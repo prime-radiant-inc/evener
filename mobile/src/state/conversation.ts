@@ -87,6 +87,7 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
+import type { ConversationMutationSubmitter } from "./conversationMutation";
 
 export type ConversationStatus =
   | "idle"
@@ -114,10 +115,23 @@ export interface ConversationMutationState {
   mutationId: number;
 }
 
-/** Display-safe local acknowledgement of a completed production mutation. */
+/** Display-safe local acknowledgement of a completed production mutation. A
+ * durable admission has no wire receipt to carry (the runtime settles at the
+ * enqueue boundary, before the daemon answers), so the receipt is optional and
+ * present only on the direct service path. */
 export interface AcceptedConversationMutation {
   readonly kind: "send" | "steer" | "queue" | "interrupt";
-  readonly receipt: MutationReceipt;
+  readonly receipt?: MutationReceipt;
+}
+
+// The production wiring's durable-submission port, supplied by the host (the
+// native screen passes its NativeMutationRuntime). When present, every
+// conversation mutation is admitted durably through it instead of calling the
+// service's transport directly; the store then reports the admission, and the
+// runtime owns dispatch and the recovery row a rejection produces.
+export interface ConversationStoreOptions {
+  readonly mutationHubId?: string;
+  readonly mutationSubmitter?: ConversationMutationSubmitter;
 }
 
 export type LoadOlderResult =
@@ -414,7 +428,39 @@ export function truncateItem(
   return sharedTruncateItem(item, bound);
 }
 
-export function createConversationStore() {
+export function createConversationStore(options: ConversationStoreOptions = {}) {
+  if (
+    options.mutationSubmitter !== undefined &&
+    (options.mutationHubId === undefined || options.mutationHubId === "")
+  )
+    throw new Error(
+      "ConversationStore: mutationHubId is required with mutationSubmitter",
+    );
+  const mutationHubId = options.mutationHubId ?? "";
+  const mutationSubmitter = options.mutationSubmitter;
+
+  // The durable path for one conversation mutation: the intent is admitted
+  // through the host's runtime at the enqueue boundary and returns no wire
+  // receipt, so the caller settles on admission rather than on a daemon answer.
+  // The target ref and instance fence come from the operation binding the
+  // caller already captured and rechecks after the await.
+  function submitMutation(
+    kind: "send" | "steer" | "queue" | "interrupt",
+    opBinding: RequestBinding,
+    conversation: MobileConversation,
+    input: InputItem[],
+    expectedQueueRevision?: number,
+  ): Promise<MutationReceipt | undefined> {
+    return mutationSubmitter!.submit({
+      kind,
+      hubId: mutationHubId,
+      targetRef: opBinding.ref,
+      threadId: conversation.threadId,
+      instanceId: conversation.instanceId ?? conversation.threadId,
+      input,
+      expectedQueueRevision,
+    });
+  }
   let conversationGen = 0;
   let mutationIdCounter = 0;
   // Draft revision: a monotonically increasing counter incremented on every
@@ -3604,7 +3650,9 @@ export function createConversationStore() {
         // it.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.send(input);
+          const receipt = mutationSubmitter
+            ? await submitMutation("send", opBinding, state.conversation, input)
+            : await service.send(input);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           // F4: Check mutationId — out-of-order completion cannot clear a
@@ -3686,7 +3734,15 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.steer(input, expectedQueueRevision);
+          const receipt = mutationSubmitter
+            ? await submitMutation(
+                "steer",
+                opBinding,
+                state.conversation,
+                input,
+                expectedQueueRevision,
+              )
+            : await service.steer(input, expectedQueueRevision);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -3761,7 +3817,9 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.queue(input);
+          const receipt = mutationSubmitter
+            ? await submitMutation("queue", opBinding, state.conversation, input)
+            : await service.queue(input);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -3836,7 +3894,9 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.interrupt();
+          const receipt = mutationSubmitter
+            ? await submitMutation("interrupt", opBinding, state.conversation, [])
+            : await service.interrupt();
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {

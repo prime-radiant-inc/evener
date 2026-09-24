@@ -131,7 +131,7 @@ describe("native composer steering wire routing", () => {
         expect(store.getState().draft).toBe(reject ? "direction" : "");
         if (!reject && method === "turn/drainAsSteer" && depth > 0)
           expect(
-            store.getState().lastAcceptedMutation?.receipt.queueEntryIds,
+            store.getState().lastAcceptedMutation?.receipt?.queueEntryIds,
           ).toEqual(["queue_1", "queue_2"]);
       } finally {
         store.getState().close();
