@@ -48,6 +48,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,21 +93,34 @@ func main() {
 	flag.IntVar(&o.probes, "probes", 0, "with --serve, after the turns finish probe the idle daemon this many times the way the hub does (fresh connection, initialize, thread/list with subagents, thread/read) and report CPU and bytes per probe")
 	flag.BoolVar(&o.serve, "serve", false, "run evener serve and drive it over AppWire with a subscribed client")
 	flag.Parse()
-	if o.evener == "" || o.turns < 1 || o.rounds < 1 || (o.turns > 1 && !o.serve) ||
-		o.payloadKB < 0 || o.streamBytes < 0 || o.delegates < 0 {
+	if err := o.validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "turncpu: %v\n", err)
 		flag.Usage()
 		os.Exit(2)
-	}
-	// Delegates are spawned one per round of the first turn, and the last
-	// turn runs until every one has reported: with more delegates than
-	// rounds, a multi-turn run's first turn ends short of spawning them all
-	// and its last turn never ends.
-	if o.delegates > o.rounds {
-		log.Fatalf("turncpu: --delegates (%d) must not exceed --rounds (%d)", o.delegates, o.rounds)
 	}
 	if err := run(o); err != nil {
 		log.Fatalf("turncpu: %v", err)
 	}
+}
+
+func (o options) validate() error {
+	switch {
+	case o.evener == "":
+		return errors.New("--evener is required")
+	case o.turns < 1 || o.rounds < 1:
+		return errors.New("--turns and --rounds must be at least 1")
+	case o.turns > 1 && !o.serve:
+		return errors.New("more than one turn needs --serve")
+	case o.payloadKB < 0 || o.streamBytes < 0 || o.delegates < 0 || o.childRounds < 0:
+		return errors.New("--payload-kb, --stream-bytes, --delegates and --child-rounds must not be negative")
+	case o.delegates > o.rounds:
+		// Delegates are spawned one per round of the first turn, and the last
+		// turn runs until every one has reported: with more delegates than
+		// rounds, a multi-turn run's first turn ends short of spawning them
+		// all and its last turn never ends.
+		return fmt.Errorf("--delegates (%d) must not exceed --rounds (%d)", o.delegates, o.rounds)
+	}
+	return nil
 }
 
 // provider is the scripted chat-completions endpoint. Each tool-bearing
@@ -377,14 +391,7 @@ func run(o options) error {
 		args = append(args, "work through the files")
 	}
 	cmd := exec.CommandContext(ctx, o.evener, args...)
-	cmd.Env = append(os.Environ(),
-		"HOME="+home,
-		"XDG_CONFIG_HOME="+configDir,
-		"XDG_STATE_HOME="+filepath.Join(home, "state"),
-		"XDG_CACHE_HOME="+filepath.Join(home, "cache"),
-		"TMPDIR="+tmpBase,
-		envvars.EVENERHostTempBases.Assignment(tmpBase),
-	)
+	cmd.Env = childEnv(os.Environ(), home, configDir, tmpBase)
 	logPath := filepath.Join(o.outDir, "evener.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -458,6 +465,24 @@ func run(o options) error {
 		return fmt.Errorf("session stopped after %d of %d turns (see %s)", prov.turn, o.turns, logPath)
 	}
 	return nil
+}
+
+// childEnv is inherited with every EVENER_ setting dropped (a developer's
+// providers.toml path, model or state dir would point the run away from the
+// scripted provider and --out), and HOME, XDG dirs and temp bases moved under
+// --out.
+func childEnv(inherited []string, home, configDir, tmpBase string) []string {
+	env := slices.DeleteFunc(slices.Clone(inherited), func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_")
+	})
+	return append(env,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+configDir,
+		"XDG_STATE_HOME="+filepath.Join(home, "state"),
+		"XDG_CACHE_HOME="+filepath.Join(home, "cache"),
+		"TMPDIR="+tmpBase,
+		envvars.EVENERHostTempBases.Assignment(tmpBase),
+	)
 }
 
 var listeningRE = regexp.MustCompile(`listening on (\S+)`)
@@ -605,7 +630,14 @@ func cpuTime(pid int) time.Duration {
 		return 0
 	}
 	s := string(raw)
-	fields := strings.Fields(s[strings.LastIndexByte(s, ')')+2:])
+	end := strings.LastIndexByte(s, ')')
+	if end < 0 {
+		return 0
+	}
+	fields := strings.Fields(s[end+1:])
+	if len(fields) < 13 {
+		return 0
+	}
 	ut, _ := strconv.ParseInt(fields[11], 10, 64)
 	st, _ := strconv.ParseInt(fields[12], 10, 64)
 	return time.Duration(ut+st) * 10 * time.Millisecond
