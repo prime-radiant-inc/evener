@@ -185,6 +185,44 @@ base_url = "http://127.0.0.1:9/v1"
 auth = "bearer"
 `
 
+// The four fixtures below are the same authored-gap shape through the two
+// terminal branches that expand rather than skip: an empty ${VAR:-} default
+// and a default that fills in nothing but an auth scheme word. Both resolve
+// "none" without consulting the store or the environment, exactly like the
+// unset-variable shape above, so a key pushed here is one nothing sends.
+
+const authoredGapEmptyDefaultInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+api_key = "${AUTHORED_GAP_KEY:-}"
+`
+
+const authoredGapSchemeWordInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+api_key = "${AUTHORED_GAP_KEY:-Bearer}"
+`
+
+const authoredHeaderGapEmptyDefaultInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.authored-gap.credential_headers]
+Authorization = "${AUTHORED_GAP_HDR:-}"
+`
+
+const authoredHeaderGapSchemeWordInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.authored-gap.credential_headers]
+Authorization = "${AUTHORED_GAP_HDR:-Bearer}"
+`
+
 // TestAuth_StatusExposesConfigRevision proves AuthStatusResponse carries a
 // non-empty ConfigRevision, that it is stable while the instance's credential
 // configuration is unchanged, and that it moves when the effective source
@@ -320,10 +358,11 @@ func TestAuth_ConfigRevisionCoversTheCredentialDestination(t *testing.T) {
 
 // TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing
 // pins the other direction of the same class the authored-header skip closes:
-// an authored credential whose variables are unset is terminal, so the instance
-// resolves "none" (registry.credential returns there without consulting the file
-// store or the environment) while a stored key is never read. Reported as
-// "added" it is a live credential that is dead.
+// an authored credential that resolves to nothing — an unset variable, an
+// empty ${VAR:-} default, a scheme-word placeholder — is terminal, so the
+// instance resolves "none" (registry.credential returns there without
+// consulting the file store or the environment) while a stored key is never
+// read. Reported as "added" it is a live credential that is dead.
 func TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -333,6 +372,10 @@ func TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothin
 	}{
 		{name: "api-key-var-unset", toml: authoredGapInstanceToml, instance: "authored-gap", layer: "api_key"},
 		{name: "credential-headers-var-unset", toml: authoredHeaderGapInstanceToml, instance: "authored-gap", layer: "credential_headers"},
+		{name: "api-key-empty-default", toml: authoredGapEmptyDefaultInstanceToml, instance: "authored-gap", layer: "api_key"},
+		{name: "api-key-scheme-word-default", toml: authoredGapSchemeWordInstanceToml, instance: "authored-gap", layer: "api_key"},
+		{name: "credential-header-empty-default", toml: authoredHeaderGapEmptyDefaultInstanceToml, instance: "authored-gap", layer: "credential_headers"},
+		{name: "credential-header-scheme-word-default", toml: authoredHeaderGapSchemeWordInstanceToml, instance: "authored-gap", layer: "credential_headers"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,11 +413,11 @@ func TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothin
 }
 
 // TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer pins the marker in the
-// revision: an instance that authors a credential whose variables are unset
-// resolves "none", exactly like one that authors nothing, so without the marker
-// a push prepared against the credentialless instance and applied after the
-// authored layer appeared would pass both fences - and the key it stores is one
-// nothing reads.
+// revision: an instance that authors a credential that resolves to nothing —
+// unset variables, empty defaults, scheme-word placeholders — resolves "none",
+// exactly like one that authors nothing, so without the marker a push prepared
+// against the credentialless instance and applied after the authored layer
+// appeared would pass both fences - and the key it stores is one nothing reads.
 func TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -394,6 +437,10 @@ func TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer(t *testing.T) {
 	}{
 		{name: "api-key-var-unset", toml: authoredGapInstanceToml},
 		{name: "credential-headers-var-unset", toml: authoredHeaderGapInstanceToml},
+		{name: "api-key-empty-default", toml: authoredGapEmptyDefaultInstanceToml},
+		{name: "api-key-scheme-word-default", toml: authoredGapSchemeWordInstanceToml},
+		{name: "credential-header-empty-default", toml: authoredHeaderGapEmptyDefaultInstanceToml},
+		{name: "credential-header-scheme-word-default", toml: authoredHeaderGapSchemeWordInstanceToml},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writeProvidersToml(t, dir, tc.toml)
@@ -410,7 +457,7 @@ func TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer(t *testing.T) {
 				t.Fatalf("ActiveSource = %q, want none", authored.ActiveSource)
 			}
 			if authored.ConfigRevision == credentialless.ConfigRevision {
-				t.Fatalf("the revision did not move when providers.toml gained an authored credential whose variables are unset (%q)", authored.ConfigRevision)
+				t.Fatalf("the revision did not move when providers.toml gained an authored credential that resolves to nothing (%q)", authored.ConfigRevision)
 			}
 		})
 	}

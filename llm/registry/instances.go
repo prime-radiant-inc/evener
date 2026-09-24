@@ -610,6 +610,17 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		_, _ = fmt.Fprintf(sum, "%s\x01", k)
 		hashSlot(h.CredentialHeaders[k])
 	}
+	// The provider-level headers are the fallback's request shape: the
+	// fetch sends them when there is no default row to resolve through
+	// (or the row cannot resolve — ResolveInstanceListing falls back to
+	// the provider's own transport then), so both states hash the same
+	// bytes the request would carry.
+	hashProviderHeaders := func() {
+		for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
+			_, _ = fmt.Fprintf(sum, "%s\x01", k)
+			hashSlot(h.Headers[k])
+		}
+	}
 	if rec.head.DefaultModel != "" && !isGlob(rec.head.DefaultModel) {
 		// The listing fetch resolves through the default row and sends
 		// the merged headers with the request — provider, exact row,
@@ -627,12 +638,14 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 				// keep publishing stale rows under the old identity.
 				_, _ = fmt.Fprintf(sum, "row\x01%s\x01%s\x01", k, res.Headers[k])
 			}
+		} else {
+			// The default row cannot resolve: the listing falls back to
+			// the provider's own transport, whose request carries the
+			// provider-level headers alone.
+			hashProviderHeaders()
 		}
 	} else {
-		for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
-			_, _ = fmt.Fprintf(sum, "%s\x01", k)
-			hashSlot(h.Headers[k])
-		}
+		hashProviderHeaders()
 	}
 	return hex.EncodeToString(sum.Sum(nil)), true
 }
@@ -694,6 +707,23 @@ func (r *Registry) listingTransport(rec *record) Transport {
 		return res.Transport
 	}
 	return rec.head.Transport
+}
+
+// listingProtocol is the protocol a bare launch of the instance speaks:
+// the default row's when the row resolves, the provider's own otherwise
+// — the same stale-default judgment listingTransport makes for the
+// transport. The listing's Protocol must describe the same launch its
+// Auth and BaseURL already do: every resolve depth takes the row's
+// protocol, and the entry's endpoint fingerprint and revision are
+// computed over it.
+func (r *Registry) listingProtocol(rec *record) string {
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+		return rec.head.Protocol
+	}
+	if res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport); err == nil {
+		return res.Protocol
+	}
+	return rec.head.Protocol
 }
 
 // authHeaderKey resolves which credential-header key carries the named
@@ -895,16 +925,24 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		}
 		if v == "" {
 			// An empty ${VAR:-} default resolved to nothing: an empty
-			// credential never resolves as a present one.
-			return none("no credential (api_key expands to an empty value)")
+			// credential never resolves as a present one. The layer is
+			// still authored and terminal — it returns here without
+			// consulting the store or the environment, so a stored key
+			// is one nothing sends, and the authored marker says so.
+			cred, warns := none("no credential (api_key expands to an empty value)")
+			cred.AuthoredLayer = "api_key"
+			return cred, warns
 		}
 		if r.schemeWordDefault(h.APIKey) {
 			// A default that fills in a bare scheme word is authored
 			// placeholder text, not key material — the same rule the
 			// Authorization header applies — so it resolves as no
 			// credential with a warning, never as a present one whose
-			// value would reach the wire as the word alone.
-			return none("no credential (api_key expands to nothing but an auth scheme word)")
+			// value would reach the wire as the word alone. Authored
+			// and terminal exactly like the empty expansion above.
+			cred, warns := none("no credential (api_key expands to nothing but an auth scheme word)")
+			cred.AuthoredLayer = "api_key"
+			return cred, warns
 		}
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
@@ -922,10 +960,14 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 			return cred, warns
 		}
 		if auth.expanded == "" {
-			return noneAuth(fmt.Sprintf("no credential (the %s credential header expands to an empty value)", auth.key))
+			cred, warns := noneAuth(fmt.Sprintf("no credential (the %s credential header expands to an empty value)", auth.key))
+			cred.AuthoredLayer = "credential_headers"
+			return cred, warns
 		}
 		if auth.noMaterial {
-			return noneAuth(fmt.Sprintf("no credential (the %s credential header expands to nothing but an auth scheme word)", auth.key))
+			cred, warns := noneAuth(fmt.Sprintf("no credential (the %s credential header expands to nothing but an auth scheme word)", auth.key))
+			cred.AuthoredLayer = "credential_headers"
+			return cred, warns
 		}
 		return Credential{Value: auth.expanded, Source: "credential_headers"}, nil
 	}
@@ -1081,7 +1123,7 @@ func (r *Registry) Instances() []Instance {
 			baseURL, _, _ = r.resolveBaseURL(inst.rec, t)
 		}
 		out = append(out, Instance{
-			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: h.Protocol, Surface: h.Surface,
+			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: r.listingProtocol(inst.rec), Surface: h.Surface,
 			Auth: t.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
 			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 			CredentialSource: cred.Source, Warnings: warns,

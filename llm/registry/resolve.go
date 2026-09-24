@@ -428,11 +428,22 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 				return true
 			}
 		}
-		// The scan names the ids the registry knows; a live listing can
-		// return one it has never seen, and a glob can pin that unseen
-		// row onto a scheme the api_key travels with. An auth-bearing
-		// glob means the predicate cannot vouch for the listing's rows,
-		// so the command key counts as mintable.
+		// The ids the scan can name are the ones the registry already
+		// holds. A live listing can also return an id no layer has ever
+		// seen, and with no row or glob naming it, that id resolves
+		// through the provider's own transport — the same fallback
+		// ResolveInstance falls back to (spec §8.1). When that fallback
+		// sends api_key, the command is reachable no matter how
+		// terminal every known row is, so the fetch must be refused.
+		switch rec.head.Transport.Auth {
+		case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+		default:
+			return true
+		}
+		// A glob can pin that unseen row onto a scheme the api_key
+		// travels with; an auth-bearing glob means the predicate
+		// cannot vouch for the listing's rows, so the command key
+		// counts as mintable.
 		if r.recordGlobPinsAuth(rec) {
 			return true
 		}

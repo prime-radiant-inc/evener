@@ -186,6 +186,28 @@ base = "openai"
 base_url = "https://gw/v1"
 [providers.anthropic]
 base_url = "https://gw/v1"
+[providers.gapempty]
+base = "openai"
+base_url = "https://gw/v1"
+api_key = "${MISSING:-}"
+[providers.gapscheme]
+base = "openai"
+base_url = "https://gw/v1"
+api_key = "${MISSING:-Bearer}"
+[providers.hdrother]
+base = "openai"
+base_url = "https://gw/v1"
+auth = "header"
+auth_header = "X-K"
+[providers.hdrother.credential_headers]
+X-K = "${MISSING:-}"
+[providers.hdrschemeword]
+base = "openai"
+base_url = "https://gw/v1"
+auth = "header"
+auth_header = "X-K"
+[providers.hdrschemeword.credential_headers]
+X-K = "${MISSING:-Bearer}"
 [providers.same]
 base = "openai"
 base_url = "https://api.openai.com/v1"
@@ -207,18 +229,27 @@ base_url = "https://proxy/v1"
 		// so: "none" alone would be indistinguishable from an instance that
 		// authors no credential at all, and the difference decides whether a key
 		// a writer stores under the name is ever sent (AuthoredLayer).
-		"envref":    {Value: "", Source: "none", AuthoredLayer: "api_key"},
-		"hdr":       {Value: "Bearer pk", Source: "credential_headers"},
-		"hdrgap":    {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
-		"stored":    {Value: "from-store", Source: "store"},
-		"work":      {Value: "", Source: "none"},
-		"work2":     {Value: "gw", Source: "env:GW_KEY"},
-		"gw":        {Value: "gw2", Source: "env:GW_API_KEY"},
-		"anthropic": {Value: "", Source: "none"},
-		"same":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
-		"mine":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
-		"bedrock":   {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
-		"viaproxy":  {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"envref": {Value: "", Source: "none", AuthoredLayer: "api_key"},
+		"hdr":    {Value: "Bearer pk", Source: "credential_headers"},
+		"hdrgap": {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
+		// An authored layer that expands to nothing is exactly as
+		// terminal as one whose variables are unset: the empty default
+		// and the bare scheme word both resolve "none" without ever
+		// consulting the store or the environment, so a key pushed
+		// here is one nothing sends (AuthoredLayer names the layer).
+		"gapempty":      {Value: "", Source: "none", AuthoredLayer: "api_key"},
+		"gapscheme":     {Value: "", Source: "none", AuthoredLayer: "api_key"},
+		"hdrother":      {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
+		"hdrschemeword": {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
+		"stored":        {Value: "from-store", Source: "store"},
+		"work":          {Value: "", Source: "none"},
+		"work2":         {Value: "gw", Source: "env:GW_KEY"},
+		"gw":            {Value: "gw2", Source: "env:GW_API_KEY"},
+		"anthropic":     {Value: "", Source: "none"},
+		"same":          {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"mine":          {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"bedrock":       {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
+		"viaproxy":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
 	}
 	for name, w := range want {
 		rec := r.explicit[name]
@@ -1608,6 +1639,68 @@ func TestAuthFingerprintRotatesGlobRowHeaders(t *testing.T) {
 	}
 }
 
+// A default row can pin its own protocol, and every resolve depth takes
+// the row's protocol for the bare-name launch — presence, transport, and
+// the listing fetch all speak it, and the entry's endpoint fingerprint
+// and revision are computed over it. The listing entry must describe
+// that same launch: a provider-level Protocol would contradict the
+// row-aware Auth and BaseURL beside it.
+func TestInstancesProtocolFollowsTheDefaultRow(t *testing.T) {
+	config := "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"protocol = \"openai-responses\"\n"
+	r := fixtureLoad(t, nil, config)
+	inst, ok := r.Instance("gw")
+	if !ok {
+		t.Fatal("no gw instance")
+	}
+	if inst.Protocol != "openai-responses" {
+		t.Fatalf("Instance.Protocol = %q, want the default row's openai-responses: the entry describes the bare-name launch, as its Auth and BaseURL already do", inst.Protocol)
+	}
+	res, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence(gw): %v", err)
+	}
+	if res.Protocol != inst.Protocol {
+		t.Fatalf("listing Protocol %q disagrees with the presence resolve's %q: one launch, one protocol", inst.Protocol, res.Protocol)
+	}
+}
+
+// When the default row cannot resolve — a disabled model, a dead alias —
+// the listing fetch falls back to the provider's own transport and sends
+// the provider-level headers (ResolveInstanceListing falls back to
+// ResolveInstance). The identity must hash exactly those bytes in that
+// state, or a provider-level header rotation carries cached live rows
+// forward under the old request shape.
+func TestAuthFingerprintCoversProviderHeadersWhenTheDefaultRowCannotResolve(t *testing.T) {
+	mk := func(t *testing.T, providerHeaders string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"anthropic\"\n" +
+			"api_key_env = [\"WORK_KEY\"]\n" +
+			"default_model = \"alias-row\"\n" +
+			"[providers.gw.models.\"alias-row\"]\n" +
+			"alias_of = \"gone-model\"\n" +
+			"[providers.gw.models.\"gone-model\"]\n" +
+			"disabled = true\n" +
+			providerHeaders
+		return fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config).AuthFingerprint("gw")
+	}
+	plain, ok := mk(t, "[providers.gw.headers]\n\"X-Beta\" = \"false\"\n")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "[providers.gw.headers]\n\"X-Beta\" = \"true\"\n")
+	if plain == rotated {
+		t.Fatal("fingerprint unchanged across a provider-header rotation in the fallback state; the listing request changed")
+	}
+}
+
 // A row can pin its own auth scheme, and the listing resolves every row
 // at full depth through that row's own transport: the mint predicate
 // must see what the rows would execute, not only the provider-level
@@ -1624,6 +1717,37 @@ func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
 	r := fixtureLoad(t, nil, config)
 	if !r.LaunchMintsCredentialCommand("gw") {
 		t.Fatal("the mint predicate missed the row's auth override: the listing's full-depth row resolution executes the api_key command under the row's bearer scheme")
+	}
+}
+
+// The ids the registry knows are not the only ones a live listing can
+// return: a provider whose every known row stays terminal (auth none)
+// still carries a credential-bearing provider-level transport, and an
+// unseen live id falls back to exactly that transport when the fetch
+// applies it. Client.Models then resolves the new row at full depth, so
+// the predicate must treat the provider's own scheme as reachable — the
+// known-id scan alone cannot vouch for ids that do not exist yet.
+func TestLaunchMintsCoversProviderFallbackForUnseenModels(t *testing.T) {
+	mk := func(providerAuth string) string {
+		return "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"" + providerAuth + "\"\n" +
+			"api_key = '''$(gw-mint)'''\n" +
+			"default_model = \"house-model\"\n" +
+			"[providers.gw.models.\"house-model\"]\n" +
+			"auth = \"none\"\n"
+	}
+	r := fixtureLoad(t, nil, mk("header"))
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate missed the provider-level fallback: an unseen live id resolves through the header scheme and the listing's full-depth row resolution executes the api_key command")
+	}
+	// The same shape with a provider that truly never sends api_key stays
+	// fetchable: every row — known or still unseen — resolves terminal.
+	r = fixtureLoad(t, nil, mk("none"))
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate refused a provider whose every row, seen or unseen, stays terminal")
 	}
 }
 
