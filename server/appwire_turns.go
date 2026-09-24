@@ -54,9 +54,15 @@ type appTurnProjection struct {
 }
 
 func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error) {
+	return appTurnProjectionFromTranscriptPrefix(path, 0)
+}
+
+// appTurnProjectionFromTranscriptPrefix projects the first size bytes of the
+// transcript at path, or the whole file when size is zero.
+func appTurnProjectionFromTranscriptPrefix(path string, size int64) (appTurnProjection, error) {
 	toolNames := map[string]string{}
 	entries := 0
-	projection, err := apptranscript.ItemTurnProjectionFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	projection, err := apptranscript.ItemTurnProjectionFromFilePrefix(path, size, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > entries {
 			entries = entryIndex
 		}

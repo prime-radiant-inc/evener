@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -738,13 +739,22 @@ type ItemTurnProjection struct {
 // ItemTurnProjectionFromFile projects a transcript and returns both its
 // visible logical turns and the absolute next entry ordinal.
 func ItemTurnProjectionFromFile(path string, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
-	return itemTurnProjectionFromFileContext(context.Background(), path, maxLineBytes, project)
+	return itemTurnProjectionFromFileContext(context.Background(), path, 0, maxLineBytes, project)
 }
 
-func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
+// ItemTurnProjectionFromFilePrefix is ItemTurnProjectionFromFile over only the
+// first size bytes of path. A transcript is append-only, so that prefix is the
+// transcript as it stood when it was size bytes long.
+func ItemTurnProjectionFromFilePrefix(path string, size int64, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
+	return itemTurnProjectionFromFileContext(context.Background(), path, size, maxLineBytes, project)
+}
+
+// itemTurnProjectionFromFileContext reads the first size bytes of path, or the
+// whole file when size is zero.
+func itemTurnProjectionFromFileContext(ctx context.Context, path string, size int64, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
 	var acc logicalTurnAccumulator
 	entryIndex := 0
-	header, err := scanSemanticTranscriptContext(ctx, path, maxLineBytes, func(raw json.RawMessage) error {
+	header, err := scanSemanticTranscriptContext(ctx, path, size, maxLineBytes, func(raw json.RawMessage) error {
 		entry, decodeErr := transcript.DecodeEntry(raw)
 		if decodeErr != nil {
 			// The scanner already strictly validated every entry it admits,
@@ -780,7 +790,7 @@ func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([
 }
 
 func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	projection, err := itemTurnProjectionFromFileContext(ctx, path, maxLineBytes, project)
+	projection, err := itemTurnProjectionFromFileContext(ctx, path, 0, maxLineBytes, project)
 	return projection.Turns, err
 }
 
@@ -834,7 +844,7 @@ func positionProjectedItemsAt(items []appwire.ThreadItem, turnID string, entryOr
 }
 
 func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
-	return scanSemanticTranscriptContext(context.Background(), path, maxLineBytes, visit)
+	return scanSemanticTranscriptContext(context.Background(), path, 0, maxLineBytes, visit)
 }
 
 // narrowScan is the one read loop behind the full-transcript derived scans
@@ -878,7 +888,7 @@ func decodeNarrowEntry[T any](label string) func(json.RawMessage) (T, error) {
 	}
 }
 
-func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
+func scanSemanticTranscriptContext(ctx context.Context, path string, size int64, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
 	if err := ctx.Err(); err != nil {
 		return transcript.Header{}, err
 	}
@@ -890,7 +900,11 @@ func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineByte
 	if maxLineBytes <= 0 {
 		maxLineBytes = 128 << 20
 	}
-	reader := bufio.NewReaderSize(f, 64*1024)
+	var source io.Reader = f
+	if size > 0 {
+		source = io.LimitReader(f, size)
+	}
+	reader := bufio.NewReaderSize(source, 64*1024)
 	var header transcript.Header
 	headerRead := false
 	for {

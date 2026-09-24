@@ -1,6 +1,8 @@
 package apptranscript
 
 import (
+	"bytes"
+	"os"
 	"reflect"
 	"testing"
 
@@ -369,4 +371,38 @@ func requireItemTurnsFromFile(t testing.TB, path string, maxLineBytes int, proje
 		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	return turns
+}
+
+// A byte prefix of an append-only transcript is the transcript as it stood when
+// it was that long; projecting the prefix answers what a projection taken then
+// would have.
+func TestItemTurnProjectionFromFilePrefixProjectsTheEarlierTranscript(t *testing.T) {
+	path := writeEntries(t,
+		userEntry(1, "question"),
+		assistantTextEntry(2, "answer"),
+		userEntry(3, "later question"),
+		assistantTextEntry(4, "later answer"),
+	)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Header plus the first two entries.
+	prefix := 0
+	for range 3 {
+		prefix += bytes.IndexByte(data[prefix:], '\n') + 1
+	}
+	earlier := writeEntries(t, userEntry(1, "question"), assistantTextEntry(2, "answer"))
+
+	got, err := ItemTurnProjectionFromFilePrefix(path, int64(prefix), testMaxLineBytes, sequentialTestProjector())
+	if err != nil {
+		t.Fatalf("ItemTurnProjectionFromFilePrefix: %v", err)
+	}
+	want, err := ItemTurnProjectionFromFile(earlier, testMaxLineBytes, sequentialTestProjector())
+	if err != nil {
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("prefix projection = %+v, want the earlier transcript's %+v", got, want)
+	}
 }

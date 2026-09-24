@@ -322,10 +322,8 @@ type appDescendantProjection struct {
 	turns        *appTurnSnapshot
 	thread       appwire.Thread
 	activeTurnID string
-	// evictedNextEntry is the evicted snapshot's next live entry. A rebuilt
-	// snapshot allocates no entry below it, so items streamed after a resume
-	// order after everything a subscriber already holds.
-	evictedNextEntry uint64
+	// eviction records what a rebuild of the evicted snapshot needs.
+	eviction appTurnsEviction
 	// lastUsed orders eviction: the least recently read or settled descendant
 	// goes first.
 	lastUsed uint64

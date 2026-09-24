@@ -3,11 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -26,9 +26,13 @@ import (
 )
 
 const (
-	evictionRootPrompt = "ROOT-EVICTION-PARITY"
-	evictionChildTask  = "CHILD-EVICTION-PARITY"
+	evictionRootPrompt  = "ROOT-EVICTION-PARITY"
+	evictionChildTask   = "CHILD-EVICTION-PARITY"
+	evictionSendPrompt  = "ROOT-EVICTION-SEND"
+	evictionSendMessage = "RESUME-EVICTED-CHILD"
 )
+
+var evictionDelegateID = regexp.MustCompile(`dlg_[A-Za-z0-9_-]+`)
 
 // evictionDelegateAdapter scripts one root that delegates once and a child
 // that makes one real tool call before reporting. Everything below the LLM
@@ -40,6 +44,7 @@ type evictionDelegateAdapter struct {
 	mu         sync.Mutex
 	rootCalls  int
 	childCalls int
+	sent       bool
 }
 
 func (*evictionDelegateAdapter) Name() string { return "openai" }
@@ -63,6 +68,11 @@ func (a *evictionDelegateAdapter) Complete(_ context.Context, req llm.Request) (
 			return evictionToolCall(req, llm.ToolCallData{ID: "child_write", Name: "write_file", Arguments: args, Type: "function"}), nil
 		}
 		return evictionCommunicate(req, "child finished"), nil
+	}
+	if strings.Contains(text, evictionSendPrompt) && !a.sent {
+		a.sent = true
+		args, _ := json.Marshal(map[string]any{"to": evictionDelegateID.FindString(text), "message": evictionSendMessage, "max_wait_ms": 30_000})
+		return evictionToolCall(req, llm.ToolCallData{ID: "root_send", Name: "delegate_send", Arguments: args, Type: "function"}), nil
 	}
 	a.rootCalls++
 	if a.rootCalls == 1 {
@@ -102,8 +112,9 @@ func evictionCommunicate(req llm.Request, message string) llm.Response {
 
 // runEvictionDelegate drives a real root session through one delegate run,
 // projecting the child onto srv exactly as cmd/evener/serve.go wires it, and
-// returns the child's thread ID once the whole job tree has quiesced.
-func runEvictionDelegate(t *testing.T, srv *Server) string {
+// returns the root and the child's thread ID once the whole job tree has
+// quiesced.
+func runEvictionDelegate(t *testing.T, srv *Server) (*agent.Session, string) {
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -121,15 +132,7 @@ func runEvictionDelegate(t *testing.T, srv *Server) string {
 		return filepath.Join(dir, "sessions", threadID+".transcript.jsonl")
 	})
 
-	// TRIPWIRE: scripted in-process adapter; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := root.ProcessInput(ctx, evictionRootPrompt, nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if _, err := root.DrainJobTree(ctx); err != nil {
-		t.Fatalf("DrainJobTree: %v", err)
-	}
+	driveEvictionRoot(t, root, evictionRootPrompt)
 
 	srv.mu.RLock()
 	defer srv.mu.RUnlock()
@@ -137,9 +140,24 @@ func runEvictionDelegate(t *testing.T, srv *Server) string {
 		t.Fatalf("descendants = %d, want exactly the one delegate", len(srv.appDescendants))
 	}
 	for id := range srv.appDescendants {
-		return id
+		return root, id
 	}
-	return ""
+	return root, ""
+}
+
+// driveEvictionRoot runs one root input and waits for the whole job tree to
+// quiesce.
+func driveEvictionRoot(t *testing.T, root *agent.Session, input string) {
+	t.Helper()
+	// TRIPWIRE: scripted in-process adapter; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, input, nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if _, err := root.DrainJobTree(ctx); err != nil {
+		t.Fatalf("DrainJobTree: %v", err)
+	}
 }
 
 func descendantProjectionForTest(t *testing.T, srv *Server, threadID string) *appDescendantProjection {
@@ -155,9 +173,12 @@ func descendantProjectionForTest(t *testing.T, srv *Server, threadID string) *ap
 
 func descendantTurnsResident(t *testing.T, srv *Server, threadID string) bool {
 	t.Helper()
-	projection := descendantProjectionForTest(t, srv, threadID)
 	srv.mu.RLock()
 	defer srv.mu.RUnlock()
+	projection := srv.appDescendants[threadID]
+	if projection == nil {
+		t.Fatalf("no descendant projection for %s", threadID)
+	}
 	return projection.turns != nil
 }
 
@@ -223,18 +244,6 @@ func conversationItems(turns []appwire.Turn) []conversationItem {
 	return out
 }
 
-func requireCursorStale(t *testing.T, err error) {
-	t.Helper()
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		t.Fatalf("error = %v, want a transcript cursor stale wire error", err)
-	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
-		t.Fatalf("error = %+v, want transcript cursor stale", wire)
-	}
-}
-
 // A rebuilt descendant snapshot cannot reproduce the live one: live-only system
 // items are never persisted, so the same (entry, item) position names a
 // different item after a rebuild. Rehydration therefore answers from the
@@ -242,7 +251,7 @@ func requireCursorStale(t *testing.T, err error) {
 // against the live snapshot fails as stale instead of paging the wrong items.
 func TestEvictedDescendantReadServesTranscriptProjectionUnderFreshIncarnation(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 1000})
-	childID := runEvictionDelegate(t, srv)
+	_, childID := runEvictionDelegate(t, srv)
 	projection := descendantProjectionForTest(t, srv, childID)
 	srv.mu.RLock()
 	status, active := projection.thread.Status.Type, projection.activeTurnID
@@ -284,7 +293,39 @@ func TestEvictedDescendantReadServesTranscriptProjectionUnderFreshIncarnation(t 
 		Cursor:    liveWindow.OlderCursor,
 		ItemLimit: 1,
 	})
-	requireCursorStale(t, err)
+	if !isStaleItemCursorError(err) {
+		t.Fatalf("pre-eviction cursor after rehydration = %v, want typed stale error", err)
+	}
+}
+
+// A delegate resumed after eviction has already persisted the message that
+// resumes it by the time the event announcing it arrives, so the rebuild the
+// event triggers must not also carry it: the reader would see it twice.
+func TestEvictedDelegateResumedBySendShowsTheMessageOnce(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 1000})
+	root, childID := runEvictionDelegate(t, srv)
+	evictQuiescentDescendantsForTest(srv, 0)
+	if descendantTurnsResident(t, srv, childID) {
+		t.Fatal("quiescent delegate still resident after eviction")
+	}
+
+	driveEvictionRoot(t, root, evictionSendPrompt)
+
+	read, err := readDescendantTurns(srv, childID, appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatalf("read resumed delegate: %v", err)
+	}
+	count := 0
+	for _, turn := range read.Thread.Turns {
+		for _, item := range turn.Items {
+			if item.Type == "userMessage" && strings.Contains(item.Text, evictionSendMessage) {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("resumed delegate shows the resuming message %d times, want once; turns=%+v", count, read.Thread.Turns)
+	}
 }
 
 // quiescentDescendantFixture drives synthetic descendants of one root whose
@@ -297,13 +338,11 @@ type quiescentDescendantFixture struct {
 
 func newQuiescentDescendantFixture(t *testing.T) *quiescentDescendantFixture {
 	t.Helper()
-	dir := t.TempDir()
 	srv := NewServer(ServerConfig{AppReplaySize: 10000})
 	srv.SetAppIdentity("local", "root")
-	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-		return filepath.Join(dir, "sessions", threadID+".transcript.jsonl")
-	})
-	return &quiescentDescendantFixture{t: t, srv: srv, dir: dir}
+	f := &quiescentDescendantFixture{t: t, srv: srv, dir: t.TempDir()}
+	srv.SetDescendantTranscriptPathFunc(f.transcriptPath)
+	return f
 }
 
 func (f *quiescentDescendantFixture) transcriptPath(threadID string) string {
@@ -422,32 +461,62 @@ func TestQuiescentDescendantWithoutTranscriptResolverIsNeverEvicted(t *testing.T
 	}
 }
 
-func TestEvictedDescendantResumeRehydratesBeforeApplyingItsEvent(t *testing.T) {
+// A resumed delegate persists the input that resumes it before the event
+// announcing it arrives, so the rebuild that event triggers covers only the
+// transcript as it stood at eviction: the input then arrives once, live.
+func TestEvictedDescendantResumeRebuildsTheTranscriptAsEvicted(t *testing.T) {
 	f := newQuiescentDescendantFixture(t)
-	f.finishedDescendant("child")
-	evictQuiescentDescendantsForTest(f.srv, 0)
-	f.requireResident("child", false)
-	// The transcript keeps growing while the descendant is evicted (a delegate
-	// persists its own turns), so its rebuilt turn ids now run past the ids the
-	// live projector has handed out.
+	f.persist("child", "persisted child")
+	f.startTurn("child", "live child")
+	// One live turn persists as several entries, so the transcript's turn ids
+	// run past the ids the live projector has handed out.
 	f.persist("child", "later one", "later two", "later three")
-	persisted, err := appTurnProjectionFromTranscriptFile(f.transcriptPath("child"))
+	f.finish("child")
+	evictedAt, err := appTurnProjectionFromTranscriptFile(f.transcriptPath("child"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	evictQuiescentDescendantsForTest(f.srv, 0)
+	f.requireResident("child", false)
 
+	f.persist("child", "resumed")
 	f.startTurn("child", "resumed")
 	f.requireResident("child", true)
 
 	turns := f.srv.appAllTurns("child")
 	if !turnsContainText(turns, "persisted child") || !turnsContainText(turns, "later three") {
-		t.Fatalf("resumed turns = %+v, want the persisted history kept", turns)
+		t.Fatalf("resumed turns = %+v, want the history persisted before eviction", turns)
+	}
+	count := 0
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Text == "resumed" {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("resumed input appears %d times, want once: %+v", count, turns)
 	}
 	resumed := findItemByText(t, turns, "resumed")
 	var ordinal int
-	if _, err := fmt.Sscanf(resumed.TurnID, "turn_%d", &ordinal); err != nil || ordinal <= persisted.persistedEntries {
-		t.Fatalf("resumed turn id %q, want one fenced above the transcript's persisted turn_%d", resumed.TurnID, persisted.persistedEntries)
+	if _, err := fmt.Sscanf(resumed.TurnID, "turn_%d", &ordinal); err != nil || ordinal <= evictedAt.persistedEntries {
+		t.Fatalf("resumed turn id %q, want one fenced above the transcript's persisted turn_%d", resumed.TurnID, evictedAt.persistedEntries)
 	}
+}
+
+// Eviction discards the only in-memory copy, so a descendant whose transcript
+// cannot be found stays resident.
+func TestQuiescentDescendantWithoutTranscriptFileIsNeverEvicted(t *testing.T) {
+	f := newQuiescentDescendantFixture(t)
+	f.finishedDescendant("child")
+	if err := os.Remove(f.transcriptPath("child")); err != nil {
+		t.Fatal(err)
+	}
+
+	evictQuiescentDescendantsForTest(f.srv, 0)
+
+	f.requireResident("child", true)
 }
 
 // Items the live snapshot streamed but the transcript never persisted leave
@@ -514,9 +583,7 @@ func TestDescendantEvictionRacesReadsAndResumes(t *testing.T) {
 	var wg sync.WaitGroup
 	failures := make(chan string, len(ids)*rounds)
 	for _, id := range ids {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range rounds {
 				read, err := readDescendantTurns(f.srv, id, appwire.TranscriptItemPageLimit)
 				// Resumes push the persisted exchange out of the latest window,
@@ -526,22 +593,19 @@ func TestDescendantEvictionRacesReadsAndResumes(t *testing.T) {
 					return
 				}
 			}
-		}()
-		go func() {
-			defer wg.Done()
+		})
+		wg.Go(func() {
 			for i := range rounds {
 				f.startTurn(id, fmt.Sprintf("resume %s %d", id, i))
 				f.finish(id)
 			}
-		}()
+		})
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for range rounds {
 			evictQuiescentDescendantsForTest(f.srv, 0)
 		}
-	}()
+	})
 	wg.Wait()
 	close(failures)
 	for failure := range failures {
