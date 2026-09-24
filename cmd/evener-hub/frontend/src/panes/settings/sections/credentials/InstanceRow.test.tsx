@@ -6,9 +6,11 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
 import rawStyles from "./InstanceRow.module.css";
 
-// CSS Modules import as an index signature, so every `rawStyles.foo` access is
-// `string | undefined` under noUncheckedIndexedAccess: requireClass makes a
-// missing class a loud error instead of a comparison that can never fail.
+// CSS Modules import as an index signature, so any dotted access on the imported
+// binding is `string | undefined` under noUncheckedIndexedAccess: requireClass
+// makes a missing class a loud error instead of a comparison that can never
+// fail. (Deliberately no member-access example in prose: the styles contract
+// test matches an import-bound name anywhere in the file's text.)
 const CLASS = {
   row: requireClass(rawStyles.row, "InstanceRow.module.css", "row"),
   rowButton: requireClass(rawStyles.rowButton, "InstanceRow.module.css", "rowButton"),
