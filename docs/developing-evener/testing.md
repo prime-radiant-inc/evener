@@ -424,7 +424,11 @@ splitting it across processes is what bounds its wall time (hub: ~80s serial,
 the package's TestMain applies with `shardrun.ConfigureRunFile` and then
 unsets, so a test that re-execs its own binary as a helper keeps its explicit
 `-test.run`. `AGENT_SHARDS=0`, `HUB_SHARDS=0` and `CLI_SHARDS=0` fall back to
-one `go test`. A TestMain that dropped that call would still pass: every
+one `go test`. `HUB_SHARDS=elsewhere` and `CLI_SHARDS=elsewhere` leave that
+package out of the run entirely, because another job runs it, and
+`ROOT_REST=0` skips the root `go test` itself: the CI race lanes use them to
+run the hub on one runner and the rest of the root module on another
+(scripts/lib/gate-root-shards.sh, `RACE_ROOT_PART`). A TestMain that dropped that call would still pass: every
 shard would just run the whole package. One that made the call before
 `flag.Parse` would let any `-test.run` on the command line override the file.
 So each sharded package pins the wiring with a one-line test,
