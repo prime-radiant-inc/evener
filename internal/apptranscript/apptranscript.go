@@ -563,13 +563,22 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				toolNames[part.ToolCall.ID] = part.ToolCall.Name
 				if part.ToolCall.Name == "communicate" {
 					text := CommunicateMessageFromArguments(part.ToolCall.Arguments)
-					// Rejected communicate (Arguments={}, RawArguments set):
-					// CommunicateMessageFromArguments returns "" for the {}
-					// placeholder, so without a fallback the call vanishes from
-					// the hub thread. Surface the model's raw bytes instead,
-					// mirroring the SentArguments precedence used elsewhere.
+					// A communicate with Arguments={} and RawArguments set is
+					// ambiguous on the assistant turn alone: it is both the
+					// durable shape of a rejected communicate (the model sent
+					// malformed JSON the tool never ran) AND a repaired-malformed
+					// communicate that was healed and executed successfully
+					// (assistantHistoryMessage sets RawArguments for any
+					// invalid-JSON original). Thread the raw bytes into the
+					// paired tool result, which carries the error/PrevalOnly
+					// status that disambiguates: a rejected communicate surfaces
+					// its raw bytes there; a healed-and-executed one delivered its
+					// message live and renders nothing. Store the raw bytes in
+					// toolNames (keyed by call ID) so the result turn can recover
+					// them â a communicate result always carries its own name, so
+					// the map's name-fallback role is never exercised for it.
 					if text == "" && part.ToolCall.RawArguments != "" {
-						text = part.ToolCall.SentArguments()
+						toolNames[part.ToolCall.ID] = part.ToolCall.RawArguments
 					}
 					if text != "" && !EchoesAssistantText(lastAssistantText, text) {
 						items = append(items, appwire.ThreadItem{
@@ -620,6 +629,23 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				name = toolNames[part.ToolResult.ToolCallID]
 			}
 			if name == "communicate" {
+				// A rejected communicate (Arguments={}, RawArguments set) was
+				// deferred from the assistant turn. The result's IsError
+				// confirms the call was rejected â surface the raw bytes now,
+				// mirroring the SentArguments precedence used elsewhere. A
+				// healed-and-executed communicate (IsError=false) delivered its
+				// message live and renders nothing, matching live.
+				if part.ToolResult.IsError {
+					if rawArgs, ok := toolNames[part.ToolResult.ToolCallID]; ok && rawArgs != "" && rawArgs != "communicate" {
+						items = append(items, appwire.ThreadItem{
+							Type:   "agentMessage",
+							ID:     fmt.Sprintf("item_assistant_comm_%d_%d", turnIndex, i),
+							TurnID: turnID,
+							Text:   rawArgs,
+							Status: appwire.TurnStatusCompleted,
+						})
+					}
+				}
 				delete(toolNames, part.ToolResult.ToolCallID)
 				continue
 			}

@@ -1378,15 +1378,69 @@ func TestProjectTurn_WellFormedCallUnchanged(t *testing.T) {
 	}
 }
 
+// TestProjectTurn_RepairedCommunicateRendersNoRawFallback proves the raw
+// fallback for a communicate with Arguments={} and RawArguments set must NOT
+// fire on the assistant turn alone: that is also the durable shape of a
+// repairable-malformed communicate that was healed and executed successfully
+// (assistantHistoryMessage sets RawArguments for any invalid-JSON original).
+// A healed communicate delivered its message live, so reload must render
+// nothing from the raw bytes — only the paired tool result knows whether the
+// call was rejected, which it is not here. Before the fix the assistant turn
+// emitted an agentMessage carrying the raw malformed bytes, diverging from the
+// live path that delivered the healed message.
+func TestProjectTurn_RepairedCommunicateRendersNoRawFallback(t *testing.T) {
+	const rawArgs = `{message: "hello", }` // malformed JSON — the repaired-call shape
+	toolNames := map[string]string{}
+	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_healed",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	// A healed communicate that delivered its message live renders nothing on
+	// reload from the assistant turn: the raw bytes are not the delivered
+	// message. The paired result turn carries the success, so there is nothing
+	// to surface here.
+	if len(assistantItems) != 0 {
+		t.Fatalf("want 0 items from assistant turn (healed communicate delivered its message; raw bytes are not it), got %d: %+v", len(assistantItems), assistantItems)
+	}
+
+	// The paired tool-result turn confirms the call succeeded (IsError=false),
+	// so it must not surface the raw fallback either.
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_healed",
+				Name:       "communicate",
+				IsError:    false,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(resultItems) != 0 {
+		t.Fatalf("want 0 items from result turn (healed communicate succeeded; no raw fallback), got %d: %+v", len(resultItems), resultItems)
+	}
+}
+
 // TestProjectTurn_RejectedCommunicateShowsRawFallback verifies that a rejected
-// communicate call (Arguments={}, RawArguments=<original malformed bytes>)
-// surfaces in the hub thread as an agentMessage with the raw bytes as text,
-// not vanishing entirely. CommunicateMessageFromArguments returns "" for the
-// {} placeholder, so without a SentArguments fallback the call is invisible.
+// communicate call (Arguments={}, RawArguments=<original malformed bytes>) does
+// NOT surface its raw bytes on the assistant turn alone: that is the durable
+// shape shared with a healed-and-executed communicate, so the raw fallback is
+// deferred to the paired tool result, whose IsError confirms the rejection.
+// The assistant turn renders nothing; the result turn surfaces the raw bytes.
 func TestProjectTurn_RejectedCommunicateShowsRawFallback(t *testing.T) {
 	const rawArgs = `{message: "hello", }` // malformed JSON — bare key, trailing comma
 	toolNames := map[string]string{}
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1399,13 +1453,33 @@ func TestProjectTurn_RejectedCommunicateShowsRawFallback(t *testing.T) {
 		}}},
 	}, toolNames, nil, nil)
 
-	if len(items) != 1 {
-		t.Fatalf("want 1 item (agentMessage with raw fallback), got %d: %+v", len(items), items)
+	// The assistant turn alone cannot distinguish rejected from healed, so it
+	// renders nothing — the raw bytes are deferred to the result turn.
+	if len(assistantItems) != 0 {
+		t.Fatalf("want 0 items from assistant turn (raw fallback deferred to result), got %d: %+v", len(assistantItems), assistantItems)
 	}
-	if items[0].Type != "agentMessage" {
-		t.Errorf("Type = %q, want agentMessage", items[0].Type)
+
+	// The paired tool result confirms the rejection (IsError=true), so the raw
+	// bytes surface as an agentMessage here.
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_rej",
+				Name:       "communicate",
+				IsError:    true,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (agentMessage with raw fallback), got %d: %+v", len(resultItems), resultItems)
 	}
-	if items[0].Text != rawArgs {
-		t.Errorf("Text = %q, want the model's raw arguments %q for a rejected communicate call", items[0].Text, rawArgs)
+	if resultItems[0].Type != "agentMessage" {
+		t.Errorf("Type = %q, want agentMessage", resultItems[0].Type)
+	}
+	if resultItems[0].Text != rawArgs {
+		t.Errorf("Text = %q, want the model's raw arguments %q for a rejected communicate call", resultItems[0].Text, rawArgs)
 	}
 }
