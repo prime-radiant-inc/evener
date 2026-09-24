@@ -75,10 +75,23 @@ export type IdFactory = () => string;
 // applied here where the fence is computed, so the displayed conversation and
 // the mutations it offers can never disagree about the instance.
 
-export interface ConversationServiceOptions {
+export interface ConversationServiceOptions<ReadLease = unknown> {
   readonly idFactory?: IdFactory;
   // The clock hydrateThread stamps the model with; tests inject a fixed one.
   readonly now?: () => number;
+  // Native wires these to its durable mutation host: onReadStart leases the
+  // target just before the raw authoritative read, and onReadComplete hands
+  // the same raw response back so the runtime can settle its dispatch gate
+  // from exactly the snapshot that produces the conversation projection. A
+  // host that has no runtime passes neither and nothing changes.
+  readonly onReadStart?: (
+    threadRef: string,
+    expectedThreadId?: string,
+  ) => ReadLease | undefined;
+  readonly onReadComplete?: (
+    lease: ReadLease | undefined,
+    response: ThreadReadResponse,
+  ) => void | Promise<unknown>;
 }
 
 export interface ConversationReadProjection {
@@ -543,9 +556,9 @@ function validateQueueAction(
   }
 }
 
-export function createConversationService(
+export function createConversationService<ReadLease = unknown>(
   client: ConversationClientLike | AppwireClient,
-  options: ConversationServiceOptions = {},
+  options: ConversationServiceOptions<ReadLease> = {},
 ): QueueConversationService &
   ConversationModelCatalog &
   ConversationGoalActions &
@@ -583,7 +596,12 @@ export function createConversationService(
   type PendingProjection = {
     ref: string;
     instanceId: string | null;
-    read: Promise<ThreadReadResponse>;
+    // Paging waits on the whole projected publish, not the raw RPC: the
+    // response alone is not the state a page's cursor must be seated against.
+    // A host's read fence (onReadComplete) sits between the raw response and
+    // the commit, so paging that waited on the raw read could seat a cursor
+    // against a projection the publish had not installed yet.
+    publish: Promise<ConversationReadProjection>;
   };
   let pendingProjection: PendingProjection | null = null;
 
@@ -664,13 +682,17 @@ export function createConversationService(
       // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
       // and capabilities before the await so the service is fail-closed
       // during the read; the pair is installed together only on success.
+      const expectedThreadId = threadId ?? undefined;
       const epoch = beginOpen(threadRef);
+      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
       });
+      if (options.onReadComplete !== undefined)
+        await options.onReadComplete(readLease, response);
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw here leaves ref+capabilities null/fail-closed. Only
       // commit the pair after projection succeeds and the epoch is still
@@ -704,7 +726,9 @@ export function createConversationService(
           : pendingProjection?.ref === threadRef
             ? pendingProjection.instanceId
             : null;
+      const expectedThreadId = threadId ?? undefined;
       const epoch = beginOpen(threadRef);
+      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const read = client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -713,44 +737,54 @@ export function createConversationService(
         itemsView: "fragment",
         itemLimit: READ_ITEM_LIMIT,
       });
-      pendingProjection = { ref: threadRef, instanceId: pagingInstance, read };
-      const response: ThreadReadResponse = await read;
-      // Compute ALL response-derived projection work BEFORE committing the
-      // pair — a throw in hydration, projectConversation or activity
-      // projection (or a malformed response) leaves ref+capabilities
-      // null/fail-closed. Only commit the
-      // pair after all projection succeeds and the epoch is still current;
-      // a stale successful result returns without committing.
-      const thread = readWithPushedCapabilities(response.thread, epoch);
-      const readInstanceId = nonemptyString(
-        response.thread.evener.instanceId ?? response.thread.id,
-        "thread instance id",
-      );
-      const conversation = projectConversation({
-        ...hydrateThread({ ...response, thread }, threadRef, now()),
-        instanceId: readInstanceId,
-      });
-      const activity = activityService.projectActivity(thread);
-      const olderCursor = response.olderCursor ?? null;
-      const caps = extractCapabilities(thread.evener.capabilities);
-      const readModelScope = { harness: thread.source, cwd: thread.cwd };
-      if (openEpoch === epoch) {
-        modelScope = readModelScope;
-        instanceId = readInstanceId;
-        threadId = response.thread.id;
-        ref = threadRef;
-        capabilities = caps;
-        opening = null;
-      }
-      return {
-        conversation,
-        activity,
-        olderCursor,
-        hasEarlierItems:
-          thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
-        hasLaterItems:
-          thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
-      };
+      // The publish is the whole projected read: the raw response, the host's
+      // read fence, the projection work, and the pair commit. Paging waits on
+      // it (see PendingProjection), so a page can never be seated against a
+      // projection the publish has not installed.
+      const publish = (async (): Promise<ConversationReadProjection> => {
+        const response: ThreadReadResponse = await read;
+        if (options.onReadComplete !== undefined)
+          await options.onReadComplete(readLease, response);
+        // Compute ALL response-derived projection work BEFORE committing the
+        // pair — a throw in hydration, projectConversation or activity
+        // projection (or a malformed response) leaves ref+capabilities
+        // null/fail-closed. Only commit the
+        // pair after all projection succeeds and the epoch is still current;
+        // a stale successful result returns without committing.
+        const thread = readWithPushedCapabilities(response.thread, epoch);
+        const readInstanceId = nonemptyString(
+          response.thread.evener.instanceId ?? response.thread.id,
+          "thread instance id",
+        );
+        const conversation = projectConversation({
+          ...hydrateThread({ ...response, thread }, threadRef, now()),
+          instanceId: readInstanceId,
+        });
+        const activity = activityService.projectActivity(thread);
+        const olderCursor = response.olderCursor ?? null;
+        const caps = extractCapabilities(thread.evener.capabilities);
+        const readModelScope = { harness: thread.source, cwd: thread.cwd };
+        if (openEpoch === epoch) {
+          modelScope = readModelScope;
+          instanceId = readInstanceId;
+          threadId = response.thread.id;
+          ref = threadRef;
+          capabilities = caps;
+          opening = null;
+        }
+        return {
+          conversation,
+          activity,
+          olderCursor,
+          hasEarlierItems:
+            thread.turns?.some((turn) => turn.hasEarlierItems === true) ??
+            false,
+          hasLaterItems:
+            thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
+        };
+      })();
+      pendingProjection = { ref: threadRef, instanceId: pagingInstance, publish };
+      return publish;
     },
 
     async loadOlder(cursor) {
@@ -761,7 +795,11 @@ export function createConversationService(
         const expected = pending;
         let projection: PendingProjection = pending;
         for (;;) {
-          await projection.read;
+          // Wait for the projected publish, not the raw RPC: the host's read
+          // fence and the pair commit both sit inside it, so a page is seated
+          // only after the state it pages against is installed. A rejection
+          // here is the read's own failure, surfaced unchanged.
+          await projection.publish;
           if (pendingProjection === projection) break;
           const next: PendingProjection | null = pendingProjection;
           if (

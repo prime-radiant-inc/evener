@@ -426,6 +426,48 @@ describe("ConversationService", () => {
       });
     });
 
+    it("paging waits for the host's read fence, not the raw RPC response", async () => {
+      // The native host fences the projected publish (onReadComplete) around
+      // the same raw read. Paging must wait for the whole publish: a page
+      // seated once the raw response landed but before the fence settled would
+      // be seated against a projection the publish had not installed.
+      const client = new FakeAppwireClient();
+      const thread = makeThread();
+      client.on("thread/read", () => makeReadResponse(thread, "fresh-cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      let releaseFence!: () => void;
+      const fence = new Promise<void>((resolve) => {
+        releaseFence = resolve;
+      });
+      let fences = 0;
+      const service = createConversationService(client, {
+        onReadComplete: () => {
+          fences += 1;
+          // open()'s read is unfenced; the refresh's read is held at the fence.
+          return fences === 1 ? undefined : fence;
+        },
+      });
+      await service.open("ref-1");
+
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-from-before-refresh");
+      // Let the raw read resolve; the fence is still held.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+
+      releaseFence();
+      await refresh;
+      await expect(page).resolves.toMatchObject({ turnsPage: { data: [] } });
+      expect(
+        client.calls.find((call) => call.method === "thread/turns/list")?.params,
+      ).toMatchObject({ ref: "ref-1", cursor: "cursor-from-before-refresh" });
+    });
+
     it("does not page after the pending read is closed", async () => {
       const { client, service, thread } = setup({ olderCursor: "cursor-a" });
       await service.open("ref-1");
