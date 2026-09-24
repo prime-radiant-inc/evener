@@ -43,8 +43,9 @@ it("isReady: only \"ready\" is ready", () => {
 });
 
 it("useConnectionDisplay: ready -> reconnecting keeps the screen tree mounted and shows the banner", () => {
+	const client = {} as AppwireClient;
 	let state: ConnectionState = "ready";
-	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false, client));
 	expect(hook.result.current).toBe("none");
 	state = "reconnecting";
 	hook.rerender();
@@ -52,8 +53,9 @@ it("useConnectionDisplay: ready -> reconnecting keeps the screen tree mounted an
 });
 
 it("useConnectionDisplay: reconnecting -> ready removes the banner", () => {
+	const client = {} as AppwireClient;
 	let state: ConnectionState = "ready";
-	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false, client));
 	state = "reconnecting";
 	hook.rerender();
 	expect(hook.result.current).toBe("banner");
@@ -63,9 +65,10 @@ it("useConnectionDisplay: reconnecting -> ready removes the banner", () => {
 });
 
 it("useConnectionDisplay: fatal shows the wall even for a hub that was ready a moment ago", () => {
+	const client = {} as AppwireClient;
 	let state: ConnectionState = "ready";
 	let fatal = false;
-	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal, client));
 	expect(hook.result.current).toBe("none");
 	state = "closed";
 	fatal = true;
@@ -74,9 +77,10 @@ it("useConnectionDisplay: fatal shows the wall even for a hub that was ready a m
 });
 
 it("useConnectionDisplay: keeps the wall through a fatal retry until ready", () => {
+	const client = {} as AppwireClient;
 	let state: ConnectionState = "ready";
 	let fatal = false;
-	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal, client));
 	state = "closed";
 	fatal = true;
 	hook.rerender();
@@ -93,8 +97,9 @@ it("useConnectionDisplay: keeps the wall through a fatal retry until ready", () 
 });
 
 it("useConnectionDisplay: never having been ready is a wall, not a banner, even before any failure", () => {
+	const client = {} as AppwireClient;
 	const state: ConnectionState = "connecting";
-	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false, client));
 	expect(hook.result.current).toBe("wall");
 });
 
@@ -104,9 +109,10 @@ it("useConnectionDisplay: never having been ready is a wall, not a banner, even 
 // the panel's review retired it as tautological and left this test as the
 // one that actually exercises the reset.
 it("useConnectionDisplay: everReady for the previous hub does not banner the next hub before it is ready", () => {
+	const client = {} as AppwireClient;
 	let hubId = "hub-1";
 	let state: ConnectionState = "ready";
-	const hook = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const hook = renderHook(() => useConnectionDisplay(hubId, state, false, client));
 	expect(hook.result.current).toBe("none");
 	hubId = "hub-2";
 	state = "connecting";
@@ -369,7 +375,7 @@ it("a hub re-key with the old client still ready walls, withholds the client, an
 	let hubId = "hub-1";
 	let client: AppwireClient | null = first;
 	let state: ConnectionState = "ready";
-	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false, client));
 	const renderClient = renderHook(() => useRenderClient(client, state, hubId));
 	const live = renderHook(() => useLiveReadiness(hubId, client, state));
 	const deferred = live.result.current;
@@ -406,7 +412,7 @@ it("a hub re-key keeps refusing the previous hub's ready pairing until the conne
 	let hubId = "hub-1";
 	let client: AppwireClient | null = first;
 	let state: ConnectionState = "ready";
-	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false, client));
 	const renderClient = renderHook(() => useRenderClient(client, state, hubId));
 	const live = renderHook(() => useLiveReadiness(hubId, client, state));
 
@@ -499,7 +505,7 @@ it("a re-keyed remount refuses the previous hub's pairing on the render it lands
 		return null;
 	}
 	function Owner() {
-		landedDisplay = useConnectionDisplay("hub-2", "ready", false);
+		landedDisplay = useConnectionDisplay("hub-2", "ready", false, first);
 		landedClient = useRenderClient(first, "ready", "hub-2");
 		deferred = useLiveReadiness("hub-2", first, "ready");
 		return createElement(Probe);
@@ -577,6 +583,40 @@ it("useLiveReadiness refuses a previous hub's adopted client at a remount until 
 	expect(remounted.result.current()).toBe(true);
 });
 
+// Round 63's Medium: the display hook's trust arm was client-blind, so the
+// mount's own ready state — the connection still reporting the previous
+// hub's ready client through the re-key window — earned the new hub its
+// screen, and a keyed remount rendered the normal surface while the client
+// and readiness hooks refused the pairing. The trust arm now requires the
+// same identity record the client hooks consult: a client the record knows
+// under another hub vouches for nothing here, and the display walls until
+// the re-point's own dial delivers a client this hub can claim.
+it("useConnectionDisplay refuses the previous hub's recorded client for the new hub's remount until the re-point", () => {
+	const first = {} as AppwireClient;
+	const replacement = {} as AppwireClient;
+	// The connection layer recorded the client for hub-1 at its dial.
+	recordClientReadyHub(first, "hub-1");
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay("hub-2", state, false, client));
+	// The landing render walls (round 32); the settle must not earn trust
+	// for hub-2 off the previous hub's ready client either.
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+
+	// The connection re-points: its own dial for hub-2 closes the old
+	// client, goes connecting, and transitions into ready on the new client —
+	// recorded for hub-2 at ITS dial. The display earns its screen.
+	recordClientReadyHub(replacement, "hub-2");
+	client = null;
+	state = "reconnecting";
+	display.rerender();
+	client = replacement;
+	state = "ready";
+	display.rerender();
+	expect(display.result.current).toBe("none");
+});
+
 // Round 49's undefined-hub Medium: useRenderClient seeds adoption.scope as
 // undefined, so a mount whose hubId is also undefined passed the ready-path
 // scope check on its very first render and served the live client prop with
@@ -624,6 +664,7 @@ it("useRenderClient withholds an undefined hub's ready pairing until the settle 
 // display hook. Trust must be born before it unlocks anything: the explicit
 // boolean never compares equal to a real scope.
 it("useConnectionDisplay walls an undefined hub's ready mount until the settle earns trust", () => {
+	const first = {} as AppwireClient;
 	let landedDisplay: ReturnType<typeof useConnectionDisplay> | null = null;
 	let settledDisplay: ReturnType<typeof useConnectionDisplay> | null = null;
 	let probed = false;
@@ -638,7 +679,7 @@ it("useConnectionDisplay walls an undefined hub's ready mount until the settle e
 		return null;
 	}
 	function Owner() {
-		settledDisplay = useConnectionDisplay(undefined, "ready", false);
+		settledDisplay = useConnectionDisplay(undefined, "ready", false, first);
 		return createElement(Probe);
 	}
 	render(createElement(Owner));
@@ -655,9 +696,10 @@ it("useConnectionDisplay walls an undefined hub's ready mount until the settle e
 // previous hub's ready state, so the new hub retained content it never
 // showed. The re-arm must be gated on the same render's scope move.
 it("useConnectionDisplay: a hub move while ready does not retain content the next hub never showed", () => {
+	const client = {} as AppwireClient;
 	let hubId = "hub-1";
 	let state: ConnectionState = "ready";
-	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false, client));
 	// Mount-already-ready: the settle earns trust and retention for hub-1.
 	display.rerender();
 	expect(display.result.current).toBe("none");
@@ -684,10 +726,11 @@ it("useConnectionDisplay: a hub move while ready does not retain content the nex
 // against the closed client the fatal wall exists to prevent. The re-arm
 // must key on readiness the new hub actually earned.
 it("useConnectionDisplay: a fatal update after a re-key does not retain a hub trust never vouched for", () => {
+	const client = {} as AppwireClient;
 	let hubId = "hub-1";
 	let state: ConnectionState = "ready";
 	let fatal = false;
-	const display = renderHook(() => useConnectionDisplay(hubId, state, fatal));
+	const display = renderHook(() => useConnectionDisplay(hubId, state, fatal, client));
 	// Mount-already-ready: the settle earns trust and retention for hub-1.
 	display.rerender();
 	expect(display.result.current).toBe("none");
@@ -720,9 +763,10 @@ it("useConnectionDisplay: a fatal update after a re-key does not retain a hub tr
 // stale re-key shape the move gate exists to refuse. The screen it shows must
 // retain through the next flap like any other genuinely-ready hub.
 it("useConnectionDisplay: a hub move that lands with a genuine ready transition retains the screen", () => {
+	const client = {} as AppwireClient;
 	let hubId = "hub-1";
 	let state: ConnectionState = "ready";
-	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false, client));
 	// Mount-already-ready: the settle earns trust and retention for hub-1.
 	display.rerender();
 	expect(display.result.current).toBe("none");
@@ -752,9 +796,10 @@ it("useConnectionDisplay: a hub move that lands with a genuine ready transition 
 // the return to A lands on a still-trusted scope whose screen shows. The next
 // reconnect must banner that shown content, not wall it.
 it("useConnectionDisplay: returning to a still-trusted hub re-arms the retention it showed under", () => {
+	const client = {} as AppwireClient;
 	let hubId = "hub-1";
 	let state: ConnectionState = "ready";
-	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false, client));
 	// Mount-already-ready: the settle earns trust and retention for hub-1.
 	display.rerender();
 	expect(display.result.current).toBe("none");

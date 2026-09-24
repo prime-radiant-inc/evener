@@ -2318,11 +2318,15 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		// child must not own its parent's environment (ownsFresh stays false),
 		// but its construction still mints a scratch on that environment when
 		// none is there — and on base, where the same child got a fresh clone,
-		// that minted scratch was dropped on failure. Drop it here too, but
-		// only when the environment held none once the child's retained binding
-		// was installed: a scratch present before construction — the parent's
-		// own, or the child's adopted retained one — is never this restore's to
-		// dispose.
+		// that minted scratch was dropped on failure. On a shared parent the
+		// settle deliberately KEEPS the minted scratch instead (round 51: no
+		// post-hoc attribution can tell this construction's mint from a
+		// sibling's, and the parent environment holds the lease legitimately),
+		// so this branch only arms the settle's manifest-authoritative pass —
+		// the referenced-keep hand-back that releases and requeues what the
+		// manifest names — never a disposal. Do not read the base-clone
+		// wording above as this branch's contract: a fresh created
+		// environment (ownsFresh) is the only shape whose settle may dispose.
 		if !ownsFresh && local.SessionScratchDir() == "" {
 			mintedScratch = true
 		}

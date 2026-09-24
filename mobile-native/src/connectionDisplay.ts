@@ -180,6 +180,7 @@ export function useConnectionDisplay(
 	hubId: string | undefined,
 	state: ConnectionState,
 	fatal: boolean,
+	client: AppwireClient | null,
 ): ConnectionDisplay {
 	const everReady = useRef(false);
 	const fatalRecovery = useRef(false);
@@ -207,6 +208,14 @@ export function useConnectionDisplay(
 	// the effect below, so this render computes with voided values instead of
 	// mutating the refs mid-render.
 	const scopeMoved = scope.current !== hubId;
+	// The pairing verdict the trust arm below keys on: the connection's
+	// state alone reports whichever client it still holds — in the re-key
+	// window, the previous hub's — so the identity record (the connection
+	// layer's memory of which hub a client PROVED ready under, written at
+	// its dial) is what says whether that pairing vouches for this hub at
+	// all. An unknown client passes exactly as before: the record only ever
+	// withholds a client it knows under a different hub (round 63).
+	const pairingServesHub = client !== null && clientServesHub(client, hubId);
 	useEffect(() => {
 		if (scope.current !== hubId) {
 			scope.current = hubId;
@@ -215,17 +224,24 @@ export function useConnectionDisplay(
 		}
 		const transitionedIntoReady = state === "ready" && lastState.current !== state;
 		if (state !== lastState.current) {
-			if (state === "ready") {
+			if (state === "ready" && pairingServesHub) {
 				// A transition INTO ready is the one event that vouches for
 				// the hub it happened under; the mount counts as one through
-				// the "unmounted" sentinel.
+				// the "unmounted" sentinel. But the state alone reports the
+				// CONNECTION, and the connection still reports the previous
+				// hub's client through the re-key window — so the transition
+				// earns trust only when the pairing passes the identity
+				// record. A client the record knows under another hub
+				// vouches for nothing here, and the display walls until the
+				// re-point's own dial delivers a client this hub can claim.
 				setTrust({ trusted: true, scope: hubId });
 			}
 			lastState.current = state;
 		}
 		if (
 			state === "ready" &&
-			(transitionedIntoReady || (trust.trusted && trust.scope === hubId))
+			((transitionedIntoReady && pairingServesHub) ||
+				(trust.trusted && trust.scope === hubId))
 		) {
 			// The retention arm keys on readiness this hub actually earned.
 			// A post-settle ready render alone is not evidence: the scope
@@ -251,7 +267,7 @@ export function useConnectionDisplay(
 			// still dialing must not remount a child against the closed client.
 			fatalRecovery.current = true;
 		}
-	}, [state, fatal, hubId]);
+	}, [state, fatal, hubId, client]);
 	// The connection reports the PREVIOUS hub in the re-key window (`hubId`
 	// has moved while the connection still reports the old one), and this
 	// hook cannot see which client that state vouches for. Void the moved

@@ -898,17 +898,17 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	expect(renderedText(tree)).toContain("from-b");
 });
 
-// Round 58's High, the provider-surface half: the sign-in resume arm handed
-// the flow the raw client on every transition (ready ? client : null), so a
-// sign-in opened during the re-key window - the store's selection already on
-// hub-2 while the connection still reports hub-1's ready client - received
-// the previous hub's client and started its exchange against it. The open
-// arm is gated through canUseConnection already (the round-56 record); this
-// pins the resume arm to the same authorization. The drive invokes the
-// screen's own onSignIn callback directly: once the credential store is
-// gated too, no listing read lands during the window, so no row exists to
-// press - the arm's contract is what this test isolates.
-it("does not resume a sign-in onto the previous hub's adopted client", async () => {
+// Round 63's Medium, the screen half of round 58's High: the display hook's
+// trust arm was client-blind, so a keyed remount onto the previous hub's
+// still-ready client rendered the normal provider surface while the client
+// and readiness hooks refused the pairing - a sign-in opened there had a
+// surface to run from. The display now requires the identity record's
+// verdict before a ready state earns trust, so the window renders the
+// connection wall instead: no affordance mounts and no exchange can run
+// against the previous hub's client. The resume arm's own mechanics stay
+// pinned by the banner-retry test above; the cross-hub window it used to
+// guard alone is now closed before the surface can mount.
+it("walls the re-key window against the previous hub's recorded client", async () => {
 	const oauth: InstanceListResponse = {
 		instances: [
 			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
@@ -939,26 +939,23 @@ it("does not resume a sign-in onto the previous hub's adopted client", async () 
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
 	const tree = render(<ProvidersScreen {...props} />);
 	await act(async () => {});
-
-	// Open a sign-in by invoking the screen's own callback, exactly as the
-	// row's affordance does. The open arm is already gated: the flow is
-	// handed null for the foreign client.
-	const openers = tree.root.findAll(
-		(node) => typeof node.props.onSignIn === "function",
-	);
-	if (openers.length === 0) throw new Error("no onSignIn affordance mounted");
-	act(() => openers[0]!.props.onSignIn("work"));
 	await act(async () => {});
 
-	// The resume arm must not hand the flow the previous hub's client: its
-	// exchange would run against the hub the route re-keyed away from.
-	expect(setConnection).not.toHaveBeenCalledWith(stale);
+	// The wall replaces the surface: no sign-in affordance mounts and no
+	// exchange runs against the previous hub's client — the strongest form
+	// of the round-58 contract, closed one layer up.
+	expect(renderedText(tree)).toContain("Connect to New hub");
+	expect(
+		tree.root.findAll((node) => typeof node.props.onSignIn === "function"),
+	).toHaveLength(0);
 	expect(
 		stale.calls.map((call) => call.method),
 	).not.toContain("evener/auth/device/start");
 
-	// The connection re-points to hub-2's own client - a new object the
-	// record has never seen - and the flow receives it and proceeds.
+	// The connection re-points: its own dial for hub-2 transitions into
+	// ready on the replacement — recorded for hub-2 at ITS dial — and the
+	// surface earns its screen. A sign-in opened now runs on that client
+	// alone.
 	const replacement = new FakeClient("ready");
 	replacement.on("evener/instance/list", () => oauth);
 	replacement.on("evener/auth/device/start", () => ({
@@ -968,15 +965,38 @@ it("does not resume a sign-in onto the previous hub's adopted client", async () 
 		verificationUrl: "https://example.test/verify",
 		intervalSeconds: 5,
 	}));
+	recordClientReadyHub(replacement, "hub-2");
+	harness.connection = {
+		...harness.connection,
+		client: null,
+		state: "reconnecting",
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
 	harness.connection = {
 		...harness.connection,
 		client: replacement as unknown as ConversationClientLike,
+		state: "ready",
 	};
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
 	await act(async () => {});
+
+	// Open a sign-in by invoking the screen's own callback, exactly as the
+	// row's affordance does.
+	const openers = tree.root.findAll(
+		(node) => typeof node.props.onSignIn === "function",
+	);
+	if (openers.length === 0) throw new Error("no onSignIn affordance mounted");
+	act(() => openers[0]!.props.onSignIn("work"));
+	await act(async () => {});
+
+	// The flow receives the re-pointed client and proceeds; the previous
+	// hub's client was never handed over.
 	expect(setConnection).toHaveBeenCalledWith(replacement);
+	expect(setConnection).not.toHaveBeenCalledWith(stale);
 	expect(
 		replacement.calls.map((call) => call.method),
 	).toContain("evener/auth/device/start");
