@@ -654,14 +654,46 @@ func metaComponentWalk(fs afero.Fs, path, root string) error {
 }
 
 // readMetaFile reads the meta file through a no-follow descriptor when the
-// filesystem is the real OS filesystem, closing the leaf TOCTOU window
-// (finding 6). For in-memory test filesystems (afero.MemMapFs), which have no
-// symlinks and no TOCTOU, it falls back to afero.ReadFile.
+// underlying filesystem is the real OS filesystem, closing the leaf TOCTOU
+// window (finding 6). The no-follow open must fire for every afero wrapper
+// that ultimately delegates to the OS, not just bare *afero.OsFs: ReadOnlyFs
+// and BasePathFs over OsFs pass reads through to os.Open (which follows leaf
+// symlinks), so matching only *afero.OsFs lets a symlinked .meta.json leaf
+// bypass the O_NOFOLLOW guard via any wrapper. For in-memory test
+// filesystems (afero.MemMapFs), which have no symlinks and no TOCTOU, it
+// falls back to afero.ReadFile.
+//
+// Unwrapping:
+//   - *afero.OsFs and afero.OsFs (value receiver): the real OS filesystem —
+//     open the path directly with O_NOFOLLOW.
+//   - *afero.ReadOnlyFs: identity path mapping (source.Open(name) delegates
+//     unchanged), so the path is the same real OS path; open it directly.
+//     ReadOnlyFs has an unexported source field and no public accessor, but
+//     the path is not remapped, so readFileNoFollowOS(path) is correct.
+//   - *afero.BasePathFs: remaps paths via RealPath; resolve to the real OS
+//     path first, then open that. RealPath can fail on paths outside the
+//     base (os.ErrNotExist); fall back to afero.ReadFile so the caller sees
+//     the same error the wrapper would produce.
 func readMetaFile(fs afero.Fs, path string) ([]byte, error) {
-	if _, ok := fs.(*afero.OsFs); ok {
+	switch t := fs.(type) {
+	case *afero.OsFs, afero.OsFs:
 		return readFileNoFollowOS(path)
+	case *afero.ReadOnlyFs:
+		// ReadOnlyFs passes paths through unchanged; the underlying
+		// source is typically OsFs, so the real OS path is the same.
+		return readFileNoFollowOS(path)
+	case *afero.BasePathFs:
+		realPath, err := t.RealPath(path)
+		if err != nil {
+			// Path outside the base dir or other RealPath failure:
+			// fall back to the wrapper's own read so the caller sees
+			// the same error it would have gotten.
+			return afero.ReadFile(fs, path)
+		}
+		return readFileNoFollowOS(realPath)
+	default:
+		return afero.ReadFile(fs, path)
 	}
-	return afero.ReadFile(fs, path)
 }
 
 // listSessionMetasFS is the filesystem seam beneath ListSessionMetas.

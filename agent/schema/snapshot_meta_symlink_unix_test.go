@@ -94,3 +94,42 @@ func TestLoadSessionMetaFS_SymlinkedLeafRefusedByNoFollow(t *testing.T) {
 		t.Fatalf("expected O_NOFOLLOW refusal ('refusing to follow it'), got: %v", err)
 	}
 }
+
+// TestLoadSessionMetaFS_ReadOnlyFs_SymlinkedLeafRefused (FU3 round 13, M1)
+// asserts readMetaFile's no-follow open fires when the afero.Fs is a ReadOnlyFs
+// wrapping OsFs, not just bare *afero.OsFs. Pre-fix, readMetaFile matched only
+// *afero.OsFs; a ReadOnlyFs over OsFs fell through to afero.ReadFile, which
+// follows a symlinked leaf — bypassing the O_NOFOLLOW guard. Post-fix, the type
+// switch unwraps ReadOnlyFs (identity path mapping) and opens through
+// readFileNoFollowOS, refusing the symlink with ELOOP.
+func TestLoadSessionMetaFS_ReadOnlyFs_SymlinkedLeafRefused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+
+	// Create a real sessions dir and a real meta file outside the leaf path.
+	sessDir := filepath.Join(dir, sessionsSubdir)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realMeta := filepath.Join(dir, "real.meta.json")
+	if err := os.WriteFile(realMeta, []byte(`{"id":"`+id+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the meta leaf with a symlink to the real file.
+	leafPath := filepath.Join(sessDir, id+".meta.json")
+	if err := os.Symlink(realMeta, leafPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// ReadOnlyFs wrapping OsFs: readMetaFile must still refuse via O_NOFOLLOW.
+	fs := afero.NewReadOnlyFs(afero.NewOsFs())
+	_, err := loadSessionMetaFS(fs, dir, id)
+	if err == nil {
+		t.Fatal("readMetaFile followed a symlinked meta leaf via ReadOnlyFs; should refuse via O_NOFOLLOW")
+	}
+	if !strings.Contains(err.Error(), "refusing to follow") {
+		t.Fatalf("expected O_NOFOLLOW refusal ('refusing to follow it'), got: %v", err)
+	}
+}
