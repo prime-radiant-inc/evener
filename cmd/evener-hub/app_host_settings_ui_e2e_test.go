@@ -53,6 +53,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +62,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/internal/e2ecap"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -127,6 +129,26 @@ const (
 	// allow-listed, and classified as a mutation).
 	hostSettingsUIInRepoAgent = "host-inrepo-agent-9d4"
 	hostSettingsUIInRepoDir   = "inrepo-cwd"
+
+	// The plugins-manager pane's seed. The host's plugin store is a FILE the
+	// store reads (known_marketplaces.json under the disposable root's plugin
+	// store), not a set of clones, so this pane can be held to the same
+	// provenance as the seeded-value panes: seed exactly ONE marketplace, named
+	// unlike any controller name, whose directory source points at a path that
+	// exists ONLY on the host. The host hub seeds its own defaults only when
+	// this file is ABSENT, so seeding it is what makes the host's list distinct
+	// from the controller's - whose isolated root is seeded with its own
+	// defaults (controllerMarketplaceNames) instead.
+	hostSettingsUIHostMarketplace    = "host-market-7c1"
+	hostSettingsUIHostMarketplaceDir = "market-7c1"
+
+	// The layout the host hub derives for its plugin store: hostHubLaunchScript
+	// points XDG_CONFIG_HOME at hostDir, so internal/plugins/paths.go's
+	// DefaultRoot resolves to <hostDir>/evener/plugins, and the registry file
+	// inside it is known_marketplaces.json. Named once so the seed below and the
+	// focused shape test cannot drift from the package's own derivation.
+	hostSettingsUIPluginStoreRelPath   = "evener/plugins"
+	hostSettingsUIMarketplacesFileName = "known_marketplaces.json"
 )
 
 // hostSettingsUIGate returns the t.Skip reason when the live settings-UI check
@@ -243,6 +265,18 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(filepath.Join(inrepoCwd, ".evener")))
 	host.writeFile(filepath.Join(inrepoCwd, ".evener", "launch.toml"),
 		[]byte("agent = \""+hostSettingsUIInRepoAgent+"\"\n"))
+	// The plugins-manager pane's seed. Written BEFORE the host hub starts: the
+	// hub seeds its DEFAULT marketplaces only when known_marketplaces.json is
+	// ABSENT, so this file is what makes the host's list distinct from the
+	// controller's. The registry bytes are the store's own marshaling (see
+	// hostSettingsUIHostKnownMarketplacesJSON), and the directory source is
+	// referenced in place, so its catalog must exist at <path>/.claude-plugin/
+	// marketplace.json on the host.
+	pluginStoreDir := filepath.Join(hostDir, hostSettingsUIPluginStoreRelPath)
+	marketDir := filepath.Join(hostDir, hostSettingsUIHostMarketplaceDir)
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(pluginStoreDir) + " " + shellquote.RemoteWord(filepath.Join(marketDir, ".claude-plugin")))
+	host.writeFile(filepath.Join(pluginStoreDir, hostSettingsUIMarketplacesFileName), hostSettingsUIHostKnownMarketplacesJSON(hostDir))
+	host.writeFile(filepath.Join(marketDir, ".claude-plugin", "marketplace.json"), hostSettingsUIHostMarketplaceCatalogJSON())
 	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostSettingsUIAddr, hostDir+"/state")))
 
 	// The two files this check must leave untouched: the host's REAL credential
@@ -556,12 +590,64 @@ func settingsUIExpectJSON(projectCwd, inrepoCwd string) []byte {
 		"mcpConfig":   map[string]string{"host": hostSettingsUIHostMCPConfig, "controller": hostSettingsUIControllerMCPConfig},
 		"project":     map[string]string{"cwd": projectCwd, "hostAgent": hostSettingsUIProjectAgent},
 		"inrepo":      map[string]string{"cwd": inrepoCwd, "hostAgent": hostSettingsUIInRepoAgent},
+		"pluginsManager": map[string]any{
+			"hostMarketplace":        hostSettingsUIHostMarketplace,
+			"controllerMarketplaces": controllerMarketplaceNames(),
+		},
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		panic(fmt.Sprintf("marshal the settings-UI fixture: %v", err))
 	}
 	return append(data, '\n')
+}
+
+// hostSettingsUIHostKnownMarketplacesJSON marshals the disposable host's
+// marketplace registry EXACTLY as the store itself writes it — through the
+// package's own plugins.Marketplaces / MarketplaceRef / Source JSON, with
+// saveMarketplaces' own indent and trailing newline — so the bytes the check
+// drops at <hostDir>/evener/plugins/known_marketplaces.json are a shape the
+// store's own reader accepts.
+// TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore writes these same
+// bytes back through the store's derived path and lists them.
+func hostSettingsUIHostKnownMarketplacesJSON(hostDir string) []byte {
+	dir := filepath.Join(hostDir, hostSettingsUIHostMarketplaceDir)
+	mk := plugins.Marketplaces{
+		hostSettingsUIHostMarketplace: plugins.MarketplaceRef{
+			Source:          plugins.Source{Kind: plugins.SourceDirectory, Path: dir},
+			InstallLocation: dir,
+			LastUpdated:     time.Date(2026, time.September, 24, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	data, err := json.MarshalIndent(mk, "", "  ")
+	if err != nil {
+		panic(fmt.Sprintf("marshal the host's seeded known_marketplaces.json: %v", err))
+	}
+	return append(data, '\n')
+}
+
+// hostSettingsUIHostMarketplaceCatalogJSON is the catalog of the seeded
+// directory marketplace: the file plugins.ParseCatalog reads at
+// <path>/.claude-plugin/marketplace.json. It names the same sentinel, so a pane
+// that could only resolve the marketplace from the controller (where this
+// directory source does not exist) would have nothing to show.
+func hostSettingsUIHostMarketplaceCatalogJSON() []byte {
+	return []byte("{\n  \"name\": \"" + hostSettingsUIHostMarketplace + "\",\n  \"plugins\": []\n}\n")
+}
+
+// controllerMarketplaceNames returns the marketplace names a hub seeds into an
+// EMPTY store on first run (plugins.DefaultMarketplaceSeeds), sorted for a
+// stable fixture. The controller's isolated root starts empty and is seeded, so
+// a plugins-manager pane that rendered the CONTROLLER's store instead of the
+// selected host's would list these; the driver requires every one ABSENT.
+func controllerMarketplaceNames() []string {
+	seeds := plugins.DefaultMarketplaceSeeds()
+	names := make([]string, 0, len(seeds))
+	for name := range seeds {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // hostSettingsUIHostProvidersTOML is the disposable host's providers.toml: one
@@ -656,5 +742,76 @@ func TestHostSettingsUIGateSkipsWithoutOptIn(t *testing.T) {
 	t.Setenv("EVENER_SSH_E2E_UI_GUARD_DISPOSABLE", "1")
 	if got, want := hostSettingsUIGuardedCredentials(home, hostDir), hostDir+"/evener/credentials.toml"; got != want {
 		t.Fatalf("falsification-hook guard target = %q, want the disposable store %q", got, want)
+	}
+}
+
+// TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore pins, with NO host
+// involved, the two facts the live plugins-manager assertion rests on:
+//
+//  1. The disposable host's plugin store really is <root>/evener/plugins: with
+//     XDG_CONFIG_HOME pointed at a test root — exactly as hostHubLaunchScript
+//     points the host hub at hostDir — plugins.DefaultRoot() resolves there, so
+//     the registry the check seeds is the file the host's store reads.
+//  2. The EXACT bytes the check seeds are a shape the store's own reader
+//     accepts. Writing hostSettingsUIHostKnownMarketplacesJSON at the store's
+//     derived path and listing it back through plugins.Manager.ListMarketplaces
+//     yields the sentinel marketplace with its directory source intact, and not
+//     one of the controller's default names — so the driver's positive
+//     assertion cannot pass on an empty/broken store and its negative cannot be
+//     vacuous. Browse over the same entry proves the seeded catalog file parses
+//     too, since a directory source is referenced in place.
+func TestHostSettingsUISeededHostMarketplaceIsHonouredByTheStore(t *testing.T) {
+	hostDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", hostDir)
+
+	storeDir := filepath.Join(hostDir, hostSettingsUIPluginStoreRelPath)
+	if got := plugins.DefaultRoot(); got != storeDir {
+		t.Fatalf("plugins.DefaultRoot() with XDG_CONFIG_HOME=%s = %q, want the disposable host's plugin store %q", hostDir, got, storeDir)
+	}
+	marketDir := filepath.Join(hostDir, hostSettingsUIHostMarketplaceDir)
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatalf("create the plugin store %s: %v", storeDir, err)
+	}
+	if err := os.MkdirAll(filepath.Join(marketDir, ".claude-plugin"), 0o700); err != nil {
+		t.Fatalf("create the seeded directory marketplace %s: %v", marketDir, err)
+	}
+	seed := hostSettingsUIHostKnownMarketplacesJSON(hostDir)
+	if err := os.WriteFile(filepath.Join(storeDir, hostSettingsUIMarketplacesFileName), seed, 0o600); err != nil {
+		t.Fatalf("write the seeded known_marketplaces.json: %v", err)
+	}
+	t.Logf("seeded %s:\n%s", filepath.Join(storeDir, hostSettingsUIMarketplacesFileName), seed)
+	if err := os.WriteFile(filepath.Join(marketDir, ".claude-plugin", "marketplace.json"), hostSettingsUIHostMarketplaceCatalogJSON(), 0o600); err != nil {
+		t.Fatalf("write the seeded marketplace.json: %v", err)
+	}
+
+	// NewManager("") is the store the host hub itself builds: DefaultRoot()
+	// under the ambient XDG_CONFIG_HOME.
+	mgr := plugins.NewManager("")
+	listed, err := mgr.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListMarketplaces over the seeded registry: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("the seeded registry listed %d marketplaces %v, want exactly the one sentinel %q", len(listed), listed, hostSettingsUIHostMarketplace)
+	}
+	ref, ok := listed[hostSettingsUIHostMarketplace]
+	if !ok {
+		t.Fatalf("the seeded registry did not list the sentinel %q; listed %v", hostSettingsUIHostMarketplace, listed)
+	}
+	if ref.Source.Kind != plugins.SourceDirectory || ref.Source.Path != marketDir {
+		t.Fatalf("the seeded marketplace's source = %+v, want a directory source at %q", ref.Source, marketDir)
+	}
+	for _, name := range controllerMarketplaceNames() {
+		if _, listed := listed[name]; listed {
+			t.Fatalf("the seeded host registry lists the controller's own default marketplace %q, so the driver's negative assertion would be vacuous", name)
+		}
+	}
+
+	cat, err := mgr.Browse(context.Background(), hostSettingsUIHostMarketplace)
+	if err != nil {
+		t.Fatalf("Browse over the seeded directory marketplace: %v", err)
+	}
+	if cat.Name != hostSettingsUIHostMarketplace {
+		t.Fatalf("the seeded catalog's name = %q, want %q", cat.Name, hostSettingsUIHostMarketplace)
 	}
 }

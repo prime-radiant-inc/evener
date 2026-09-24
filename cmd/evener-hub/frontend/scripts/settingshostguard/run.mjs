@@ -431,6 +431,51 @@ class Driver {
     });
   }
 
+  // clickSettingsSegment activates a segmented-control option (settings-content's
+  // own SegmentedControl, widgets/segmentedcontrol) by the PREFIX of its visible
+  // or accessible label. The options are role=radio buttons whose labels carry a
+  // live count - "Marketplaces (1)" - so an exact-text click cannot name them;
+  // matching the prefix is what the product itself renders. It uses the same
+  // mouse-event path as clickSettingsButton so React's onClick fires.
+  async clickSettingsSegment(labelPrefix) {
+    const boxes = await evaluate(
+      this.send,
+      `(() => {
+        const root = document.querySelector("[data-testid='settings-content']");
+        if (root === null) return [];
+        const matches = [...root.querySelectorAll("button[role='radio']")].filter((b) => {
+          const label = (b.getAttribute("aria-label") ?? "").trim() || b.textContent.trim();
+          return label.startsWith(${JSON.stringify(labelPrefix)});
+        });
+        return matches.map((b) => {
+          b.scrollIntoView({ block: "center" });
+          const r = b.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: b.disabled };
+        });
+      })()`,
+    );
+    check(
+      boxes && boxes.length > 0,
+      `no segmented-control option labeled ${JSON.stringify(labelPrefix)} in the settings content`,
+    );
+    check(!boxes[0].disabled, `segmented-control option ${JSON.stringify(labelPrefix)} is disabled`);
+    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: boxes[0].x, y: boxes[0].y });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: boxes[0].x,
+      y: boxes[0].y,
+      button: "left",
+      clickCount: 1,
+    });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: boxes[0].x,
+      y: boxes[0].y,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+
   // buttonEnabled reports whether the settings button with this accessible
   // text exists and is enabled.
   buttonState(text) {
@@ -710,19 +755,55 @@ async function runPane(driver, section) {
       return record;
     }
     case "plugins-manager": {
+      // This pane used to assert structure alone - it rendered, showed no load
+      // error, and carried the host picker value - because the fixture had no way
+      // to seed a marketplace. The store's registered marketplaces ARE a file
+      // (known_marketplaces.json in the host's plugin root), and a directory
+      // source is referenced in place, so the Go owner now seeds ONE marketplace
+      // whose directory exists only on the selected host. The pane is therefore
+      // held to the same provenance as the seeded-value panes: it must list THAT
+      // host's marketplace and must not list this hub's defaults.
+      const c = expect.pluginsManager;
+      check(
+        c !== undefined &&
+          typeof c.hostMarketplace === "string" &&
+          c.hostMarketplace.length > 0 &&
+          Array.isArray(c.controllerMarketplaces) &&
+          c.controllerMarketplaces.length > 0 &&
+          c.controllerMarketplaces.every((n) => typeof n === "string" && n.length > 0),
+        "plugins-manager: the fixture must provide {pluginsManager: {hostMarketplace, controllerMarketplaces}} - the marketplace name seeded only on the selected host, and this hub's own default marketplace names - so this pane can assert host provenance instead of structure",
+      );
       await driver.openPane(section);
       await driver.waitPage(
         `(() => { const root = document.querySelector("[data-testid='settings-content']"); return root !== null && root.innerText.includes("Browse") ? true : null; })()`,
         { label: "plugins-manager segmented control" },
       );
-      const text = await driver.settingsText();
+      // The segments are Installed / Browse / Marketplaces; the tour lands on
+      // Installed. The registered marketplaces - the host-scoped data - are the
+      // "Marketplaces" segment, so drive the product's own control there.
+      await driver.clickSettingsSegment("Marketplaces");
+      const text = await driver.waitPage(
+        `(() => { const el = document.querySelector("[data-testid='settings-content']"); if (el === null) return null; return el.innerText.includes(${JSON.stringify(c.hostMarketplace)}) ? el.innerText : null; })()`,
+        {
+          label: `the plugins-manager pane to list the marketplace seeded only on the selected host (${JSON.stringify(c.hostMarketplace)})`,
+        },
+      );
       check(
         !/Failed to load/.test(text),
         `plugins-manager: the pane rendered a load error with a remote host selected; text was:\n${text}`,
       );
+      // Non-vacuous: the host sentinel above must APPEAR, so a pane that fell
+      // back to this hub (which has none of these) fails; each controller default
+      // below must be ABSENT, so a pane rendering THIS hub's list fails too.
+      for (const controllerName of c.controllerMarketplaces) {
+        check(
+          !text.includes(controllerName),
+          `plugins-manager: the pane rendered the CONTROLLER's marketplace ${JSON.stringify(controllerName)} while a remote host was selected; text was:\n${text}`,
+        );
+      }
       record.probe =
-        "segmented control (Installed / Browse / Marketplaces) + pane body (structural: the host plugin/marketplace catalog is not file-seedable here)";
-      record.evidence = { textExcerpt: text.slice(0, 400) };
+        'segmented control "Marketplaces" (the selected host\'s registered marketplaces, seeded through its own known_marketplaces.json)';
+      record.evidence = { hostMarketplace: c.hostMarketplace, textExcerpt: text.slice(0, 400) };
       record.ok = true;
       return record;
     }
