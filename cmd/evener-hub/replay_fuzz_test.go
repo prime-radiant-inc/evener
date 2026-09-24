@@ -147,9 +147,10 @@ func TestHubReplay_RejectedCallLiveVsReload(t *testing.T) {
 // projects one turn in isolation.
 //
 // commRawArgs threads the assistant turn's raw communicate bytes into the live
-// side: a rejected communicate surfaces them as a CommunicateData (modeled live),
-// matching the reload side's result-gated raw fallback. A healed communicate
-// (IsError=false) renders nothing on both sides.
+// side: a rejected communicate surfaces them as a settled failed
+// commandExecution (modeled live), matching the reload side's result-gated raw
+// fallback. A healed communicate (IsError=false) renders the delivered message
+// on both sides.
 func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte, commRawArgs string) {
 	t.Helper()
 	var ae, re transcript.Entry
@@ -178,12 +179,18 @@ func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte,
 			continue
 		}
 		// A rejected communicate (IsError=true, PrevalOnly=true) was never
-		// executed — live emits nothing for it (communicate's Exec fn never
-		// runs; the projector suppresses communicate start/end). The reload
-		// side renders a commandExecution tool error, which the allow-list in
-		// normalizeMetamorphic skips (it is a reload-only rendering with no
-		// live event path, like web_search).
+		// executed — the START was suppressed, but the END now emits a
+		// settled failed commandExecution item (matching what reload renders
+		// from the deferred CommRawArgs). Model the same ToolCallEndData the
+		// live session would emit for the rejected call.
 		if p.ToolResult.IsError {
+			liveEvents = append(liveEvents, events.New(events.ToolCallEndData{
+				ToolName:      "communicate",
+				CallID:        p.ToolResult.ToolCallID,
+				ArgumentsJSON: commRawArgs,
+				Error:         apptranscript.StringifyToolContent(p.ToolResult.Content),
+				PrevalOnly:    p.ToolResult.PrevalOnly,
+			}))
 			continue
 		}
 		// A healed communicate (IsError=false) delivered its message live.
@@ -346,22 +353,19 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 					continue
 				}
 				// communicate surfaces live as EventCommunicate, not a tool item
-				// (the live ToolCallStart for communicate is suppressed). Reload
-				// maps a well-formed communicate tool_call to the same
-				// agentMessage. A communicate with Arguments={} and
-				// RawArguments set is ambiguous on the assistant turn alone
-				// (rejected vs healed-and-executed share that durable shape),
-				// so both live and reload render nothing here: live emits no
-				// EventCommunicate (CommunicateMessageFromArguments({}) is
-				// ""), and reload defers the raw fallback to the paired result
-				// turn. The single-entry metamorphic compares the assistant
-				// turn alone, so both sides agree (nothing). The multi-entry
-				// test below exercises the paired result turn, which carries
-				// the error/PrevalOnly status that disambiguates.
+				// (the live ToolCallStart for communicate is suppressed). Both
+				// live and reload defer ALL communicate messages to the paired
+				// result turn: the assistant turn alone cannot disambiguate a
+				// valid-JSON communicate that will succeed from one rejected at
+				// prevalidation (PrevalOnly), nor a malformed communicate that
+				// will be healed from one that will be rejected. The result
+				// turn carries the IsError/PrevalOnly status that
+				// disambiguates. The single-entry metamorphic compares the
+				// assistant turn alone, so both sides agree (nothing). The
+				// multi-entry test (checkLiveVsReloadMultiEntry) exercises the
+				// paired result turn, which carries the error/PrevalOnly status
+				// that disambiguates.
 				if p.ToolCall.Name == "communicate" {
-					if msg := apptranscript.CommunicateMessageFromArguments(p.ToolCall.Arguments); msg != "" {
-						add(events.CommunicateData{Message: msg})
-					}
 					continue
 				}
 				// Rejected call: show raw bytes, skip intent (mirrors ProjectTurn).
@@ -506,14 +510,6 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 		//     renders web_search ONLY on reload (added in ec96619c). 4a covers its
 		//     carry-through fidelity.
 		if it.Type == "commandExecution" && it.ToolName == "web_search" {
-			continue
-		}
-		//   - rejected communicate: live suppresses communicate start/end for
-		//     rejected calls (the Exec fn never runs), so nothing renders live;
-		//     reload emits a commandExecution tool error so the user sees what
-		//     was rejected. This is a reload-only rendering with no live event
-		//     path, like web_search above.
-		if it.Type == "commandExecution" && it.ToolName == "communicate" && it.PrevalOnly {
 			continue
 		}
 		//   - redacted thinking: there is no live reasoning-summary delta for

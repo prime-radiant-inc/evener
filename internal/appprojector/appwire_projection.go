@@ -757,8 +757,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventToolCallEnd:
 		data := eventData[events.ToolCallEndData](event.Data)
 		var out []AppNotification
+		hadProvisionalItem := false
 		if data.Error != "" {
 			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
+				hadProvisionalItem = true
 				delete(p.provisionalCommunicateItems, data.CallID)
 				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
 					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
@@ -771,9 +773,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
 			p.communicatePhases[data.CallID] = communicatePhaseClosed
+			// A rejected communicate with no prior preview item (PrevalOnly
+			// rejection — the Exec fn never ran) emits a settled failed
+			// commandExecution so the user sees what was rejected, matching
+			// what reload renders from the deferred CommRawArgs. A preview-
+			// path communicate that failed already retracted its provisional
+			// agent message (above); do not double-render a tool error.
+			if data.Error != "" && data.ToolName == "communicate" && !hadProvisionalItem {
+				out = append(out, p.settledCommunicateFailure(data, event))
+			}
 			return out
 		}
 		if data.ToolName == "communicate" && p.toolItemsByKey[data.CallID] == "" {
+			if data.Error != "" && !hadProvisionalItem {
+				out = append(out, p.settledCommunicateFailure(data, event))
+			}
 			return out
 		}
 		raw := data.ToolState
@@ -2328,6 +2342,37 @@ func (p *AppEventProjector) toolItemID(callID string) string {
 	itemID := p.nextItemID("tool")
 	p.toolItemsByKey[callID] = itemID
 	return itemID
+}
+
+// settledCommunicateFailure builds a NotifyItemCompleted notification for a
+// rejected communicate whose START was suppressed or never seen. Live
+// suppresses communicate start/end for rejected calls (the Exec fn never
+// runs), but the END must still surface a settled failed commandExecution
+// item so the user sees what was rejected — matching what reload renders
+// from the deferred CommRawArgs. This closes the live/reload divergence
+// the metamorphic oracle previously excluded (round 6 finding 1b).
+func (p *AppEventProjector) settledCommunicateFailure(data events.ToolCallEndData, event events.SessionEvent) AppNotification {
+	item := appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            p.toolItemID(data.CallID),
+		TurnID:        p.activeTurnID,
+		ToolName:      data.ToolName,
+		CallID:        data.CallID,
+		ArgumentsJSON: data.ArgumentsJSON,
+		Error:         data.Error,
+		PrevalOnly:    data.PrevalOnly,
+		Status:        apptranscript.SettledToolStatus(data.Error != ""),
+	}
+	if !event.Timestamp.IsZero() {
+		ms := event.Timestamp.UnixMilli()
+		item.CompletedAt = &ms
+	}
+	return p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		ThreadID: p.threadID,
+		Ref:      p.ref,
+		TurnID:   p.activeTurnID,
+		Item:     item,
+	})
 }
 
 func (p *AppEventProjector) recordAssistantMessage(turnID, text string) {
