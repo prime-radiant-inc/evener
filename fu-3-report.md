@@ -1427,13 +1427,37 @@ pass — only tests and this report section.
   not-found (found=false); expected a propagated 'stat journal' error`
 - **GREEN**: `ok`
 
-### M2 — Output-path IsRegular guard
-- **Test**: `TestLocateLocalJobRetainedTarget_OutputNotRegularRejected`
-  (`agent/job_transcript_read_test.go`)
-- **Mechanism**: A non-regular, non-symlink entry (a directory) at the output
-  leaf passes `symlinkErrorDeep` but is rejected by the `IsRegular` guard.
-- **RED**: `expected 'output is not a regular file' error, got nil`
-- **GREEN**: `ok`
+### M2 — Output-path TOCTOU residual (BLOCKED: comment-only fix, no genuine RED)
+- **Status**: BLOCKED — no deterministic RED exists for the round-12 M2 fix.
+- **What round-12 M2 actually was**: `agent/job_transcript_read.go`, output-path
+  region of `locateLocalJobRetainedTarget`. The round-12 production change here is
+  **comment-only** — it added the residual-TOCTOU documentation block and changed
+  no enforceable code. `git diff 7a8bdd9232..40658905f2 --
+  agent/job_transcript_read.go` shows every `+` line in the output hunk is a `//`
+  comment; the `IsRegular` guard that the prior M2 entry attributed the RED to is
+  unchanged context that predates round 12 (it landed in round 11, commit
+  `8f4a947eab`). The report's own "Finding 2" (lines 1385-1386) and commit
+  `3e322223ea` both describe it as "output TOCTOU hybrid **comment**".
+- **Mechanical proof (this seat, scratch worktree at HEAD 6b3294ef9d)**:
+  Reverted all round-12 production files to base 7a8bdd9232 (`git checkout
+  7a8bdd9232 -- <f>` for modified, `git rm` for the two new
+  `snapshot_meta_open_*.go`), keeping HEAD test files, then ran the test:
+  ```
+  --- PASS: TestLocateLocalJobRetainedTarget_OutputNotRegularRejected (0.00s)
+  ```
+  It **PASSES on reverted production** — so it is NOT a round-12 RED. Contrast:
+  the genuine sibling `TestFindLocalJobInProject_NonErrNotExistLstatSurfaces`
+  (M1) **FAILS** on the same reverted tree and passes on HEAD.
+- **Test (retained, relabelled)**:
+  `TestLocateLocalJobRetainedTarget_OutputNotRegularRejected`
+  (`agent/job_transcript_read_test.go`). Its inline comment was corrected from
+  "(FU3 round 12, M2)" to state it is a **round-11 regression guard** for the
+  `IsRegular` behavior, not a round-12 M2 RED.
+- **RED**: none (the fix is comment-only; the IsRegular guard it appeared to pin
+  predates round 12). Writing a fake RED for a comment-only change is prohibited
+  by the brief's step 3.
+- **GREEN**: `ok` (test passes on both HEAD and reverted production — it is a
+  regression guard, not a fix-verification test).
 
 ### M3 — Session-meta intermediate component walk
 - **Test**: `TestLoadSessionMetaFS_SymlinkedIntermediateDirRefused`

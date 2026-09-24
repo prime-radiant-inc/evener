@@ -711,13 +711,17 @@ func TestFindLocalJobInProject_NonErrNotExistLstatSurfaces(t *testing.T) {
 	}
 }
 
-// TestLocateLocalJobRetainedTarget_OutputNotRegularRejected (FU3 round 12, M2)
-// pins the output-path hybrid guard's enforced invariant — the Lstat'd output
-// must be a regular file — without over-claiming the documented residual TOCTOU
-// window (a swap between the Lstat and jobstore's internal by-path open is
-// explicitly NOT closed; the round-12 fix documented it, not closed it). A
-// non-regular, non-symlink entry (a directory) at the output leaf passes
-// symlinkErrorDeep but is rejected by the IsRegular guard.
+// TestLocateLocalJobRetainedTarget_OutputNotRegularRejected is a regression guard
+// for the round-11 output-path IsRegular guard — NOT a round-12 M2 RED. It pins
+// the Lstat'd-output invariant (the output leaf must be a regular file) without
+// over-claiming the documented residual TOCTOU window: a swap between the Lstat
+// and jobstore's internal by-path open is explicitly NOT closed (the round-12
+// M2 fix documented it, not closed it — see the comment at
+// locateLocalJobRetainedTarget in job_transcript_read.go). A non-regular,
+// non-symlink entry (a directory) at the output leaf passes symlinkErrorDeep but
+// is rejected by the IsRegular guard. This test PASSES on round-12 production
+// reverted to base 7a8bdd9232 (the guard predates round 12), so it is retained as
+// a round-11 regression guard, not a round-12 RED.
 func TestLocateLocalJobRetainedTarget_OutputNotRegularRejected(t *testing.T) {
 	t.Parallel()
 	sh := t.TempDir()
