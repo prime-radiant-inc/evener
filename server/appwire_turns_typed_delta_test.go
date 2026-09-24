@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -38,5 +39,35 @@ func TestAppTurnSnapshotApplyCommittedReadsDeltasFromTypedParams(t *testing.T) {
 	}
 	if items[2].ID != "item_tool_1" || items[2].CallID != "call_1" || items[2].Output != "out" {
 		t.Fatalf("tool item = %+v, want call_1 output %q", items[2], "out")
+	}
+}
+
+// TestAppTurnSnapshotApplyCommittedMatchesEncodedInvalidUTF8 pins that the
+// typed path leaves the snapshot identical to what clients were sent when a
+// delta is not valid UTF-8. Tool output is chunked at byte offsets, so a
+// multi-byte rune can straddle two deltas; encoding replaces each half with
+// U+FFFD, and thread/read must show the same text the live stream did.
+func TestAppTurnSnapshotApplyCommittedMatchesEncodedInvalidUTF8(t *testing.T) {
+	deltas := []appwire.ToolOutputDeltaParams{
+		{TurnID: "turn_1", ItemID: "item_tool_1", CallID: "call_1", Delta: "caf\xc3"},
+		{TurnID: "turn_1", ItemID: "item_tool_1", CallID: "call_1", Delta: "\xa9!"},
+	}
+	encoded := &appTurnSnapshot{}
+	typed := &appTurnSnapshot{}
+	for _, params := range deltas {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		record := appserver.SequencedNotification{Notification: appwire.Notification{Method: appwire.NotifyToolOutputDelta, Params: raw}}
+		encoded.Apply([]appserver.SequencedNotification{record})
+		typed.ApplyCommitted(record, params)
+	}
+	want := encoded.Snapshot()[0].Items[0].Output
+	if want != "caf��!" {
+		t.Fatalf("encoded output = %q, want each half-rune replaced", want)
+	}
+	if got := typed.Snapshot()[0].Items[0].Output; got != want {
+		t.Fatalf("typed output = %q, want the encoded output %q", got, want)
 	}
 }
