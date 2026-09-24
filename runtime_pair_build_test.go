@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -943,7 +944,9 @@ func TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard(t *testing.T) {
 //
 // The held cp and a BASH_ENV wrapper around the gate's wait builtin append to
 // one log, so the order is the evidence: the gate's wait for the guard shell
-// must not return before the step that shell was running has finished.
+// must not return before the step that shell was running has finished. Each
+// also drops a marker file the test awaits: the cp names the guard shell, and
+// the wrapper marks each pid the gate starts waiting for.
 func TestMakeTestWebBrowserInterruptWaitsForGuardSetup(t *testing.T) {
 	const tripwire = 30 * time.Second
 	fixture := newBuildWebFixture(t)
@@ -953,6 +956,8 @@ func TestMakeTestWebBrowserInterruptWaitsForGuardSetup(t *testing.T) {
 	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
 	orderLog := filepath.Join(fixture.root, "setup-order.log")
 	release := filepath.Join(fixture.root, "setup.release")
+	heldPath := filepath.Join(fixture.root, "setup.held")
+	waitMarker := filepath.Join(fixture.root, "gate-waits-for.")
 	ambientGoEnv := filepath.Join(fixture.root, "ambient-go-env")
 	writeTestFile(t, ambientGoEnv, nil, 0o644)
 	// Only the private-home copy of this exact file is held; every other cp
@@ -960,7 +965,9 @@ func TestMakeTestWebBrowserInterruptWaitsForGuardSetup(t *testing.T) {
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "cp"), []byte(`#!/bin/sh
 if [ "$1" = "$EVENER_TEST_CP_HOLD" ]; then
 	printf 'cp-held %s\n' "$PPID" >> "$EVENER_TEST_SETUP_ORDER"
-	while [ ! -f "$EVENER_TEST_SETUP_RELEASE" ]; do :; done
+	printf '%s\n' "$PPID" > "$EVENER_TEST_SETUP_HELD.tmp"
+	mv "$EVENER_TEST_SETUP_HELD.tmp" "$EVENER_TEST_SETUP_HELD"
+	while [ ! -f "$EVENER_TEST_SETUP_RELEASE" ]; do sleep 0.01; done
 	printf 'cp-done\n' >> "$EVENER_TEST_SETUP_ORDER"
 fi
 exec /bin/cp "$@"
@@ -969,6 +976,7 @@ exec /bin/cp "$@"
 	writeTestFile(t, bashEnv, []byte(`wait() {
 	local status
 	printf 'wait %s\n' "$*" >> "$EVENER_TEST_SETUP_ORDER"
+	: > "$EVENER_TEST_WAIT_MARKER$1"
 	builtin wait "$@"; status=$?
 	printf 'waited %s\n' "$*" >> "$EVENER_TEST_SETUP_ORDER"
 	return "$status"
@@ -984,6 +992,8 @@ exec /bin/cp "$@"
 		"EVENER_TEST_CP_HOLD="+ambientGoEnv,
 		"EVENER_TEST_SETUP_ORDER="+orderLog,
 		"EVENER_TEST_SETUP_RELEASE="+release,
+		"EVENER_TEST_SETUP_HELD="+heldPath,
+		"EVENER_TEST_WAIT_MARKER="+waitMarker,
 	)
 	var output syncBuffer
 	command.Stdout = &output
@@ -992,53 +1002,31 @@ exec /bin/cp "$@"
 		t.Fatalf("start make test-web-browser: %v", err)
 	}
 	run := startChild(command)
-	finished := false
 	t.Cleanup(func() {
 		_ = os.WriteFile(release, nil, 0o644)
-		if !finished {
-			if err := waitForChildExit(run, tripwire); errors.Is(err, errChildExitTimeout) {
-				_ = command.Process.Kill()
-			}
+		if err := waitForChildExit(run, tripwire); errors.Is(err, errChildExitTimeout) {
+			_ = command.Process.Kill()
 		}
 	})
 	orderLines := func() []string {
 		data, _ := os.ReadFile(orderLog)
 		return strings.Split(strings.TrimSpace(string(data)), "\n")
 	}
-	// awaitLine polls the order log for want. TRIPWIRE: each line is written
-	// milliseconds after the step before it; the ceiling only bounds a hang,
-	// and the gate's own exit ends the wait early.
-	awaitLine := func(want func(string) bool) (string, error) {
-		deadline := time.Now().Add(tripwire)
-		for {
-			for _, line := range orderLines() {
-				if want(line) {
-					return line, nil
-				}
-			}
-			select {
-			case <-run.done:
-				return "", fmt.Errorf("gate exited (%v) first", run.err)
-			default:
-			}
-			if time.Now().After(deadline) {
-				return "", fmt.Errorf("not within %s", tripwire)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
 
-	held, err := awaitLine(func(line string) bool { return strings.HasPrefix(line, "cp-held ") })
-	if err != nil {
+	if err := waitForPathOrExit(heldPath, run, readinessTripwire); err != nil {
 		t.Fatalf("the retirement guard's setup never reached the held cp: %v; output = %s", err, output.String())
 	}
-	guardShell := strings.TrimPrefix(held, "cp-held ")
+	heldData, err := os.ReadFile(heldPath)
+	if err != nil {
+		t.Fatalf("read held setup step's shell: %v", err)
+	}
+	guardShell := strings.TrimSpace(string(heldData))
 	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal make test-web-browser: %v", err)
 	}
 	// The gate signals every running guard before it waits for any, so once it
 	// waits for the guard shell, that shell has been sent its TERM.
-	if _, err := awaitLine(func(line string) bool { return line == "wait "+guardShell }); err != nil {
+	if err := waitForPathOrExit(waitMarker+guardShell, run, readinessTripwire); err != nil {
 		t.Fatalf("the interrupted gate never waited for the retirement guard's shell %s: %v; order = %q; output = %s", guardShell, err, orderLines(), output.String())
 	}
 	writeTestFile(t, release, nil, 0o644)
@@ -1047,10 +1035,16 @@ exec /bin/cp "$@"
 	} else if errors.Is(err, errChildExitTimeout) {
 		t.Fatalf("make test-web-browser did not finish after the setup step was released: %v; output = %s", err, output.String())
 	}
-	finished = true
 
+	// The gate may wait for the shell more than once (a wait in a trap handler
+	// can return early), so the last wait is the one that let it move on.
 	order := orderLines()
-	done, waited := slices.Index(order, "cp-done"), slices.Index(order, "waited "+guardShell)
+	done, waited := slices.Index(order, "cp-done"), -1
+	for index, line := range order {
+		if line == "waited "+guardShell {
+			waited = index
+		}
+	}
 	if done < 0 || waited < 0 || waited < done {
 		t.Fatalf("the gate stopped waiting for the retirement guard's shell before its setup step finished; order = %q", order)
 	}
@@ -1060,6 +1054,34 @@ exec /bin/cp "$@"
 	}
 	if strings.Contains(string(logData), "npm run retirementguard") {
 		t.Fatalf("the retirement guard started after the gate was interrupted; log = %q", logData)
+	}
+}
+
+// TestWebGateScriptsHaveNoLoopJumps pins that the web gates, which poll their
+// guards with TERM and INT traps armed, never use break or continue. Bash
+// skips every command while a break or continue is pending, including a trap
+// that fires in that moment, so an interrupt landing there is swallowed and
+// the gate runs to completion. No test can aim a signal at that gap, so this
+// holds the scripts to the form that has none.
+func TestWebGateScriptsHaveNoLoopJumps(t *testing.T) {
+	loopJump := regexp.MustCompile(`(^|[\s;&|({])(break|continue)($|[\s;&|)}])`)
+	for _, path := range []string{"scripts/web/test-web.sh", "scripts/web/test-web-browser.sh", "scripts/lib/owned-jobs.sh"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for number, line := range strings.Split(string(data), "\n") {
+			code := strings.TrimSpace(line)
+			if strings.HasPrefix(code, "#") {
+				continue
+			}
+			if comment := strings.Index(code, " #"); comment >= 0 {
+				code = code[:comment]
+			}
+			if loopJump.MatchString(code) {
+				t.Errorf("%s:%d uses a loop jump a trap can be lost behind: %s", path, number+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }
 

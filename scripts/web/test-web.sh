@@ -26,8 +26,9 @@ forget_pid() {
 	local pid="$1" candidate
 	local -a remaining=()
 	for candidate in "${active_pids[@]-}"; do
-		[ -n "$candidate" ] || continue
-		[ "$candidate" = "$pid" ] || remaining+=("$candidate")
+		if [ -n "$candidate" ] && [ "$candidate" != "$pid" ]; then
+			remaining+=("$candidate")
+		fi
 	done
 	active_pids=()
 	for candidate in "${remaining[@]-}"; do
@@ -36,23 +37,16 @@ forget_pid() {
 }
 
 stop_checks() {
-	local pid wait_status previous_stopping
+	local pid previous_stopping
 	previous_stopping=$stopping
 	stopping=1
 	for pid in "${active_pids[@]-}"; do
-		[ -n "$pid" ] || continue
-		owned_job_is_running "$pid" || continue
-		kill -TERM "$pid" 2>/dev/null || :
+		if [ -n "$pid" ] && owned_job_is_running "$pid"; then
+			kill -TERM "$pid" 2>/dev/null || :
+		fi
 	done
 	for pid in "${active_pids[@]-}"; do
-		[ -n "$pid" ] || continue
-		while :; do
-			if wait "$pid" 2>/dev/null; then wait_status=0; else wait_status=$?; fi
-			# Negative and 127 statuses mean Bash no longer owns a child it can
-			# reap.
-			if [ "$wait_status" -lt 0 ] || [ "$wait_status" -eq 127 ]; then break; fi
-			owned_job_is_running "$pid" || break
-		done
+		[ -z "$pid" ] || wait_for_owned_job "$pid"
 	done
 	stopping=$previous_stopping
 	active_pids=()
@@ -110,18 +104,22 @@ interrupted() {
 # would leak the directory (the trap-before-mkdir ordering the audit enforces).
 trap finish EXIT
 trap 'interrupted 129' 1; trap 'interrupted 130' 2; trap 'interrupted 143' 15
+# No loop in this script uses break or continue: bash runs a trap that fires
+# while either is pending as a no-op, so the interrupt would be silently lost.
 
 scratch_dir dir evener-test-web
 owned_jobs_list="$dir/running-jobs"
 
 for c in typecheck test lint; do
 	check_dir="$dir/$c"
-	if ! mkdir -p "$check_dir/home" "$check_dir/tmp" "$check_dir/xdg-config" "$check_dir/xdg-cache" "$check_dir/xdg-state"; then fail=1; break; fi
-	defer_signals=1
-	HOME="$check_dir/home" TMPDIR="$check_dir/tmp" XDG_CONFIG_HOME="$check_dir/xdg-config" XDG_CACHE_HOME="$check_dir/xdg-cache" XDG_STATE_HOME="$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run "$c" >"$dir/$c.log" 2>&1 &
-	active_pids+=("$!"); started+=("$c")
-	defer_signals=0
-	consume_interrupt
+	if [ "$fail" -eq 0 ] && ! mkdir -p "$check_dir/home" "$check_dir/tmp" "$check_dir/xdg-config" "$check_dir/xdg-cache" "$check_dir/xdg-state"; then fail=1; fi
+	if [ "$fail" -eq 0 ]; then
+		defer_signals=1
+		HOME="$check_dir/home" TMPDIR="$check_dir/tmp" XDG_CONFIG_HOME="$check_dir/xdg-config" XDG_CACHE_HOME="$check_dir/xdg-cache" XDG_STATE_HOME="$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run "$c" >"$dir/$c.log" 2>&1 &
+		active_pids+=("$!"); started+=("$c")
+		defer_signals=0
+		consume_interrupt
+	fi
 done
 
 for i in "${!started[@]}"; do

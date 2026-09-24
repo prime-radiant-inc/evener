@@ -24,3 +24,19 @@ owned_job_is_running() {
 	done <"$owned_jobs_list"
 	return 1
 }
+
+# wait_for_owned_job PID — wait until PID is no longer one of this shell's
+# running jobs. One wait is not enough: a wait run from a trap handler can
+# return early, with 128 plus the trap's signal, while the job is still
+# running, so the job table has the last word.
+wait_for_owned_job() {
+	local status waiting=1
+	while [ "$waiting" -eq 1 ]; do
+		if wait "$1" 2>/dev/null; then status=0; else status=$?; fi
+		# Negative and 127 statuses mean Bash no longer owns a child it can
+		# reap.
+		if [ "$status" -lt 0 ] || [ "$status" -eq 127 ] || ! owned_job_is_running "$1"; then
+			waiting=0
+		fi
+	done
+}
