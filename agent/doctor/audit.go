@@ -615,6 +615,9 @@ func formatNonReproSessions(sessions map[string]nonReproSession, budget int) (de
 		s := sessions[k]
 		parts = append(parts, fmt.Sprintf("%s in bucket %q", s.sid, s.bucket))
 	}
+	if len(parts) == 0 {
+		return "", omitted
+	}
 	desc = strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
 	return desc, omitted
 }
@@ -811,6 +814,42 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				nonReproducible = true
 			}
 		}
+		// Round 12 finding 1: a bare sid in SessionRefs (agentSel) is
+		// colliding when it also exists in a canonical bucket. The agent-side
+		// resolver (enumerateBuckets) filters by ValidateProjectID, so it
+		// skips non-canonical buckets — a bare sid from a hex bucket that
+		// also exists in a canonical bucket resolves silently to the wrong
+		// (canonical) session. The doctor-side Locate (globBuckets sees all
+		// dirs) reports the ambiguity. When agentSel is a bare sid and it is
+		// ambiguous via Locate, check whether any OTHER bucket containing the
+		// sid has a canonical name (refFor returns a non-empty proj: ref).
+		// If so, the agent would resolve to that canonical bucket silently —
+		// omit the colliding bare sid from SessionRefs. The Description's
+		// reproducible portion already carries the bucket-qualified ref
+		// (proj:<bucket>:<sid> via doctorSel) so the session is traceable.
+		// This does not fire when the sid is ambiguous across non-canonical
+		// buckets only (hex + hex) — the agent can't resolve any of them, so
+		// the bare sid is still the honest identifier. It does not affect
+		// the nonReproducible classification, unique bare sids, or canonical
+		// proj: refs.
+		collidingBareSid := false
+		if agentSel == paths.SessionID {
+			if _, err := Locate(stateBase, agentSel); err != nil {
+				// Bare sid is ambiguous or not found. Check whether any other
+				// bucket containing the sid has a canonical name (refFor
+				// returns non-empty) — if so, the agent resolves to it silently.
+				buckets, _, _ := resolveBuckets(stateBase)
+				for _, b := range buckets {
+					if b.projectID == paths.ProjectID {
+						continue // same bucket
+					}
+					if sessionInBucket(b, paths.SessionID) && refFor(b.projectID, paths.SessionID) != "" {
+						collidingBareSid = true
+						break
+					}
+				}
+			}
+		}
 		health, err := TranscriptHealth(stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
@@ -877,7 +916,18 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			// with #2205). It is deduped when distinct sessions share a SID —
 			// the true count is in sessionsBySig and the Description, not in
 			// len(SessionRefs).
-			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, agentSel)
+			// SessionRefs carries the honest session identifier — except when
+			// the bare sid is colliding (round 12 finding 1): a bare sid from
+			// a non-canonical bucket that also exists in a canonical bucket
+			// resolves silently to the wrong session on the agent side. Omit
+			// it from SessionRefs; the Description's reproducible portion
+			// carries the bucket-qualified ref (proj:<bucket>:<sid> via
+			// doctorSel) so the session is traceable. Also omit when
+			// nonReproducible (bare sid ambiguous, DoctorCommand can't
+			// reproduce — disclosed in the non-reproducible section).
+			if !nonReproducible && !collidingBareSid {
+				f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, agentSel)
+			}
 			// DoctorCommand carries doctor-CLI-safe selectors (finding 3):
 			// followSelector's output (canonical proj:, safeTokenForRepro
 			// proj:, or bare sid). Reproducible selectors go into
@@ -957,10 +1007,12 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		totalOmitted := 0
 		if len(nonRepro) > 0 {
 			nonReproDesc, nonReproOmitted := formatNonReproSessions(nonRepro, nonReproBudget)
-			if reproDesc != "" {
-				desc += "; not reproducible: " + nonReproDesc
-			} else {
-				desc += ": not reproducible: " + nonReproDesc
+			if nonReproDesc != "" {
+				if reproDesc != "" {
+					desc += "; not reproducible: " + nonReproDesc
+				} else {
+					desc += ": not reproducible: " + nonReproDesc
+				}
 			}
 			totalOmitted += nonReproOmitted
 		}
