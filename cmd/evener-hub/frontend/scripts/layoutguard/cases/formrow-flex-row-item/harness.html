@@ -64,6 +64,8 @@ window.measure = () => {
   const trigger = box(document.querySelector("#prompt-file"));
   const chip = box(document.querySelector("#chip"));
   const value = document.querySelector("#value");
+  const valueStyle = getComputedStyle(value);
+  const gap = Number.parseFloat(getComputedStyle(document.querySelector("#row")).columnGap) || 0;
   return {
     row,
     formRow,
@@ -71,9 +73,19 @@ window.measure = () => {
     formRowOverflowsRow: formRow.right - row.right,
     triggerOverflowsRow: trigger.right - row.right,
     chipOverflowsRow: chip.right - row.right,
+    // The room the FormRow actually has: up to the chip, less the row's gap.
+    // Positive = headroom left over; negative = the FormRow runs into the chip.
+    formRowSlack: chip.left - gap - formRow.right,
     valueScrollWidth: value.scrollWidth,
     valueClientWidth: value.clientWidth,
-    valueEllipsizes: value.scrollWidth > value.clientWidth && getComputedStyle(value).textOverflow === "ellipsis",
+    valueOverflowX: valueStyle.overflowX,
+    // All three are needed for a visible ellipsis: text wider than its box,
+    // a box that clips (hidden or clip - visible would paint the overflow),
+    // and text-overflow: ellipsis to mark the cut.
+    valueEllipsizes:
+      value.scrollWidth > value.clientWidth &&
+      /^(hidden|clip)$/.test(valueStyle.overflowX) &&
+      valueStyle.textOverflow === "ellipsis",
   };
 };
 </script>
