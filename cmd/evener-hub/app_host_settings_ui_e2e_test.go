@@ -45,6 +45,7 @@ package hub
 // developer signed up for either of those is not signed up for a UI run.
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -379,10 +380,15 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	}
 
 	// The host-side proof the runner cannot give: the write reached the
-	// DISPOSABLE host config root. Read the file off the host itself.
-	written := host.output("cat " + shellquote.RemoteWord(hostAgentsDocPath))
-	if written != hostSettingsUIWrittenAgentsDoc {
-		t.Fatalf("the disposable host's AGENTS.md %s on %s holds %q, want the value written through the UI %q", hostAgentsDocPath, host.target, written, hostSettingsUIWrittenAgentsDoc)
+	// DISPOSABLE host config root. Read the file off the host itself, and compare
+	// it BY HASH: hostSSH.output trims its stdout, so comparing that text against
+	// the written value - which ends in a newline - could never match, and
+	// comparing a trimmed value would accept a file whose trailing bytes differ
+	// from what the UI wrote. A hash is exact either way.
+	wantSum := fmt.Sprintf("%x", sha256.Sum256([]byte(hostSettingsUIWrittenAgentsDoc)))
+	if gotSum := host.sha256IfFile(hostAgentsDocPath); gotSum != wantSum {
+		written := host.output("cat " + shellquote.RemoteWord(hostAgentsDocPath))
+		t.Fatalf("the disposable host's AGENTS.md %s on %s holds %q (sha256 %s), want the value written through the UI %q (sha256 %s)", hostAgentsDocPath, host.target, written, gotSum, hostSettingsUIWrittenAgentsDoc, wantSum)
 	}
 	// ...and the controller's own state did not change: the write must not have
 	// landed in THIS hub's config root.
