@@ -153,7 +153,7 @@ func (m Message) IDString() string {
 func (m *Message) UnmarshalJSON(data []byte) error {
 	var probe struct {
 		JSONRPC *json.RawMessage `json:"jsonrpc"`
-		ID      *json.RawMessage `json:"id"`
+		ID      json.RawMessage  `json:"id"`
 		Method  string           `json:"method"`
 		Result  json.RawMessage  `json:"result"`
 		Error   json.RawMessage  `json:"error"`
@@ -175,18 +175,18 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 		m.Error = &resp
 	case len(probe.Result) > 0:
-		// The result stays the bytes the peer sent: a caller decodes it straight
-		// into its typed response, where a generic any tree would cost two more
+		// The result stays the bytes the peer sent, taken from the probe rather
+		// than a second pass over the frame: a caller decodes it straight into
+		// its typed response, where a generic any tree would cost two more
 		// passes over the payload and round integers past 2^53.
-		var resp struct {
-			ID     ID              `json:"id"`
-			Result json.RawMessage `json:"result"`
+		resp := Response{Result: probe.Result}
+		if len(probe.ID) > 0 {
+			if err := unmarshalMessageFrame(probe.ID, &resp.ID); err != nil {
+				return err
+			}
 		}
-		if err := unmarshalMessageFrame(data, &resp); err != nil {
-			return err
-		}
-		m.Response = &Response{ID: resp.ID, Result: resp.Result}
-	case probe.Method != "" && probe.ID != nil:
+		m.Response = &resp
+	case probe.Method != "" && len(probe.ID) > 0 && string(probe.ID) != "null":
 		var req Request
 		if err := unmarshalMessageFrame(data, &req); err != nil {
 			return err

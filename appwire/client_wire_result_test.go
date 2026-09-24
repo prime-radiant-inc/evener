@@ -2,6 +2,8 @@ package appwire
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +25,21 @@ func TestMessageDecodeKeepsWireResultBytes(t *testing.T) {
 	}
 	if string(raw) != result {
 		t.Fatalf("Result = %s, want %s", raw, result)
+	}
+}
+
+// Taking the result from the probe must not loosen the id: a response naming
+// a null id is still refused, and one with no id at all still decodes.
+func TestMessageDecodeResponseIDRules(t *testing.T) {
+	var m Message
+	if err := json.Unmarshal([]byte(`{"id":null,"result":1}`), &m); err == nil {
+		t.Fatalf("a null response id decoded: %+v", m.Response)
+	}
+	if err := json.Unmarshal([]byte(`{"result":1}`), &m); err != nil || m.Kind() != MessageResponse || m.IDString() != "" {
+		t.Fatalf("an id-less response: err=%v kind=%d id=%q", err, m.Kind(), m.IDString())
+	}
+	if err := json.Unmarshal([]byte(`{"id":"a","result":1}`), &m); err != nil || m.IDString() != "a" {
+		t.Fatalf("a string id: err=%v id=%q", err, m.IDString())
 	}
 }
 
@@ -65,5 +82,34 @@ func TestClientRequestDecodesWireResultWithoutRounding(t *testing.T) {
 	}
 	if got := <-done; got.N != 9007199254740993 {
 		t.Fatalf("N = %d, want 9007199254740993", got.N)
+	}
+}
+
+// BenchmarkWSTransportRecvLargeResponse measures what reading one large
+// response costs the receive loop: the hub's roster probe reads thread/list and
+// thread/read answers whose diagnostics carry every retained delegate's task
+// text, megabytes per daemon every few seconds.
+func BenchmarkWSTransportRecvLargeResponse(b *testing.B) {
+	delegates := make([]EvenerDelegateInfo, 200)
+	for i := range delegates {
+		task := strings.Repeat("Jesse asks: \"study the \\\"hub\\\" <daemon> lifecycle\"\n", 60)
+		delegates[i] = EvenerDelegateInfo{ChildSessionID: fmt.Sprintf("child-%d", i), Lifecycle: "idle", Task: task, Description: task}
+	}
+	result := ThreadReadResponse{Thread: Thread{ID: "root", SessionID: "root", Evener: EvenerThread{Diagnostics: &EvenerDiagnostics{Delegates: delegates}}}}
+	frame, err := json.Marshal(ResponseMessage(NewIntID(1), result))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(frame)))
+	b.ReportAllocs()
+	for b.Loop() {
+		var msg Message
+		if err := unmarshalWSMessage(&msg, frame); err != nil {
+			b.Fatal(err)
+		}
+		var out ThreadReadResponse
+		if err := json.Unmarshal(msg.Response.Result.(json.RawMessage), &out); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

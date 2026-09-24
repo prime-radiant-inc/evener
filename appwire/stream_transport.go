@@ -270,7 +270,7 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 		return Message{}, ctxErr
 	}
 	var msg Message
-	if err := unmarshalWSMessage(line, &msg); err != nil {
+	if err := unmarshalWSMessage(&msg, line); err != nil {
 		// Decoding a large frame takes long enough for a cancellation to land and
 		// close the stream, so the same latch applies before reporting a decode
 		// failure — otherwise later calls see a raw close error for a teardown

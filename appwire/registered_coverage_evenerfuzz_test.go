@@ -227,7 +227,7 @@ func coverFailureBranches(t *testing.T) {
 	readWebSocket = func(*websocket.Conn, context.Context) (websocket.MessageType, []byte, error) {
 		return websocket.MessageText, []byte("{}"), nil
 	}
-	unmarshalWSMessage = func([]byte, any) error { return errors.New("decode") }
+	unmarshalWSMessage = func(*Message, []byte) error { return errors.New("decode") }
 	_, _ = (&WSTransport{}).Recv(context.Background())
 	readWebSocket, unmarshalWSMessage = oldRead, oldUnmarshalWS
 }
