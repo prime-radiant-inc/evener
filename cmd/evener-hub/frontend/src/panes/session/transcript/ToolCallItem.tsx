@@ -274,7 +274,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const configDefault = descriptor.foldByDefault
     ? false
     : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const disclosureFallback = configDefault || ((!descriptor.foldByDefault || failed) && autoDefault && !superseded);
+  const disclosureFallback = configDefault || ((failed || (!descriptor.foldByDefault && autoDefault)) && !superseded);
   const expanded = isDisclosureOpen(
     disclosureKey,
     disclosureFallback,

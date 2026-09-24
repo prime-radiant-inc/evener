@@ -90,8 +90,11 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 // final state. Render one status touch per ID from its last update that
 // carries ANY status: done followed by reopen must end at the reopen (the
 // card names the batch's final word, and a touched-away completion is not
-// it), while a trailing notes-only touch annotates the row instead of
-// displacing it, so a completion followed by a note cannot be erased into
+// it), while the ID's last notes-only touch annotates that final word
+// instead of displacing it - whether the note arrived before or after the
+// status (the daemon appends notes in call order either way, and freshNotes
+// on the raw path derives order-independently, so the no-raw fallback agrees
+// with it). A completion followed by a note cannot be erased into
 // suppression. Whether a status is RENDERABLE stays updateRows' own filter.
 // Ordering by each ID's final occurrence keeps distinct IDs in the order the
 // batch ends.
@@ -108,7 +111,6 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
     }
     if (str(update, "status")) {
       latestByID.set(id, { index, update });
-      annotating.delete(id);
     } else if (str(update, "notes")) {
       annotating.set(id, { index, update });
     }
@@ -116,9 +118,14 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
   const marked: Entry[] = [];
   for (const [id, entry] of latestByID) {
     const note = annotating.get(id);
-    // The annotating touch came after the row it names, so the row carries
-    // its note and ends at the batch position the annotation gave it.
-    marked.push(note ? { index: note.index, update: { ...entry.update, notes: note.update.notes } } : entry);
+    // The ID's last notes-only touch rides the row it annotates whichever
+    // order the touches arrived in, and the merged row ends at the later of
+    // the two.
+    marked.push(
+      note
+        ? { index: Math.max(entry.index, note.index), update: { ...entry.update, notes: note.update.notes } }
+        : entry,
+    );
   }
   return [...marked, ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
 }

@@ -578,6 +578,28 @@ test("a trailing notes-only touch on the same id keeps the card's completion", (
   expect(within(rows[0]!).getByText("with a caveat")).toBeTruthy();
 });
 
+test("a notes-only touch arriving before the status word still carries to the raw path's row", () => {
+  // The raw path derives fresh notes from the call's own state, not the
+  // update order, so both orders must render the note on the row.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, notes: "with a caveat" },
+          { id: 1, status: "done" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+      { raw: [{ id: 1, type: "implement", description: "finish the thing", prompt: "", status: "done" }] },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled"]);
+  expect(within(rows[0]!).getByText("with a caveat")).toBeTruthy();
+});
+
 test("a trailing notes-only touch keeps the fallback row's completion and carries the note", () => {
   // Same batch shape with no raw (old daemon / replayed transcript): the
   // fallback row keeps the "#id" label, the done touch, and the note.
@@ -588,6 +610,31 @@ test("a trailing notes-only touch keeps the fallback row's completion and carrie
         updates: [
           { id: 1, status: "done" },
           { id: 1, notes: "with a caveat" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ #1");
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.getAttribute("data-touch")).toBe("done");
+  expect(rows[0]!.textContent).toContain("with a caveat");
+});
+
+test("a notes-only touch arriving BEFORE the status word carries through to the fallback row too", () => {
+  // Same batch with the touches reversed: the note reaches the daemon's
+  // task either way (Update appends notes in order), so the no-raw fallback
+  // must agree with freshNotes on the raw path and keep the note - the
+  // final word stays the status, but the annotation is not discarded.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, notes: "with a caveat" },
+          { id: 1, status: "done" },
         ],
       },
       "Updated 1→done, 1. Progress: 1/1 tasks complete.",

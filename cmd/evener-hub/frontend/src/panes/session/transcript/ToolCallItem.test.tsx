@@ -785,6 +785,26 @@ test("an errored tool row still force-expands under a foldByDefault descriptor",
   expect(screen.getByText("task 9 not found")).toBeTruthy();
 });
 
+test("a row whose failure is corroborated after it settled still force-opens", () => {
+  // `failed` is read reactively (like superseded), not only stashed at the
+  // settle transition: a row that settled clean but later turns out to have
+  // failed opens the moment the failure is known. The force-open is
+  // attribution, not a settle-time posture, and the fold cannot hide it.
+  registerToolRenderer({
+    match: "tci_late_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  const view = render(<ToolCallItem item={item({ toolName: "tci_late_fail" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  view.rerender(
+    <ToolCallItem item={item({ toolName: "tci_late_fail", error: "late boom" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByText("late boom")).toBeTruthy();
+});
+
 test("a foldByDefault descriptor stays folded under the full preset's open baseline, and still opens on click", () => {
   // Full is the strongest force-open the app has: entering the level
   // establishes an open disclosure baseline for the whole scope, and only an
