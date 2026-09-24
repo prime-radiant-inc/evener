@@ -953,6 +953,10 @@ export function createConversationStore() {
     folds: {
       itemFoldSources: (item: ItemModel) => readonly ItemModel[];
       toolResultFoldSources: (item: ItemModel) => readonly ItemModel[];
+      itemSideContributes: (
+        item: ItemModel,
+        side: (input: ItemModel) => boolean,
+      ) => boolean;
     },
     mergedTurns: readonly TurnModel[],
   ): Set<string> {
@@ -961,65 +965,38 @@ export function createConversationStore() {
     for (const turn of mergedTurns) {
       for (const item of turn.items) {
         // RoboRev review rounds 1 and 3: ownership and report are
-        // different questions, and the callId fold's absorbed results
-        // (round 1) count for both. A merged item whose fold sources
-        // include a page input is page history; an item whose backing is
-        // only INHERITED page ownership — a prior page's content the
-        // merge drew in, or an untouched item that was already the
-        // page's — keeps that ownership but is NOT this page's
-        // contribution: itemKeys is the reader's no-progress signal
-        // (nonempty clears its retry guard), so a page that only
-        // re-serves retained content must report empty. A page input is
-        // this page's contribution when it supplied a payload field the
-        // merged item's other sources lack, or when the merge kept
-        // nothing else beside it (a genuinely new item); a duplicate
-        // whose every field also sits on a retained side brought nothing.
+        // different questions. A merged item whose fold sources include a
+        // page input is page history; an item whose backing is only
+        // INHERITED page ownership — a prior page's content the merge
+        // drew in, or an untouched item that was already the page's —
+        // keeps that ownership but is NOT this page's contribution:
+        // itemKeys is the reader's no-progress signal (nonempty clears
+        // its retry guard), so a page that only re-serves retained
+        // content must report empty.
         const sources = [
           ...folds.itemFoldSources(item),
           ...folds.toolResultFoldSources(item),
         ];
-        const others = sources.filter((source) => !pageInputs.has(source));
         let inherited = false;
-        let contributed = false;
-        for (const source of [
-          ...folds.itemFoldSources(item),
-          ...folds.toolResultFoldSources(item),
-        ]) {
-          if (!pageInputs.has(source)) {
-            if (pageItemIds.has(source.transcriptKey ?? source.id)) {
-              inherited = true;
-            }
-            continue;
-          }
-          if (others.length === 0) {
-            contributed = true;
-            continue;
-          }
+        for (const source of sources) {
           if (
-            PAGE_CONTRIBUTION_FIELDS.some(
-              (field) =>
-                (source as unknown as Record<string, unknown>)[field] != null &&
-                others.every(
-                  (other) =>
-                    (other as unknown as Record<string, unknown>)[field] == null,
-                ),
-            ) ||
-            // RoboRev review round 4: text is not a plain nullable here —
-            // hydration spells OMITTED text as an empty string plus a
-            // presence marker, so a retained sparse item's "" fails the
-            // field-null check and a page supplying ONLY the missing text
-            // read as contributing nothing. Presence is the real signal:
-            // a page input that provides text no other source provides
-            // is a contribution, and the restored row keeps its page
-            // ownership against a later omitting refresh.
-            (itemTextPresence(source) === "provided" &&
-              others.every(
-                (other) => itemTextPresence(other) !== "provided",
-              ))
+            !pageInputs.has(source) &&
+            pageItemIds.has(source.transcriptKey ?? source.id)
           ) {
-            contributed = true;
+            inherited = true;
           }
         }
+        // RoboRev round 4 (panel M2): the contribution question is the
+        // merge's own answer — replaying the fold without the page's
+        // inputs must lose content the merged item carries, the merge's
+        // field rules deciding (rank-merged status, startedAt and
+        // completedAt, text presence, every spread field). The hand-rolled
+        // field list this replaced missed the rank-promoted status and
+        // the timing fields, so genuinely contributed content could read
+        // as a duplicate and fall out of pageItemIds/itemKeys.
+        const contributed =
+          sources.some((source) => pageInputs.has(source)) &&
+          folds.itemSideContributes(item, (input) => pageInputs.has(input));
         if (!contributed && !inherited) continue;
         for (const id of [item.transcriptKey ?? item.id, item.id]) {
           pageItemIds.add(id);
@@ -1029,29 +1006,6 @@ export function createConversationStore() {
     }
     return recorded;
   }
-
-  // The payload fields a page input can supply a merged item its other
-  // sources lack — the fields mergePageItem folds from either side.
-  const PAGE_CONTRIBUTION_FIELDS = [
-    "text",
-    "toolName",
-    "callId",
-    "argumentsJSON",
-    "description",
-    "eventKind",
-    "steeringKind",
-    "raw",
-    "output",
-    "error",
-    "prevalOnly",
-    "exitCode",
-    "images",
-    "outputImages",
-    "source",
-    "reasoningSummaries",
-    "status",
-    "position",
-  ] as const;
 
   // RoboRev review round 1: follow page ownership through a merge's item
   // folds. Any merged item whose fold sources include page-owned content is

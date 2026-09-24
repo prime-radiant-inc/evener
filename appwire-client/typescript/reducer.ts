@@ -527,11 +527,22 @@ type ToolItemMergeContext = {
   // (the strip's real-source test, duplicate-reconciliation freshness)
   // treat a surviving candidate as a source the call never merged from.
   toolResultFolds: WeakMap<ItemModel, readonly ItemModel[]>;
+  // The absorbed results that supplied tool fields the rewritten call
+  // carries — the fold's own supersession test, recorded where the
+  // absorption happened because the candidates it reads are fold-time
+  // state. A result whose every foldable field a fresh candidate also
+  // supplies left nothing behind and is not a contributor. Retention
+  // consumers read this instead of re-deriving field presence.
+  toolResultContributors: WeakMap<ItemModel, ReadonlySet<ItemModel>>;
 };
 type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
 
 function createToolItemMergeContext(fresh: readonly TurnModel[], older: readonly TurnModel[]): ToolItemMergeContext {
-  const context: ToolItemMergeContext = { provenance: new WeakMap(), toolResultFolds: new WeakMap() };
+  const context: ToolItemMergeContext = {
+    provenance: new WeakMap(),
+    toolResultFolds: new WeakMap(),
+    toolResultContributors: new WeakMap(),
+  };
   const add = (source: ToolItemSource, turns: readonly TurnModel[]): void => {
     for (const turn of turns) {
       for (const item of turn.items) {
@@ -723,6 +734,16 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
             recordToolFoldRewrite(context, rewritten, item);
             const absorbed = [...fresh.results, ...older.results];
             if (absorbed.length > 0) context.toolResultFolds.set(rewritten, absorbed);
+            // The merge's own supersession test names the absorbed results
+            // that supplied tool fields the rewrite carries; a result whose
+            // every foldable field a fresh candidate also supplies left
+            // nothing behind and contributes nothing.
+            const surviving = absorbed.filter(
+              (result) => !fullySupersededToolResult(result, fold),
+            );
+            if (surviving.length > 0) {
+              context.toolResultContributors.set(rewritten, new Set(surviving));
+            }
           }
           items.push(rewritten);
           continue;
@@ -1408,6 +1429,18 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   newerTurnFolds: ReadonlyMap<string, readonly string[]>;
   itemFoldSources: (item: ItemModel) => readonly ItemModel[];
   toolResultFoldSources: (item: ItemModel) => readonly ItemModel[];
+  // Whether the fold's own replay loses content when the inputs `side`
+  // names leave it — the merge's own answer to "did that side contribute",
+  // its field rules deciding (nullish fallbacks, rank-merged status, text
+  // presence, and every spread-merged field), never a consumer's
+  // re-derived list. A side holding none of the item's fold inputs
+  // contributed nothing; a side holding every input contributed
+  // everything; absorbed tool results answer through the fold's own
+  // supersession test, recorded where the absorption happened.
+  itemSideContributes: (
+    item: ItemModel,
+    side: (input: ItemModel) => boolean,
+  ) => boolean;
 }
 
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
@@ -1852,6 +1885,7 @@ function mergeTurnHistoryWithContext(
     newerTurnFolds,
     itemFoldSources: itemFoldSourcesOf(context),
     toolResultFoldSources: toolResultFoldSourcesOf(context),
+    itemSideContributes: itemSideContributesOf(context),
   };
 }
 
@@ -1885,6 +1919,44 @@ function itemFoldSourcesOf(context?: ToolItemMergeContext): (item: ItemModel) =>
 // folds' doc above): only retention consumers read it.
 function toolResultFoldSourcesOf(context?: ToolItemMergeContext): (item: ItemModel) => readonly ItemModel[] {
   return context === undefined ? () => [] : (item) => context.toolResultFolds.get(item) ?? [];
+}
+
+// The item merge's own fold-order replay: the membership's leaves — older
+// side first, then fresh in the order they folded in, exactly the order
+// itemFoldSources reads — reduced through mergePageItem the way the edges
+// combined them.
+function foldItemSpine(leaves: readonly ItemModel[]): ItemModel {
+  return leaves.reduce((accumulated, leaf) => mergePageItem(accumulated, leaf));
+}
+
+// The fold's answer to whether the inputs `side` names contributed content
+// the merged item carries: replay the spine without them and the merge's
+// own selection rules decide what was lost. Every field rule counts —
+// rank-merged status, the ??-fallback fields (startedAt and completedAt
+// included), text presence, and every spread-merged field — because the
+// comparison IS the merge's own output.
+function itemSideContributesOf(
+  context?: ToolItemMergeContext,
+): (item: ItemModel, side: (input: ItemModel) => boolean) => boolean {
+  const sourcesOf = itemFoldSourcesOf(context);
+  return (item, side) => {
+    // Absorbed tool results answer through the fold's own recorded
+    // supersession: a surviving contributor on the asked side means the
+    // rewrite carries tool fields that side supplied.
+    for (const result of context?.toolResultContributors.get(item) ?? []) {
+      if (side(result)) return true;
+    }
+    const leaves = sourcesOf(item);
+    const kept = leaves.filter((leaf) => !side(leaf));
+    if (kept.length === leaves.length) return false;
+    if (kept.length === 0) return true;
+    const full = foldItemSpine(leaves);
+    const without = foldItemSpine(kept);
+    return (
+      !sameModelFields(full, without) ||
+      itemTextPresence(full) !== itemTextPresence(without)
+    );
+  };
 }
 
 // The older-page merge plus its own fragment membership, for callers that

@@ -20711,6 +20711,118 @@ describe("ConversationStore", () => {
       );
     });
 
+    // RoboRev round 4 (panel M2): the contribution set must be the merge's
+    // own answer, not a hand-rolled field list. Status merges by RANK — a
+    // page's completed copy outranks the retained inProgress one while both
+    // sides still carry a status — so the merged item carries the page's
+    // status while the presence check read two non-null statuses as "the
+    // page brought nothing": the claim never reached pageItemIds and an
+    // omitting rehydrate dropped the surviving history.
+    it("counts a page's rank-promoted status as its contribution and keeps the settled row through an omitting rehydrate", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [agentMessageItem("msg-1", "answer", "inProgress")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      expect(rowById(store, "msg-1")).toBeDefined();
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "msg-1",
+                turnId: "tp",
+                type: "agentMessage",
+                text: "answer",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The fold carried the page's rank-promoted status: the live row
+      // settles even though the retained copy said inProgress.
+      const settledRow = rowById(store, "msg-1");
+      expect(settledRow?.kind === "assistant" ? settledRow.streaming : true).toBe(
+        false,
+      );
+      // The rank-promoted status is the page's contribution: it must report
+      // among the page's item keys.
+      expect(loaded.status === "loaded" ? loaded.itemKeys.length : 0).toBeGreaterThan(
+        0,
+      );
+      // And the claim must keep the settled copy as page history: the
+      // snapshot omits it, and an unclaimed row would go with it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, sink);
+      expect(rowById(store, "msg-1")).toBeDefined();
+    });
+
+    // RoboRev round 4 (panel M2): startedAt and completedAt fold by nullish
+    // fallback — the merged item carries the page's copy when the retained
+    // side has none — but the hand-rolled field list never named them, so a
+    // page item supplying nothing else read as contributing nothing and the
+    // load reported no item keys for content the merge actually took.
+    it("counts a page-supplied startedAt as its contribution", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [agentMessageItem("msg-2", "answer", "completed")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "msg-2",
+                turnId: "tp",
+                type: "agentMessage",
+                text: "answer",
+                status: "completed",
+                startedAt: 1758000000000,
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      expect(loaded.status === "loaded" ? loaded.itemKeys.length : 0).toBeGreaterThan(
+        0,
+      );
+    });
+
     // RoboRev review round 3: itemKeys is the reader's no-progress signal —
     // nonempty clears its retry guard — so it must report what THIS page
     // brought, not the page-owned history a prior page already owns. A page
