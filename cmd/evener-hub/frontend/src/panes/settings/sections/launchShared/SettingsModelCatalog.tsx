@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { useConnectionStore } from "../../../../stores/connection";
-import { fetchHost, useCredentialsStore, useHostInstances } from "../../../../stores/credentials";
+import { useCredentialsStore, useHostInstances } from "../../../../stores/credentials";
 import { isLocalHost, LOCAL_HOST } from "../../../../stores/hostRouting";
 import { ModelCatalog, type ModelCatalogProps } from "../../../../widgets/modelCatalog";
 import { fetchModelCatalog, fetchModelCatalogForHost } from "../../../../widgets/modelCatalog/catalogClient";
@@ -31,11 +31,18 @@ export function SettingsModelCatalog({ host = LOCAL_HOST, ...props }: SettingsMo
   // partition (stores/credentials.ts's useHostInstances). Only the selected
   // host's own listing is read - never the controller's for a remote selection.
   const hostInstances = useHostInstances(host);
+  // Only the LOCAL hub's rows are read from here: they ARE the package store's
+  // own rows, and nothing else drives that store. A remote host's listing has
+  // exactly ONE owner, the hook above, which issues the read itself against the
+  // registry's current answer - and withholds a listing that answer no longer
+  // describes. Calling fetchHost here as well read the same listing twice over
+  // the SSH proxy, and the manual read (which waits for no registry read, and
+  // stamps its own revision and request version) then discarded the hook's own
+  // response (stores/credentials.ts's fetchHost and hostRequestVersions).
   useEffect(() => {
     if (!client || connectionState !== "ready") return;
     if (local) void fetch();
-    else void fetchHost(host);
-  }, [client, connectionState, fetch, local, host]);
+  }, [client, connectionState, fetch, local]);
   const instances = local ? controllerInstances : hostInstances.instances;
   // The local hub calls the shared model/list loader unchanged (so the
   // controller's own call, and the tests that spy it, are unaffected); a remote

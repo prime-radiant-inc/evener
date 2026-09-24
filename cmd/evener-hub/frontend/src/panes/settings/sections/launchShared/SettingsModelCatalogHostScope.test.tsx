@@ -85,3 +85,35 @@ test("the local hub issues exactly today's plain model/list and never the proxy"
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
   expect(await screen.findByRole("option", { name: /Local model/ })).toBeTruthy();
 });
+
+// A remote host's instance listing has exactly ONE owner: useHostInstances,
+// which issues the read itself against the registry's current answer (and
+// withholds a listing that answer no longer describes). The component used to
+// ALSO call fetchHost in an else-branch, so a remote render read the same
+// listing TWICE over the SSH proxy - and the manual read, which bypasses the
+// hook's registry gates, waits for no registry read, and stamps its own
+// revision, won the version race and discarded the hook's own response.
+test("a remote host's instance listing is read once, not twice", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", (params) => {
+    const forwardedCall = params as { host: string; method: string };
+    if (forwardedCall.method === "evener/instance/list") {
+      return { instances: [], availableProviders: [] } as never;
+    }
+    if (forwardedCall.method === "model/list") {
+      return { data: [] } as never;
+    }
+    throw new Error(`unexpected forwarded method ${forwardedCall.method}`);
+  });
+
+  render(<SettingsModelCatalog host="beta" value="" onChange={() => {}} />);
+
+  await waitFor(() => expect(forwarded(fake, "evener/instance/list")).toBe(true));
+  const reads = fake.calls.filter(
+    (call) =>
+      call.method === "evener/host/request" && (call.params as { method: string }).method === "evener/instance/list",
+  );
+  expect(reads).toEqual([
+    { method: "evener/host/request", params: { host: "beta", method: "evener/instance/list", params: {} } },
+  ]);
+});
