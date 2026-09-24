@@ -95,6 +95,16 @@ const (
 	hostSettingsUIHostInstance       = "onhost"
 	hostSettingsUIControllerInstance = "controlleronly"
 
+	// The key the controller is seeded with and pushes to the disposable host.
+	// Its instance NAME is hostSettingsUIHostInstance: the push joins a local
+	// store entry against the host's own instances by name, so the controller
+	// entry must share the host's instance name for the host's conditional set to
+	// classify the pushed key "added" rather than skip it as "no matching
+	// instance on the host". The value is a sentinel the check can require back
+	// in the disposable host's own credentials.toml, so a push that reported on
+	// screen without writing (or wrote some other key) fails.
+	hostSettingsUIPushKey = "sk-settings-ui-push-6Qw2Ed9Rt4Yb7Uc1Xz3Nv8Ml"
+
 	hostSettingsUIHostLaunchAgent       = "host-launch-agent-7c1"
 	hostSettingsUIControllerLaunchAgent = "controller-launch-agent-9d2"
 
@@ -369,6 +379,26 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 		t.Fatalf("seed the controller's launch.toml: %v", err)
 	}
 
+	// Seed the CONTROLLER's own credential store with the instance the UI's push
+	// copies to the host. The push's unit is the local credentials-store entry,
+	// keyed by the instance name, and that name is hostSettingsUIHostInstance -
+	// the disposable host's own provider instance - so the host's conditional set
+	// classifies the pushed key "added" rather than skipping it as "no matching
+	// instance on the host"; without a real local entry the run would prove
+	// nothing harder than a skip. It is seeded through the controller's own wire
+	// method (the same evener/auth/apiKey/conditionalSet the push check seeds
+	// with), so the controller writes its own check-owned store
+	// (EVENER_CREDENTIALS_CONFIG above) instead of this test reaching into the
+	// file behind the hub's back.
+	seed, err := clientRequest[appwire.ApiKeyConditionalSetResponse](ctx, client, appwire.MethodEvenerAuthApiKeyConditionalSet,
+		appwire.ApiKeyConditionalSetParams{Provider: hostSettingsUIHostInstance, Value: hostSettingsUIPushKey})
+	if err != nil {
+		t.Fatalf("seed the controller's credential store with %q (the instance the UI's push copies to the host): %v", hostSettingsUIHostInstance, err)
+	}
+	if seed.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("seeding the controller store for %q returned action %q, want %q (the fixture needs the key present locally to push it)", hostSettingsUIHostInstance, seed.Action, appwire.ApiKeyConditionalSetActionAdded)
+	}
+
 	// Start the disposable host hub so the attach below bridges to it instead of
 	// bootstrapping a hub with the host's real environment.
 	host.mustRun(hostHubLaunchScript(hostBin, configPath, hostDir, hostSettingsUIAddr))
@@ -469,6 +499,17 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 		written := host.output("cat " + shellquote.RemoteWord(hostAgentsDocPath))
 		t.Fatalf("the disposable host's AGENTS.md %s on %s holds %q (sha256 %s), want the value written through the UI %q (sha256 %s)", hostAgentsDocPath, host.target, written, gotSum, hostSettingsUIWrittenAgentsDoc, wantSum)
 	}
+	// The credential push's own host-side proof: the report the driver required
+	// proves only what the BROWSER rendered, so this reads the DISPOSABLE host's
+	// own credentials.toml off the host and requires the pushed instance AND the
+	// controller-seeded key. The push's value must have landed in the store the
+	// disposable host hub writes - a report with no write, or a write of a
+	// different key, fails here even though the pane looked correct.
+	hostCreds := hostPushReadCredentials(t, host, credsPath)
+	if got := hostCreds[hostSettingsUIHostInstance]; got != hostSettingsUIPushKey {
+		t.Fatalf("the disposable host store %s on %s holds %q for the pushed instance %q, want the controller-seeded key the UI pushed %q; entries = %+v", credsPath, host.target, got, hostSettingsUIHostInstance, hostSettingsUIPushKey, hostCreds)
+	}
+	t.Logf("the disposable host store %s gained the UI-pushed %q with the controller's own key", credsPath, hostSettingsUIHostInstance)
 	// ...and the controller's own state did not change: the write must not have
 	// landed in THIS hub's config root.
 	controllerAfter, err := os.ReadFile(controllerAgentsDocPath)
@@ -578,7 +619,14 @@ func assertHubServesBuiltSPA(t *testing.T, addr, token string) {
 // the second with hostSettingsUIInRepoAgent in its in-repo layer.
 func settingsUIExpectJSON(projectCwd, inrepoCwd string) []byte {
 	doc := map[string]any{
-		"credentials": map[string]string{"hostText": hostSettingsUIHostInstance, "controllerText": hostSettingsUIControllerInstance},
+		"credentials": map[string]string{
+			"hostText":       hostSettingsUIHostInstance,
+			"controllerText": hostSettingsUIControllerInstance,
+			// The instance the controller was seeded with and the pane's push
+			// button copies to the host: the driver requires the push report to
+			// name it with an action that is not "failed".
+			"pushInstance": hostSettingsUIHostInstance,
+		},
 		"agentsMd": map[string]string{
 			"hostContent":       hostSettingsUIHostAgentsDoc,
 			"controllerContent": hostSettingsUIControllerAgentsDoc,
@@ -683,9 +731,11 @@ mcp_configs = ["` + hostSettingsUIControllerMCPConfig + `"]
 `
 
 // settingsUIControllerProvidersTOML is the controller stack's providers.toml:
-// the fake provider every stack needs plus an instance whose name is unlike the
-// host's, so the credentials pane's "controller value absent" assertion is
-// decisive.
+// the fake provider every stack needs, an instance whose name is unlike the
+// host's (so the credentials pane's "controller value absent" assertion is
+// decisive), and hostSettingsUIHostInstance so the controller's own registry
+// knows the instance the push seeds and copies to the host - the conditional set
+// that seeds the local store only accepts a key for a configured instance.
 func settingsUIControllerProvidersTOML(provider *fakellm.Server) string {
 	return fmt.Sprintf(`
 default = "fake"
@@ -698,7 +748,11 @@ api_key  = "fakellm-not-a-secret"
 [providers.%s]
 base     = "openai-compatible"
 base_url = "http://127.0.0.1:9/v1"
-`, provider.BaseURL(), hostSettingsUIControllerInstance)
+
+[providers.%s]
+base     = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+`, provider.BaseURL(), hostSettingsUIControllerInstance, hostSettingsUIHostInstance)
 }
 
 // TestHostSettingsUIGateSkipsWithoutOptIn pins the gate and the guard's default

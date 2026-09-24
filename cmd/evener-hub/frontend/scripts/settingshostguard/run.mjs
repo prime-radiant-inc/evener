@@ -5,7 +5,8 @@ import { spawn } from "node:child_process";
 // app (the hub's embedded frontend/dist) in real headless Chrome against a real
 // hub's /auth/<token> URL, with a REMOTE host selected, and asserts that each
 // host-scoped settings pane renders THAT HOST's own data - never the
-// controller's - then performs one write through the UI (AGENTS.md Save).
+// controller's - then performs the UI's writes: the host's AGENTS.md via Save,
+// and a credential push from the credentials pane's own button.
 //
 // Like scripts/skillguard/run.mjs, this driver never starts Vite: the hub's
 // embedded production frontend IS the app under test and --url is the hub's own
@@ -145,7 +146,7 @@ function usage() {
     "",
     "Drives the production evener-hub settings UI in headless Chrome against a real",
     "hub URL with a remote host selected, asserting each host-scoped pane renders",
-    "that host's own data and performing one write (AGENTS.md Save) through the UI.",
+    "that host's own data and performing the UI's writes (AGENTS.md Save, and a credential push).",
     "",
     "Options:",
     "  --url URL            the hub's /auth/<token> URL to open first (required)",
@@ -617,8 +618,84 @@ async function runPane(driver, section) {
         { label: `the remote pane to list the host's own instance ${JSON.stringify(expect.credentials.hostText)}` },
       );
       requireHostValue(text, expect.credentials.hostText, expect.credentials.controllerText, "credentials");
-      record.probe = `Host picker (accessible name "Host") -> option value "${driver.host}"; remote section [aria-label="${regionLabel}"]`;
-      record.evidence = { regionText: text };
+      // The push action (component 07c) is the pane's ONE write and this step is
+      // part of the check's CONTRACT, not an optional extra: the run must FAIL
+      // LOUDLY when the button is missing or its report never appears, rather
+      // than quietly skipping, because a skip here would let "the UI can push a
+      // credential to the host" read as proven when nothing was driven. The
+      // button's accessible name is its own text, `Push credentials to <host>`
+      // (CredentialsHostScope.tsx PushCredentials), and the report is the
+      // `role="status"` region `Push report for <host>`; a failure renders
+      // `role="alert"` instead.
+      const pushInstance = expect.credentials.pushInstance;
+      check(
+        typeof pushInstance === "string" && pushInstance.length > 0,
+        "credentials: the fixture must provide {credentials: {pushInstance}} - the controller instance the Go owner seeded and pushed - so the push report can be required to name it",
+      );
+      const pushButton = `Push credentials to ${driver.host}`;
+      const reportLabel = `Push report for ${driver.host}`;
+      const pushFailedText = `Couldn't push credentials to ${driver.host}`;
+      await driver.clickSettingsButton(pushButton);
+      // The wait returns the failure alert as soon as it appears, so a refused
+      // push fails here with the pane's own message instead of a bare timeout.
+      const report = await driver.waitPage(
+        `(() => {
+          const root = document.querySelector("[data-testid='settings-content']");
+          if (root === null) return null;
+          const alert = [...root.querySelectorAll("[role='alert']")].find((el) =>
+            el.textContent.includes(${JSON.stringify(pushFailedText)}));
+          if (alert !== undefined) return { failed: alert.textContent.trim() };
+          const region = root.querySelector("[role='status'][aria-label=" + JSON.stringify(${JSON.stringify(reportLabel)}) + "]");
+          if (region === null) return null;
+          return {
+            text: region.innerText,
+            // instance / action / reason are the <li>'s own <span> children.
+            rows: [...region.querySelectorAll("li")].map((li) => [...li.children].map((c) => c.textContent.trim())),
+          };
+        })()`,
+        {
+          timeoutMs: 120000,
+          label: `push report "${reportLabel}" (the credential push the pane's own button triggers)`,
+        },
+      );
+      check(
+        report.failed === undefined,
+        `credentials: pushing to ${driver.host} reported a failure: ${JSON.stringify(report.failed)}`,
+      );
+      // The failure surface's absence is asserted independently of the wait: an
+      // alert that appeared would still be a failed push even if a report later
+      // replaced it.
+      const alertNow = await evaluate(
+        driver.send,
+        `(() => {
+          const root = document.querySelector("[data-testid='settings-content']");
+          if (root === null) return null;
+          const alert = [...root.querySelectorAll("[role='alert']")].find((el) =>
+            el.textContent.includes(${JSON.stringify(pushFailedText)}));
+          return alert === undefined ? null : alert.textContent.trim();
+        })()`,
+      );
+      check(
+        !alertNow,
+        `credentials: the push failure alert was present after a report appeared: ${JSON.stringify(alertNow)}`,
+      );
+      // The report must NAME the seeded instance with a non-failure action. Any
+      // other action - "skipped", or one a newer host introduced that this build
+      // shows verbatim - fails the run and prints what it saw, because the
+      // check's criterion is a credential actually pushed to the host.
+      const row = (report.rows ?? []).find((cells) => cells[0] === pushInstance);
+      check(
+        row !== undefined,
+        `credentials: the push report for ${driver.host} did not name the seeded instance ${JSON.stringify(pushInstance)}; report said:\n${report.text}`,
+      );
+      const action = row[1];
+      check(
+        action === "added" || action === "updated",
+        `credentials: the push report for ${driver.host} gave ${JSON.stringify(pushInstance)} action ${JSON.stringify(action)} (reason ${JSON.stringify(row[2] ?? "")}), want "added" or "updated"; report said:\n${report.text}`,
+      );
+      await driver.screenshot("credentials-push-report");
+      record.probe = `Host picker (accessible name "Host") -> option value "${driver.host}"; remote section [aria-label="${regionLabel}"]; then button "${pushButton}" and its [role="status"][aria-label="${reportLabel}"] report`;
+      record.evidence = { regionText: text, pushReport: { label: reportLabel, text: report.text, rows: report.rows } };
       record.ok = true;
       return record;
     }
@@ -706,7 +783,9 @@ async function runPane(driver, section) {
       await driver.openPane(section);
       const preview = await driver.waitPage(
         `(() => { const el = document.querySelector("[data-testid='settings-content']"); if (el === null) return null; return el.innerText.includes(${JSON.stringify(c.hostAgent)}) ? el.innerText : null; })()`,
-        { label: `the in-repo pane to show the file that exists only on the selected host (${JSON.stringify(c.hostAgent)})` },
+        {
+          label: `the in-repo pane to show the file that exists only on the selected host (${JSON.stringify(c.hostAgent)})`,
+        },
       );
       await driver.clickSettingsButton("Trust this file");
       const trusted = await driver.waitPage(
@@ -742,7 +821,9 @@ async function runPane(driver, section) {
       await driver.openPane(section, { cwd: c.cwd });
       const value = await driver.waitPage(
         `(() => { const el = ${labeledInputExpr("Agent")}; return el === null ? null : (el.value.includes(${JSON.stringify(c.hostAgent)}) ? el.value : null); })()`,
-        { label: `the project pane to render the value seeded only on the selected host (${JSON.stringify(c.hostAgent)})` },
+        {
+          label: `the project pane to render the value seeded only on the selected host (${JSON.stringify(c.hostAgent)})`,
+        },
       );
       const text = await driver.settingsTextWithValues();
       check(
@@ -937,7 +1018,7 @@ async function main() {
     await runPanes(driver);
     const result = writeResult(driver);
     console.log(
-      `settingshostguard ok: ${result.panes.length} host-scoped panes rendered the selected host's data; write landed via AGENTS.md Save (artifacts at ${artifactDir})`,
+      `settingshostguard ok: ${result.panes.length} host-scoped panes rendered the selected host's data; writes landed via AGENTS.md Save and the credentials push (artifacts at ${artifactDir})`,
     );
   } catch (error) {
     console.error(`settingshostguard FAIL: ${error instanceof Error ? error.message : String(error)}`);

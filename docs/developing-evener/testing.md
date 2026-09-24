@@ -406,7 +406,8 @@ PRODUCTION hub web app (the hub's embedded `frontend/dist`) is driven in real
 Chrome with a real remote host selected, each host-scoped settings pane
 (`credentials`, `agents-md`, `launch-evener`, `inrepo`, `project`,
 `plugins-manager`, `plugins`, `skills`, `mcp`) must render THAT HOST's own data,
-and one write goes through the UI (the host's `AGENTS.md`, via Save).
+and the UI's writes go through: the host's `AGENTS.md` via Save, and a credential
+push from the `credentials` pane's own button.
 
 Eight of the nine are held to a value seeded only on the host: the pane must
 render the HOST's value and must not render this hub's. `credentials`,
@@ -418,6 +419,23 @@ read AND exercises a host-side write. `plugins-manager` asserts structure — th
 pane rendered, with no load error, carrying the selected host — because its
 catalog is a set of marketplaces CLONED under the host rather than a file, so a
 file seed cannot produce a listing. That is the honest limit of this check.
+
+The `credentials` pane also carries the credential-push action, and the check
+drives it end to end. The controller's own store is seeded first, through the
+controller's wire `evener/auth/apiKey/conditionalSet`, with an instance whose
+name matches one of the disposable host's own provider instances — so the host's
+locked conditional set classifies the pushed key `added` rather than skipping it
+as "no matching instance on the host". The driver then presses **Push
+credentials to <host>**, waits for the `Push report for <host>` region, and
+requires it to name the seeded instance with action `added` (anything but
+`added`/`updated` — including a `failed` row, a skip, or an unrecognized value —
+fails the run and prints what it saw), and requires the failure alert to be
+absent. Because a report the browser rendered is not proof that a write landed,
+the load-bearing assertion is the Go owner's: it reads the DISPOSABLE host's own
+`credentials.toml` back off the host afterwards and requires the pushed instance
+AND the controller-seeded key. The driver's push step is part of the check's
+contract, not an optional extra: a missing button or a report that never appears
+fails the run rather than skipping quietly.
 
 **This gate writes to the host and drives a browser**, so it is its own opt-in:
 a developer signed up for the push or deploy checks is not signed up for a UI
@@ -437,8 +455,9 @@ It removes the directory when it finishes, and it never writes the host's real
 `~/.config/evener/credentials.toml` or real install (`~/.local/bin/evener`):
 both are hashed before and after, and the check fails if either appeared or
 changed. Afterwards it reads the disposable `AGENTS.md` back off the host and
-requires the UI-written value, and requires the controller's own `AGENTS.md` to
-be unchanged.
+requires the UI-written value, reads the disposable `credentials.toml` back and
+requires the instance and key the pane's push wrote, and requires the
+controller's own `AGENTS.md` to be unchanged.
 
 Build prerequisite: the hub **embeds** `frontend/dist`, so the check builds the
 frontend and then the controller hub from the tree under test, in that order.
