@@ -2345,6 +2345,34 @@ describe("project row", () => {
     expect(screen.getByText("3")).toBeTruthy();
   });
 
+  // railNodes mints a fresh node when the canonical flip happens with the
+  // copy's own id unchanged (a host-order change moved the first copy), so
+  // the memo comparator must read the fields ProjectRow reads or the
+  // memoized row keeps rendering the stale rollup.
+  test("a canonical flip re-renders the memoized row, moving the rollup with it", () => {
+    const project = apiProject({ rollup_state: "warning", rollup_attn: 3 });
+    const before = {
+      ...projectRailNode(project),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+    } as ProjectRailNode;
+    const after = {
+      ...projectRailNode(project),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    } as ProjectRailNode;
+    // Stable info/actions identities, the way Rail's Tree hands them down:
+    // the node is the only thing that changed, so the memo decision rides
+    // the node comparator alone.
+    const rowInfo = info();
+    const acts = actions();
+    const { rerender } = render(<RailRow node={before} info={rowInfo} actions={acts} />);
+    expect(screen.queryByText("3")).toBeNull();
+    rerender(<RailRow node={after} info={rowInfo} actions={acts} />);
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
   test("menu offers 'Archive project' for an active project and calls onToggleArchiveProject", async () => {
     const acts = actions();
     const project = apiProject({ is_archived: false });

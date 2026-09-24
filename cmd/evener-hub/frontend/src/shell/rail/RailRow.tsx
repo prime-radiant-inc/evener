@@ -1119,6 +1119,8 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
   // boundary.
   return (
     previous.node.id === next.node.id &&
+    previous.node.spawnHost === next.node.spawnHost &&
+    previous.node.canonicalCopy === next.node.canonicalCopy &&
     previous.node.displayName === next.node.displayName &&
     previous.node.resourceError === next.node.resourceError &&
     previous.node.retry === next.node.retry &&
