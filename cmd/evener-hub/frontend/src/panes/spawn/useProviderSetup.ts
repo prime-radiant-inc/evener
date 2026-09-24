@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useConnectionStore } from "../../stores/connection";
-import { credentialsStore, fetchHost, useCredentialsStore, useHostInstances } from "../../stores/credentials";
+import { credentialsStore, retryHostRead, useCredentialsStore, useHostInstances } from "../../stores/credentials";
 import { hostRequest, isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
 
 /** Credential configuration is read from the hub, never a browser first-run flag.
@@ -18,13 +18,18 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
   const targetIsLocal = isLocalHost(host);
   const { instances, loading, error, writesRefused } = targetIsLocal ? localState : hostState;
   const load = useCallback(() => {
-    // The controller's own listing is the package store's read; a remote host's
-    // is its own partition, read through evener/host/request.
-    return targetIsLocal ? credentialsStore.getState().fetch() : fetchHost(host);
-  }, [targetIsLocal, host]);
+    // The controller's own listing is the package store's read.
+    return credentialsStore.getState().fetch();
+  }, []);
   // The retry path carries the same host, never a silent fallback to the
-  // controller's instances.
-  const retry = useCallback(() => load(), [load]);
+  // controller's instances. A remote host's read is owned by useHostInstances,
+  // so its retry asks the store for whatever that needs - the registry first
+  // when the registry's own read is what failed.
+  const retry = useCallback(() => {
+    if (targetIsLocal) return credentialsStore.getState().fetch();
+    retryHostRead(host);
+    return Promise.resolve();
+  }, [targetIsLocal, host]);
   const [checkedClient, setCheckedClient] = useState<typeof client>(null);
   const [keyless, setKeyless] = useState<{ instances: typeof instances; status: "ready" | "missing" | "error" } | null>(
     null,
@@ -34,7 +39,12 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
     let cancelled = false;
     setCheckedClient(null);
     if (client && connection === "ready") {
-      void load()
+      // A remote host's listing is read by useHostInstances (the one place that
+      // knows the registry revision); the controller's own listing is still read
+      // here. `checkedClient` marks the same moment either way - the effect
+      // registered by useHostInstances above has already started that read.
+      const attempted = targetIsLocal ? load() : Promise.resolve();
+      void attempted
         .finally(() => {
           if (!cancelled) setCheckedClient(client);
         })
@@ -43,7 +53,7 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
     return () => {
       cancelled = true;
     };
-  }, [client, connection, load]);
+  }, [client, connection, load, targetIsLocal]);
 
   const configured = instances.some(
     (instance) =>
