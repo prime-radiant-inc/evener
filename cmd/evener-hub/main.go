@@ -223,15 +223,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer release()
 
-	pprofURL, stopPprof, err := cmdutil.StartLivePprof()
+	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
+		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
+	})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 	defer stopPprof()
-	if pprofURL != "" {
-		_, _ = fmt.Fprintf(stderr, "[hub] pprof listening on %s\n", pprofURL)
-	}
 
 	var appwireTrace *appserver.WebSocketTrace
 	if opts.appwireTrace != "" {

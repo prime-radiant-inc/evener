@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -80,5 +81,32 @@ func TestRunMainStartsNoPprofWhenUnset(t *testing.T) {
 	}
 	if m := hubPprofLogLine.FindStringSubmatch(stderr.String()); m != nil {
 		t.Fatalf("hub started pprof on %s with %s unset", m[1], envvars.EVENERPprofAddr.Name)
+	}
+}
+
+// TestRunMainStartsWithoutPprofWhenItsAddressIsTaken pins that a pprof bind
+// failure is a warning: the hub still serves, just without pprof.
+func TestRunMainStartsWithoutPprofWhenItsAddressIsTaken(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = taken.Close() }()
+	t.Setenv(envvars.EVENERPprofAddr.Name, taken.Addr().String())
+	served := false
+	deps.serve = func(context.Context, hubHTTPServer) error {
+		served = true
+		return nil
+	}
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain with a taken pprof address: %v, stderr=%s", err, stderr.String())
+	}
+	if !served {
+		t.Fatalf("hub never reached serve:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "[hub] warning: running without pprof") {
+		t.Fatalf("hub did not warn that pprof is off:\n%s", stderr.String())
 	}
 }

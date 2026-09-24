@@ -198,7 +198,7 @@ type serveDeps struct {
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
-	startLivePprof   func() (indexURL string, stop func(), err error)
+	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
 	register         func(*rvreg.Registration, string, rendezvous.Entry) error
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
@@ -489,14 +489,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		defer stop()
 	}
-	pprofURL, stopPprof, pprofErr := deps.startLivePprof()
+	_, stopPprof, pprofErr := deps.startLivePprof(func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	})
 	if pprofErr != nil {
 		return pprofErr
 	}
 	defer stopPprof()
-	if pprofURL != "" {
-		fmt.Fprintf(os.Stderr, "pprof listening on %s\n", pprofURL)
-	}
 
 	// Resolve working directory.
 	wd := *workDir

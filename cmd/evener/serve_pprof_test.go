@@ -18,8 +18,8 @@ func TestServeKeepsLivePprofUpWhileServing(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
 
 	var pprofURL string
-	deps.startLivePprof = func() (string, func(), error) {
-		addr, stop, err := cmdutil.StartLivePprof()
+	deps.startLivePprof = func(logf func(string, ...any)) (string, func(), error) {
+		addr, stop, err := cmdutil.StartLivePprof(logf)
 		pprofURL = addr
 		return addr, stop, err
 	}

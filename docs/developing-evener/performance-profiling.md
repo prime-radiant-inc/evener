@@ -51,8 +51,10 @@ Port `0` picks a free port, and the process logs the one it bound: the hub
 to its stderr, each `evener serve` daemon to its stderr (for hub-spawned
 daemons, that is the session's log under `<run_dir>/logs/`). Local daemons
 the hub spawns inherit the hub's environment, so setting the variable on the
-hub enables it for every daemon it launches. Use port `0` there: a fixed port
-would be taken by the hub and every daemon would fail to start. To profile
+hub enables it for every daemon it launches. Use port `0` there: with a fixed
+port the hub takes it, and each daemon logs a warning and runs without pprof.
+Failing to bind never stops a process from starting; only a malformed or
+non-loopback address does. To profile
 daemons without the hub, set the variable in a launch configuration's `[env]`
 table instead (see [Launch configuration](../evener-hub.md#launch-configuration)).
 
