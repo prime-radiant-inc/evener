@@ -406,14 +406,19 @@ func (f *quiescentDescendantFixture) requireResident(threadID string, want bool)
 }
 
 func turnsContainText(turns []appwire.Turn, text string) bool {
+	return countItemsWithText(turns, text) > 0
+}
+
+func countItemsWithText(turns []appwire.Turn, text string) int {
+	count := 0
 	for _, turn := range turns {
 		for _, item := range turn.Items {
 			if item.Text == text {
-				return true
+				count++
 			}
 		}
 	}
-	return false
+	return count
 }
 
 func TestQuiescentDescendantTurnsKeepOnlyTheMostRecentlyUsed(t *testing.T) {
@@ -487,15 +492,7 @@ func TestEvictedDescendantResumeRebuildsTheTranscriptAsEvicted(t *testing.T) {
 	if !turnsContainText(turns, "persisted child") || !turnsContainText(turns, "later three") {
 		t.Fatalf("resumed turns = %+v, want the history persisted before eviction", turns)
 	}
-	count := 0
-	for _, turn := range turns {
-		for _, item := range turn.Items {
-			if item.Text == "resumed" {
-				count++
-			}
-		}
-	}
-	if count != 1 {
+	if count := countItemsWithText(turns, "resumed"); count != 1 {
 		t.Fatalf("resumed input appears %d times, want once: %+v", count, turns)
 	}
 	resumed := findItemByText(t, turns, "resumed")
@@ -506,17 +503,64 @@ func TestEvictedDescendantResumeRebuildsTheTranscriptAsEvicted(t *testing.T) {
 }
 
 // Eviction discards the only in-memory copy, so a descendant whose transcript
-// cannot be found stays resident.
+// cannot be found when it settles stays resident.
 func TestQuiescentDescendantWithoutTranscriptFileIsNeverEvicted(t *testing.T) {
 	f := newQuiescentDescendantFixture(t)
-	f.finishedDescendant("child")
+	f.persist("child", "persisted child")
+	f.startTurn("child", "live child")
 	if err := os.Remove(f.transcriptPath("child")); err != nil {
 		t.Fatal(err)
 	}
+	f.finish("child")
 
 	evictQuiescentDescendantsForTest(f.srv, 0)
 
 	f.requireResident("child", true)
+}
+
+// A resuming delegate persists its input before the event announcing it
+// arrives. An eviction pass that runs in that window, from any other commit,
+// must not fold the input into the prefix the rebuild projects: the input
+// would then arrive a second time, live.
+func TestDescendantEvictedBetweenPersistAndEmitShowsTheResumeOnce(t *testing.T) {
+	f := newQuiescentDescendantFixture(t)
+	f.finishedDescendant("child")
+	f.persist("child", "resumed")
+	evictQuiescentDescendantsForTest(f.srv, 0)
+	f.requireResident("child", false)
+
+	f.startTurn("child", "resumed")
+
+	if count := countItemsWithText(f.srv.appAllTurns("child"), "resumed"); count != 1 {
+		t.Fatalf("resumed input appears %d times, want once: %+v", count, f.srv.appAllTurns("child"))
+	}
+}
+
+// An event for an evicted descendant whose transcript cannot be read installs
+// an empty snapshot, since the event must land somewhere. That snapshot is
+// evicted as soon as the descendant settles, whatever the resident budget, so
+// the next read rebuilds the history the failed rebuild left out.
+func TestDescendantWhoseRebuildFailedRecoversItsHistoryAfterSettling(t *testing.T) {
+	f := newQuiescentDescendantFixture(t)
+	f.finishedDescendant("child")
+	evictQuiescentDescendantsForTest(f.srv, 0)
+	path := f.transcriptPath("child")
+	if err := os.Rename(path, path+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	f.startTurn("child", "resumed")
+	if err := os.Rename(path+".aside", path); err != nil {
+		t.Fatal(err)
+	}
+	f.finish("child")
+
+	read, err := readDescendantTurns(f.srv, "child", appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatalf("read child: %v", err)
+	}
+	if !turnsContainText(read.Thread.Turns, "persisted child") {
+		t.Fatalf("child turns = %+v, want the history the failed rebuild left out", read.Thread.Turns)
+	}
 }
 
 // Items the live snapshot streamed but the transcript never persisted leave

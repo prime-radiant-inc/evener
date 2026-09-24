@@ -695,6 +695,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 	if threadID == "" || ownerThreadID == "" || threadID == ownerThreadID {
 		return
 	}
+	prepared := s.prepareDescendantTurns(ownerThreadID, threadID)
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		if s.appThreadID != ownerThreadID {
@@ -731,7 +732,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		// restore point forward (ledger #110/#111). An evicted descendant is
 		// rebuilt the same way.
 		if projection.turns == nil {
-			s.installDescendantTurnsLocked(threadID, projection)
+			s.installDescendantTurnsLocked(threadID, projection, prepared)
 		}
 		projected := projection.projector.Project(event)
 		projection.activeTurnID = projection.projector.ActiveTurnID()
@@ -798,6 +799,11 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				pending[i].ref = appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: pending[i].threadID}.String()
 			}
 		}
+		settledPath := ""
+		settled := projection.quiescent()
+		if settled {
+			settledPath = s.descendantTranscriptPathLocked(threadID)
+		}
 		s.mu.Unlock()
 
 		committed := make([]appserver.SequencedNotification, 0, len(pending))
@@ -818,12 +824,12 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			}
 			committed = append(committed, record)
 		}
-		s.mu.Lock()
-		if projection.quiescent() {
-			s.touchDescendantLocked(projection)
-			s.evictQuiescentDescendantsLocked(appResidentQuiescentDescendants)
+		if settled {
+			settledBytes := transcriptSize(settledPath)
+			s.mu.Lock()
+			s.settleDescendantLocked(projection, settledBytes)
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 		return committed
 	})
 }

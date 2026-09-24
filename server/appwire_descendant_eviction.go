@@ -20,10 +20,11 @@ const appResidentQuiescentDescendants = 16
 
 // appTurnsEviction is what rebuilding an evicted descendant snapshot needs.
 type appTurnsEviction struct {
-	// transcriptBytes is the transcript's length at eviction. The snapshot then
-	// held exactly what that prefix persisted, and a session persists before it
-	// emits, so anything past it arrives again as live events after the
-	// rebuild. Rebuilding from the whole file would show those twice.
+	// transcriptBytes is the transcript's length when the evicted snapshot last
+	// settled (settleDescendantLocked). The snapshot then held exactly what that
+	// prefix persisted, and a session persists before it emits, so anything
+	// past it arrives again as live events after the rebuild. Rebuilding from
+	// the whole file would show those twice.
 	transcriptBytes int64
 	// nextEntry is the evicted snapshot's next live entry. A rebuilt snapshot
 	// allocates no entry below it, so items streamed after a resume order after
@@ -58,99 +59,155 @@ func (s *Server) descendantTranscriptPathLocked(threadID string) string {
 	return strings.TrimSpace(s.appDescendantTranscriptPathFunc(threadID))
 }
 
+// transcriptSize is the length of the transcript at path, or zero when there
+// is none to rebuild from.
+func transcriptSize(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// settleDescendantLocked records that a descendant's own event left it
+// quiescent, with transcriptBytes its transcript's length sampled in that
+// event's commit, then runs an eviction pass. A snapshot whose rebuild failed
+// is evicted outright, so the next read rebuilds the history it lacks.
+//
+// The length must come from the descendant's own commit. A session persists
+// before it emits, and it emits synchronously, so while its event is being
+// committed it can append nothing: the length is exactly what the snapshot has
+// applied. Sampled anywhere else, it can include an entry the session has
+// persisted but not yet emitted, which the rebuild would project and the event
+// would then deliver again.
+func (s *Server) settleDescendantLocked(projection *appDescendantProjection, transcriptBytes int64) {
+	projection.eviction.transcriptBytes = transcriptBytes
+	s.touchDescendantLocked(projection)
+	if projection.rebuildFailed && projection.readers == 0 && transcriptBytes > 0 {
+		evictDescendantTurnsLocked(projection)
+	}
+	s.evictQuiescentDescendantsLocked(appResidentQuiescentDescendants)
+}
+
+// evictDescendantTurnsLocked drops a resident descendant's turn snapshot,
+// recording the entry its rebuild must continue from.
+func evictDescendantTurnsLocked(projection *appDescendantProjection) {
+	projection.turns.mu.Lock()
+	projection.eviction.nextEntry = projection.turns.nextLiveEntry
+	projection.turns.mu.Unlock()
+	projection.turns = nil
+}
+
 // evictQuiescentDescendantsLocked drops the turn snapshots of all but the keep
 // most recently used quiescent descendants. It never evicts a descendant with
-// a turn in flight, one a read has pinned, or one with no transcript to rebuild
-// from.
+// a turn in flight, one a read has pinned, or one with no settled transcript
+// to rebuild from.
 //
 // Callers hold s.mu inside a projection commit: a commit captures snapshot
 // pointers under s.mu and applies to them after releasing it, so an eviction
 // outside the gate could strand an apply on a snapshot nobody reads.
 func (s *Server) evictQuiescentDescendantsLocked(keep int) {
-	type candidate struct {
-		threadID   string
-		projection *appDescendantProjection
-	}
-	var resident []candidate
-	for threadID, projection := range s.appDescendants {
+	var resident []*appDescendantProjection
+	for _, projection := range s.appDescendants {
 		if projection.turns != nil && projection.quiescent() {
-			resident = append(resident, candidate{threadID: threadID, projection: projection})
+			resident = append(resident, projection)
 		}
 	}
 	if len(resident) <= keep {
 		return
 	}
-	sort.Slice(resident, func(i, j int) bool { return resident[i].projection.lastUsed < resident[j].projection.lastUsed })
+	sort.Slice(resident, func(i, j int) bool { return resident[i].lastUsed < resident[j].lastUsed })
 	// A pinned descendant still counts against keep; the next evictable one
 	// goes in its place.
 	excess := len(resident) - keep
-	for _, c := range resident {
+	for _, projection := range resident {
 		if excess == 0 {
 			return
 		}
-		if c.projection.readers > 0 {
-			continue
-		}
-		path := s.descendantTranscriptPathLocked(c.threadID)
-		if path == "" {
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil {
+		if projection.readers > 0 || projection.eviction.transcriptBytes == 0 {
 			continue
 		}
 		excess--
-		c.projection.turns.mu.Lock()
-		c.projection.eviction = appTurnsEviction{transcriptBytes: info.Size(), nextEntry: c.projection.turns.nextLiveEntry}
-		c.projection.turns.mu.Unlock()
-		c.projection.turns = nil
+		evictDescendantTurnsLocked(projection)
 	}
 }
 
-// rebuiltDescendantTurns is a descendant snapshot rebuilt from its transcript,
-// and the persisted turn count its projector must be fenced above.
+// rebuiltDescendantTurns is a descendant snapshot rebuilt from its transcript
+// for eviction, and the persisted turn count its projector must be fenced
+// above; or the error that kept it from being rebuilt.
 type rebuiltDescendantTurns struct {
+	eviction         appTurnsEviction
 	snapshot         *appTurnSnapshot
 	persistedEntries int
+	err              error
 }
 
 // rebuildDescendantTurns projects a descendant's transcript into a new
 // snapshot: the prefix the evicted snapshot held, or the whole file for a
-// descendant never seen before (a zero eviction). It reads the file, so it
-// never runs under the subscription cut.
+// descendant never seen before (a zero eviction). It returns nil when there is
+// no transcript to rebuild from. It reads the file, so callers run it outside
+// the projection gate but for installDescendantTurnsLocked's rare fallback.
 //
 // The rebuilt snapshot cannot reproduce the live one it replaces: live-only
 // items (prompt_loaded, round_timings) are never persisted, so the same
 // position names a different item after a rebuild. A new snapshot mints a new
 // cursor incarnation, so a cursor from before the eviction fails as stale and
 // the client re-reads rather than paging the wrong items.
-func rebuildDescendantTurns(threadID, path string, eviction appTurnsEviction) (rebuiltDescendantTurns, error) {
+func rebuildDescendantTurns(threadID, path string, eviction appTurnsEviction) *rebuiltDescendantTurns {
+	if path == "" {
+		return nil
+	}
 	persisted, err := appTurnProjectionFromTranscriptPrefix(path, eviction.transcriptBytes)
 	if err != nil {
-		return rebuiltDescendantTurns{}, err
+		return &rebuiltDescendantTurns{eviction: eviction, err: err}
 	}
 	snapshot := &appTurnSnapshot{threadID: threadID}
 	snapshot.Seed(appTurnSeed{Turns: persisted.turns, NextEntry: max(persisted.nextEntry, eviction.nextEntry)})
-	return rebuiltDescendantTurns{snapshot: snapshot, persistedEntries: persisted.persistedEntries}, nil
+	return &rebuiltDescendantTurns{eviction: eviction, snapshot: snapshot, persistedEntries: persisted.persistedEntries}
 }
 
-// adoptLocked installs the rebuilt snapshot and fences the projector above the
-// transcript's persisted turn ids, so a live turn cannot reuse one.
-func (r rebuiltDescendantTurns) adoptLocked(projection *appDescendantProjection) {
-	projection.turns = r.snapshot
-	projection.projector.SeedPersistedTurns(r.persistedEntries)
+// prepareDescendantTurns rebuilds, outside the projection gate, the snapshot
+// the commit of an event for threadID will need: when the descendant of
+// ownerThreadID is new or evicted. It returns nil when there is nothing to
+// rebuild.
+func (s *Server) prepareDescendantTurns(ownerThreadID, threadID string) *rebuiltDescendantTurns {
+	s.mu.RLock()
+	projection := s.appDescendants[threadID]
+	if s.appThreadID != ownerThreadID || (projection != nil && projection.turns != nil) {
+		s.mu.RUnlock()
+		return nil
+	}
+	var eviction appTurnsEviction
+	if projection != nil {
+		eviction = projection.eviction
+	}
+	path := s.descendantTranscriptPathLocked(threadID)
+	s.mu.RUnlock()
+	return rebuildDescendantTurns(threadID, path, eviction)
 }
 
 // installDescendantTurnsLocked gives a descendant with no resident snapshot one
-// seeded from its transcript: on its first observation, and when an event
-// arrives for an evicted descendant. With nothing to rebuild from it starts
-// empty.
-func (s *Server) installDescendantTurnsLocked(threadID string, projection *appDescendantProjection) {
-	if path := s.descendantTranscriptPathLocked(threadID); path != "" {
-		if rebuilt, err := rebuildDescendantTurns(threadID, path, projection.eviction); err == nil {
-			rebuilt.adoptLocked(projection)
-			return
-		}
+// seeded from its transcript: on its first observation, and when an event or a
+// read arrives for an evicted descendant. It adopts rebuilt when that was
+// rebuilt for the current eviction. When the descendant was installed and
+// evicted again since, which takes a racing read or event, it rebuilds here,
+// under the gate, rather than install a prefix that may miss what the snapshot
+// applied in between. With nothing to rebuild from it starts empty; when the
+// rebuild fails it starts empty and marked so it is evicted as it settles.
+func (s *Server) installDescendantTurnsLocked(threadID string, projection *appDescendantProjection, rebuilt *rebuiltDescendantTurns) {
+	if rebuilt == nil || rebuilt.eviction != projection.eviction {
+		rebuilt = rebuildDescendantTurns(threadID, s.descendantTranscriptPathLocked(threadID), projection.eviction)
+	}
+	projection.rebuildFailed = rebuilt != nil && rebuilt.err != nil
+	if rebuilt != nil && rebuilt.err == nil {
+		// Fence the projector above the transcript's persisted turn ids, so a
+		// live turn cannot reuse one.
+		projection.turns = rebuilt.snapshot
+		projection.projector.SeedPersistedTurns(rebuilt.persistedEntries)
+		return
 	}
 	projection.turns = &appTurnSnapshot{threadID: threadID, nextLiveEntry: projection.eviction.nextEntry}
 }
@@ -180,17 +237,17 @@ func (s *Server) pinDescendantTurns(threadID string) (release func(), err error)
 	if !evicted {
 		return release, nil
 	}
-	rebuilt, err := rebuildDescendantTurns(threadID, path, eviction)
-	if err != nil {
+	rebuilt := rebuildDescendantTurns(threadID, path, eviction)
+	if rebuilt != nil && rebuilt.err != nil {
 		release()
-		return func() {}, err
+		return func() {}, rebuilt.err
 	}
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		// A resume may have rebuilt it first, and applied events since.
 		if projection.turns == nil {
-			rebuilt.adoptLocked(projection)
+			s.installDescendantTurnsLocked(threadID, projection, rebuilt)
 		}
 		s.evictQuiescentDescendantsLocked(appResidentQuiescentDescendants)
 		return nil

@@ -322,8 +322,14 @@ type appDescendantProjection struct {
 	turns        *appTurnSnapshot
 	thread       appwire.Thread
 	activeTurnID string
-	// eviction records what a rebuild of the evicted snapshot needs.
+	// eviction records what a rebuild of the evicted snapshot needs. While the
+	// snapshot is resident its transcriptBytes tracks the last settle, and a
+	// zero length keeps the descendant resident.
 	eviction appTurnsEviction
+	// rebuildFailed marks a snapshot installed empty because its transcript
+	// could not be projected. It is evicted as soon as it settles, so a read
+	// rebuilds the history it lacks.
+	rebuildFailed bool
 	// lastUsed orders eviction: the least recently read or settled descendant
 	// goes first.
 	lastUsed uint64
