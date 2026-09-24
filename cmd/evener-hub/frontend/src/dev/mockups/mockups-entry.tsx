@@ -246,6 +246,7 @@ function emptySnapshotMetadata(key: ResourceKey): unknown {
         offset: key.offset,
         limit: key.limit,
         remaining: 0,
+        truncated: false,
       };
     case "location":
       return { generation_id: GENERATION, revision: 1, ref: key.ref, top_level_ref: key.ref, top_level: true };
