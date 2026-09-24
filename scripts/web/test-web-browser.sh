@@ -18,6 +18,9 @@ dir=""
 guards=(layoutguard overflowguard shellguard spawnguard transcriptscrollguard retirementguard skillguard)
 guard_pids=()
 status=0; complete=0
+# A signal that lands while a guard is being started is held until its pid is
+# recorded (see start_guard), so stop_guards can never miss a live guard.
+defer_signals=0; pending_signal=0
 
 # owned_guard_running PID — whether PID is still one of this shell's running
 # jobs. Bash 3.2 (macOS) has no `wait -n`, so completion is found by asking
@@ -56,7 +59,10 @@ finish_browser() {
 	trap - 0; exit "$finish_status"
 }
 
-interrupted_browser() { stop_guards; exit "$1"; }
+interrupted_browser() {
+	if [ "$defer_signals" -eq 1 ]; then pending_signal=$1; return; fi
+	stop_guards; exit "$1"
+}
 
 # The trap is armed before any scratch exists: a crash between mint and arming
 # would leak the directory (the trap-before-mkdir ordering the audit enforces).
@@ -93,6 +99,7 @@ start_guard() {
 	local index=$1 guard=${guards[$1]} guard_dir="$dir/${guards[$1]}"
 	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" "$guard_dir/vite-cache" || exit 1
 	export BROWSER_GUARD_VITE_CACHE_DIR="$guard_dir/vite-cache"
+	defer_signals=1
 	case "$guard" in
 	retirementguard)
 		# retirementguard's contract is `npm run retirementguard`: it invokes the
@@ -125,6 +132,8 @@ start_guard() {
 		;;
 	esac
 	guard_pids[$index]=$!
+	defer_signals=0
+	[ "$pending_signal" -eq 0 ] || interrupted_browser "$pending_signal"
 }
 
 # The guards are independent (each has its own Chrome profile, ephemeral
