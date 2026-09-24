@@ -46,3 +46,14 @@ test("the props type requires onSelect whenever the listing is not read-only", (
   // @ts-expect-error a listing that is not readOnly must be given onSelect
   render(<ProviderInstanceGroups instances={[]} availableProviders={[]} />);
 });
+
+// L3 (roborev round 6): the interactive variant ACCEPTED onHostSignIn and
+// ignored it, so a caller could wire a prop that renders nothing and the type
+// said it was welcome. The prop belongs to the read-only variant alone (a
+// non-read-only listing is THIS hub's own, which has no host to sign in on);
+// the type rejects it there now, and this compile-time assertion (checked by
+// tsc, exactly like this file's own onSelect assertion above) is what pins it.
+test("the props type rejects onHostSignIn on the interactive variant", () => {
+  // @ts-expect-error onHostSignIn belongs to the read-only variant only
+  render(<ProviderInstanceGroups instances={[]} availableProviders={[]} onSelect={() => {}} onHostSignIn={() => {}} />);
+});

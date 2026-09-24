@@ -527,6 +527,9 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
   // can be completed on another device.
   expect(await screen.findByText("REMOTE-CODE")).toBeTruthy();
   expect(screen.getByText("https://verify.example/codex")).toBeTruthy();
+  // The dialog names the instance AND the host: several Codex-capable
+  // instances on one host must not be confusable by the code on screen.
+  expect(screen.getByRole("dialog", { name: "Sign in to codex on beta" })).toBeTruthy();
 
   // The poll is the same host-addressed call, at the flow's own interval.
   await vi.waitFor(
@@ -558,9 +561,10 @@ test("a remote device flow stops polling on success and reports it on the host",
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
 
-  // Success closes the dialog and names the host it signed in on.
+  // Success closes the dialog and names the instance and the host it signed
+  // in on (see oauthDialogs.tsx's DeviceCodeDialog).
   await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 3000 });
-  expect(getToasts().some((toast) => toast.text === "Signed in on beta")).toBe(true);
+  expect(getToasts().some((toast) => toast.text === "Signed in to codex on beta")).toBe(true);
 
   const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
   await act(async () => {
@@ -873,7 +877,8 @@ test("a remote answer's diagnostics are shown on the read-only remote view", asy
 // for. RemoteHostInstances rendered with no host key, so a device/start answer
 // that landed after the picker moved was applied to the NEW host's render: the
 // dialog named the new host while the code and flowId belonged to the old one,
-// and the poll - and the "Signed in on <host>" toast - went to a host whose auth
+// and the poll - and the "Signed in to <instance> on <host>" toast - went to a
+// host whose auth
 // store the sign-in never touched. The editor cannot outlive its host now: the
 // subtree is keyed on the host's registration identity, exactly as the push
 // action below it is, so the flow's state is cleared with the host it belonged
@@ -923,7 +928,9 @@ test("a picker change while device/start is outstanding never renders or polls t
     await new Promise((resolve) => setTimeout(resolve, 1500));
   });
   expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toEqual([]);
-  expect(getToasts().some((toast) => toast.text === "Signed in on gamma")).toBe(false);
+  // The toast a flow mounted under gamma would push names the instance AND
+  // the host it ran on; neither may be produced by beta's answer.
+  expect(getToasts().some((toast) => toast.text === "Signed in to codex on gamma")).toBe(false);
 });
 
 // M (roborev), the same seam on the failure path: a start failure names the host
@@ -1152,4 +1159,119 @@ test("a host coming back online does not restart the sign-in it is not part of",
     timeout: 3000,
   });
   expect(forwardedMethodCalls(fake, "evener/auth/device/poll").every((call) => call.host === "beta")).toBe(true);
+});
+
+// M (roborev round 6): two sign-in starts can be outstanding at once - a double
+// click, or a second Codex row picked before the first start answers. Every
+// start used to be applied by whichever answer arrived LAST, so a superseded
+// start's late answer replaced the editor the user had actually asked for, and
+// the dialog showed - and polled - the older instance's flow. The start's own
+// generation decides now: only the newest start may open an editor or name a
+// failure, and a superseded flow is never mounted, polled, or reported.
+test("a superseded sign-in start never replaces the newer one, and its flow is never polled", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  const codexRows = {
+    instances: [
+      instance({
+        name: "codex-one",
+        providerId: "openai-codex",
+        protocol: "openai-responses",
+        auth: "oauth-openai-codex",
+        authModes: ["oauth"],
+      }),
+      instance({
+        name: "codex-two",
+        providerId: "openai-codex",
+        protocol: "openai-responses",
+        auth: "oauth-openai-codex",
+        authModes: ["oauth"],
+      }),
+    ],
+    availableProviders: [],
+  };
+  // One deferred answer per instance name, so the test owns the order the two
+  // starts resolve in - and can make the FIRST one resolve LAST.
+  const starts = new Map<string, (value: unknown) => void>();
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return codexRows;
+    if (params.method === "evener/auth/device/start") {
+      const provider = (params.params as { provider: string }).provider;
+      return new Promise<unknown>((resolve) => starts.set(provider, resolve)) as never;
+    }
+    if (params.method === "evener/auth/device/poll") return REMOTE_POLL_PENDING;
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
+  const firstRow = (await within(remoteSection).findByText("codex-one")).closest("li") as HTMLElement;
+  const secondRow = within(remoteSection).getByText("codex-two").closest("li") as HTMLElement;
+
+  // Both starts are on the wire before either answers: the first row's, then
+  // the second row's.
+  await user.click(within(firstRow).getByRole("button", { name: "Sign in on host" }));
+  await vi.waitFor(() => expect(starts.has("codex-one")).toBe(true));
+  await user.click(within(secondRow).getByRole("button", { name: "Sign in on host" }));
+  await vi.waitFor(() => expect(starts.has("codex-two")).toBe(true));
+
+  // The SECOND (last-clicked) start answers first; the superseded first one
+  // answers after it.
+  await act(async () => {
+    starts.get("codex-two")?.({ ...REMOTE_DEVICE_START, flowId: "flow-two", userCode: "CODE-TWO" });
+  });
+  await act(async () => {
+    starts.get("codex-one")?.({ ...REMOTE_DEVICE_START, flowId: "flow-one", userCode: "CODE-ONE" });
+  });
+
+  // The editor on screen is the last-clicked instance's, and the superseded
+  // start's code never appears.
+  expect(await screen.findByText("CODE-TWO")).toBeTruthy();
+  expect(screen.queryByText("CODE-ONE")).toBeNull();
+
+  // Long enough for a dialog holding flow-one to have ticked at the flow's own
+  // 1s interval: the superseded flow is never polled, while the winner's is.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  });
+  const polls = forwardedMethodCalls(fake, "evener/auth/device/poll");
+  expect(polls.length).toBeGreaterThan(0);
+  expect(polls.every((call) => (call.params as { flowId: string }).flowId === "flow-two")).toBe(true);
+  expect(screen.queryByText("CODE-ONE")).toBeNull();
+});
+
+// L1 (roborev round 6): the fallback refusal sent the operator to
+// EVENER_LOGIN_HEADLESS=1 on the host - an env var the hub's own DeviceStart
+// never reads (auth/openai/device.go's issuer-404 path is what sets `fallback`;
+// the variable is consumed by the `evener openai login` CLI), so the retry
+// failed identically. The message names the thing that actually completes the
+// sign-in: the CLI on the host itself, against that instance.
+test("a host that offers no device flow names the host-side CLI, never a dead-end env var", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return REMOTE_DEVICE_FALLBACK;
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  const alert = await screen.findByRole("alert");
+  // The remedy is the CLI on the host, naming the instance it signs in...
+  expect(alert.textContent).toContain("evener openai login --instance codex --no-device");
+  // ...and never the env var the hub does not read.
+  expect(alert.textContent).not.toContain("EVENER_LOGIN_HEADLESS");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
