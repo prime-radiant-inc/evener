@@ -13,7 +13,7 @@ import { Button, FormRow, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./inrepo.module.css";
-import { useHostScopedLoad } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "inrepo.module.css", "root"),
@@ -87,7 +87,13 @@ export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
   // resolves against THAT host rather than leaving this one's on screen or its
   // own failure standing (the same [store] idiom the other host-scoped sections
   // use; a []-deps effect could reload on neither).
-  useHostScopedLoad(host, () => refresh(cwdRef.current), [store]);
+  const { reload } = useHostScopedLoad(host, () => refresh(cwdRef.current), [store]);
+
+  // A change to the SELECTED host's launch config - the working directory's own
+  // launch.toml, or a trust decision made elsewhere - must reach this pane
+  // rather than leaving a stale resolution on screen. `reload` re-resolves the
+  // working directory the user has committed.
+  useLaunchConfigRefresh(host, reload);
 
   function handleCommit(path: string): void {
     setCwd(path);

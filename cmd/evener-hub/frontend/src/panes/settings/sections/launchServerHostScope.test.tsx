@@ -236,6 +236,195 @@ function hostLaunchCalls(fake: FakeClient, host: string): string[] {
     .map((call) => (call.params as { method: string }).method);
 }
 
+/** How many times the pane forwarded `method` to `host` through the proxy. */
+function forwardedMethodCalls(fake: FakeClient, host: string, method: string): number {
+  return hostLaunchCalls(fake, host).filter((forwarded) => forwarded === method).length;
+}
+
+/** A remote host's own evener/launch/updated, as the hub relays it: wrapped in
+ * evener/host/notification and tagged with the host that owns it. */
+function emitHostLaunchUpdated(fake: FakeClient, host: string): void {
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: { host, method: "evener/launch/updated", params: {} },
+  });
+}
+
+/** The controller's own evener/launch/updated - the local hub's plain
+ * broadcast, delivered unwrapped. */
+function emitLaunchUpdated(fake: FakeClient): void {
+  fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } });
+}
+
+// The launch-config panes must CONVERGE when the host's own launch config
+// changes under them. A burst of notifications must be bounded, a change for
+// another host must not touch this pane, and a re-read must never silently take
+// away what the user is typing.
+test("a launch-config change for the SELECTED host re-reads the pane and shows the host's new value", async () => {
+  const fake = connectFakeClient();
+  let agent = "beta-agent";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("beta-agent");
+  expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(1);
+
+  // Another client saves beta's global layer; the hub re-emits beta's own
+  // evener/launch/updated, wrapped and tagged with beta.
+  agent = "beta-agent-2";
+  emitHostLaunchUpdated(fake, "beta");
+
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-2"));
+  // Exactly ONE more layer read - the refresh - and it was the refresh path
+  // (the form never blanked), not a load.
+  expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(2);
+  expect(screen.queryByText(/Loading launch settings/)).toBeNull();
+});
+
+test("a launch-config change for a DIFFERENT host does not re-read the selected pane", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent: "beta-agent" } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("beta-agent");
+  const reads = forwardedMethodCalls(fake, "beta", "evener/launch/getLayer");
+
+  // gamma's own change must not move beta's pane.
+  emitHostLaunchUpdated(fake, "gamma");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(reads);
+  expect(forwardedMethodCalls(fake, "gamma", "evener/launch/getLayer")).toBe(0);
+});
+
+test("a BURST of launch-config changes for the selected host produces one bounded re-read", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent: "beta-agent" } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  await screen.findByLabelText("Agent");
+  const reads = forwardedMethodCalls(fake, "beta", "evener/launch/getLayer");
+
+  for (let i = 0; i < 5; i++) emitHostLaunchUpdated(fake, "beta");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  // Five notifications inside the 250ms debounce window coalesce into exactly
+  // one layer read.
+  expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(reads + 1);
+});
+
+test("an incoming change keeps the user's typed draft and says the host's values changed", async () => {
+  const fake = connectFakeClient();
+  let agent = "beta-agent";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  const user = userEvent.setup();
+  const agentInput = (await screen.findByLabelText("Agent")) as HTMLInputElement;
+  await user.clear(agentInput);
+  await user.type(agentInput, "typed-on-beta");
+
+  agent = "beta-agent-2";
+  emitHostLaunchUpdated(fake, "beta");
+
+  // The re-read happened...
+  await waitFor(() => expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(2));
+  // ...the draft the user typed is still theirs...
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
+  // ...and the pane does not silently keep it: the newer host values are named
+  // beside the form, with a way to take them.
+  expect(screen.getByText(/changed on the host while you were editing/)).toBeTruthy();
+});
+
+test("with the local hub selected, a change to its launch config re-reads the pane", async () => {
+  const fake = connectFakeClient();
+  let agent = "controller-agent";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/launch/schema", () => schema("controller schema"));
+  fake.on("evener/launch/getLayer", () => ({ agent }));
+  fake.on("evener/launch/resolve", () => ({ effective: { agent }, layers: {}, provenance: {} }));
+
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("controller-agent");
+  // The pane's own read, counted by resolve: the extensions store (a singleton
+  // subscribed to the same broadcast) also refetches getLayer on this
+  // notification, and its read is not this pane's.
+  const reads = controllerLaunchCalls(fake).filter((method) => method === "evener/launch/resolve").length;
+
+  agent = "controller-agent-2";
+  emitLaunchUpdated(fake);
+
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("controller-agent-2"));
+  expect(controllerLaunchCalls(fake).filter((method) => method === "evener/launch/resolve").length).toBe(reads + 1);
+});
+
+test("with the local hub selected, a REPLACED controller connection re-reads the pane", async () => {
+  const first = connectFakeClient();
+  first.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  first.on("evener/launch/schema", () => schema("controller schema"));
+  first.on("evener/launch/getLayer", () => ({ agent: "controller-agent" }));
+  first.on("evener/launch/resolve", () => ({ effective: { agent: "controller-agent" }, layers: {}, provenance: {} }));
+
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("controller-agent");
+
+  // The browser wires a NEW client (a hub swap, a reconnect onto a fresh
+  // socket). This hub's launch config may have moved while the old connection
+  // was gone, and the plain broadcast reached nobody: the replacement itself is
+  // the signal to re-read.
+  const second = new FakeClient("ready");
+  second.on("evener/launch/schema", () => schema("controller schema"));
+  second.on("evener/launch/getLayer", () => ({ agent: "controller-agent-2" }));
+  second.on("evener/launch/resolve", () => ({
+    effective: { agent: "controller-agent-2" },
+    layers: {},
+    provenance: {},
+  }));
+  act(() => {
+    connectionStore.getState().connect(second);
+  });
+
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("controller-agent-2"));
+  // Counted by resolve: the extensions store's recovery read is not this pane's.
+  expect(second.calls.filter((call) => call.method === "evener/launch/resolve").length).toBe(1);
+});
+
 // A remote host that is merely AWAY (unattached) refuses evener/host/request, so
 // a pane that loaded in that window sits on its failure - the host's attachment
 // is a live session field, deliberately not part of the registration identity, so

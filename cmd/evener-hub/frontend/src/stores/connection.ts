@@ -123,6 +123,54 @@ export function onConnectionNotification(handler: (n: AnyNotification) => void):
   return coreOnConnectionNotification(core, handler);
 }
 
+/**
+ * onConnectionReplacedOrRecovered subscribes `handler` to the two transitions
+ * that mean this browser's controller connection may have MISSED something -
+ * the hub broadcasts a change to every CONNECTED client, so a change made while
+ * this one was away reaches it as nothing at all:
+ *
+ *   - a REPLACED client: a different client object is wired. The data any read
+ *     of the previous one produced describes a socket the browser has left.
+ *   - a RECOVERY: the connection becomes ready again after being away. Anything
+ *     that happened during the gap carried no notification this client saw.
+ *
+ * A FIRST connection is deliberately not a recovery - nothing was missed, because
+ * there was nothing to miss it with - so a handler mounted before AppShell's own
+ * connect() does not fire on that first ready. The `client` and `state` repeat
+ * guard is the same one createStoreLifecycle uses: the store publishes on every
+ * setState, including the handshake's own metadata writes, and none of those is
+ * a transition.
+ *
+ * Nothing here reads or writes the connection: it is a subscription helper for
+ * stores that follow the connection rather than owning it. */
+export function onConnectionReplacedOrRecovered(handler: () => void): () => void {
+  const initial = connectionStore.getState();
+  let client: AppwireClientLike | null = initial.client;
+  let state = initial.state;
+  // Whether this connection has ever been ready: what tells a reconnection from
+  // a first connection.
+  let seenReady = initial.state === "ready";
+  return connectionStore.subscribe((next) => {
+    if (next.client === client && next.state === state) return;
+    // A REPLACEMENT is a different client on both sides of the swap. A null
+    // side is this browser's FIRST client (or a cleared one), not a replacement:
+    // a first connect is the mount read's own trigger, not a recovery.
+    const replaced = client !== null && next.client !== null && next.client !== client;
+    client = next.client;
+    state = next.state;
+    // A client already reconnecting has been ready before - that is what
+    // reconnecting means - so a store that meets the flap mid-way still treats
+    // the ready that follows it as a recovery.
+    if (next.state === "reconnecting") {
+      seenReady = true;
+      return;
+    }
+    if (next.state !== "ready" || next.client === null) return;
+    if (replaced || seenReady) handler();
+    seenReady = true;
+  });
+}
+
 export function useConnectionStore(): ConnectionStoreState;
 export function useConnectionStore<T>(selector: (state: ConnectionStoreState) => T): T;
 export function useConnectionStore<T>(selector?: (state: ConnectionStoreState) => T): T | ConnectionStoreState {

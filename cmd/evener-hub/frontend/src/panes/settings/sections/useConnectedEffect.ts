@@ -27,9 +27,10 @@
 // subscription, not a local useState) can ignore the extra parameter
 // entirely; TypeScript permits passing a 0-arg function where a 1-arg one is
 // expected.
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { useHostAttachEpoch } from "../../../stores/hosts";
+import { onLaunchConfigUpdated } from "../../../stores/launchConfig";
 
 export function useConnectedEffect(
   // The awaited value is the caller's own (fetch()'s applied verdict, a
@@ -146,14 +147,14 @@ export function useHostScopedLoad(
     // The epoch rides the restarted effect's deps only: it is not content.
     [...deps, attachEpoch],
   );
-  const reload = (): void => {
+  const reload = useCallback((): void => {
     const run = currentRun.current;
     if (run === null) return;
     // Same content, so the pane keeps what it is showing; the caller reports the
     // outcome itself, as it does for every other run.
     void run.load(false, run.isCancelled).catch(() => {});
-  };
-  const retryLoad = (): void => {
+  }, []);
+  const retryLoad = useCallback((): void => {
     const run = currentRun.current;
     if (run === null) return;
     // A first look at this content again: forget what was claimed, so this run is
@@ -161,6 +162,47 @@ export function useHostScopedLoad(
     // notice it cannot render while the load is not ready.
     loadedDeps.current = null;
     void run.load(true, run.isCancelled).catch(() => {});
-  };
+  }, []);
   return { reload, retryLoad };
+}
+
+/** LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS is how long a burst of change
+ * notifications coalesces into one re-read - the same 250ms bound the
+ * extensions store's own launch layer uses for the same notification
+ * (appwire-client/state/extensions/launchLayer.ts's
+ * LAUNCH_LAYER_REFETCH_DEBOUNCE_MS). */
+export const LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS = 250;
+
+/**
+ * useLaunchConfigRefresh re-issues a launch-config pane's read when the host it
+ * is editing changes its launch configuration underneath it - the case the
+ * panes' `[store]`-keyed load effect cannot see, because the host's own
+ * evener/launch/updated re-emits while the store instance, the pane and the
+ * form all stay mounted.
+ *
+ * `refresh` must be the pane's REFRESH path (useHostScopedLoad's `reload`, which
+ * is stable): the data on screen is this host's own and the draft in it is the
+ * user's, so a re-read must never blank. The subscription itself (which host's
+ * notification, and the local hub's connection replacement/recovery) lives in
+ * stores/launchConfig.ts's onLaunchConfigUpdated.
+ *
+ * A burst of notifications - the hub fans every client's setLayer out - is
+ * coalesced into one re-read by the debounce, so a storm of changes cannot
+ * become a request storm. */
+export function useLaunchConfigRefresh(host: string, refresh: () => void): void {
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    function schedule(): void {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        refresh();
+      }, LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS);
+    }
+    const unsubscribe = onLaunchConfigUpdated(host, schedule);
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [host, refresh]);
 }

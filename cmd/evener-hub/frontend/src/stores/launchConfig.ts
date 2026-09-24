@@ -10,7 +10,7 @@
 import type { LaunchConfigStoreState } from "@evener/appwire-client";
 import { createLaunchConfigStore, type LaunchConfigClient, type LaunchConfigStore } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import { connectedClientPort } from "./connection";
+import { connectedClientPort, onConnectionNotification, onConnectionReplacedOrRecovered } from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
 import {
@@ -71,6 +71,45 @@ const goneLaunchConfigStore = createLaunchConfigStore(goneClient);
 export function launchConfigStoreForHost(host: string | null | undefined): LaunchConfigStore {
   if (isLocalHost(host)) return launchConfigStore;
   return hostEntry(host as string).store;
+}
+
+/**
+ * onLaunchConfigUpdated subscribes `handler` to `host`'s own launch-config
+ * CHANGE, which is what lets a mounted launch-config pane converge when the
+ * configuration moves underneath it:
+ *
+ *   - A REMOTE host's own evener/launch/updated reaches this browser wrapped in
+ *     evener/host/notification, tagged with the host that owns it (the hub's
+ *     relayHostNotifications fan-out). It is unwrapped here through the same
+ *     host-bound port every read of that host already goes through
+ *     (remoteHostStoreClient), so a change tagged with any OTHER host - and the
+ *     controller's own plain frames - never reaches this subscription. Handling
+ *     the wrapper at the client seam rather than bypassing it is what makes the
+ *     tag load-bearing.
+ *
+ *   - The LOCAL hub's launch config is this browser's own, and its
+ *     evener/launch/updated arrives plainly over the connection the shared port
+ *     follows across a client swap (onConnectionNotification). It has no host
+ *     registration and so no attach epoch (stores/hosts.ts), which is why a
+ *     REPLACED controller connection or a RECOVERY is its second signal: a
+ *     change made while this browser was away carried no notification it saw.
+ *
+ * The handler fires once per notification; coalescing a burst is the caller's
+ * business (see useLaunchConfigRefresh). */
+export function onLaunchConfigUpdated(host: string, handler: () => void): () => void {
+  if (isLocalHost(host)) {
+    const stopNotifications = onConnectionNotification((n) => {
+      if (n.method === "evener/launch/updated") handler();
+    });
+    const stopConnection = onConnectionReplacedOrRecovered(handler);
+    return () => {
+      stopNotifications();
+      stopConnection();
+    };
+  }
+  return remoteHostStoreClient(host).onNotification((n) => {
+    if (n.method === "evener/launch/updated") handler();
+  });
 }
 
 /** hostEntry is the one accessor of the per-host cache and the ONE place a

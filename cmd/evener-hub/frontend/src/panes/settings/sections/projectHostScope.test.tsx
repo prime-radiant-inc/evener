@@ -314,3 +314,44 @@ test("a failed refresh keeps the project form and the draft, and a retry clears 
   await waitFor(() => expect(screen.queryByText(/Could not re-read/)).toBeNull());
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 });
+
+/** The project-layer reads the pane forwarded to `host` through the proxy. */
+function forwardedLayerCalls(fake: FakeClient, host: string): number {
+  return fake.calls.filter(
+    (call) =>
+      call.method === "evener/host/request" &&
+      (call.params as { host: string }).host === host &&
+      (call.params as { method: string }).method === "evener/launch/getLayer",
+  ).length;
+}
+
+// The project pane converges too: the SELECTED host's own evener/launch/updated
+// re-issues this project's read, and the form shows the host's new value.
+test("a launch-config change for the selected host re-reads the project layer and shows the new value", async () => {
+  setQueryCwd("/repo");
+  const fake = connectFakeClient();
+  let agent = "beta-agent";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string; params: { layer?: string } };
+    if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
+    if (forwarded.method === "evener/launch/getLayer")
+      return (forwarded.params.layer === "project" ? { agent } : {}) as never;
+    if (forwarded.method === "evener/launch/resolve") return { effective: {}, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<ProjectHostScope sectionId="project" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("beta-agent");
+  const reads = forwardedLayerCalls(fake, "beta");
+
+  agent = "beta-agent-2";
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: { host: "beta", method: "evener/launch/updated", params: {} },
+  });
+
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-2"));
+  expect(forwardedLayerCalls(fake, "beta")).toBe(reads + 2);
+});

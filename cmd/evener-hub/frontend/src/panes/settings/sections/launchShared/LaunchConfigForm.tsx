@@ -55,6 +55,7 @@ const CLASS = {
   groupHeader: requireClass(styles.groupHeader, "LaunchConfigForm.module.css", "groupHeader"),
   field: requireClass(styles.field, "LaunchConfigForm.module.css", "field"),
   actions: requireClass(styles.actions, "LaunchConfigForm.module.css", "actions"),
+  conflict: requireClass(styles.conflict, "LaunchConfigForm.module.css", "conflict"),
   status: requireClass(styles.status, "LaunchConfigForm.module.css", "status"),
 };
 
@@ -104,6 +105,32 @@ function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer
   return (resolvedDefaults as Record<string, unknown>)[option.wireField];
 }
 
+/** sameLayerValue compares two launch-config values structurally: a layer's
+ * fields hold JSON scalars, string lists and plain maps/objects, and every read
+ * hands back a FRESH object even when the content is byte-for-byte the same. */
+function sameLayerValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((item, index) => sameLayerValue(item, right[index]));
+  }
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return (
+    keys.length === Object.keys(rightRecord).length &&
+    keys.every((key) => Object.hasOwn(rightRecord, key) && sameLayerValue(leftRecord[key], rightRecord[key]))
+  );
+}
+
+/** sameLayer answers whether two layers carry the same content. A re-read of
+ * the same owner's layer is a new OBJECT every time, so a content comparison is
+ * what tells a real change from a fresh copy of the same values. */
+function sameLayer(left: LaunchConfigLayer, right: LaunchConfigLayer): boolean {
+  return sameLayerValue(left, right);
+}
+
 export function LaunchConfigForm({
   options,
   layer,
@@ -119,8 +146,26 @@ export function LaunchConfigForm({
   onSaved,
 }: LaunchConfigFormProps) {
   const supportedOptions = useMemo(() => options.filter((opt) => optionSupportsLayer(opt, layer)), [options, layer]);
-  const [state, setState] = useState<LaunchFormState>(() => buildFormState(supportedOptions, current));
+  // `seed` names what the draft currently belongs to: the owner (the per-host
+  // store instance, or the host name for a caller that has no instance), the
+  // `current` it was built from, and the built form state itself. Keeping the
+  // built baseline lets an UNTOUCHED draft be told from an edited one by object
+  // identity alone - every edit publishes a new LaunchFormState - without
+  // re-deriving the baseline on every render.
+  const [seed, setSeed] = useState<{
+    owner: object | string | undefined;
+    current: LaunchConfigLayer;
+    baseline: LaunchFormState;
+  }>(() => {
+    const baseline = buildFormState(supportedOptions, current);
+    return { owner: draftOwner ?? host, current, baseline };
+  });
+  const [state, setState] = useState<LaunchFormState>(seed.baseline);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  // Whether the host's values moved under an EDITED draft: the draft stays
+  // (it is the user's), and this is what says so instead of leaving a later
+  // Save to overwrite the newer values in silence.
+  const [conflict, setConflict] = useState(false);
 
   // The draft belongs to ONE per-host store instance. A host-scoped parent
   // hands this form a different instance - with it a different `current`, a
@@ -141,16 +186,44 @@ export function LaunchConfigForm({
   // unchanged across a re-registration - so a caller that has the instance hands
   // it over, and one that does not keeps today's name-keyed behavior.
   const owner: object | string | undefined = draftOwner ?? host;
-  const [seededOwner, setSeededOwner] = useState<object | string | undefined>(owner);
   const [status, setStatusText] = useState("");
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
-  if (seededOwner !== owner) {
-    setSeededOwner(owner);
-    setState(buildFormState(supportedOptions, current));
+  if (seed.owner !== owner) {
+    const baseline = buildFormState(supportedOptions, current);
+    setSeed({ owner, current, baseline });
+    setState(baseline);
     setFieldErrors({});
     setStatusText("");
+    setConflict(false);
+  } else if (seed.current !== current) {
+    // A same-owner re-read: the pane refreshed this host's layer while the form
+    // stayed mounted. When the host's values did not actually move - every read
+    // hands back a fresh object even of identical content - only the recorded
+    // baseline moves forward. When they DID move, an untouched draft follows the
+    // host and an edited one stays the user's, with the change reported beside
+    // the form rather than applied over what they typed.
+    if (sameLayer(seed.current, current)) {
+      setSeed({ owner, current, baseline: seed.baseline });
+    } else if (state === seed.baseline) {
+      const baseline = buildFormState(supportedOptions, current);
+      setSeed({ owner, current, baseline });
+      setState(baseline);
+      setConflict(false);
+    } else {
+      setSeed({ owner, current, baseline: seed.baseline });
+      setConflict(true);
+    }
+  }
+
+  /** adoptHostValues drops the draft and shows the host's newest values, the
+   * user's own choice from the conflict notice. */
+  function adoptHostValues(): void {
+    const baseline = buildFormState(supportedOptions, seed.current);
+    setState(baseline);
+    setSeed({ owner, current: seed.current, baseline });
+    setConflict(false);
   }
 
   // The draft swap above drops the status line, so the self-clear timer it armed
@@ -357,6 +430,14 @@ export function LaunchConfigForm({
           ))}
         </div>
       ))}
+      {conflict && (
+        <p className={CLASS.conflict} role="status">
+          These settings changed on the host while you were editing. Saving will overwrite the newer values.{" "}
+          <Button type="button" onClick={() => adoptHostValues()}>
+            Use the host's values
+          </Button>
+        </p>
+      )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
           Save launch defaults

@@ -33,7 +33,7 @@ import { HostScopedSurface } from "./hostScopedSurface";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
-import { useHostScopedLoad } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
@@ -165,6 +165,12 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
     },
     [cwd, store],
   );
+
+  // The selected host's project layer can change under this mounted pane (the
+  // host's own launch.toml/global layer moving, another window's Save): re-read
+  // it through the refresh path so the form converges without taking away the
+  // draft the user is typing.
+  useLaunchConfigRefresh(host, reload);
 
   if (!cwd) {
     return (

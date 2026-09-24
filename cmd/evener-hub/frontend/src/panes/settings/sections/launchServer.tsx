@@ -15,7 +15,7 @@ import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
-import { useHostScopedLoad } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
@@ -154,6 +154,11 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
     },
     [store],
   );
+
+  // The host's own launch config can change under this mounted pane (another
+  // window's Save, a change made on the host itself): re-read it through the
+  // refresh path so the form converges without taking away what is being typed.
+  useLaunchConfigRefresh(host, reload);
 
   return (
     <div className={CLASS.root}>

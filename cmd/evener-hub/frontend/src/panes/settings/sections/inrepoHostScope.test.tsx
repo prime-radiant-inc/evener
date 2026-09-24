@@ -204,3 +204,43 @@ test("browsing for a directory asks the selected host's filesystem, never the co
   expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(false);
   expect(fake.calls.some((call) => call.method === "evener/paths/complete")).toBe(false);
 });
+
+/** The resolve() reads the pane forwarded to `host` through the proxy. */
+function forwardedResolveCalls(fake: FakeClient, host: string): number {
+  return fake.calls.filter(
+    (call) =>
+      call.method === "evener/host/request" &&
+      (call.params as { host: string }).host === host &&
+      (call.params as { method: string }).method === "evener/launch/resolve",
+  ).length;
+}
+
+// The in-repo pane converges too: the SELECTED host's own evener/launch/updated
+// re-resolves this working directory, so a launch.toml that changed on the host
+// (or a trust decision made elsewhere) reaches the pane.
+test("a launch-config change for the selected host re-resolves the in-repo config", async () => {
+  localStorage.setItem("lastCwd", "/repo");
+  const fake = connectFakeClient();
+  let hash = "beta-hash";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (forwarded.method === "evener/launch/resolve")
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash }) as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<InRepoHostScope sectionId="inrepo" />);
+  await screen.findByText("beta-hash");
+  const reads = forwardedResolveCalls(fake, "beta");
+
+  hash = "beta-hash-2";
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: { host: "beta", method: "evener/launch/updated", params: {} },
+  });
+
+  await screen.findByText("beta-hash-2");
+  expect(forwardedResolveCalls(fake, "beta")).toBe(reads + 1);
+});
