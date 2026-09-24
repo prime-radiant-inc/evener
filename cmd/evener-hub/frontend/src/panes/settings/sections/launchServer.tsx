@@ -14,7 +14,7 @@ import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
@@ -87,20 +87,27 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // if it fails (the same non-fatal contract as the diagnostics).
   const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
-  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // useHostScopedLoad (not a bare useEffect): a direct deep link to
   // /settings/launch-evener can mount this section before AppShell's own
   // connect() handshake finishes, and schema()/getLayer() both require a
-  // connected client (throw otherwise) - see that hook's own doc comment.
-  // isCancelled guards the same "component unmounted mid-load" case the
+  // connected client (throw otherwise) - see that hook's own doc comment - and
+  // it re-runs this read when the selected host COMES BACK, not only when it
+  // changes. isCancelled guards the same "component unmounted mid-load" case the
   // legacy local `cancelled` flag did.
-  useConnectedEffect(
-    async (isCancelled) => {
-      // A host switch reloads: the previous host's form must not stand while the
-      // new host's schema/layer are in flight. Clearing first is a no-op on the
-      // local mount, whose initial state is already "loading".
-      setLoad({ phase: "loading" });
-      setDiagnostics([]);
-      setResolvedDefaults(undefined);
+  useHostScopedLoad(
+    host,
+    async (blank, isCancelled) => {
+      // Different content - a host switch, or a re-registration under the same
+      // name - reloads: the previous host's form must not stand while the new
+      // host's schema/layer are in flight. Clearing first is a no-op on the local
+      // mount, whose initial state is already "loading". A re-read of THIS host
+      // (a reconnect, blank === false) keeps the form on screen - and the draft
+      // the user has typed into it.
+      if (blank) {
+        setLoad({ phase: "loading" });
+        setDiagnostics([]);
+        setResolvedDefaults(undefined);
+      }
       try {
         const [schema, current, resolved] = await Promise.all([
           store.getState().schema(),
@@ -117,7 +124,13 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
           setResolvedDefaults(resolved.effective);
         }
       } catch (err) {
-        if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+        if (isCancelled()) return;
+        // A failed read of content this pane is NOT already showing is the
+        // failure to report. A failed refresh keeps the load it has: that data is
+        // still this host's own, and the next attach (or a switch) retries it.
+        setLoad((current) =>
+          current.phase === "ready" ? current : { phase: "error", message: friendlyErrorMessage(err) },
+        );
       }
     },
     [store],

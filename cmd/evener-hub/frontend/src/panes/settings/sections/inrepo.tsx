@@ -13,7 +13,7 @@ import { Button, FormRow, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./inrepo.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "inrepo.module.css", "root"),
@@ -83,10 +83,11 @@ export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
   }, [cwd]);
 
   // Defer initial resolution until the client is ready, and re-run when the
-  // selected host changes: a host switch must load THAT host's in-repo config
-  // rather than leaving this one's on screen (the same [store] idiom the other
-  // host-scoped sections use; a []-deps effect cannot reload on a switch).
-  useConnectedEffect(() => refresh(cwdRef.current), [store]);
+  // selected host changes - or comes back after being away - so this pane
+  // resolves against THAT host rather than leaving this one's on screen or its
+  // own failure standing (the same [store] idiom the other host-scoped sections
+  // use; a []-deps effect could reload on neither).
+  useHostScopedLoad(host, () => refresh(cwdRef.current), [store]);
 
   function handleCommit(path: string): void {
     setCwd(path);

@@ -22,7 +22,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";
 import { HostScopedSurface } from "./hostScopedSurface";
 import { Code } from "./settingsField";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "agentsDoc.module.css", "root"),
@@ -58,9 +58,12 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
   const toast = useToasts();
 
   // Reconnects are the store's business (stores/agentsDoc.ts refetches on
-  // every one); this is the mount read. The content-keyed effect below is
-  // what keeps either of them from taking a dirty draft with it.
-  useConnectedEffect(() => store.getState().fetch(), [store]);
+  // every one); this is the mount read, which useHostScopedLoad also re-issues
+  // when the selected host comes BACK rather than only when it changes. The
+  // content-keyed effect below is what keeps any of them from taking a dirty
+  // draft with it: this section renders from the store's own state, so a
+  // re-read never unmounts the editor.
+  useHostScopedLoad(host, () => store.getState().fetch(), [store]);
 
   // The editor's draft belongs to the host it was loaded from: switching hosts
   // hands the section the new host's store, so the previous host's draft and

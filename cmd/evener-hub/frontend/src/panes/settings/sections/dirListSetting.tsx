@@ -37,7 +37,7 @@ import {
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { DirectoryActions } from "../../../widgets/pathfield";
 import styles from "./dirListSetting.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   section: requireClass(styles.section, "dirListSetting.module.css", "section"),
@@ -199,7 +199,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
   // before AppShell's own connect() handshake finishes, and fetchLaunchLayer
   // requires a connected client - see that hook's own doc comment for the
   // race this guards against.
-  useConnectedEffect(() => store.getState().fetchLaunchLayer(), [store]);
+  useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
   async function handleAdd(path: string): Promise<CollectionAddResult> {
     const validated = await store.getState().validatePath(path, "dir");

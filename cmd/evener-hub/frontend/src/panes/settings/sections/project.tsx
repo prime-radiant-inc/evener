@@ -32,7 +32,7 @@ import { HostScopedSurface } from "./hostScopedSurface";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
@@ -106,18 +106,26 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   // next project's form.
   const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
-  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // useHostScopedLoad (not a bare useEffect): a direct deep link to
   // /settings/project?cwd= can mount this section before AppShell's own
   // connect() handshake finishes, and schema()/getLayer() both require a
-  // connected client (throw otherwise) - see that hook's own doc comment.
-  // isCancelled guards the same "component unmounted (or cwd/host changed)
-  // mid-load" case the legacy local `cancelled` flag did. The deps include the
-  // store, so a host switch reloads: a []-deps effect could not.
-  useConnectedEffect(
-    async (isCancelled) => {
+  // connected client (throw otherwise) - see that hook's own doc comment - and
+  // it re-runs this read when the selected host COMES BACK, not only when it
+  // changes. isCancelled guards the same "component unmounted (or cwd/host
+  // changed) mid-load" case the legacy local `cancelled` flag did. The deps
+  // include the store, so a host switch reloads, and the cwd, so another
+  // project's layer is never shown for the one in the address bar.
+  useHostScopedLoad(
+    host,
+    async (blank, isCancelled) => {
       if (!cwd) return;
-      setLoad({ phase: "loading" });
-      setResolvedDefaults(undefined);
+      // Different content - a host switch, a re-registration, or a different
+      // project directory - reloads. A re-read of the same content (a reconnect,
+      // blank === false) keeps the form on screen, and the draft in it.
+      if (blank) {
+        setLoad({ phase: "loading" });
+        setResolvedDefaults(undefined);
+      }
       try {
         const [schema, current, globalDefaults, resolved] = await Promise.all([
           store.getState().schema(),
@@ -132,7 +140,12 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
         if (resolved && !isCancelled()) setResolvedDefaults(resolved.effective);
       } catch (err) {
-        if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+        if (isCancelled()) return;
+        // A failed read of content this pane is NOT already showing is the
+        // failure to report; a failed refresh keeps the load it has.
+        setLoad((current) =>
+          current.phase === "ready" ? current : { phase: "error", message: friendlyErrorMessage(err) },
+        );
       }
     },
     [cwd, store],

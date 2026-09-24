@@ -27,8 +27,9 @@
 // subscription, not a local useState) can ignore the extra parameter
 // entirely; TypeScript permits passing a 0-arg function where a 1-arg one is
 // expected.
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { connectionStore } from "../../../stores/connection";
+import { useHostAttachEpoch } from "../../../stores/hosts";
 
 export function useConnectedEffect(
   // The awaited value is the caller's own (fetch()'s applied verdict, a
@@ -56,4 +57,61 @@ export function useConnectedEffect(
     // wrapper hook one level removed from the real useEffect call.
     // biome-ignore lint/correctness/useExhaustiveDependencies: generic passthrough hook - see comment above
   }, deps);
+}
+
+/**
+ * useHostScopedLoad is useConnectedEffect for a pane whose read belongs to the
+ * host the settings route selected, and it adds the two things every one of
+ * those panes needs on top of it.
+ *
+ * 1. The host's ATTACH EPOCH is part of what restarts the read
+ *    (stores/hosts.ts). A host that is merely away refuses
+ *    `evener/host/request`, so a pane that loaded in that window sits on its
+ *    failure - and a host's attachment is live session state, deliberately not
+ *    part of the registration identity, so nothing remounts and nothing
+ *    re-reads when it comes back. The registry's own answer is what reports the
+ *    transition (there is no host lifecycle notification on the wire).
+ *
+ * 2. `load` is told whether this run is looking at DIFFERENT content (`blank`):
+ *    a host switch or a re-registration, which every pane must drop what it is
+ *    showing for, because the form on screen is the host the user left. The
+ *    same content re-read - a host coming back, `blank === false` - is a
+ *    refresh, and a refresh must NOT blank: the data on screen belongs to this
+ *    host, and whatever the user has typed into it is theirs to keep.
+ *
+ * "Different content" is exactly "the caller's own deps changed": the per-host
+ * store instance (a new one for a switch and for a re-registration) and each
+ * pane's own content key (the project pane's cwd). The attach epoch is compared
+ * separately - appended to the restarted effect's deps but NOT to the content
+ * comparison - which is what keeps a reconnect a refresh rather than a switch.
+ *
+ * A pane that renders from its store's own state (agentsDoc, mcp, dirListSetting
+ * and the marketplaces pane) ignores both parameters: the store keeps its data
+ * and its draft-holding components stay mounted, so re-issuing the read is all
+ * that is needed.
+ */
+export function useHostScopedLoad(
+  host: string,
+  load: (blank: boolean, isCancelled: () => boolean) => Promise<unknown>,
+  deps: readonly unknown[],
+): void {
+  const attachEpoch = useHostAttachEpoch(host);
+  // The deps of the run that produced what is on screen, so the next run can
+  // tell a re-read of the same content from a look at different content. Set
+  // from the effect body, not during render: a render React discards must not
+  // claim the content as loaded.
+  const loadedDeps = useRef<readonly unknown[] | null>(null);
+  useConnectedEffect(
+    (isCancelled) => {
+      const previous = loadedDeps.current;
+      const blank =
+        previous === null ||
+        previous.length !== deps.length ||
+        previous.some((value, index) => !Object.is(value, deps[index]));
+      loadedDeps.current = deps;
+      return load(blank, isCancelled);
+    },
+    // The epoch rides the restarted effect's deps only: it is not content.
+    [...deps, attachEpoch],
+  );
 }

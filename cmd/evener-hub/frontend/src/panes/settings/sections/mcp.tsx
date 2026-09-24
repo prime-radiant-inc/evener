@@ -33,7 +33,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { PathListEditor } from "./dirListSetting";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./mcp.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   page: requireClass(styles.page, "mcp.module.css", "page"),
@@ -113,11 +113,12 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
     if (isLocalHost(host)) void overview.fetch();
   }, [host]);
 
-  // useConnectedEffect, not a bare mount-once effect: a direct deep link to
+  // useHostScopedLoad, not a bare mount-once effect: a direct deep link to
   // /settings/mcp can mount this section before AppShell's connect() handshake
-  // finishes, and it re-runs when the selected host changes so switching hosts
-  // loads THAT host's layer rather than leaving this one's on screen.
-  useConnectedEffect(() => store.getState().fetchLaunchLayer(), [store]);
+  // finishes, and it re-runs when the selected host changes - and when it comes
+  // BACK after being away - so this section shows THAT host's layer rather than
+  // leaving this one's on screen (or its own failure standing).
+  useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {
     const validated = await store.getState().validatePath(path, "file");
