@@ -66,10 +66,17 @@ finish_browser() {
 
 # A second signal while the gate is already stopping exits at once, without
 # waiting any further for the skill guard, whose go test can run for minutes.
+# That is the operator insisting: the skill guard's test binary, its Chrome
+# and its helper daemons may then outlive the gate (they run in their own
+# process groups, so no signal here reaches all of them), and the scratch is
+# kept and named for whatever they left.
 stopping=0
 interrupted_browser() {
 	if [ "$defer_signals" -eq 1 ]; then pending_signal=$1; return; fi
-	if [ "$stopping" -eq 1 ]; then trap - 0; exit "$1"; fi
+	if [ "$stopping" -eq 1 ]; then
+		[ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2
+		trap - 0; exit "$1"
+	fi
 	stopping=1
 	stop_guards; exit "$1"
 }
@@ -89,16 +96,12 @@ scratch_dir dir evener-test-web-browser
 # BUILT frontend (the hub serves the embedded dist), so a missing dist is built
 # before any guard starts, not skipped.
 repo_root="$(cd "$script_dir/../.." && pwd -P)"
+# A failed build fails only the skill guard: the other guards serve the
+# frontend through their own Vite and still run to their verdicts.
+build_status=0
 if [ ! -f dist/index.html ]; then
 	printf 'building the production frontend for web-skillguard…\n'
-	if NODE_DISABLE_COMPILE_CACHE=1 npm run build >"$dir/skillguard-build.log" 2>&1; then
-		:
-	else
-		build_status=$?
-		cat "$dir/skillguard-build.log"
-		printf 'FAIL  web-skillguard (frontend build, exit %s)\n' "$build_status" >&2
-		exit "$build_status"
-	fi
+	NODE_DISABLE_COMPILE_CACHE=1 npm run build >"$dir/skillguard-build.log" 2>&1 || build_status=$?
 fi
 
 # start_guard INDEX — start guards[INDEX] in the background, its output in
@@ -167,6 +170,11 @@ guard_status=()
 next=0 running=0 done_count=0
 while [ "$done_count" -lt "${#guards[@]}" ]; do
 	while [ "$running" -lt "$slots" ] && [ "$next" -lt "${#guards[@]}" ]; do
+		if [ "${guards[$next]}" = skillguard ] && [ "$build_status" -ne 0 ]; then
+			guard_status[$next]=$build_status
+			next=$((next + 1)); done_count=$((done_count + 1))
+			continue
+		fi
 		start_guard "$next"
 		next=$((next + 1)); running=$((running + 1))
 	done
@@ -188,6 +196,10 @@ for i in "${!guards[@]}"; do
 	guard=${guards[$i]}
 	if [ "${guard_status[$i]}" -eq 0 ]; then
 		printf 'PASS  web-%s\n' "$guard"
+	elif [ "$guard" = skillguard ] && [ "$build_status" -ne 0 ]; then
+		printf 'FAIL  web-skillguard (frontend build, exit %s)\n' "$build_status" >&2
+		cat "$dir/skillguard-build.log"
+		[ "$status" -ne 0 ] || status="$build_status"
 	else
 		printf 'FAIL  web-%s (exit %s)\n' "$guard" "${guard_status[$i]}" >&2
 		cat "$dir/$guard.log"

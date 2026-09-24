@@ -1006,6 +1006,31 @@ func TestMakeTestWebBrowserSecondInterruptStopsWaiting(t *testing.T) {
 	}
 }
 
+// TestMakeTestWebBrowserBuildFailureFailsOnlyTheSkillGuard pins that a
+// frontend build failure fails the one guard that needs the build, and every
+// other guard still runs to its own verdict.
+func TestMakeTestWebBrowserBuildFailureFailsOnlyTheSkillGuard(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""), "BROWSER_GUARD_CONCURRENCY=7", "EVENER_TEST_NPM_FAIL_COMMAND=run build")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make test-web-browser with a failing build exited zero; output = %s", output)
+	}
+	for _, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard"} {
+		if !strings.Contains(string(output), "PASS  web-"+guard+"\n") {
+			t.Errorf("web-%s did not run to its verdict when the build failed; output = %s", guard, output)
+		}
+	}
+	if !strings.Contains(string(output), "FAIL  web-skillguard (frontend build, exit 17)") {
+		t.Errorf("the skill guard was not failed as a build failure; output = %s", output)
+	}
+}
+
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
