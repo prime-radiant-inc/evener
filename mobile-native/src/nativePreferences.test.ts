@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	AnyNotification,
+	KeybindingDraftCheckpoint,
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
-import { toWireConfig, WireError } from "@evener/appwire-client";
+import {
+	createTranscriptDisplayStore,
+	toWireConfig,
+	WireError,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -253,7 +258,7 @@ function setupDomain(domain: "keybindings" | "transcript") {
 	const old = isKeys ? keybindings : transcript;
 	const result = isKeys
 		? { ...keybindings, revision: 4, rules: [] }
-		: { revision: 5, config: toWireConfig(config) };
+		: { layout: "mobile" as const, revision: 5, config: toWireConfig(config) };
 	const snapshot = () =>
 		isKeys
 			? model.getSnapshot().keybindings
@@ -468,7 +473,7 @@ it("checkpoints before dispatch and refuses edits, discard, or duplicate save du
 	await expect(f.model.editTranscript(config)).rejects.toThrow();
 	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
 	await expect(f.model.saveTranscript()).rejects.toThrow();
-	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.storage.load()).toBeNull();
 });
@@ -487,7 +492,7 @@ it("accepts its own notification before the acknowledgement", async () => {
 			config: toWireConfig(proposedConfig),
 		},
 	});
-	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
 		conflict: false,
@@ -508,7 +513,7 @@ it("retains a proposal if a genuinely newer external revision beats its acknowle
 		method: "evener/settings/transcriptDisplay/changed",
 		params: { layout: "mobile", revision: 6, config: toWireConfig(config) },
 	});
-	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
 		conflict: true,
@@ -532,10 +537,10 @@ it("late acknowledgement cannot erase a new same-config pending checkpoint", asy
 	next.client.handlers.set(transcriptPatch, () => nextAck.promise);
 	const nextSave = next.model.saveTranscript();
 	expect(f.storage.load()).not.toEqual(oldCheckpoint);
-	oldAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	oldAck.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await oldSave;
 	expect(f.storage.load()).not.toBeNull();
-	nextAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	nextAck.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await nextSave;
 });
 
@@ -543,7 +548,13 @@ it("storage failure prevents dispatch and exposes a fixed safe error", async () 
 	const source = draftStorage().storage;
 	const f = persistedPreferences({
 		...source,
-		save: () => {
+		// The shared repository persists through the port's compare-and-swap
+		// set (insertIfAbsent on the first write, replaceIf once a record is
+		// classified), so a local write failure surfaces there.
+		insertIfAbsent: () => {
+			throw new Error("secret local path");
+		},
+		replaceIf: () => {
 			throw new Error("secret local path");
 		},
 	});
@@ -569,7 +580,7 @@ it("an uncertain write cannot be discarded or replayed until an authoritative re
 	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
 	await f.model.refresh();
 	expect(f.model.getSnapshot().transcriptMobile.writeUncertain).toBe(false);
-	expect(f.storage.load()?.writeUncertain).toBe(false);
+	expect(f.storage.load()).toMatchObject({ writeUncertain: false });
 	await f.model.discardTranscriptDraft();
 	expect(f.storage.load()).toBeNull();
 });
@@ -668,6 +679,7 @@ it("a cleanup failure does not turn a confirmed save into an unknown server outc
 	});
 	await f.model.refresh();
 	f.client.handlers.set(transcriptPatch, () => ({
+		layout: "mobile",
 		revision: 5,
 		config: toWireConfig(proposedConfig),
 	}));
@@ -697,4 +709,191 @@ it("a change notification cannot hide a local recovery error", async () => {
 	});
 	expect(f.model.getSnapshot().transcriptMobile.error).toBe(error);
 	expect(f.model.getSnapshot().transcriptMobile.storageUnavailable).toBe(true);
+});
+
+describe("transcriptMobile projection (A10)", () => {
+	it("projects transcriptMobile through the shared transcript display store", async () => {
+		const f = persistedPreferences();
+		await f.model.refresh();
+		await f.model.editTranscript(proposedConfig);
+		// The shared store's own checkpoint carries its `layout` field; the
+		// deleted hand-rolled draft repository never wrote one. Its presence
+		// is the projection's own signature.
+		expect(f.storage.load()).toMatchObject({
+			layout: "mobile",
+			baseRevision: 4,
+			config: proposedConfig,
+			writeUncertain: false,
+		});
+		expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+			draft: { revision: 4, config: proposedConfig },
+			draftUnreadable: false,
+		});
+		expect(
+			f.client.requests.filter((request) => request.method === transcriptPatch),
+		).toHaveLength(0);
+	});
+
+	it("surfaces an unreadable transcript draft record and clears it on discard", async () => {
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", "{not json");
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", backend),
+		);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(true);
+		await model.discardTranscriptDraft();
+		expect(backend.store.has("evener.native.transcript-draft.hub")).toBe(false);
+		expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(false);
+	});
+
+	it("migrates a legacy transcript draft checkpoint (no layout) instead of stranding it", async () => {
+		// The previous native implementation stored this hub's mobile-only
+		// checkpoint without a layout. The shared store's decoder requires one,
+		// so the port adopts the known mobile layout by compare-and-swap rather
+		// than classifying an upgradeable draft as unreadable.
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", backend),
+		);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(false);
+		expect(model.getSnapshot().transcriptMobile.draft).toMatchObject({
+			revision: 4,
+			config,
+		});
+		expect(backend.store.get("evener.native.transcript-draft.hub")).toMatchObject({
+			layout: "mobile",
+		});
+	});
+
+	it("keeps a readable legacy checkpoint visible when the migration write fails", async () => {
+		// The adoption write is best-effort: a failed write (quota, denied
+		// storage) must not make load() throw, which the shared store would map
+		// to storageUnavailable with no draft - hiding the readable legacy
+		// checkpoint the read just decoded.
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", {
+				...backend,
+				replaceIf: () => {
+					throw new Error("quota exceeded");
+				},
+			}),
+		);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile).toMatchObject({
+			draftUnreadable: false,
+			storageUnavailable: false,
+			draft: { revision: 4, config },
+		});
+	});
+
+	it("can discard a legacy checkpoint whose migration write failed", async () => {
+		// The migrated checkpoint must still name the bytes on disk, or the
+		// shared repository's compare-and-swap refuses and discard silently
+		// does nothing.
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", {
+				...backend,
+				replaceIf: () => {
+					throw new Error("quota exceeded");
+				},
+			}),
+		);
+		await model.refresh();
+		await model.discardTranscriptDraft();
+		expect(backend.store.has("evener.native.transcript-draft.hub")).toBe(false);
+		expect(model.getSnapshot().transcriptMobile.draft).toBeNull();
+	});
+
+	it("can save a legacy draft after one migration-write failure", async () => {
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		let writes = 0;
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		client.handlers.set(transcriptPatch, () => ({
+			layout: "mobile",
+			revision: 5,
+			config: toWireConfig(proposedConfig),
+		}));
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", {
+				...backend,
+				replaceIf: (key, expected, next) => {
+					writes += 1;
+					if (writes === 1) throw new Error("quota exceeded");
+					return backend.replaceIf(
+						key,
+						expected,
+						next as KeybindingDraftCheckpoint,
+					);
+				},
+			}),
+		);
+		await model.refresh();
+		await model.saveTranscript(proposedConfig);
+		expect(model.getSnapshot().transcriptMobile.confirmed?.revision).toBe(5);
+		expect(backend.store.has("evener.native.transcript-draft.hub")).toBe(false);
+	});
+
+	it("generation-aware staleness: a draft composed under generation N does not read current when a replacement hub reuses revision N", async () => {
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		// The exact store nativePreferences constructs for the projection.
+		const store = createTranscriptDisplayStore({ client });
+		store.setSupport("supported");
+		store.beginReadyGeneration();
+		await store.getState().refreshHubDefaults();
+		store.getState().editDraft("mobile", proposedConfig);
+		// A replacement hub (a reconnect to a restarted hub) begins a new ready
+		// generation; its revision numbering may restart, so mobile revision 4
+		// is not the 4 the draft was composed against.
+		store.beginReadyGeneration();
+		await store.getState().refreshHubDefaults();
+		expect(store.getState().draftConflict).toBe(true);
+	});
 });

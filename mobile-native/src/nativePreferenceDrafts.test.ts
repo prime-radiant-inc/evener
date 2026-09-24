@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	classifyDraftRead,
@@ -269,18 +270,20 @@ describe("rawStringDraftBackend compare-and-swap", () => {
 });
 
 describe("nativeTranscriptDrafts", () => {
-	it("treats a stored JSON null as no draft, not an unreadable record", () => {
+	it("classifies a stored JSON null as an unreadable record, distinct from no record at all", () => {
 		// Both drafts share one backend.get(): parseDraftBytes hands back the
-		// RAW string "null" for a stored JSON null so the KEYBINDINGS port can
-		// classify it as a present-but-unreadable record (see above). The
-		// transcript port has no unreadable-record recovery path, so it keeps
-		// the pre-existing meaning of a stored null - no draft - rather than
-		// have TranscriptDraftRepository's validateCheckpoint throw on it and
-		// strand the section in storageUnavailable.
+		// tagged StoredNullRecord for a stored JSON null, so the shared store
+		// reads it as a present-but-unreadable record (draftUnreadable) and
+		// discarding it is what clears the notice - the same recovery path the
+		// keybindings port has (see above).
 		const { raw, b } = rawBytesBackend();
 		raw.set("evener.native.transcript-draft.hub", "null");
 		const storage = nativeTranscriptDrafts("hub", b);
 
+		const loaded = storage.load();
+		expect(loaded).not.toBeNull();
+		expect(isStoredNullRecord(loaded)).toBe(true);
+		expect(storage.removeIf(loaded as never)).toBe(true);
 		expect(storage.load()).toBeNull();
 	});
 
@@ -289,9 +292,9 @@ describe("nativeTranscriptDrafts", () => {
 		// (a JSON string) decode to the JS string "null", which used to be
 		// indistinguishable from a stored JSON null once both came back as
 		// the bare string "null" - silently treating a corrupt checkpoint as
-		// no draft at all, contrary to this repository's contract to reject
-		// invalid checkpoints (see preferenceDraftRepository's
-		// validateCheckpoint, which throws on exactly this shape).
+		// no draft at all, contrary to the shared store's contract to reject
+		// invalid checkpoints (its draftCheckpoint decoder throws on exactly
+		// this shape, surfacing draftUnreadable).
 		const { raw, b } = rawBytesBackend();
 		raw.set("evener.native.transcript-draft.hub", '"null"');
 		const storage = nativeTranscriptDrafts("hub", b);
@@ -306,6 +309,35 @@ describe("nativeTranscriptDrafts", () => {
 		const storage = nativeTranscriptDrafts("hub", b);
 
 		expect(storage.load()).toEqual(transcriptCheckpoint);
+	});
+
+	it("satisfies the shared DraftPort contract: insertIfAbsent, replaceIf, raw-identity removeIf", () => {
+		// The shared transcript display store drives every checkpoint write
+		// through DraftPort's full compare-and-swap set; the deleted
+		// hand-rolled transcript repository's narrower port (no
+		// insertIfAbsent, no replaceIf) could not. The raw-identity half is what lets an
+		// unreadable record be discarded by handing back exactly what load()
+		// returned.
+		const { raw, b } = rawBytesBackend();
+		const storage = nativeTranscriptDrafts("hub", b);
+		const checkpoint = {
+			id: "t1",
+			layout: "mobile" as const,
+			baseRevision: 2,
+			config: makeTranscriptDisplayConfig(),
+			writeUncertain: false,
+		};
+
+		expect(storage.insertIfAbsent(checkpoint)).toBe(true);
+		expect(storage.insertIfAbsent({ ...checkpoint, id: "t2" })).toBe(false);
+		expect(storage.load()).toEqual(checkpoint);
+		expect(storage.replaceIf(checkpoint, { ...checkpoint, baseRevision: 3 })).toBe(true);
+		expect(storage.load()).toMatchObject({ baseRevision: 3 });
+
+		raw.set("evener.native.transcript-draft.hub", "{not json");
+		const unreadable = storage.load();
+		expect(storage.removeIf(unreadable)).toBe(true);
+		expect(raw.has("evener.native.transcript-draft.hub")).toBe(false);
 	});
 });
 
