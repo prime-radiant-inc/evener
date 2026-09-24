@@ -218,6 +218,49 @@ func TestDelegateAttentionFoldCursorNeverMutatesAReturnedFold(t *testing.T) {
 	}
 }
 
+// A caller may change the fold it was handed — appendDelegateAttentionResolutions
+// records each resolution it appends into it — and the cursor must not see
+// that: the verify read after an append has to decide from the file alone.
+// Here the resolution lands in a different transcript, so the file the cursor
+// reads never records it.
+func TestDelegateAttentionFoldCursorIgnoresChangesToAReturnedFold(t *testing.T) {
+	path, sessionID, writer := newAttentionFoldTranscript(t)
+	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
+	_, _, elsewhere := newAttentionFoldTranscript(t)
+	var cursor delegateAttentionFoldCursor
+	fold := requireCursorMatchesFullFold(t, &cursor, path, sessionID, "steering a")
+	if err := appendDelegateAttentionResolutions(elsewhere, fold, []string{"delegate:a"}, delegateAttentionConsumed, 0); err != nil {
+		t.Fatal(err)
+	}
+	verified := requireCursorMatchesFullFold(t, &cursor, path, sessionID, "resolution recorded elsewhere")
+	if _, resolved := verified.resolutions["delegate:a"]; resolved {
+		t.Fatal("verify read reports a resolution this transcript never recorded")
+	}
+	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:b", "bravo"))
+	requireCursorMatchesFullFold(t, &cursor, path, sessionID, "appended after")
+}
+
+// An ID repeated within one resolution call is appended once.
+func TestAppendDelegateAttentionResolutionsAppendsARepeatedIDOnce(t *testing.T) {
+	path, sessionID, writer := newAttentionFoldTranscript(t)
+	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendDelegateAttentionResolutions(writer, fold, []string{"delegate:a", "delegate:a"}, delegateAttentionConsumed, 0); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One header, one steering entry, one resolution.
+	if lines := bytes.Count(raw, []byte("\n")); lines != 3 {
+		t.Fatalf("transcript has %d lines, want 3:\n%s", lines, raw)
+	}
+}
+
 // A torn trailing line is not consumed: the cursor resumes at its start once
 // it completes, exactly as a full fold picks it up.
 func TestDelegateAttentionFoldCursorResumesAtATornTail(t *testing.T) {

@@ -1283,6 +1283,8 @@ type delegateAttentionFoldCursor struct {
 // read returns the fold of the transcript at path, with readDelegateAttentionFold's
 // decisions: the same fold, the same errors, and the empty fold for a missing
 // file. The cursor is left empty unless this read succeeds on a regular file.
+// The returned fold is the one the next read resumes from, so callers must not
+// change it.
 func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAttentionFold, error) {
 	previous := *c
 	*c = delegateAttentionFoldCursor{}
@@ -1510,19 +1512,27 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	return writer.Close()
 }
 
+// appendDelegateAttentionResolutions appends a resolution for each of ids that
+// fold does not already record, once per ID however often ids repeats it. It
+// leaves fold unchanged: a resident Session's fold is its attention cursor's,
+// which must hold only what the file holds, or the verify read after this
+// append would confirm it from memory.
 func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
+	appended := make(map[string]bool, len(ids))
 	for _, attentionID := range ids {
+		if appended[attentionID] {
+			continue
+		}
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
 		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
 			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
-		fold.resolutions[attentionID] = disposition
-		fold.resumeGenerations[attentionID] = resumeGeneration
+		appended[attentionID] = true
 	}
 	return nil
 }
