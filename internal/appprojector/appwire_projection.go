@@ -94,6 +94,10 @@ type AppEventProjector struct {
 	reasoningTurnID string
 	toolItemsByKey  map[string]string
 	toolArgsByKey   map[string]string
+	// toolDescriptionByKey stores the started item's Description (intent) so the
+	// END event carries forward the START's gated intent rather than re-deriving
+	// it from argsJSON without the size/validation gate (F3 round 5).
+	toolDescriptionByKey map[string]string
 	// toolStartByKey records each open tool call's server-side start time (the
 	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
 	// the completed item with the call's real StartedAt/DurationMS (issue
@@ -156,6 +160,7 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		ref:                         ref,
 		toolItemsByKey:              map[string]string{},
 		toolArgsByKey:               map[string]string{},
+		toolDescriptionByKey:        map[string]string{},
 		toolStartByKey:              map[string]time.Time{},
 		suppressedTools:             map[string]struct{}{},
 		heldToolResultImages:        map[string]appwire.ThreadItem{},
@@ -701,6 +706,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		itemID := p.nextItemID("tool")
 		p.toolItemsByKey[data.CallID] = itemID
 		p.toolArgsByKey[data.CallID] = data.ArgumentsJSON
+		p.toolDescriptionByKey[data.CallID] = data.Description
 		startedItem := appwire.ThreadItem{
 			Type:          "commandExecution",
 			ID:            itemID,
@@ -793,8 +799,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Raw:           raw,
 			// Carry the call's intent onto the completed item too (#26):
 			// the started item already has it, and live consumers (the web
-			// subagent activity line) render the intent from Description.
-			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
+			// subagent activity line) render the intent from Description. Reuse the
+			// START event's gated Description rather than re-deriving from argsJSON
+			// without the size/validation gate (F3 round 5): when the START suppressed
+			// intent (oversized/rejected bytes), the END must agree, not re-derive it.
+			Description: p.toolDescriptionByKey[data.CallID],
 			// ExitCode promotes the shell tool's exit code, already riding
 			// data.ToolState end to end (agent/session_tools_shell.go:483
 			// shellToolResult), onto the settled item (wire-honesty spec Part
@@ -2078,6 +2087,7 @@ func (p *AppEventProjector) resetTurnScopedState() {
 	p.reasoningTurnID = ""
 	p.toolItemsByKey = map[string]string{}
 	p.toolArgsByKey = map[string]string{}
+	p.toolDescriptionByKey = map[string]string{}
 	p.toolStartByKey = map[string]time.Time{}
 	p.suppressedTools = map[string]struct{}{}
 	p.provisionalCommunicateItems = map[string]string{}

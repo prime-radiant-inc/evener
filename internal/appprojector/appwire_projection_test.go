@@ -2861,13 +2861,15 @@ func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 		t.Fatalf("completed tool item should carry the intent-derived Description, got %q", item.Description)
 	}
 
-	// Description is derived from the arguments' intent field when the
-	// started event carries no explicit Description, matching
-	// ToolIntentFromArguments.
+	// The START event sets Description from the valid args' intent field (as the
+	// real live path does for valid JSON with an intent field). The END now carries
+	// the START's Description forward instead of re-deriving from argsJSON without
+	// the size/validation gate (F3 round 5).
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "grep",
 		CallID:        "call_2",
 		ArgumentsJSON: `{"query":"retry","intent":"trace the retry callers"}`,
+		Description:   "trace the retry callers",
 	}})
 	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
 		ToolName: "grep",
@@ -3368,5 +3370,35 @@ func TestAppEventProjectorKeepsEnvironmentInOwnTurn(t *testing.T) {
 	}
 	if environmentItem.TurnID != "turn_environment_fixture" || environmentItem.TurnID == userItem.TurnID {
 		t.Fatalf("environment turn=%q user turn=%q; environment must be separate", environmentItem.TurnID, userItem.TurnID)
+	}
+}
+
+// TestAppEventProjectorToolCallEndRespectsStartDescriptionGate (F3 round 5):
+// when the START event suppressed intent (Description="") because the
+// arguments were oversized/rejected, the END item must NOT re-derive
+// intent from argsJSON. The START gate and END gate must agree: if the
+// START suppressed intent, the END must too, not re-derive it from the
+// same bytes the START already declined to parse.
+func TestAppEventProjectorToolCallEndRespectsStartDescriptionGate(t *testing.T) {
+	projector := NewAppEventProjector("th_gate", "local:th_gate")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_gate", Data: events.UserInputData{Text: "hello"}})
+
+	// START: Description is empty (the live path suppressed intent because
+	// the arguments were oversized — RawArgumentsRejected). The ArgumentsJSON
+	// still carries the raw bytes, which contain an "intent" field.
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_gate", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_gated",
+		ArgumentsJSON: `{"command":"go test","intent":"should not appear at END"}`,
+		Description:   "", // START suppressed intent
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_gate", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_gated",
+		Error:    "tool arguments too large",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "" {
+		t.Fatalf("END item must not re-derive intent when START suppressed it (Description=%q), got item.Description=%q", item.Description, item.Description)
 	}
 }
