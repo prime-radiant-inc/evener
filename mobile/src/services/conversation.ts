@@ -598,9 +598,9 @@ export function createConversationService<ReadLease = unknown>(
     instanceId: string | null;
     // Paging waits on the whole projected publish, not the raw RPC: the
     // response alone is not the state a page's cursor must be seated against.
-    // A host's read fence (onReadComplete) sits between the raw response and
-    // the commit, so paging that waited on the raw read could seat a cursor
-    // against a projection the publish had not installed yet.
+    // The publish spans the raw response, the projection work and commit, and
+    // the host's read fence, so paging that waited on the raw read could seat a
+    // cursor against a projection the publish had not installed yet.
     publish: Promise<ConversationReadProjection>;
   };
   let pendingProjection: PendingProjection | null = null;
@@ -673,6 +673,23 @@ export function createConversationService<ReadLease = unknown>(
     }
   }
 
+  // Hand the same raw authoritative read back to the host's fence. A fence
+  // failure is non-fatal to the conversation read: the read itself succeeded,
+  // and a fence that cannot settle leaves the runtime's durable dispatch gate
+  // blocked (the fail-safe direction) until a later read reconciles it. It must
+  // never turn a good projection into a conversation error.
+  async function reconcileRead(
+    lease: ReadLease | undefined,
+    response: ThreadReadResponse,
+  ): Promise<void> {
+    if (options.onReadComplete === undefined) return;
+    try {
+      await options.onReadComplete(lease, response);
+    } catch (error) {
+      console.error("ConversationService: read fence failed", error);
+    }
+  }
+
   return {
     async open(threadRef, _cursor) {
       pendingProjection = null;
@@ -691,7 +708,6 @@ export function createConversationService<ReadLease = unknown>(
         subscribe: true,
         replaceSubscription: true,
       });
-      await options.onReadComplete?.(readLease, response);
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw here leaves ref+capabilities null/fail-closed. Only
       // commit the pair after projection succeeds and the epoch is still
@@ -715,6 +731,10 @@ export function createConversationService<ReadLease = unknown>(
         capabilities = caps;
         opening = null;
       }
+      // Reconcile the host's durable dispatch gate only for a read whose
+      // projection actually installed: a failed projection or a stale epoch
+      // leaves the gate blocked.
+      if (openEpoch === epoch) await reconcileRead(readLease, response);
       return conversation;
     },
 
@@ -736,13 +756,12 @@ export function createConversationService<ReadLease = unknown>(
         itemsView: "fragment",
         itemLimit: READ_ITEM_LIMIT,
       });
-      // The publish is the whole projected read: the raw response, the host's
-      // read fence, the projection work, and the pair commit. Paging waits on
-      // it (see PendingProjection), so a page can never be seated against a
-      // projection the publish has not installed.
+      // The publish is the whole projected read: the raw response, the
+      // projection work and pair commit, and then the host's read fence. Paging
+      // waits on it (see PendingProjection), so a page can never be seated
+      // against a projection the publish has not installed.
       const publish = (async (): Promise<ConversationReadProjection> => {
         const response: ThreadReadResponse = await read;
-        await options.onReadComplete?.(readLease, response);
         // Compute ALL response-derived projection work BEFORE committing the
         // pair — a throw in hydration, projectConversation or activity
         // projection (or a malformed response) leaves ref+capabilities
@@ -770,6 +789,9 @@ export function createConversationService<ReadLease = unknown>(
           capabilities = caps;
           opening = null;
         }
+        // Reconcile the host's durable dispatch gate only after the projection
+        // installed, so a failed projection or a stale epoch leaves it blocked.
+        if (openEpoch === epoch) await reconcileRead(readLease, response);
         return {
           conversation,
           activity,

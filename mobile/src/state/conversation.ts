@@ -522,10 +522,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // rejoin.md:19, 372-373), so a frame this store applied while the read was
   // in flight is already folded into the snapshot that arrives, and a frame
   // that arrives after the response lands on top of it through the normal
-  // path. Nothing awaits between the response and the commit (the service's
-  // readProjection and rehydrate below each await the read alone), so there
-  // is no window to buffer for; the web's applyHydrationResponseCut drops its
-  // buffer at the same point for the same reason.
+  // path. The service's readProjection and rehydrate now also await the native
+  // host's read fence behind the response, but that fence resolves within
+  // microtasks (the native mutation adapter is synchronous), so a socket frame
+  // (a macrotask) still cannot interleave before the commit; there is no window
+  // to buffer for. If that fence ever crossed a macrotask boundary, frames
+  // arriving in the window would need buffering. The web's
+  // applyHydrationResponseCut drops its buffer at the same point for the same
+  // reason.
   //
   // The package reducer over the conversation. The display rows are projected
   // from the model it returns (applyNotification below), so the rows a frame

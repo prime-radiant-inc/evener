@@ -28,7 +28,6 @@ export interface NativeMutationHost extends ConversationMutationSubmitter {
 		response: ThreadReadResponse,
 	): Promise<"reconciled" | "blocked" | "stale">;
 	dispose(): void;
-	stop(): Promise<void>;
 }
 
 /** The refusal a mutation gets while no host is live: durable submission is
@@ -97,7 +96,7 @@ export function createNativeMutationHost(
 						expectedThreadId,
 					),
 		reconcileRead: (lease, response) =>
-			lease === undefined
+			lease === undefined || unregister === undefined
 				? Promise.resolve("stale")
 				: runtime.reconcileAuthoritativeRead(lease, response),
 		dispose: () => {
@@ -105,6 +104,5 @@ export function createNativeMutationHost(
 			unregister = undefined;
 			startPromise = undefined;
 		},
-		stop: () => runtime.stop(),
 	};
 }

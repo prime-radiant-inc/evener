@@ -193,7 +193,7 @@ test("a rejected production send is admitted durably and lands a recovery row th
 		]);
 		expect(snapshot.outbox).toEqual([]);
 	});
-	await host.stop();
+	await runtime.stop();
 });
 
 test("a durable send clears the composer's durable unconfirmed draft at enqueue, not at settlement", async () => {
@@ -251,7 +251,7 @@ test("a durable send clears the composer's durable unconfirmed draft at enqueue,
 		},
 		turn: { id: "turn-1" },
 	});
-	await host.stop();
+	await runtime.stop();
 });
 
 test("a failed host startup keeps the registration so a later admission still dispatches", async () => {
@@ -259,7 +259,7 @@ test("a failed host startup keeps the registration so a later admission still di
 	// host registration must survive it, or the next admission would be
 	// durably enqueued with no client bound and never dispatched.
 	let attempts = 0;
-	const { client, host, service, store } = compose({
+	const { runtime, client, host, service, store } = compose({
 		setInterval: (callback) => {
 			attempts += 1;
 			if (attempts === 1) throw new Error("timer setup unavailable");
@@ -288,7 +288,7 @@ test("a failed host startup keeps the registration so a later admission still di
 			client.calls.filter((call) => call.method === "turn/start"),
 		).toHaveLength(1);
 	});
-	await host.stop();
+	await runtime.stop();
 });
 
 test("a synchronous registration failure rejects the start promise instead of throwing", async () => {
@@ -333,5 +333,5 @@ test("the durable submitter refuses while no host is live and delegates once one
 	const live = createDurableSubmitter(() => host);
 	await live.submit(request);
 	expect((await runtime.read(targetKey)).outbox).toHaveLength(1);
-	await host.stop();
+	await runtime.stop();
 });
