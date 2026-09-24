@@ -80,7 +80,19 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
     );
   } else {
     body = (
+      // Keyed on the host's REGISTRATION identity, like the push action inside
+      // it: everything this subtree holds is that host's, and the sign-in
+      // editor's state is no exception. Left mounted across a host change, a
+      // device/start answer that belonged to the host the user left would be
+      // applied to the host that took over - the flow started on beta rendered,
+      // polled, and reported as gamma's - and a failure naming the old host
+      // would stay under the new selection. The identity rather than the NAME,
+      // for the same reason the push action's key uses it (see below): a host
+      // re-registered under the same name is a DIFFERENT registration, and an
+      // editor started under the previous one is not the new one's. A registry
+      // read that leaves the registration where it was does not remount this.
       <RemoteHostInstances
+        key={`host:${hostInstanceIdentity(host)}`}
         host={host}
         registryFailed={load.phase === "error"}
         // Whether the registry's CURRENT answer names the host - the same
@@ -115,11 +127,13 @@ interface HostSignInEditor {
 /** RemoteHostInstances is the read-only view of one remote host's own provider
  * listing, plus that host's push action. useHostInstances hands it the listing
  * for the CURRENT registry snapshot and issues the read when there is none (see
- * that hook), so nothing here knows about registry revisions. Its rows stay
- * read-only, with one deliberate exception: component 07d's "Sign in on host"
- * for a Codex instance, which drives the device-code flow on that host (see
- * beginHostSignIn) - and the push action below the listing is the surface's
- * other write. */
+ * that hook), so nothing here knows about registry revisions. Everything it
+ * holds is the selected host's - the sign-in editor's state included - and the
+ * call site keys the whole subtree on that host's registration identity for
+ * exactly that reason. Its rows stay read-only, with one deliberate exception:
+ * component 07d's "Sign in on host" for a Codex instance, which drives the
+ * device-code flow on that host (see beginHostSignIn) - and the push action
+ * below the listing is the surface's other write. */
 function RemoteHostInstances({
   host,
   registryFailed,
@@ -136,8 +150,11 @@ function RemoteHostInstances({
   const state = useHostInstances(host);
   const [signIn, setSignIn] = useState<HostSignInEditor | null>(null);
   const [signInError, setSignInError] = useState<string | null>(null);
-  // Async start work may finish after the host changes or the pane unmounts;
-  // only a live editor owns its feedback.
+  // Async start work may finish after the pane unmounts; a mounted editor owns
+  // its feedback. This tracks the MOUNT alone, never which host the editor was
+  // started for: that tie is the SUBTREE's key at this component's call site,
+  // which is what unmounts it - and clears this state - when the host it was
+  // started for is no longer the one the settings route selects.
   const active = useEditorLifetime();
   // Stable identities, as CredentialsSection's own closeEditor is: the
   // DeviceCodeDialog's poll effect depends on the onSuccess/onCancel it is
