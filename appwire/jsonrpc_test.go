@@ -133,3 +133,29 @@ func TestResponseFrameEncodesItsResultOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestResponseFrameKeepsEncodingJSONSemantics pins that a frame written
+// through MarshalJSONTo encodes its result exactly as encoding/json would on
+// its own: nil slices as null, HTML-escaped strings, sorted map keys.
+func TestResponseFrameKeepsEncodingJSONSemantics(t *testing.T) {
+	type result struct {
+		Nil  []string       `json:"nil"`
+		HTML string         `json:"html"`
+		Map  map[string]int `json:"map"`
+	}
+	in := result{HTML: "<a&b>", Map: map[string]int{"z": 1, "a": 2}}
+	framed, err := json.Marshal(ResponseMessage(NewIntID(3), in))
+	if err != nil {
+		t.Fatalf("marshal frame: %v", err)
+	}
+	want, err := json.Marshal(struct {
+		ID     int    `json:"id"`
+		Result result `json:"result"`
+	}{3, in})
+	if err != nil {
+		t.Fatalf("marshal want: %v", err)
+	}
+	if !bytes.Equal(framed, want) {
+		t.Fatalf("frame = %s, want %s", framed, want)
+	}
+}
