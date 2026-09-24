@@ -220,6 +220,18 @@ base = "amazon-bedrock"
 [providers.viaproxy]
 base = "openai"
 base_url = "https://proxy/v1"
+[providers.nonehdr]
+base = "openai-compatible"
+base_url = "https://gw/v1"
+auth = "none"
+[providers.nonehdr.credential_headers]
+X-Gateway-Key = "gk-literal"
+[providers.noneauth]
+base = "openai-compatible"
+base_url = "https://gw/v1"
+auth = "none"
+[providers.noneauth.credential_headers]
+Authorization = "Bearer $PORTKEY_KEY"
 `
 	env := map[string]string{"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk", "GW_KEY": "gw", "GW_API_KEY": "gw2", "ANTHROPIC_API_KEY": "sk-ant", "AWS_BEARER_TOKEN_BEDROCK": "bt", "OPENAI_BASE_URL": "https://proxy/v1"}
 	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
@@ -250,6 +262,13 @@ base_url = "https://proxy/v1"
 		"mine":          {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
 		"bedrock":       {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
 		"viaproxy":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		// The none scheme only means no Authorization slot: the wire still
+		// carries credential headers under every scheme, so the source
+		// names the layer the request really sends — the gateway key the
+		// transport adds, and an Authorization header authored on a
+		// none-scheme instance.
+		"nonehdr":  {Value: "", Source: "credential_headers"},
+		"noneauth": {Value: "", Source: "credential_headers"},
 	}
 	for name, w := range want {
 		rec := r.explicit[name]
@@ -759,6 +778,53 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(res.Warnings, ";"), "no credential (command expression failed: command exited with status 1: session expired)") {
 		t.Fatalf("warnings = %v; want the command failure wording", res.Warnings)
+	}
+}
+
+// The none scheme never fills the auth slot, but the wire still carries
+// credential headers: the resolution path builds the header map under every
+// scheme. So the source names the layer the request really sends, and its
+// command expression runs exactly when the wire map is built — never on the
+// presence judgment, once on the full resolution.
+func TestCredentialSourceUnderNoneAuthNamesEffectiveHeaders(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"[providers.gw.credential_headers]\n" +
+		"X-Gateway-Key = '''$(get-gateway-token)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
+	r := fixtureLoad(t, nil, config)
+
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres.Credential.Source != "credential_headers" {
+		t.Fatalf("presence source = %q; want credential_headers", pres.Credential.Source)
+	}
+	if runs != 0 {
+		t.Fatalf("the presence judgment ran the command %d times; want 0", runs)
+	}
+
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "credential_headers" {
+		t.Fatalf("full source = %q; want credential_headers", res.Credential.Source)
+	}
+	if res.CredentialHeaders["X-Gateway-Key"] != "minted-token" {
+		t.Fatalf("credential headers = %v; want the minted gateway key", res.CredentialHeaders)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (one run serves the resolution)", runs)
 	}
 }
 

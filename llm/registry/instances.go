@@ -906,12 +906,13 @@ func (r *Registry) schemeWordDefault(raw string) bool {
 // supplied, so the resolution path that also builds the credential header
 // map never runs the header's command expressions twice. The transport a
 // launch resolves governs the scheme branches — oauth and adc are terminal,
-// none and optional-bearer need no credential — under the same transport
-// that names the header. suppressAuthReason drops the no-credential reason
-// from a failing auth header: the resolution path passes it because its
-// header loop reports the same failure naming the header — one condition,
-// one warning — while the listing path builds no header map and passes
-// false to keep the reason.
+// none and optional-bearer need no auth-slot credential, though the none
+// branch still names effective credential headers — under the same
+// transport that names the header. suppressAuthReason drops the
+// no-credential reason from a failing auth header: the resolution path
+// passes it because its header loop reports the same failure naming the
+// header — one condition, one warning — while the listing path builds no
+// header map and passes false to keep the reason.
 func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transport, suppressAuthReason bool, presence bool) (Credential, []string) {
 	h := rec.head
 	optional := t.Auth == AuthNone || t.Auth == AuthOptionalBearer
@@ -953,9 +954,16 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		return cred, append(warn, reasons...)
 	}
 	if t.Auth == AuthNone {
-		// The none scheme never sends a credential, so no slot needs
+		// The none scheme never fills the auth slot, so no slot needs
 		// materializing: expanding api_key here would run a command the
-		// wire never carries.
+		// wire never carries. Credential headers still go out — the
+		// resolution path builds the header map under every scheme — so
+		// the source names the layer the request really sends, judged
+		// by the same presence rules the wire map applies, without
+		// running any command to say so.
+		if len(r.credentialHeaderNames(rec, t)) > 0 {
+			return Credential{Source: "credential_headers"}, nil
+		}
 		return Credential{Source: "none"}, nil
 	}
 	if auth.present {
