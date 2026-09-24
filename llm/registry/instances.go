@@ -119,7 +119,11 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	if rec.head.Implicit == nil || !*rec.head.Implicit {
 		return false
 	}
-	switch rec.head.Transport.Auth {
+	// The scheme the listing derives the instance with — the same
+	// listingTransport computeInstances reads — decides the verdict, so a
+	// default row or glob that overrides the head's auth scheme moves the
+	// rename verdict with the instance the listing shows.
+	switch r.listingTransport(rec).Auth {
 	case AuthNone, AuthOptionalBearer:
 		return true
 	case AuthOAuthOpenAICodex:
