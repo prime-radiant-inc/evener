@@ -363,9 +363,9 @@ func rleRenderContracts(t *testing.T) {
 	}
 
 	var resultMessage strings.Builder
-	writeResultToolMessage(&resultMessage, &llm.ToolCallData{Arguments: json.RawMessage(`{"message":"done"}`)})
-	writeResultToolMessage(&resultMessage, &llm.ToolCallData{Arguments: json.RawMessage(`{"other":1}`)})
-	writeResultToolMessage(&resultMessage, &llm.ToolCallData{Arguments: json.RawMessage("{")})
+	writeResultToolMessage(&resultMessage, &llm.ToolCallData{Arguments: json.RawMessage(`{"message":"done"}`)}, false)
+	writeResultToolMessage(&resultMessage, &llm.ToolCallData{Arguments: json.RawMessage(`{"other":1}`)}, false)
+	writeResultToolMessage(&resultMessage, &llm.ToolCallData{Arguments: json.RawMessage("{")}, false)
 	if got := resultMessage.String(); got != "done\n{\"other\":1}\n{\n" {
 		t.Fatalf("result-tool fallbacks = %q", got)
 	}

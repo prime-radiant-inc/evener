@@ -2273,3 +2273,75 @@ func TestRenderMarkdown_ResultToolBoundedRawFallback(t *testing.T) {
 		t.Errorf("expected the bounded raw fallback to contain a long prefix of the raw args, got:\n%s", out)
 	}
 }
+
+// TestRenderMarkdown_HealedCommunicateSuppressesRawArgs verifies finding 5:
+// a repaired-successful communicate (status "ok", RawArguments set) must NOT
+// show its malformed raw bytes in the tool card's input summary. Live and
+// AppWire reload suppress them for successful communicates, so the markdown
+// rendering must too. Before the fix, writeToolCardLine used tc.SentArguments()
+// which returns RawArguments when set, dumping malformed bytes into the
+// "input" field. The fix uses the repaired Arguments for an "ok" communicate.
+func TestRenderMarkdown_HealedCommunicateSuppressesRawArgs(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{message: "hello"}` // malformed JSON — bare key
+	assistantPart := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:           "call_healed_comm",
+			Name:         "communicate",
+			Arguments:    []byte(`{}`),
+			RawArguments: rawArgs,
+		},
+	}
+	resultPart := llm.ContentPart{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_healed_comm",
+			Name:       "communicate",
+			IsError:    false,
+		},
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantPart}}}},
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{resultPart}}}},
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	// The raw malformed bytes must NOT appear in the tool card's input field.
+	if strings.Contains(out, rawArgs) {
+		t.Errorf("healed communicate must not show raw malformed bytes in tool card; got:\n%s", out)
+	}
+	// The healed message "hello" must be rendered as assistant text (matching
+	// what live delivered), not the raw malformed bytes.
+	if !strings.Contains(out, "hello") {
+		t.Errorf("healed communicate must render the repaired message 'hello', got:\n%s", out)
+	}
+}
+
+// TestRenderMarkdown_OversizedValidJSONSuppressesIntent verifies finding 4:
+// oversized valid JSON (within MaxToolArgumentBytes) must suppress intent in
+// the markdown tool card, matching the live path's suppression. Live rejects
+// oversized args via ValidateRawArguments (suppressing Description), but the
+// durable record has RawArguments="" for valid JSON, so reload would show
+// intent without the size-gate check.
+func TestRenderMarkdown_OversizedValidJSONSuppressesIntent(t *testing.T) {
+	t.Parallel()
+	// Build valid JSON over the MaxToolArgumentBytes cap with an "intent" key.
+	large := strings.Repeat("x", 2*1024*1024+10)
+	oversizedArgs := []byte(`{"intent":"secret","bar":"` + large + `"}`)
+	assistantPart := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:        "call_oversized",
+			Name:      "widget",
+			Arguments: oversizedArgs,
+		},
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantPart}}}},
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	// Intent must NOT appear: the live path suppresses it for oversized args.
+	if strings.Contains(out, "intent: secret") {
+		t.Errorf("oversized valid JSON must suppress intent (size-gate check), but found 'intent: secret' in:\n%s", out)
+	}
+}

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -963,7 +965,8 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 				// Consume its mechanical result (the runtime persists an
 				// {"accepted":...} ack) so it does not surface as an orphan.
 				idx.consumed[p.ToolCall.ID] = true
-				writeResultToolMessage(b, p.ToolCall)
+				paired, hasResult := idx.byCallID[p.ToolCall.ID]
+				writeResultToolMessage(b, p.ToolCall, hasResult && !paired.result.IsError)
 				continue
 			}
 			if !wroteToolsHeader {
@@ -1001,10 +1004,20 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 // header line for a tool card.
 func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCallData) {
 	args := json.RawMessage(tc.SentArguments())
+	// For a healed communicate (status "ok") with malformed raw bytes,
+	// use the repaired Arguments instead of the raw bytes — live and
+	// AppWire reload suppress raw bytes for successful communicates.
+	if name == "communicate" && status == "ok" && tc.RawArguments != "" {
+		args = tc.Arguments
+	}
 	fmt.Fprintf(b, "- [%s] `%s`", status, name)
-	// Skip the intent lookup for rejected calls: Arguments holds the {}
-	// placeholder, which parses to an empty intent anyway.
-	if tc.RawArguments == "" {
+	// Suppress intent when RawArguments is set (invalid JSON) OR when the
+	// arguments exceed the size cap (oversized valid JSON is rejected by
+	// ValidateRawArguments on the live path, which suppresses Description
+	// there). The durable record only sets RawArguments for !json.Valid,
+	// so oversized valid JSON has RawArguments="" and would otherwise show
+	// intent on reload.
+	if tc.RawArguments == "" && tool.ValidateRawArguments(tc.Arguments) == nil {
 		if intent := toolIntent(tc.Arguments); intent != "" {
 			fmt.Fprintf(b, " — intent: %s", intent)
 		}
@@ -1064,7 +1077,7 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 // writeResultToolMessage extracts and renders the "message" field from a result
 // tool call's JSON arguments as plain assistant text. Falls back to the raw
 // arguments string if the message field is absent.
-func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData) {
+func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed bool) {
 	args := json.RawMessage(tc.SentArguments())
 	if len(args) > 0 {
 		var m map[string]any
@@ -1072,6 +1085,21 @@ func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData) {
 			if msg, ok := m["message"]; ok {
 				fmt.Fprintf(b, "%v\n", msg)
 				return
+			}
+		}
+		// For a healed communicate (result is "ok"), the raw bytes are malformed
+		// but were repaired and delivered live. Repair them here to recover the
+		// message — matching what live delivered — instead of showing the raw
+		// malformed bytes. For a rejected communicate (result is "error") or a
+		// pending call (no result), the raw fallback is correct: the user sees
+		// the raw bytes the model sent.
+		if healed && tc.RawArguments != "" {
+			repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
+			if err := json.Unmarshal(repaired, &m); err == nil {
+				if msg, ok := m["message"]; ok {
+					fmt.Fprintf(b, "%v\n", msg)
+					return
+				}
 			}
 		}
 		// No "message" key or unparseable: render the raw arguments.
