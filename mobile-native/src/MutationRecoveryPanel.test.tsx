@@ -137,6 +137,9 @@ it("withholds restore from a projected row when the converter result withholds i
 		snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
 		() => false,
 	);
+	// The record still offers Restore, but the withholding converter leaves the
+	// row's actions discard-only: offered-but-blocked, not unoffered.
+	expect(rows[0].restoreOffered).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 });
 

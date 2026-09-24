@@ -45,6 +45,12 @@ export interface NativeMutationRecoveryRow {
 	 * reconstitute here. Restore is withheld for such a row rather than
 	 * silently dropping the image. */
 	carriesAttachments: boolean;
+	/** Whether the record-aware fence offers Restore for this row at all,
+	 * independent of the composer. `actions` carries Restore only when the
+	 * converter result also allows it, so a row that offers Restore while its
+	 * actions lack it is offered-but-blocked: the panel still shows the
+	 * disabled affordance and the caller's hint. */
+	restoreOffered: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
 }
@@ -157,6 +163,7 @@ export function projectNativeMutationRecovery(
 	for (const record of targetRecoveryRecords(targetKey, snapshot)) {
 		const text = recoveredComposerText(record);
 		const carriesAttachments = recordCarriesAttachments(record);
+		const restoreOffered = recordOffersRestore(record);
 		rows.push({
 			targetKey,
 			clientMutationId: record.clientMutationId,
@@ -168,6 +175,7 @@ export function projectNativeMutationRecovery(
 				: { reason: record.recoveryReason }),
 			text,
 			carriesAttachments,
+			restoreOffered,
 			record,
 			actions: nativeMutationRecoveryActions(record, canRestore(record)),
 		});
@@ -394,7 +402,7 @@ export function MutationRecoveryPanel({
 				// the converter result already folded into row.actions decides
 				// whether it is actionable now. A record-eligible row the composer
 				// cannot accept still shows a disabled Restore with the caller's hint.
-				const offersRestore = recordOffersRestore(row.record);
+				const offersRestore = row.restoreOffered;
 				const restorable = row.actions.includes("restore");
 				return (
 					<View
