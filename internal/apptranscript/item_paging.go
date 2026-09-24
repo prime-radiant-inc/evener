@@ -335,12 +335,24 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 		}
+		// Flush unpaired communicates: the group's records ended with a
+		// pending communicate call whose CommRawArgs were never consumed by a
+		// paired result turn. Render each as an agentMessage, matching the
+		// full-read path's FlushUnpairedCommunicates and the turn-window
+		// path's projectIndexedGroup flush. Without this, the bounded
+		// item-window read silently drops unpaired communicates.
+		items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
 		merged := mergeGroupedItems(items)
 		if err := ctx.Err(); err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
 		}
-		if uint64(len(merged)) != itemRange.count {
+		// The sidecar count (group.items) excludes flushed communicates:
+		// they are a projection-time rendering decision, not an index-time
+		// count. Flush can only ADD items, so merged >= count is expected.
+		// A deficit means items were lost — a real projection/index
+		// disagreement.
+		if uint64(len(merged)) < itemRange.count {
 			_ = file.Close()
 			return nil, projectedRecords, fmt.Errorf("indexed item count for logical group %d changed", group.id)
 		}
@@ -351,6 +363,16 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		if err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
+		}
+		// Flushed communicates extend the group beyond the sidecar's count.
+		// They land at the highest Item positions, so widen the window to
+		// include them — raising hi and count to the effective total does
+		// not shift earlier items' positions or keys.
+		if effectiveCount := uint64(len(positioned)); effectiveCount > itemRange.count {
+			itemRange.count = effectiveCount
+			if itemRange.hi < effectiveCount {
+				itemRange.hi = effectiveCount
+			}
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
 		stampGroupedTurnFromEntries(&turn, entries)

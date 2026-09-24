@@ -280,3 +280,107 @@ func TestIncrementalAppendResolvesDeferredCommunicateOnResume(t *testing.T) {
 	}
 	assertCommunicateErrorItemMatches(t, item, freshItem, "resume-vs-full")
 }
+
+// unpairedCommunicateFixture persists one logical turn whose assistant entry
+// issues a communicate call with no paired result turn: the communicate is
+// unpaired at end-of-transcript. The full read's FlushUnpairedCommunicates
+// and the bounded turn-window path's projectIndexedGroup both flush it as an
+// agentMessage; the bounded item-window path (projectIndexedItemRangesContext)
+// must do the same.
+func unpairedCommunicateFixture() []transcript.Entry {
+	return []transcript.Entry{
+		userEntry(1, "do the thing"),
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "thinking about it"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        "call_comm_unpaired",
+				Name:      "communicate",
+				Arguments: json.RawMessage(`{"message":"hello there"}`),
+			}},
+		}}}},
+	}
+}
+
+// findFlushedCommunicateItem returns the flushed communicate agentMessage item
+// from a slice of items, if present. The flushed item's ID is
+// "item_assistant_flushed_" + callID.
+func findFlushedCommunicateItem(items []appwire.ThreadItem) (appwire.ThreadItem, bool) {
+	for _, item := range items {
+		if item.Type == "agentMessage" && item.ID == "item_assistant_flushed_call_comm_unpaired" {
+			return item, true
+		}
+	}
+	return appwire.ThreadItem{}, false
+}
+
+// TestItemWindowFlushesUnpairedCommunicate proves the bounded item-window read
+// (projectIndexedItemRangesContext) flushes unpaired communicates, matching the
+// full read's FlushUnpairedCommunicates and the bounded turn-window path's
+// projectIndexedGroup. Without the flush, the item-window read silently drops
+// the flushed agentMessage — the text item is the only candidate, and the
+// communicate's deferred bytes never render.
+func TestItemWindowFlushesUnpairedCommunicate(t *testing.T) {
+	path := writeEntries(t, unpairedCommunicateFixture()...)
+
+	// Full read with flush: project with a shared registry (the way the
+	// server's appTurnProjectionFromTranscriptFile does), then flush.
+	reg := NewToolCallRegistry()
+	fullProjector := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return boundedTestProjector(turn, turnID, turnIndex, reg)
+	}
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, fullProjector)
+	FlushUnpairedCommunicates(&full, reg)
+	if len(full) != 1 {
+		t.Fatalf("full read produced %d turns, want 1 logical turn", len(full))
+	}
+	fullFlushed, ok := findFlushedCommunicateItem(full[0].Items)
+	if !ok {
+		t.Fatalf("full read with flush must render the unpaired communicate; items: %+v", full[0].Items)
+	}
+	if fullFlushed.Text != "hello there" {
+		t.Fatalf("full read flushed communicate Text = %q, want %q", fullFlushed.Text, "hello there")
+	}
+	wantKeys := keysFor(full[0])
+
+	// Turn-paging bounded read (projectIndexedGroup path — already flushes).
+	page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, boundedTestProjector)
+	if len(page.Turns) != 1 {
+		t.Fatalf("paged read produced %d turns, want 1 logical turn", len(page.Turns))
+	}
+	pageFlushed, ok := findFlushedCommunicateItem(page.Turns[0].Items)
+	if !ok {
+		t.Fatalf("paged read must render the unpaired communicate (parity with full read); items: %+v", page.Turns[0].Items)
+	}
+	if pageFlushed.Text != fullFlushed.Text {
+		t.Errorf("paged flushed Text = %q, want %q", pageFlushed.Text, fullFlushed.Text)
+	}
+	if got := keysFor(page.Turns[0]); !reflect.DeepEqual(got, wantKeys) {
+		t.Errorf("paged keys = %v, want full read keys %v", got, wantKeys)
+	}
+
+	// Item-window bounded read (projectIndexedItemRangesContext path).
+	window, _, err := NewTurnCache().LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
+		ThreadRef: "local:th_comm_unpaired",
+		Limit:     40,
+	}, boundedTestProjector)
+	if err != nil {
+		t.Fatalf("LatestItemWindowFromFile: %v", err)
+	}
+	var windowKeys []string
+	var windowFlushed appwire.ThreadItem
+	for _, c := range window.Candidates {
+		windowKeys = append(windowKeys, c.Item.TranscriptKey)
+		if item, ok := findFlushedCommunicateItem([]appwire.ThreadItem{c.Item}); ok {
+			windowFlushed = item
+		}
+	}
+	if windowFlushed.Type == "" {
+		t.Fatalf("item-window read must render the unpaired communicate (parity with full read); candidates: %+v", window.Candidates)
+	}
+	if windowFlushed.Text != fullFlushed.Text {
+		t.Errorf("item-window flushed Text = %q, want %q", windowFlushed.Text, fullFlushed.Text)
+	}
+	if !reflect.DeepEqual(windowKeys, wantKeys) {
+		t.Errorf("item-window keys = %v, want full read keys %v", windowKeys, wantKeys)
+	}
+}
