@@ -9,12 +9,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -299,12 +303,22 @@ func scratchDirsIn(t *testing.T, base string) []string {
 	return found
 }
 
-// A committed delegate's restore builds the child its own environment and then
-// constructs the session on it — and the construction runs the git snapshot,
-// which is what mints an unsandboxed environment's scratch dir. A restore that
-// fails after that point (a fault anywhere inside initSessionState) leaves no
-// session to own the scratch, so the abort has to drop it and its lease.
-func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
+// A committed delegate's restore constructs the session on the child's
+// environment — and the construction runs the git snapshot, which is what
+// mints an unsandboxed environment's scratch dir. The default child shape
+// works in the parent's workspace, so the mint lands on the live parent's
+// SHARED environment, and the construction's pin recorded it under the
+// parent's inherited binding row: the manifest references it. A restore that
+// fails after that point leaves no session to own the scratch, but the
+// settlement must still classify by the manifest the way the pooled tail does
+// (round 21): the referenced mint is retained with its lease released — the
+// handoff a retirement makes — so a later restore of the same child re-probes
+// and reacquires the durable directory instead of the state silently
+// disappearing. Round 11 disposed it as "a directory nothing will ever
+// reacquire"; that premise only ever held for an environment the restore
+// itself created, whose binding row died with the failure. The parent's
+// world-usable temp container is not the mint and stays (round 20).
+func TestRestoreIdleFailureRetainsTheManifestReferencedChildScratch(t *testing.T) {
 	// A write-capable ceiling keeps the restore off the read-only floor, so the
 	// child gets a plain unsandboxed environment — the default shape, which mints
 	// its scratch lazily rather than owning one from EnableSandbox.
@@ -347,8 +361,771 @@ func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
 	}
 	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 
-	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
-		t.Errorf("failed delegate restore left scratch %v, which nothing will ever release", leaked)
+	// The manifest-referenced mint survives — and being no allocation this
+	// restore claimed, it stays attached to the live shared environment that
+	// minted it: the settle cannot attribute a window mint (round 65), so the
+	// parent keeps its scratch and the lease frees only when that environment
+	// releases, which is when a later restore of the same child reacquires.
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root session has no scratch retention owner")
+	}
+	rootEnv, ok := root.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env = %T, want a local environment", root.env)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var minted []sandbox.ScratchReference
+	for _, ref := range manifest.References {
+		if strings.HasPrefix(filepath.Clean(ref.Dir), filepath.Clean(scratchBase)+string(os.PathSeparator)) {
+			minted = append(minted, ref)
+		}
+	}
+	if len(minted) == 0 {
+		t.Fatalf("no manifest reference names a scratch under the mint base %q: %+v", scratchBase, manifest.References)
+	}
+	for _, ref := range minted {
+		if _, err := os.Stat(ref.Dir); err != nil {
+			t.Fatalf("the manifest-referenced scratch %q did not survive the failed restore: %v", ref.Dir, err)
+		}
+		if got := envScratchRefDir(rootEnv, ref.Kind); got != ref.Dir {
+			t.Fatalf("the retained scratch %q was detached from the shared environment that minted it: env holds %q", ref.Dir, got)
+		}
+		handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
+		if err == nil {
+			_ = handle.Retain()
+			t.Fatalf("the retained scratch %q was left with its lease given up while the live parent still holds it", ref.Dir)
+		}
+		if !errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
+			t.Fatalf("the retained scratch %q reacquire error = %v, want the lease-held refusal", ref.Dir, err)
+		}
+	}
+}
+
+// A created environment's failed restore must route through the manifest
+// settlement (mintedScratch starts at ownsFresh), not the adoption retain
+// handoff. When the claim flips to contended after the disposal, the heal
+// re-provisions a fresh scratch and reports no transfer, and the settlement's
+// designed outcome for that fallback is durability: the pending-kind contract
+// pins it as a bare manifest reference beside the slot the binding still keeps
+// on the retained directory, with its lease released so a later restore of the
+// same consumer reacquires it instead of minting a third scratch. The retained
+// directory the fixture holds a lease on is never this restore's to touch.
+func TestRestoreIdleFailureSettlesTheReprovisionedFreshScratch(t *testing.T) {
+	// Isolate the scratch base: every directory this restore mints lands
+	// under it, so the settlement's disposals are observable directly, and
+	// cleanup removes directory and pin together.
+	isolated := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, isolated)
+	netDisabled := false
+	childWorkspace := t.TempDir()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		// A workspace of the child's own keeps the restore off the root's
+		// shared environment, so it creates a fresh sandboxed one — and a
+		// recorded read-only snapshot is the mode this communicate-only
+		// structured scope requires. The store's preflight wants the config
+		// projection the snapshot agrees with.
+		descriptor.WorkingDir = childWorkspace
+		descriptor.Sandbox = &delegatestore.SandboxSnapshot{Mode: "read-only", Network: &netDisabled}
+		descriptor.Config.Sandbox = "read-only"
+		descriptor.Config.SandboxNet = &netDisabled
+	})
+	sbxGit(t, fixture.workspace, "init", "-q")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root session has no scratch retention owner")
+	}
+	const bindingID = "b-settle-fresh"
+	slots, bindingRow := mintRefreshScratchBinding(t, root, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, root, fixture.childID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	root.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{fixture.childID: {SessionID: fixture.childID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+	preMinted, err := filepath.Glob(filepath.Join(isolated, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The claim flips to contended between the replacement's guard and its
+	// own hold, so the already-disposed mint forces the heal to re-provision.
+	root.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		root.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		pool := root.retainedScratch.Load()
+		pool.mu.Lock()
+		delete(pool.handles, key)
+		pool.contended[key] = struct{}{}
+		pool.mu.Unlock()
+	}
+	boom := errors.New("restored delegate construction failed")
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+
+	// The settlement's record: exactly the re-provisioned fallback remains
+	// under the base this restore minted in — the original mint the
+	// replacement disposed, and nothing else the restore created. The
+	// settlement retains the bare-pinned reprovision rather than dropping it
+	// (the pending-kind contract below), so the retry the caller is about to
+	// run adopts what this failed attempt's reprovision pinned.
+	postMinted, err := filepath.Glob(filepath.Join(isolated, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fallback string
+	for _, dir := range postMinted {
+		if !slices.Contains(preMinted, dir) {
+			if fallback != "" {
+				t.Fatalf("the failed restore left more than one fresh fallback behind: %q and %q", fallback, dir)
+			}
+			fallback = dir
+		}
+	}
+	if fallback == "" {
+		t.Fatal("the failed restore left no re-provisioned fallback record")
+	}
+
+	// The fallback is pinned exactly as the pending-kind contract promises: a
+	// bare manifest reference, while the binding's slot keeps naming the
+	// retained directory for a later restore to re-probe.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("the carried binding %q is absent after the failed restore", bindingID)
+	}
+	slot, hasSlot := row.Slots[sandbox.ScratchKindSandbox]
+	if !hasSlot || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the binding's slot must keep naming the retained %q: %+v", retainedDir, row.Slots)
+	}
+	current := ""
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == fixture.childID {
+			current = consumer.CurrentBindingID
+		}
+	}
+	if current != bindingID {
+		t.Fatalf("the child's consumer row names %q, want %q", current, bindingID)
+	}
+	fallbackReferenced := false
+	retainedReferenced := false
+	for _, ref := range manifest.References {
+		switch filepath.Clean(ref.Dir) {
+		case filepath.Clean(fallback):
+			fallbackReferenced = true
+		case filepath.Clean(retainedDir):
+			retainedReferenced = true
+		}
+	}
+	if !fallbackReferenced {
+		t.Fatalf("the re-provisioned fallback %q lost its bare manifest reference: %+v", fallback, manifest.References)
+	}
+	if !retainedReferenced {
+		t.Fatalf("the retained %q lost its manifest reference: %+v", retainedDir, manifest.References)
+	}
+
+	// The settlement released the fallback's lease for the next restore of
+	// this consumer to reacquire, and the retained directory survives
+	// untouched beside it.
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: fallback, Kind: sandbox.ScratchKindSandbox})
+	if err != nil {
+		t.Fatalf("the re-provisioned fallback %q was not left reacquirable: %v", fallback, err)
+	}
+	_ = handle.Retain()
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the retained %q did not survive the failed restore: %v", retainedDir, err)
+	}
+}
+
+// A created environment whose restore genuinely transferred a retained
+// allocation must still settle a failure by the manifest, not retain every
+// scratch the environment carries: a later construction step can leave
+// further scratch on that environment — here, an unrelated directory the
+// manifest does not reference — and a blanket retain hands it a durable
+// lease-less leak instead of the settlement's classification. The manifest
+// names the adopted allocation, so the settlement keeps exactly that one and
+// disposes the unreferenced newcomer (round 30).
+func TestRestoreIdleFailureSettlesUnrelatedScratchBesideAnAdoptedTransfer(t *testing.T) {
+	// Isolate the scratch base: every directory this restore mints or the
+	// test installs lands under it, so the settlement's keep-vs-dispose is
+	// observable directly.
+	isolated := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, isolated)
+	// A workspace of the child's own keeps the restore off the root's shared
+	// environment (a fresh plain environment this restore created), and a
+	// write-capable ceiling keeps the restore off the read-only floor so the
+	// environment mints its scratch lazily — nothing exists for the adoption
+	// to skip, so the retained unsandboxed slot genuinely transfers.
+	childWorkspace := t.TempDir()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.WorkingDir = childWorkspace
+		descriptor.ToolNameCeiling = []string{"communicate", "write_file"}
+	})
+	sbxGit(t, fixture.workspace, "init", "-q")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root session has no scratch retention owner")
+	}
+	const bindingID = "b-adopted-settle"
+	slots, bindingRow := mintRefreshScratchBinding(t, root, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, root, fixture.childID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	root.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindUnsandboxed]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{fixture.childID: {SessionID: fixture.childID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+
+	// The later construction step: an unrelated scratch directory the
+	// manifest does not name, installed on the environment after the
+	// adoption — the exact newcomer the settlement must classify away.
+	extraDir := t.TempDir()
+	if !strings.HasPrefix(filepath.Clean(extraDir), filepath.Clean(isolated)+string(os.PathSeparator)) {
+		// t.TempDir roots elsewhere; keep the assertion set honest by placing
+		// the newcomer inside the isolated base the settlement reads.
+		extraDir = filepath.Join(isolated, "evener-sandbox-unrelated")
+		if err := os.MkdirAll(extraDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root.cfg.testOnly.scratchRestoreAfterAdoption = func(env *execenv.LocalExecutionEnvironment) {
+		borrowed, err := sandbox.BorrowRetainedSessionScratch(extraDir)
+		if err != nil {
+			t.Fatalf("borrow the unrelated scratch: %v", err)
+		}
+		if err := env.RestoreSessionScratch(bindingID, sandbox.ScratchReference{Dir: extraDir, Kind: sandbox.ScratchKindSandbox}, borrowed); err != nil {
+			t.Fatalf("install the unrelated scratch: %v", err)
+		}
+	}
+	boom := errors.New("restored delegate construction failed")
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+
+	// The unrelated, unreferenced scratch is this restore's to dispose: the
+	// settlement must not have retained it beside the adopted allocation.
+	if _, err := os.Stat(extraDir); !os.IsNotExist(err) {
+		t.Fatalf("the unrelated scratch %q survived the failed restore's settlement beside an adopted transfer: %v", extraDir, err)
+	}
+	// The adopted allocation is manifest-referenced durable state: it
+	// survives, handed back to the pool — the settle releases the
+	// environment's hold by requeueing the transferred handle, so the next
+	// in-process restore of this child re-claims it without flock churn.
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the adopted retained scratch %q did not survive the failed restore: %v", retainedDir, err)
+	}
+	pool := root.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the root pool is gone after the failed restore")
+	}
+	pool.mu.Lock()
+	requeued := pool.handles[key]
+	pool.mu.Unlock()
+	if requeued == nil {
+		t.Fatalf("the adopted retained scratch %q was not requeued into the pool for the next restore", retainedDir)
+	}
+}
+
+// saveColdRestorableChild writes a committed child's session meta and an
+// empty transcript — the durable state a real committed spawn leaves — so a
+// cold restore can reconstruct the child from disk.
+func saveColdRestorableChild(t *testing.T, stateDir string, base schema.SessionMeta, childID, parentID, task, workdir string, depth int) {
+	t.Helper()
+	childMeta := base
+	childMeta.ID = childID
+	childMeta.ParentSessionID = parentID
+	childMeta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, childID), transcript.Header{
+		SessionID:       childID,
+		ParentSessionID: parentID,
+		Task:            task,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      workdir,
+		Depth:           depth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A grandchild restore runs as the CHILD owner, and a child never runs
+// prepareRetainedScratch — so the failed restore settles with no pool, the
+// exact state the round-11 nil-pool dispose branch was written for. But the
+// environment it fails on can be the live parent's shared one, not a fresh
+// one this restore created: the caller's mintedScratch gate only proves the
+// environment held no SCRATCH at adoption time, while the parent's
+// world-usable TMPDIR container — provisioned long before this restore and
+// still serving the parent's spawned children — is something
+// DisposeUnadoptedScratch also removes, breaking removeUnsandboxedTmpLocked's
+// own rule that a live env keeps its container. The settle must leave the
+// shared environment alone entirely — its container by that rule, and since
+// round 51 its scratch too: the empty-snapshot record cannot attribute what
+// stands there, so the construction's own mint now stays with the live parent
+// that owns it.
+func TestRestoreIdleFailureOnASharedEnvKeepsTheParentTempContainer(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	root, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	// The child owner: its own working directory gives it a private plain
+	// unsandboxed environment (the write-capable ceiling keeps the restore off
+	// the read-only floor), and being a child it owns no retained-scratch pool.
+	childID := identifier.MustNewSessionID()
+	childWorkspace := t.TempDir()
+	childConfig := meta.Config.Clone()
+	childConfig.AgentName = "subagent"
+	childDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    childID,
+		TranscriptRef:     encodeRef("", childID),
+		OwnerSessionID:    meta.ID,
+		VisibleSessionID:  meta.ID,
+		Task:              "own the grandchild's restore",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            childConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, childID, meta.ID, childDescriptor.Task, childWorkspace, 1)
+	childSub, _, err := (delegateRuntime{owner: root}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: childDescriptor,
+	})
+	if err != nil {
+		t.Fatalf("restore the child owner: %v", err)
+	}
+	defer childSub.sess.discardRestoredCandidate()
+	parent := childSub.sess
+	if parent.retainedScratch.Load() != nil {
+		t.Fatal("fixture expected the child owner to hold no retained-scratch pool")
+	}
+	parentEnv, ok := parent.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("child owner env = %T, want a local environment", parent.env)
+	}
+	if dir := parentEnv.SessionScratchDir(); dir != "" {
+		t.Fatalf("fixture expected the child owner's environment scratchless before the grandchild restore, got %q", dir)
+	}
+
+	// The parent's environment has already served commands, so it holds the
+	// world-usable TMPDIR container every spawned child receives. The scratch
+	// that first command minted is then dropped — DisposeUnsandboxedScratch's
+	// own contract keeps the container and its lease — so the grandchild's
+	// restore enters against a scratchless environment that nonetheless holds
+	// a live container: exactly the live-parent shape.
+	probe, err := parentEnv.ExecCommand(context.Background(), `printf %s "$TMPDIR"`, 5000, "", nil)
+	if err != nil {
+		t.Fatalf("probe the parent's TMPDIR: %v", err)
+	}
+	containerDir := strings.TrimSpace(probe.Stdout)
+	if containerDir == "" {
+		t.Fatal("fixture expected the parent environment to hold a TMPDIR container")
+	}
+	parentEnv.DisposeUnsandboxedScratch()
+	if dir := parentEnv.SessionScratchDir(); dir != "" {
+		t.Fatalf("fixture expected the parent environment scratchless before the grandchild restore, got %q", dir)
+	}
+
+	// The grandchild is committed against the child owner with the SAME
+	// working directory, which is what routes its restore onto the parent's
+	// live shared environment instead of building a fresh one.
+	grandchildID := identifier.MustNewSessionID()
+	grandchildConfig := meta.Config.Clone()
+	grandchildConfig.AgentName = "subagent"
+	grandchildDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    grandchildID,
+		TranscriptRef:     encodeRef("", grandchildID),
+		OwnerSessionID:    childID,
+		VisibleSessionID:  childID,
+		Task:              "fail construction on the shared environment",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            grandchildConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, grandchildID, childID, grandchildDescriptor.Task, childWorkspace, 2)
+	// The snapshot only runs commands in a repo, and running commands is what
+	// mints the shared environment's scratch.
+	sbxGit(t, childWorkspace, "init", "-q")
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	boom := errors.New("grandchild construction failed")
+	parent.cfg.testOnly.skipGitSnapshot = false
+	parent.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	if _, _, err := (delegateRuntime{owner: parent}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: grandchildDescriptor,
+	}); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+
+	// The grandchild's construction minted a fresh scratch on the shared
+	// environment — and on a shared environment that mint cannot be told
+	// apart from a concurrent actor's, so it stays with the live parent that
+	// owns it: the environment reuses it on its next command, and its close
+	// releases the lease for the sweeper to collect.
+	if dirs := scratchDirsIn(t, scratchBase); len(dirs) != 1 {
+		t.Errorf("failed grandchild restore left %v scratch dirs; the shared env must keep exactly the one mint it holds", dirs)
+	}
+	if dir := parentEnv.SessionScratchDir(); dir == "" {
+		t.Fatal("the shared environment lost the minted scratch it owns")
+	}
+	// The parent's container is NOT this restore's to remove: the live parent
+	// and its already-spawned children still point at it as TMPDIR.
+	if _, err := os.Stat(containerDir); err != nil {
+		t.Errorf("the failed grandchild restore destroyed the live parent's TMPDIR container %q: %v", containerDir, err)
+	}
+}
+
+// A failed shared-environment restore must never dispose scratch a concurrent
+// actor minted on the parent's environment. The mintedScratch gate records
+// only that the environment held no scratch when the adoption finished — an
+// empty snapshot, not an attribution: the environment holds one scratch per
+// kind and the lazy mint reuses whatever is present, so the allocation
+// standing there at settlement is the FIRST minter's — this restore's
+// construction, or another parent/child's command that ran in the window —
+// with nothing on the environment to tell them apart. A settle that disposes
+// by that inference deletes the concurrent actor's live allocation.
+func TestRestoreIdleFailureKeepsAConcurrentActorsScratchOnASharedEnv(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	root, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	// The child owner: its own working directory gives it a private plain
+	// unsandboxed environment, and being a child it owns no retained-scratch
+	// pool.
+	childID := identifier.MustNewSessionID()
+	childWorkspace := t.TempDir()
+	childConfig := meta.Config.Clone()
+	childConfig.AgentName = "subagent"
+	childDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    childID,
+		TranscriptRef:     encodeRef("", childID),
+		OwnerSessionID:    meta.ID,
+		VisibleSessionID:  meta.ID,
+		Task:              "own the grandchild's restore",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            childConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, childID, meta.ID, childDescriptor.Task, childWorkspace, 1)
+	childSub, _, err := (delegateRuntime{owner: root}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: childDescriptor,
+	})
+	if err != nil {
+		t.Fatalf("restore the child owner: %v", err)
+	}
+	defer childSub.sess.discardRestoredCandidate()
+	parent := childSub.sess
+	if parent.retainedScratch.Load() != nil {
+		t.Fatal("fixture expected the child owner to hold no retained-scratch pool")
+	}
+	parentEnv, ok := parent.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("child owner env = %T, want a local environment", parent.env)
+	}
+	if dir := parentEnv.SessionScratchDir(); dir != "" {
+		t.Fatalf("fixture expected the child owner's environment scratchless before the grandchild restore, got %q", dir)
+	}
+
+	// The grandchild is committed against the child owner with the SAME
+	// working directory, which routes its restore onto the parent's live
+	// shared environment instead of building a fresh one.
+	grandchildID := identifier.MustNewSessionID()
+	grandchildConfig := meta.Config.Clone()
+	grandchildConfig.AgentName = "subagent"
+	grandchildDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    grandchildID,
+		TranscriptRef:     encodeRef("", grandchildID),
+		OwnerSessionID:    childID,
+		VisibleSessionID:  childID,
+		Task:              "fail construction beside a concurrent actor's scratch",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            grandchildConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, grandchildID, childID, grandchildDescriptor.Task, childWorkspace, 2)
+	sbxGit(t, childWorkspace, "init", "-q")
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	// The concurrent actor: between the adoption's empty-snapshot check and
+	// the construction's own mint, another parent/child sharing this
+	// environment runs a command, and its lazy mint lands first. The
+	// construction's git snapshot then reuses what is present instead of
+	// minting a second allocation.
+	parent.cfg.testOnly.scratchRestoreAfterAdoption = func(env *execenv.LocalExecutionEnvironment) {
+		parent.cfg.testOnly.scratchRestoreAfterAdoption = nil
+		if _, err := env.ExecCommand(context.Background(), `true`, 5000, "", nil); err != nil {
+			t.Fatalf("the concurrent actor's command on the shared environment: %v", err)
+		}
+	}
+	boom := errors.New("grandchild construction failed")
+	parent.cfg.testOnly.skipGitSnapshot = false
+	parent.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	if _, _, err := (delegateRuntime{owner: parent}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: grandchildDescriptor,
+	}); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+
+	// The concurrent actor's allocation is live and owned by the environment
+	// the failed restore merely shared: it must still be on disk and still
+	// held, not classified as this restore's own mint and disposed.
+	if dirs := scratchDirsIn(t, scratchBase); len(dirs) != 1 {
+		t.Errorf("the failed shared-env restore left %v scratch dirs; the concurrent actor's one allocation must survive", dirs)
+	}
+	if dir := parentEnv.SessionScratchDir(); dir == "" {
+		t.Fatal("the shared environment lost the concurrent actor's scratch")
+	}
+}
+
+// Round 65's Medium: the settle's referenced-keep pass released every
+// manifest-referenced handle the shared environment held, so a concurrent
+// actor that minted AND pinned scratch in the window — the parent's own
+// next command, a sibling's construction — had its allocation detached from
+// the live environment on the restore's failure, taking the parent's
+// current scratch and lease away mid-flight. The settle now releases only
+// what the pool recorded THIS restore claiming: everything else a shared
+// environment holds stays attached, the same round-51 attribution limit
+// applied to the release half.
+func TestRestoreIdleFailureKeepsAConcurrentActorsPinnedScratchAttachedToTheSharedEnv(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	root, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	childID := identifier.MustNewSessionID()
+	childWorkspace := t.TempDir()
+	childConfig := meta.Config.Clone()
+	childConfig.AgentName = "subagent"
+	childDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    childID,
+		TranscriptRef:     encodeRef("", childID),
+		OwnerSessionID:    meta.ID,
+		VisibleSessionID:  meta.ID,
+		Task:              "own the grandchild's restore",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            childConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, childID, meta.ID, childDescriptor.Task, childWorkspace, 1)
+	childSub, _, err := (delegateRuntime{owner: root}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: childDescriptor,
+	})
+	if err != nil {
+		t.Fatalf("restore the child owner: %v", err)
+	}
+	defer childSub.sess.discardRestoredCandidate()
+	parent := childSub.sess
+	if parent.retainedScratch.Load() != nil {
+		t.Fatal("fixture expected the child owner to hold no retained-scratch pool")
+	}
+	parentEnv, ok := parent.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("child owner env = %T, want a local environment", parent.env)
+	}
+	if dir := parentEnv.SessionScratchDir(); dir != "" {
+		t.Fatalf("fixture expected the child owner's environment scratchless before the grandchild restore, got %q", dir)
+	}
+
+	grandchildID := identifier.MustNewSessionID()
+	grandchildConfig := meta.Config.Clone()
+	grandchildConfig.AgentName = "subagent"
+	grandchildDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    grandchildID,
+		TranscriptRef:     encodeRef("", grandchildID),
+		OwnerSessionID:    childID,
+		VisibleSessionID:  childID,
+		Task:              "fail construction beside a concurrent actor's pinned scratch",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            grandchildConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, grandchildID, childID, grandchildDescriptor.Task, childWorkspace, 2)
+	sbxGit(t, childWorkspace, "init", "-q")
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	// The concurrent actor mints AND PINS — the reviewer's reach: a sibling's
+	// session init published the allocation into the root manifest, so it is
+	// the settle's referenced-keep pass, not the disposal, that must leave it
+	// alone.
+	var siblingDir string
+	parent.cfg.testOnly.scratchRestoreAfterAdoption = func(env *execenv.LocalExecutionEnvironment) {
+		parent.cfg.testOnly.scratchRestoreAfterAdoption = nil
+		slots, bindingRow := mintRefreshScratchBinding(t, parent, "b-sibling-pinned-mint", sandbox.ScratchKindSandbox)
+		handle := slots[sandbox.ScratchKindSandbox]
+		siblingDir = handle.Dir
+		// A sibling's session init installs its binding identity on the shared
+		// environment before the scratch restore: RestoreSessionScratch matches
+		// the binding against the installed identity.
+		owner, ok := parent.scratchRetentionOwner()
+		if !ok {
+			t.Fatal("fixture expected the child owner to carry a scratch retention owner")
+		}
+		if err := env.SetScratchRetentionBinding(owner, bindingRow); err != nil {
+			t.Fatalf("the concurrent actor's binding install on the shared environment: %v", err)
+		}
+		if err := env.RestoreSessionScratch(bindingRow.BindingID, sandbox.ScratchReference{Kind: sandbox.ScratchKindSandbox, Dir: handle.Dir}, handle); err != nil {
+			t.Fatalf("the concurrent actor's install on the shared environment: %v", err)
+		}
+	}
+	boom := errors.New("grandchild construction failed")
+	parent.cfg.testOnly.skipGitSnapshot = false
+	parent.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	if _, _, err := (delegateRuntime{owner: parent}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: grandchildDescriptor,
+	}); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+
+	// The concurrent actor's pinned allocation stays ATTACHED to the live
+	// shared environment — the parent's next command runs on it exactly as
+	// before the failed restore. (Its directory survives either way; the
+	// release never deletes. The harm is the detach.)
+	if dir := parentEnv.SessionScratchDir(); dir == "" || dir != siblingDir {
+		t.Fatalf("the failed restore detached the concurrent actor's pinned scratch from the shared environment: env scratch = %q, want %q", dir, siblingDir)
+	}
+	// The allocation itself is untouched on disk: the settle neither
+	// detaches it nor deletes what the manifest references.
+	if _, err := os.Stat(siblingDir); err != nil {
+		t.Errorf("the failed restore disturbed the concurrent actor's pinned scratch directory: %v", err)
 	}
 }
 

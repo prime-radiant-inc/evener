@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 const (
@@ -41,6 +43,23 @@ var ErrScratchRetentionStaleRevision = errors.New("sandbox: scratch retention re
 // held (typically the live owner in this process). A caller restoring after a
 // real crash releases the lease first; a held lease is left with its owner.
 var ErrScratchRetentionLeaseHeld = errors.New("sandbox: retained scratch lease is already held")
+
+// ErrScratchRetentionLockHeld is returned when the manifest's durable update
+// lock is contended: the caller lost a race with a concurrent writer (or a
+// reader's install hold) and must retry, exactly as two racing writers
+// already do. The lock is deliberately fail-fast — callers never block on it.
+var ErrScratchRetentionLockHeld = errors.New("sandbox: scratch retention manifest is locked by another writer")
+
+// ErrScratchRetentionReleased is returned when a binding mutation — a pin, an
+// upsert, a revision-checked update — targets a manifest whose terminal
+// tombstone has already committed. A released manifest is closed for writes:
+// a losing writer retrying through a lock-contention window must not be able
+// to resurrect bindings or add references after the terminal release, which
+// would leave live allocations pinned against collection on an authority that
+// already authorized their collection. Unlike the lock sentinel this error is
+// terminal — it must not be retried. ReleaseScratchRetention itself writes
+// the tombstone directly and remains the only writer after the fact.
+var ErrScratchRetentionReleased = errors.New("sandbox: scratch retention manifest is released")
 
 // ScratchOwner identifies the root that owns a retention manifest. It is the
 // only retention authority: every pin, reference and binding belongs to exactly
@@ -128,6 +147,24 @@ func scratchRetentionLockPath(owner ScratchOwner) string {
 	return filepath.Join(scratchRetentionDir(owner), owner.RootSessionID+".lock")
 }
 
+// WithScratchRetentionLock runs fn holding the manifest's durable update lock
+// — the same one PinScratchBinding, UpdateScratchBindings and the release
+// path serialize on — so a reader can load, validate, and act with no
+// manifest update committing in between. The retained-scratch refresh needs
+// exactly this: its revision recheck and its row install must be one atomic
+// step against every manifest writer.
+func WithScratchRetentionLock(owner ScratchOwner, fn func() error) error {
+	if err := owner.validate(); err != nil {
+		return err
+	}
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+	return fn()
+}
+
 // canonicalScratchPath normalizes an allocation or reference path without
 // requiring it to exist (a failed/never-exposed allocation still has a name).
 func canonicalScratchPath(path string) (string, error) {
@@ -171,6 +208,23 @@ func loadScratchRetention(owner ScratchOwner) (ScratchManifest, error) {
 	return manifest, nil
 }
 
+// scratchManifestWriteProbe is a nil-in-production test seam fired after a
+// manifest write's rename already committed: its error simulates the
+// post-rename fsync failure class, where writeScratchRetention reports a
+// failure for a transaction that is already durable and every caller must
+// treat as committed.
+var scratchManifestWriteProbe func() error
+
+// SetScratchManifestWriteProbeForTesting installs the post-rename manifest
+// write probe and returns its restore. Cross-package tests use it to
+// simulate the post-rename fsync failure class for a caller that must treat
+// the reported failure as committed; the probe is nil in production.
+func SetScratchManifestWriteProbeForTesting(hook func() error) (restore func()) {
+	old := scratchManifestWriteProbe
+	scratchManifestWriteProbe = hook
+	return func() { scratchManifestWriteProbe = old }
+}
+
 func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 	manifest.Version = scratchRetentionVersion
 	manifest.Owner = owner
@@ -178,7 +232,13 @@ func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: marshal scratch retention manifest: %w", err)
 	}
-	return atomicWritePrivateFile(scratchManifestPath(owner), raw)
+	if err := atomicWritePrivateFile(scratchManifestPath(owner), raw); err != nil {
+		return err
+	}
+	if hook := scratchManifestWriteProbe; hook != nil {
+		return hook()
+	}
+	return nil
 }
 
 func acquireScratchRetentionLock(owner ScratchOwner) (scratchLease, error) {
@@ -187,10 +247,20 @@ func acquireScratchRetentionLock(owner ScratchOwner) (scratchLease, error) {
 	}
 	lease, contended, err := acquireScratchLease(scratchRetentionLockPath(owner))
 	if err != nil {
+		// The unix lease reports contention as a non-nil error alongside the
+		// contended flag (flock's EWOULDBLOCK), so both branches must map
+		// contention onto the same sentinel or callers cannot distinguish a
+		// lost lock race from real corruption.
+		if contended {
+			return nil, ErrScratchRetentionLockHeld
+		}
 		return nil, fmt.Errorf("sandbox: acquire scratch retention lock: %w", err)
 	}
 	if contended {
-		return nil, errors.New("sandbox: scratch retention manifest is locked by another writer")
+		if lease != nil {
+			_ = lease.Release()
+		}
+		return nil, ErrScratchRetentionLockHeld
 	}
 	return lease, nil
 }
@@ -276,6 +346,12 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 	if err != nil {
 		return err
 	}
+	// A terminally released manifest is closed for writers: a pin published
+	// onto the tombstone would resurrect protection the collector is already
+	// authorized to ignore (round 13).
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
 	canonicalRef := ScratchReference{Dir: dir, Kind: ref.Kind}
 	for _, existing := range manifest.References {
 		existingDir, err := canonicalScratchPath(existing.Dir)
@@ -316,6 +392,10 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 // and upserting the binding afterwards cannot make that promise — each Pin is
 // its own committed transaction — and a failure between them left the earlier
 // pins' references durable, retained, and owned by nobody (round 19).
+// pendingKinds names owned kinds whose handle is pinned as a bare protected
+// reference WITHOUT claiming the binding's slot for that kind: the slot keeps
+// naming whatever it named, so a fallback mint cannot displace a retained
+// allocation whose reacquire is still pending.
 //
 // Every allocation is validated before any durable write, each newly added
 // reference's directory pin is made durable before the manifest commit (so a
@@ -323,10 +403,12 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 // durable), and the manifest is written once. A failure before the commit — an
 // unusable handle, a conflicting reference, a binding the merge rejects, a pin
 // write, the manifest write itself — rolls back the directory pins this call
-// published and leaves the manifest exactly as the call found it. A commit that
+// published — including a pin it created repairing a reference the manifest
+// already listed — and leaves the manifest exactly as the call found it. A
+// commit that
 // reports an error after its rename landed is kept whole: references and binding
 // are both durable, which is the same state a successful call leaves.
-func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[string]*SessionScratch) error {
+func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[string]*SessionScratch, pendingKinds map[string]struct{}) error {
 	if err := owner.validate(); err != nil {
 		return err
 	}
@@ -363,58 +445,90 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 	if err != nil {
 		return err
 	}
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
+	// The pre-call revision is the rollback's commit discriminator: the
+	// rollback runs under this lock, so a revision that moved proves the
+	// manifest write's rename landed — the transaction is durable despite
+	// the reported error (round 39).
+	preRevision := manifest.Revision
 	if binding.Slots == nil {
 		binding.Slots = make(map[string]ScratchSlot, len(refs))
 	}
 	var added []ScratchReference
+	var repaired []ScratchReference
 	for _, ref := range refs {
 		var listed bool
 		for _, existing := range manifest.References {
 			existingDir, err := canonicalScratchPath(existing.Dir)
 			if err != nil {
-				return rollbackAddedScratchPins(owner, added, err)
+				return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 			}
 			if existingDir != ref.Dir {
 				continue
 			}
 			if existing.Kind != ref.Kind {
-				return rollbackAddedScratchPins(owner, added, fmt.Errorf("sandbox: conflicting retention reference for %q", ref.Dir))
+				return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, fmt.Errorf("sandbox: conflicting retention reference for %q", ref.Dir))
 			}
 			listed = true
 			break
 		}
+		// A pin over a reference the manifest already lists is a repair of a
+		// lost pin: the write below may create it, and a failed transaction
+		// must also remove what it created there — the added list alone tracks
+		// only newly published references (round 35). An unreadable pin fails
+		// the write below with the same error and creates nothing, so only
+		// absence marks a pin this call is about to create.
+		_, pinErr := readScratchDirectoryPin(ref.Dir)
 		if err := writeScratchDirectoryPin(ref.Dir, owner, ref); err != nil {
-			return rollbackAddedScratchPins(owner, added, err)
+			return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 		}
 		if !listed {
 			added = append(added, ref)
+		} else if os.IsNotExist(pinErr) {
+			repaired = append(repaired, ref)
 		}
-		binding.Slots[ref.Kind] = ScratchSlot{Dir: ref.Dir, OwnsLease: true}
+		if _, pending := pendingKinds[ref.Kind]; !pending {
+			binding.Slots[ref.Kind] = ScratchSlot{Dir: ref.Dir, OwnsLease: true}
+		}
 	}
 	manifest.References = append(manifest.References, added...)
 	if err := applyScratchBindingUpdate(&manifest, binding, nil); err != nil {
-		return rollbackAddedScratchPins(owner, added, err)
+		return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 	}
 	if err := writeScratchRetention(owner, manifest); err != nil {
 		// writeScratchRetention can report an error after the rename committed;
 		// the rollback re-reads the manifest and then leaves a published
 		// reference's pin alone, so a committed transaction stays whole.
-		return rollbackAddedScratchPins(owner, added, err)
+		return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 	}
 	return nil
 }
 
-// rollbackAddedScratchPins removes the directory pins a failed PinScratchBinding
-// call published, restoring the pre-call state so the allocations are collectible
-// again. It is called with the manifest lock held and never removes a pin whose
-// reference the manifest already holds — rollbackUnpublishedScratchPin re-reads
-// the manifest first — so a publication that committed despite reporting an
-// error keeps its protection. The original error is returned unwrapped when every
-// rollback succeeds; every cause is reported when one does not.
-func rollbackAddedScratchPins(owner ScratchOwner, added []ScratchReference, cause error) error {
+// rollbackPinScratchBindingPins removes the directory pins a failed
+// PinScratchBinding call created, restoring the pre-call state so the
+// allocations are collectible again: the newly published references' pins
+// through the unpublished-pin rollback, and the repairs of pins over
+// references the manifest already listed through the repaired-pin rollback
+// (round 35). It is called with the manifest lock held. For a newly published
+// reference it never removes a pin the manifest already holds —
+// rollbackUnpublishedScratchPin re-reads the manifest first — so a publication
+// that committed despite reporting an error keeps its protection. A repaired
+// pin is gated on the pre-call revision for the same reason: a revision that
+// moved proves the manifest write's rename landed, and a committed
+// transaction keeps its repair (round 39). The original error is returned
+// unwrapped when every rollback succeeds; every cause is reported when one
+// does not.
+func rollbackPinScratchBindingPins(owner ScratchOwner, added, repaired []ScratchReference, preRevision uint64, cause error) error {
 	var failures []error
 	for _, ref := range added {
 		if err := rollbackUnpublishedScratchPin(owner, ref.Dir, ref.Kind); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	for _, ref := range repaired {
+		if err := rollbackRepairedScratchPin(owner, ref.Dir, ref.Kind, preRevision); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -422,6 +536,45 @@ func rollbackAddedScratchPins(owner ScratchOwner, added []ScratchReference, caus
 		return cause
 	}
 	return errors.Join(cause, errors.Join(failures...))
+}
+
+// rollbackRepairedScratchPin removes a pin this transaction created over a
+// reference the manifest already listed — the repair of a lost pin whose
+// transaction then failed BEFORE its commit. The durable manifest is re-read
+// first: writeScratchRetention can report an error after the rename committed,
+// and a committed transaction keeps its repair — the revision moved, the
+// listing is part of the durable coherent state, and removing the pin would
+// leave the committed reference unpinned and its directory collectible
+// (round 39). Only a revision still at the pre-call value proves the
+// transaction never committed, and only then does the pre-call state — no pin —
+// get restored. A pin that is absent, unreadable, or no longer this owner's
+// own pin for the directory and kind is left alone, mirroring
+// rollbackUnpublishedScratchPin's doubt-handling.
+func rollbackRepairedScratchPin(owner ScratchOwner, dir, kind string, preRevision uint64) error {
+	current, err := loadScratchRetention(owner)
+	if err != nil {
+		return fmt.Errorf("sandbox: confirm rollback of repaired retention pin for %q: %w", dir, err)
+	}
+	if current.Revision != preRevision {
+		// The transaction committed despite the reported error; the repair
+		// stays with it.
+		return nil
+	}
+	pin, pinErr := readScratchDirectoryPin(dir)
+	switch {
+	case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == kind:
+		if removeErr := os.Remove(filepath.Join(dir, scratchPinName)); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("sandbox: roll back repaired retention pin for %q: %w", dir, removeErr)
+		}
+		return nil
+	case os.IsNotExist(pinErr):
+		// Already absent; nothing to undo.
+		return nil
+	case pinErr != nil:
+		return fmt.Errorf("sandbox: repaired retention pin for %q is unreadable; left in place: %w", dir, pinErr)
+	default:
+		return fmt.Errorf("sandbox: repaired retention pin for %q does not identify this owner's pin for the directory and kind; left in place", dir)
+	}
 }
 
 // rollbackUnpublishedScratchPin undoes the directory pin of a Pin call whose
@@ -493,6 +646,9 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 	if err != nil {
 		return err
 	}
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
 	if manifest.Revision != expectedRevision {
 		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
@@ -517,7 +673,78 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 // different binding already owns is demoted to a wrapper borrow. It never
 // replaces a whole stale record.
 func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
-	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer})
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, 0, false)
+}
+
+// UpsertScratchBindingAtRevision publishes one binding and its consumer
+// record with the same per-slot rebasing as UpsertScratchBinding, but only
+// when the manifest still stands at expectedRevision. Rows a caller derived
+// from an earlier snapshot must not replace what a concurrent writer committed
+// after that snapshot — the consumer merge replaces rows wholesale — so the
+// check turns that race into ErrScratchRetentionStaleRevision for the caller
+// to retry by re-deriving.
+func UpsertScratchBindingAtRevision(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding, expectedRevision uint64) error {
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, expectedRevision, true)
+}
+
+// ScratchLockContentionDelay returns the growing spacing the bounded retry
+// applies between attempts at a fail-fast manifest-lock refusal: the first
+// retry waits 1ms and the spacing doubles to an 8ms cap, so a fsync-scale
+// hold is waited out rather than failed against. It is the single source for
+// every lock-contention spacing in the process; pass attempt counting from 0.
+func ScratchLockContentionDelay(attempt int) time.Duration {
+	// The doubling is for waiting out a microsecond-to-millisecond hold, not
+	// for growing a sustained refusal's cost: cap it at the documented 8ms.
+	if attempt >= 3 {
+		return 8 * time.Millisecond
+	}
+	return time.Duration(1<<attempt) * time.Millisecond
+}
+
+// RetryScratchLockContention runs fn and retries while fn fails with the
+// manifest's transient lock refusal, spacing attempts with a growing backoff
+// so a concurrent writer's fsync-scale hold can clear between them: a
+// lock-held refusal is by construction a microsecond-to-millisecond race,
+// never a durability verdict, so a same-inputs retry is always safe — the
+// writers re-read and rebase onto the fresh manifest under the lock. The
+// bound keeps a sustained refusal a real, reported failure: exhaustion
+// returns the refusal to the caller, never a silent success.
+func RetryScratchLockContention(fn func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		if err = fn(); !errors.Is(err, ErrScratchRetentionLockHeld) {
+			return err
+		}
+		if attempt >= 4 {
+			return err
+		}
+		time.Sleep(ScratchLockContentionDelay(attempt))
+	}
+}
+
+// RetryScratchLockContentionFor retries fn like RetryScratchLockContention but
+// bounds the retry by a wall-clock budget instead of the writer-sized attempt
+// count. The fixed five-attempt bound is sized for one concurrent writer's
+// fsync-scale hold; a call site that serializes a whole fleet of participants
+// on the same lock — the adoption revalidations, one per concurrent restore of
+// the same root — turns each refusal into a lottery the fleet plays together,
+// and five tickets strand everyone past the fifth loser no matter how short
+// each individual hold is. Every refusal stays a microsecond-to-millisecond
+// race, so retrying the same inputs remains always safe. The budget keeps a
+// sustained refusal a real, reported failure: its expiry returns the refusal
+// to the caller, never a silent success.
+func RetryScratchLockContentionFor(budget time.Duration, fn func() error) error {
+	var err error
+	start := time.Now()
+	for attempt := 0; ; attempt++ {
+		if err = fn(); !errors.Is(err, ErrScratchRetentionLockHeld) {
+			return err
+		}
+		if time.Since(start) >= budget {
+			return err
+		}
+		time.Sleep(ScratchLockContentionDelay(attempt))
+	}
 }
 
 // UpsertScratchBindingOnly publishes one binding record under the manifest lock
@@ -527,10 +754,16 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 // owned by the agent layer, and a shared environment's mint must not re-point
 // its owner's consumer (or erase its recorded roles).
 func UpsertScratchBindingOnly(owner ScratchOwner, binding ScratchBinding) error {
-	return upsertScratchBinding(owner, binding, nil)
+	return upsertScratchBinding(owner, binding, nil, 0, false)
 }
 
-func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding) error {
+// upsertScratchBinding publishes binding and consumers with an optional
+// expected-revision guard: checkRevision false is the unchecked legacy path;
+// true refuses a manifest that moved past expectedRevision. Absence is the
+// explicit flag, never a sign bit — revisions are uint64, and a narrowing
+// conversion would read every revision above MaxInt64 as the unchecked path
+// (round 24).
+func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding, expectedRevision uint64, checkRevision bool) error {
 	if err := owner.validate(); err != nil {
 		return err
 	}
@@ -545,6 +778,15 @@ func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers 
 	manifest, err := loadScratchRetention(owner)
 	if err != nil {
 		return err
+	}
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
+	// A mismatching revision refuses the upsert so a caller holding a
+	// superseded snapshot re-derives instead of clobbering whatever committed
+	// in between.
+	if checkRevision && manifest.Revision != expectedRevision {
+		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
 	if err := applyScratchBindingUpdate(&manifest, binding, consumers); err != nil {
 		return err
@@ -617,14 +859,51 @@ func leaseOwningBinding(manifest ScratchManifest, canonicalDir string) (string, 
 	return "", false
 }
 
+// leaseOwningBindingOfKind finds the binding that owns the directory's lease
+// under the reference's own kind. The reset's carry must not treat a slot of
+// another kind as the owner: the carry's kind gate drops such a slot from the
+// rebuilt manifest, so a kind-blind owner match would carry the reference
+// with no binding left to pair with it (round 81) — the graph the reader
+// fails closed on, committed unreleased where no later reset repairs it. The
+// upsert demotion above deliberately keeps the kind-blind lookup: it folds
+// supplied slots against every owner of the directory, whatever the kind.
+func leaseOwningBindingOfKind(manifest ScratchManifest, canonicalDir, kind string) (string, bool) {
+	for _, binding := range manifest.Bindings {
+		slot, ok := binding.Slots[kind]
+		if !ok || !slot.OwnsLease {
+			continue
+		}
+		if dir, err := canonicalScratchPath(slot.Dir); err == nil && dir == canonicalDir {
+			return binding.BindingID, true
+		}
+	}
+	return "", false
+}
+
+// consumersNamingScratchBinding returns every consumer row that names bindingID
+// in any of its roles: the rows a carried binding must travel with for the
+// graph's reader to accept an owning binding.
+func consumersNamingScratchBinding(consumers []ScratchConsumerBinding, bindingID string) []ScratchConsumerBinding {
+	var named []ScratchConsumerBinding
+	for _, consumer := range consumers {
+		if consumer.CurrentBindingID == bindingID ||
+			consumer.ParentSharedBindingID == bindingID ||
+			consumer.WorktreeRestoreBindingID == bindingID ||
+			slices.Contains(consumer.AbandonedBindingIDs, bindingID) {
+			named = append(named, consumer)
+		}
+	}
+	return named
+}
+
 func validateScratchBindingUpdate(manifest ScratchManifest, mergedBindings []ScratchBinding, suppliedBindings []ScratchBinding, suppliedConsumers []ScratchConsumerBinding) error {
-	refs := make(map[string]struct{}, len(manifest.References))
+	refs := make(map[string]string, len(manifest.References))
 	for _, ref := range manifest.References {
 		dir, err := canonicalScratchPath(ref.Dir)
 		if err != nil {
 			return err
 		}
-		refs[dir] = struct{}{}
+		refs[dir] = ref.Kind
 	}
 	seenBinding := make(map[string]struct{}, len(suppliedBindings))
 	for _, binding := range suppliedBindings {
@@ -642,8 +921,16 @@ func validateScratchBindingUpdate(manifest ScratchManifest, mergedBindings []Scr
 			if err != nil {
 				return err
 			}
-			if _, ok := refs[dir]; !ok {
+			pinnedKind, ok := refs[dir]
+			if !ok {
 				return fmt.Errorf("sandbox: scratch binding %q slot %q references unpinned directory %q", binding.BindingID, kind, dir)
+			}
+			if pinnedKind != kind {
+				// A slot claiming a pinned directory under another kind has
+				// no reference to pair with — the same mismatch the graph
+				// reader fails closed on, caught here before it can be
+				// written (round 67).
+				return fmt.Errorf("sandbox: scratch binding %q slot %q kind does not match pinned kind %q", binding.BindingID, kind, pinnedKind)
 			}
 		}
 	}
@@ -730,6 +1017,11 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	if err != nil {
 		return nil, err
 	}
+	if probe := scratchOpenProbe; probe != nil {
+		if err := probe(); err != nil {
+			return nil, err
+		}
+	}
 	// ReleaseScratchRetention writes the tombstone and removes pins while
 	// holding this lock, so holding it across the lease acquisition serializes
 	// open against release.
@@ -743,7 +1035,7 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 		return nil, err
 	}
 	if manifest.Released {
-		return nil, errors.New("sandbox: scratch retention is released")
+		return nil, ErrScratchRetentionReleased
 	}
 	referenced := false
 	for _, existing := range manifest.References {
@@ -793,6 +1085,21 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 		return nil, err
 	}
 	return &SessionScratch{Dir: dir, base: base, lease: lease}, nil
+}
+
+// scratchOpenProbe, when set, is consulted at the top of
+// OpenRetainedSessionScratch before the manifest lock is taken: a non-nil
+// error opens nothing and is returned to the caller. Tests use it to model a
+// concurrent fail-fast manifest-lock hold (ErrScratchRetentionLockHeld) and a
+// terminal release committing inside the preparation-to-open window without
+// lock choreography. It is nil in production; tests set it through
+// SetScratchOpenProbeForTesting and clear it with their cleanup.
+var scratchOpenProbe func() error
+
+// SetScratchOpenProbeForTesting installs the probe consulted at the top of
+// OpenRetainedSessionScratch. Passing nil clears it.
+func SetScratchOpenProbeForTesting(fn func() error) {
+	scratchOpenProbe = fn
 }
 
 // verifyRetainedScratchPin reads dir's identity pin and confirms it is exactly
@@ -855,7 +1162,10 @@ func revalidateRetainedScratchAfterLease(owner ScratchOwner, dir, kind string) e
 		return err
 	}
 	if manifest.Released {
-		return errors.New("sandbox: scratch retention was released while acquiring the lease")
+		// Typed: the refresh's release-race decline check matches this error
+		// with errors.Is, and an untyped sentinel would slip past it and fail
+		// the exact race it exists for (round 15).
+		return fmt.Errorf("sandbox: scratch retention was released while acquiring the lease: %w", ErrScratchRetentionReleased)
 	}
 	return verifyRetainedScratchPin(owner, dir, kind)
 }
@@ -883,7 +1193,19 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 	manifest.Released = true
 	manifest.Revision++
 	if err := writeScratchRetention(owner, manifest); err != nil {
-		return err
+		// A write can commit its rename before reporting the post-rename
+		// failure class, so re-read under this held lock: it makes every
+		// writer single, so a manifest that reads Released at exactly the
+		// revision this call attempted can only be this release's own
+		// commit (the reset's argument, round 45, applied at the release).
+		// Returning without that check would skip the pin cleanup below
+		// over a durable tombstone, pinning otherwise-reclaimable
+		// directories under the committed release (round 77).
+		fresh, rereadErr := loadScratchRetention(owner)
+		if rereadErr != nil || !fresh.Released || fresh.Revision != manifest.Revision {
+			return err
+		}
+		manifest = fresh
 	}
 	// The tombstone is durable before any pin is removed, so an interruption
 	// between the two can only leave an extra pin, never a pinless directory
@@ -935,6 +1257,442 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 	return errors.Join(failures...)
 }
 
+// ResetScratchRetentionIfReleased reinitializes a manifest whose terminal
+// tombstone has committed and returns the manifest to publish against, plus
+// whether the reinitialization ran. A
+// terminal close removed every pin it could acquire and authorized ordinary
+// collection for the rest, so a restored session treats that durable state as
+// already gone: it mints fresh allocations rather than resuming the closed
+// session's scratch, and its first publication must be a legal write against a
+// manifest that no longer claims to be released — otherwise every write rides
+// a tombstone that authorizes collecting the session's live allocations. An
+// unreleased manifest is returned untouched with reset=false. The reset
+// verdict is computed under the reset's own manifest lock, so a caller gating
+// adoption of carried rows on it cannot race a terminal release that
+// tombstones the manifest between the caller's earlier read and the reset
+// (round 22).
+func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool, error) {
+	if err := owner.validate(); err != nil {
+		return ScratchManifest{}, false, err
+	}
+	// The manifest lock is fail-fast like every scratch writer's, and a
+	// refused reset must not fail the restore it is part of — the same
+	// bounded growing backoff applies.
+	var out ScratchManifest
+	var reset bool
+	err := RetryScratchLockContention(func() error {
+		// The whole reset is serialized against scratch reclamation: the carry
+		// pass resurrects Released rows without taking any directory lease, so
+		// a sweep could otherwise remove a carried directory between this
+		// reset's read and its commit. Taken per attempt inside the retry —
+		// the reset never holds it across a backoff, and a manifest-lock
+		// refusal releases it before the retry.
+		if scratchResetBeforeReclaimLock != nil {
+			scratchResetBeforeReclaimLock()
+		}
+		scratchReclamationMu.Lock()
+		defer scratchReclamationMu.Unlock()
+		lock, err := acquireScratchRetentionLock(owner)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Release() }()
+		manifest, err := loadScratchRetention(owner)
+		if err != nil {
+			return err
+		}
+		if !manifest.Released {
+			out = manifest
+			return nil
+		}
+		// Keep the revision advancing: a writer holding the pre-reset revision
+		// must still read as stale against the reinitialized manifest.
+		fresh := ScratchManifest{
+			Version:  manifest.Version,
+			Revision: manifest.Revision + 1,
+			Owner:    manifest.Owner,
+		}
+		// A carried reference must travel with the rows that make the graph
+		// valid for its own reader (validateRetainedScratchGraph): the binding
+		// that owns its directory under the reference's own kind (round 81: a
+		// kind-blind owner match carried the reference while the carry's kind
+		// gate dropped the only slot that could pair with it) and every
+		// consumer role that names it. Carrying a reference alone would commit
+		// a manifest whose restore validation fails forever — references with
+		// no binding — with no later reset to repair it, Released being false
+		// again (round 16). A reference nothing in the tombstoned manifest
+		// owns is nothing a restore could re-probe: its pair dies here
+		// instead — the reference
+		// drops and every pin is left in place: this owner's own pin is
+		// re-pinned by the reinstall's republish (same owner, directory, and
+		// kind — the pin write is idempotent), and when nothing republishes,
+		// its protection ends with the next terminal release's tombstone —
+		// which is what authorizes the collector to remove the pin and its
+		// directory; a foreign pin belongs to its own manifest (round 25).
+		carriedBindings := make(map[string]ScratchBinding)
+		carryReference := func(dir, kind string) error {
+			ownerID, owned := leaseOwningBindingOfKind(manifest, dir, kind)
+			_, found := scratchBindingByID(manifest.Bindings, ownerID)
+			consumers := consumersNamingScratchBinding(manifest.Consumers, ownerID)
+			if !owned || !found || len(consumers) == 0 {
+				// Ownerless, or an owning binding no consumer names — the
+				// crash-window artifact the graph reader fails closed on:
+				// carrying either would wedge every later restore on the
+				// fresh manifest. Let the pair die together, and leave every
+				// pin untouched: the death's only caller is the contended
+				// branch, so this owner's readable pin protects a directory
+				// whose lease a live holder still holds — stripping it
+				// lease-less left the collector free to sweep the directory
+				// out from under the holder (round 25). The reinstall this
+				// reset serves re-pins the same identity immediately, and
+				// when nothing does, the pin's protection ends with the next
+				// terminal release's tombstone, which is what authorizes the
+				// collector to remove it; until then the collector
+				// conservatively retains it with a diagnostic.
+				// Only a pin that cannot be READ aborts the death: committing
+				// past an unreadable pin strands an orphan with no diagnostic
+				// at all, and the free-lease branch would refuse the same
+				// read anyway (round 23).
+				return verifyDyingReferencePin(dir)
+			}
+			fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: kind})
+			// The reference travels with every binding whose slot names its
+			// directory, not only the lease owner: a wrapper-only slot is a
+			// distinct consumer's identity for the same retained allocation,
+			// and dropping it orphaned that consumer's row in the narrowing
+			// pass below — its next restore then minted fresh scratch instead
+			// of borrowing the directory it still held (round 24). Each carried
+			// binding narrows to the slots whose directories carried: its
+			// other slots may name pins the terminal release already removed,
+			// and a slot naming an unpinned directory fails the graph reader.
+			for _, binding := range manifest.Bindings {
+				for slotKind, slot := range binding.Slots {
+					if slotDir, err := canonicalScratchPath(slot.Dir); err == nil && slotDir == dir {
+						// Only the reference's own kind carries (round 67): a
+						// slot claiming the directory under another kind has
+						// no reference to pair with in the fresh manifest, and
+						// the graph reader fails closed on the mismatch —
+						// wedging every later restore of the root. The binding
+						// simply does not travel for this reference; if none
+						// of its slots match, the narrowing passes below drop
+						// its roles with it.
+						if slotKind != kind {
+							continue
+						}
+						narrowed, ok := carriedBindings[binding.BindingID]
+						if !ok {
+							narrowed = binding
+							narrowed.Slots = map[string]ScratchSlot{}
+							carriedBindings[binding.BindingID] = narrowed
+						}
+						narrowed.Slots[slotKind] = slot
+					}
+				}
+			}
+			return nil
+		}
+		// The terminal release that tombstoned this manifest removed every
+		// pin whose lease it could take; the ones left behind were contended
+		// by live owners, and Released:true was what made them collectible. A
+		// reinitialized manifest no longer claims to be released, so each
+		// surviving pin must be reconciled or the collector would retain its
+		// directory forever with a diagnostic on every sweep: finish the
+		// release for the pins whose lease is now free (remove the pin; the
+		// directory becomes ordinary), and carry a reference for the pins
+		// still held by a pin that is exactly this owner's identity for the
+		// directory and kind (the pair stays coherent, the holder keeps its
+		// protection, and the next terminal release collects them).
+		for _, ref := range manifest.References {
+			dir, err := canonicalScratchPath(ref.Dir)
+			if err != nil {
+				return err
+			}
+			lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+			if contended {
+				pin, pinErr := readScratchDirectoryPin(dir)
+				switch {
+				case os.IsNotExist(pinErr):
+					// A pin the crash window removed leaves nothing a carried
+					// reference could pair with: the reference dies with the
+					// manifest (round 16).
+				case pinErr != nil:
+					// An unreadable pin: the reset cannot tell whose protection
+					// it is. Abort with the tombstone intact rather than commit
+					// past an orphan the collector conservatively retains, with
+					// a diagnostic, forever; a later reset retries once the
+					// read heals (round 19).
+					return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
+				case pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+					// Exactly this owner's pin for the directory and kind: the
+					// pair is still real, and the carry keeps it coherent with
+					// the holder's protection.
+					if err := carryReference(dir, ref.Kind); err != nil {
+						return err
+					}
+				case pin.Owner == owner:
+					// Our own pin with a directory or kind this reference
+					// cannot verify. The lease is not ours to remove against,
+					// but the contention is transient — a live holder releases —
+					// so abort rather than commit past it: the tombstone stays,
+					// and the next reset reaches this reference through the
+					// free-lease branch, which removes the malformed pin and
+					// finishes the release (round 19).
+					return fmt.Errorf("sandbox: retention pin for %q does not identify this owner's pin for the directory and kind", dir)
+				default:
+					// A foreign pin under contention: leave the file — it
+					// belongs to its own manifest — and drop the reference
+					// (round 17).
+				}
+				continue
+			}
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					// The directory was already collected out from under the
+					// tombstone (Released pins read collectible), so the
+					// reference is stale: it dies with the manifest. Failing
+					// here would block every later reset on a directory that
+					// is never coming back.
+					continue
+				}
+				return fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, err)
+			}
+			// finishRelease removes this owner's pin now that the lease is
+			// ours, releasing the lease on the way out of a failure.
+			finishRelease := func() error {
+				if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
+					if releaseErr := lease.Release(); releaseErr != nil {
+						return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, errors.Join(rmErr, releaseErr))
+					}
+					return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
+				}
+				return nil
+			}
+			switch pin, pinErr := readScratchDirectoryPin(dir); {
+			case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+				// The real pair with its lease now free: finish the release.
+				if err := finishRelease(); err != nil {
+					return err
+				}
+			case os.IsNotExist(pinErr):
+				// Already absent; the reference dies with the manifest.
+			case pinErr == nil && pin.Owner == owner:
+				// Our own pin with a directory or kind this reference cannot
+				// verify — garbage this owner wrote, and the lease is ours
+				// right now, so finish the release for it exactly like the
+				// matched case: remove the malformed pin and let the
+				// reference die with the manifest. Leaving it would strand an
+				// orphan an unreleased manifest does not reference, which the
+				// collector conservatively retains, with a diagnostic, forever
+				// (round 19).
+				if err := finishRelease(); err != nil {
+					return err
+				}
+			case pinErr == nil:
+				// A foreign pin: leave the file — its coherence is its own
+				// manifest's business — and drop the reference, which no
+				// longer has a pair here (round 17).
+			default:
+				// An unreadable pin: the reset cannot even tell whose
+				// protection it is, and committing past it would strand the
+				// same retained-forever orphan. Abort with the tombstone
+				// intact; a later reset retries once the read heals (round
+				// 19).
+				if releaseErr := lease.Release(); releaseErr != nil {
+					return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, errors.Join(pinErr, releaseErr))
+				}
+				return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
+			}
+			if releaseErr := lease.Release(); releaseErr != nil {
+				return fmt.Errorf("sandbox: release retention lease for %q: %w", dir, releaseErr)
+			}
+		}
+		for _, id := range slices.Sorted(maps.Keys(carriedBindings)) {
+			fresh.Bindings = append(fresh.Bindings, carriedBindings[id])
+		}
+		// Consumer rows narrow in one pass after the carries, not once per
+		// carried reference: a consumer routinely names several bindings,
+		// and narrowing per carry let the second carry overwrite the
+		// first's roles, leaving a carried binding no consumer names — the
+		// exact graph the reader fails closed on (round 17). A row
+		// survives with exactly the roles that name carried bindings.
+		fresh.Consumers = make([]ScratchConsumerBinding, 0, len(manifest.Consumers))
+		for _, consumer := range manifest.Consumers {
+			narrowed := consumer
+			kept := false
+			if _, ok := carriedBindings[narrowed.CurrentBindingID]; ok {
+				kept = true
+			} else {
+				narrowed.CurrentBindingID = ""
+			}
+			if _, ok := carriedBindings[narrowed.ParentSharedBindingID]; ok {
+				kept = true
+			} else {
+				narrowed.ParentSharedBindingID = ""
+			}
+			if _, ok := carriedBindings[narrowed.WorktreeRestoreBindingID]; ok {
+				kept = true
+			} else {
+				narrowed.WorktreeRestoreBindingID = ""
+			}
+			abandoned := make([]string, 0, len(narrowed.AbandonedBindingIDs))
+			for _, id := range narrowed.AbandonedBindingIDs {
+				if _, ok := carriedBindings[id]; ok {
+					abandoned = append(abandoned, id)
+				}
+			}
+			if len(abandoned) != len(narrowed.AbandonedBindingIDs) {
+				narrowed.AbandonedBindingIDs = abandoned
+			}
+			if kept || len(abandoned) > 0 {
+				fresh.Consumers = append(fresh.Consumers, narrowed)
+			}
+		}
+		// Belt-and-suspenders (round 81): the raw commit below is the only
+		// writer that publishes without update validation, and a rebuilt
+		// graph the reader fails closed on wedges every later restore of the
+		// root — Released is false again, so no later reset repairs it. The
+		// carry machinery above guarantees this graph by construction; a
+		// violation here is a regression in that machinery, and aborting
+		// keeps the tombstone intact for a later reset to retry.
+		if err := validateResetScratchGraph(fresh); err != nil {
+			return fmt.Errorf("sandbox: the reset would commit an invalid retention graph: %w", err)
+		}
+		if err := writeScratchRetention(owner, fresh); err != nil {
+			// A write whose rename already committed can still report the
+			// post-rename failure class (writeScratchRetention's probe fires
+			// after atomicWritePrivateFile): the reset then committed —
+			// Released false with the carried rows at the advanced revision —
+			// and reporting reset=false aborts the install over a manifest
+			// the reset already repaired, leaving carried references pinned
+			// with no restored consumer to re-probe them. This closure holds
+			// the single-writer retention lock, so an unreleased manifest at
+			// exactly fresh's revision is this reset's commit; anything else
+			// keeps the error (round 45; the rounds 39/43 commit
+			// discriminators applied to the reset).
+			if current, rerr := loadScratchRetention(owner); rerr == nil &&
+				!current.Released && current.Revision == fresh.Revision {
+				out = current
+				reset = true
+				return nil
+			}
+			return err
+		}
+		out = fresh
+		reset = true
+		return nil
+	})
+	if err != nil {
+		return ScratchManifest{}, false, err
+	}
+	return out, reset, nil
+}
+
+// verifyDyingReferencePin checks the pin state of a reference whose owning
+// pair died with the tombstoned manifest. The death's only caller is the
+// reset's contended branch, so the pin protects a directory whose lease a
+// live holder still holds: a readable pin — this owner's own or a foreign
+// one — is LEFT UNTOUCHED. Stripping this owner's pin lease-less would leave
+// the holder's directory collectible while the holder still uses it; the
+// reinstall the reset serves re-pins the same identity immediately (the pin
+// write is idempotent for a matching owner, directory, and kind), and when
+// nothing republishes, the pin's protection ends with the next terminal
+// release's tombstone — which is what authorizes the collector to remove the
+// pin and its directory (round 25). A pin that is already absent has nothing
+// to protect. A pin that cannot be READ aborts the death — committing the
+// reference away past an unreadable pin strands an orphan with no diagnostic
+// at all, with no later reset left to retry (round 23) — the same contract
+// the contended and free-lease branches enforce on their own reads
+// (round 19).
+func verifyDyingReferencePin(dir string) error {
+	_, pinErr := readScratchDirectoryPin(dir)
+	if os.IsNotExist(pinErr) {
+		return nil
+	}
+	if pinErr != nil {
+		return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
+	}
+	// A readable pin — ours or foreign — is left exactly where it is.
+	return nil
+}
+
+// validateResetScratchGraph checks the rebuilt manifest the reset is about to
+// commit against the graph invariants its own reader fails closed on: a
+// carried reference must pair with a carried binding slot of the same kind, a
+// carried slot must name a carried reference of its kind, a consumer role
+// must name a carried binding, and a lease-owning binding must keep the
+// consumer role that names it. The reset never builds the reader's sanctioned
+// shapes — a "historical" reference with no owning slot, or a binding that
+// owns nothing — so the pairing is required in both directions here. The
+// carry machinery guarantees every invariant by construction; this gate
+// exists so a future regression in that machinery aborts the reset with the
+// tombstone intact instead of committing a manifest every later restore of
+// the root refuses (round 81's ask; the round-16 wedge class has no repair
+// once Released is false again).
+func validateResetScratchGraph(manifest ScratchManifest) error {
+	refKinds := make(map[string]string, len(manifest.References))
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return err
+		}
+		if _, dup := refKinds[dir]; dup {
+			return fmt.Errorf("retention reference %q is duplicated", ref.Dir)
+		}
+		refKinds[dir] = ref.Kind
+	}
+	bindingIDs := make(map[string]struct{}, len(manifest.Bindings))
+	ownsLease := make(map[string]struct{})
+	slotDirs := make(map[string]struct{})
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == "" {
+			return errors.New("retention manifest holds a binding without an id")
+		}
+		bindingIDs[binding.BindingID] = struct{}{}
+		for kind, slot := range binding.Slots {
+			dir, err := canonicalScratchPath(slot.Dir)
+			if err != nil {
+				return err
+			}
+			if refKinds[dir] != kind {
+				return fmt.Errorf("retention binding %q slot %q names %q, which no reference of that kind pins", binding.BindingID, kind, slot.Dir)
+			}
+			slotDirs[dir] = struct{}{}
+			if slot.OwnsLease {
+				ownsLease[binding.BindingID] = struct{}{}
+			}
+		}
+	}
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return err
+		}
+		if _, paired := slotDirs[dir]; !paired {
+			return fmt.Errorf("retention reference %q of kind %q is claimed by no carried binding slot", ref.Dir, ref.Kind)
+		}
+	}
+	named := make(map[string]struct{})
+	for _, consumer := range manifest.Consumers {
+		roles := []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID}
+		roles = append(roles, consumer.AbandonedBindingIDs...)
+		for _, id := range roles {
+			if id == "" {
+				continue
+			}
+			if _, ok := bindingIDs[id]; !ok {
+				return fmt.Errorf("retention consumer %q references unknown binding %q", consumer.SessionID, id)
+			}
+			named[id] = struct{}{}
+		}
+	}
+	for id := range ownsLease {
+		if _, ok := named[id]; !ok {
+			return fmt.Errorf("retention binding %q owns a lease but no consumer role names it", id)
+		}
+	}
+	return nil
+}
+
 // BorrowRetainedSessionScratch returns a lease-less handle to an already
 // retained directory so a distinct sharing consumer can point at the same
 // allocation without duplicating its lease. The directory must exist.
@@ -949,12 +1707,14 @@ func BorrowRetainedSessionScratch(dir string) (*SessionScratch, error) {
 	return &SessionScratch{Dir: canonical, base: filepath.Dir(canonical)}, nil
 }
 
-// scratchDirectoryRetained decides whether the collector must skip dir. A
-// missing pin means "not retained by this subsystem". A malformed pin, a
+// ScratchDirectoryRetained decides whether the collector must skip dir —
+// and whether a wrapper borrow may still install it: a directory the
+// collector may take is not one a restored environment may use (round 30).
+// A missing pin means "not retained by this subsystem". A malformed pin, a
 // missing/incomplete manifest, or a pin whose reference is absent is
 // conservatively retained with a diagnostic, never treated as collectible. A
 // Released tombstone authorizes ordinary collection.
-func scratchDirectoryRetained(dir string) (bool, error) {
+func ScratchDirectoryRetained(dir string) (bool, error) {
 	pin, err := readScratchDirectoryPin(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

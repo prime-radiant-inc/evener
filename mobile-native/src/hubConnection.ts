@@ -6,6 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { createConnectionStore } from "@evener/appwire-client/state/connection";
 import { createHubClient } from "./connection";
+import { recordClientReadyHub } from "./connectionIdentity";
 import { connectionFailure } from "./connectionRecovery";
 
 export interface HubConnection {
@@ -101,6 +102,19 @@ export function useHubConnection(
 				unsubscribe = currentConnection.onStateChange((next) => {
 					if (cancelled) return;
 					if (next === "ready") {
+						// The hub this client was dialed for is the one fact
+						// the display hooks cannot see for themselves (a
+						// route's key can outrun the connection's
+						// re-point), so the connection layer records it —
+						// and readiness is what proves it: a client still
+						// connecting, or whose dial failed, has established
+						// nothing, so the record is written here, on the
+						// ready transition itself. The state-change dispatch
+						// is synchronous: every listener runs before React
+						// schedules the render that observes ready, so the
+						// record lands before any ready consumer reads it
+						// (connectionIdentity, round 61).
+						recordClientReadyHub(currentConnection, activeId);
 						setError(null);
 						setFatal(false);
 					}

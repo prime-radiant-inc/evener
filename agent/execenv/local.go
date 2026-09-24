@@ -227,10 +227,21 @@ type LocalExecutionEnvironment struct {
 	retentionOwner   sandbox.ScratchOwner
 	retentionBinding sandbox.ScratchBinding
 	retentionSet     bool
+	// retentionPending records the scratch kinds whose retained owning slot
+	// adoption skipped because the lease was contended elsewhere in this
+	// process. While a kind is pending, PinOwnedScratch pins a fresh fallback
+	// mint as a bare protected reference without claiming the binding's slot,
+	// so the manifest row keeps naming the retained directory and the next
+	// refresh re-probes it. Guarded by scratchMu like the fields above.
+	retentionPending map[string]struct{}
 	// retentionPinErr is the first sticky scratch-retention pin/publish failure
 	// seen on this environment. Preparation surfaces it as a persistence error
 	// rather than trusting a partially pinned allocation.
 	retentionPinErr error
+
+	// scratchPinProbe observes each PinOwnedScratch attempt for deterministic
+	// lock-contention fixtures in same-package tests. Nil in production.
+	scratchPinProbe func(attempt int)
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's
@@ -827,6 +838,61 @@ func (e *LocalExecutionEnvironment) ReleaseSessionScratch(kind string) *sandbox.
 	e.scratchMu.Unlock()
 	e.invalidateSandboxFS()
 	return handle
+}
+
+// SettleScratchByReferences settles every per-session scratch allocation this
+// environment owns against referenced, the canonical directories a durable
+// retention manifest still names. An allocation whose directory is named is
+// retained: it is taken off the environment with its lease released and its
+// directory kept for a later resume to reacquire. Every other allocation is
+// disposed with its directory — it is this environment's own fresh mint, and
+// nothing will ever reacquire it. The world-usable temp container follows
+// the same whole-env verdict RetainSessionScratch and DisposeUnadoptedScratch
+// already give it: removed when no allocation was kept, since a failed launch
+// must not leak the container either, and its lease released for the
+// crashed-scratch sweep otherwise, because a process this environment
+// deliberately did not kill can outlive the settle. The caller must be
+// abandoning the environment: this takes the kept allocations off it, exactly
+// as ReleaseSessionScratch does.
+func (e *LocalExecutionEnvironment) SettleScratchByReferences(referenced map[string]struct{}) {
+	refs, err := e.ScratchRetentionReferences()
+	if err != nil {
+		// What the environment holds cannot be read, so no held directory can
+		// be told apart from a fresh mint: keep them all and give up only the
+		// leases, never the allocation a reference may name.
+		e.RetainSessionScratch()
+		return
+	}
+	kept := false
+	for _, ref := range refs {
+		dir, absErr := filepath.Abs(ref.Dir)
+		if absErr != nil {
+			continue
+		}
+		if _, ok := referenced[filepath.Clean(dir)]; !ok {
+			continue
+		}
+		kept = true
+		if handle := e.ReleaseSessionScratch(ref.Kind); handle != nil {
+			// Retain is the release side of the handoff: the lease goes, the
+			// directory stays for the later resume the manifest still names.
+			_ = handle.Retain()
+		}
+	}
+	if !kept {
+		e.DisposeUnadoptedScratch()
+		return
+	}
+	// Whatever the environment still owns is its own fresh mint: dispose it
+	// with its directory. The container's lease is released rather than its
+	// directory removed, for the same reason RetainSessionScratch keeps it.
+	e.DisposeSandboxScratch()
+	e.DisposeUnsandboxedScratch()
+	e.scratchMu.Lock()
+	if e.unsandboxedTmp != nil {
+		_ = e.unsandboxedTmp.Retain()
+	}
+	e.scratchMu.Unlock()
 }
 
 func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {

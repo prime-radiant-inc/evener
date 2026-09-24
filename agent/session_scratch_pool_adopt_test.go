@@ -89,7 +89,7 @@ func TestScratchRetentionConcurrentAdoption(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, err := root.adoptConsumerScratch(envs[i], fmt.Sprintf("consumer-%d", i))
+			_, _, err := root.adoptConsumerScratch(envs[i], fmt.Sprintf("consumer-%d", i))
 			results[i] = err
 		}(i)
 	}
@@ -105,6 +105,126 @@ func TestScratchRetentionConcurrentAdoption(t *testing.T) {
 			t.Fatalf("consumer-%d scratch = %q, want %q", i, got, dirs[i])
 		}
 		env.RetainSessionScratch()
+	}
+}
+
+// seedOneRetainedAllocation pins exactly one retained allocation onto root's
+// manifest — a pinned reference with its lease-owning binding and consumer row —
+// and frees the live lease so prepareRetainedScratch can reacquire it.
+func seedOneRetainedAllocation(t *testing.T, root *Session, dir string) (sandbox.ScratchOwner, string) {
+	t.Helper()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	base := t.TempDir()
+	scratch, err := sandbox.NewSessionScratch(base, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	binding := sandbox.ScratchBinding{
+		BindingID:      "E0",
+		OwnerSessionID: owner.RootSessionID,
+		WorkingDir:     dir,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true},
+		},
+	}
+	consumer := sandbox.ScratchConsumerBinding{SessionID: "consumer-0", CurrentBindingID: "E0"}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision, []sandbox.ScratchBinding{binding}, []sandbox.ScratchConsumerBinding{consumer}); err != nil {
+		t.Fatal(err)
+	}
+	// Release the live lease so prepareRetainedScratch reacquires the handle.
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	return owner, scratch.Dir
+}
+
+// TestPrepareRetainedScratchRetriesTransientLockRefusal pins round 50's
+// first Medium: the cold-restore open pass treated a fail-fast manifest-lock
+// refusal from OpenRetainedSessionScratch as fatal, so any concurrent
+// in-process writer holding the lock for the fsync scale of its transaction
+// failed an otherwise recoverable restore. The refusal is transient by
+// construction — the open must retry it with the shared bounded backoff
+// exactly like every other scratch writer.
+func TestPrepareRetainedScratchRetriesTransientLockRefusal(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, retainedDir := seedOneRetainedAllocation(t, root, dir)
+
+	// The first open is refused the way a concurrent in-process writer
+	// refuses it: the manifest lock is fail-fast and held only for the
+	// fsync scale of a transaction. The second attempt finds it released.
+	calls := 0
+	sandbox.SetScratchOpenProbeForTesting(func() error {
+		calls++
+		if calls == 1 {
+			return sandbox.ErrScratchRetentionLockHeld
+		}
+		return nil
+	})
+	t.Cleanup(func() { sandbox.SetScratchOpenProbeForTesting(nil) })
+
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("prepareRetainedScratch over a transient lock refusal: %v", err)
+	}
+	pool := root.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("prepareRetainedScratch published no pool")
+	}
+	if _, pooled := pool.handles[canonicalScratchDir(retainedDir)]; !pooled {
+		t.Fatal("the retried open never reacquired the retained allocation")
+	}
+	_ = owner
+}
+
+// TestPrepareRetainedScratchDeclinesWhenTheReleaseWinsTheWindow pins round
+// 50's second Medium: a terminal release committing between the preparation's
+// manifest load and the locked open made ErrScratchRetentionReleased fatal,
+// aborting the restore before installScratchRetention could reset the
+// tombstone and continue on fresh scratch. The decline must behave exactly
+// like the already-released short-circuit at the preparation's head: release
+// every handle acquired and publish nothing, so the install path's reset
+// runs.
+func TestPrepareRetainedScratchDeclinesWhenTheReleaseWinsTheWindow(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, _ := seedOneRetainedAllocation(t, root, dir)
+
+	// The terminal release lands inside the preparation-to-open window: the
+	// probe runs at the open's top, before its lock, so the open's in-lock
+	// revalidation reads the real tombstone and refuses.
+	sandbox.SetScratchOpenProbeForTesting(func() error {
+		if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+			t.Fatalf("fixture terminal release: %v", err)
+		}
+		return nil
+	})
+	t.Cleanup(func() { sandbox.SetScratchOpenProbeForTesting(nil) })
+
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("prepareRetainedScratch over a mid-window terminal release: %v", err)
+	}
+	if pool := root.retainedScratch.Load(); pool != nil {
+		t.Fatal("the declined retained restore published a pool: the reset path must run instead")
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Released {
+		t.Fatal("fixture: the release did not tombstone the manifest inside the window")
 	}
 }
 
@@ -182,7 +302,7 @@ func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
 
 			// Restore the sharing consumer BEFORE its owner's binding.
 			sharer := execenv.NewLocalExecutionEnvironment(dir)
-			adopted, err := root.adoptConsumerScratch(sharer, "consumer-sharer")
+			adopted, _, err := root.adoptConsumerScratch(sharer, "consumer-sharer")
 			if err != nil {
 				t.Fatalf("adopt sharing consumer: %v", err)
 			}
@@ -200,7 +320,7 @@ func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
 				return
 			}
 			ownerEnv := execenv.NewLocalExecutionEnvironment(dir)
-			if _, err := root.adoptConsumerScratch(ownerEnv, "consumer-owner"); err != nil {
+			if _, _, err := root.adoptConsumerScratch(ownerEnv, "consumer-owner"); err != nil {
 				t.Fatalf("adopt owner after sharing consumer: %v", err)
 			}
 			if got := ownerEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {

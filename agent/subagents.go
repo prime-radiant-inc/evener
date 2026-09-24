@@ -225,6 +225,19 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch 
 		return nil
 	}
 	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
+	// A child session never runs prepareRetainedScratch, so a pool its
+	// restore-adoption refresh seeded is process-local to this session alone:
+	// the root's terminal release detaches only the root's pool, and
+	// releaseRetirementScratch runs only under the retirement policy this
+	// teardown may not carry. Seal and detach it here so its reacquired
+	// leases cannot outlive the session pinning contended slots against every
+	// later cold restore (round 15). The seal rides the pool's own lock —
+	// the same contract the terminal, retirement, and release paths already
+	// keep — so a wrapper borrow holding the lock across its install either
+	// completes before the seal or declines inside its critical section
+	// instead of reporting success over it (rounds 30 and 34).
+	sess.sealRetainedScratch()
+	sess.detachRetainedScratch()
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that

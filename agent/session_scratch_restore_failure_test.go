@@ -175,14 +175,19 @@ func TestDelegateRestoreFailurePreservesAdoptedRetainedScratch(t *testing.T) {
 	if !referenced {
 		t.Fatalf("retained reference for %s was erased: %+v", scratch.Dir, after.References)
 	}
-	// Its lease is released rather than leaked, so a later restore can
-	// reacquire it.
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
-	if err != nil {
-		t.Fatalf("adopted retained scratch lease was not released: %v", err)
+	// Its lease is handed back to the pool rather than leaked: the failed
+	// restore settles by the manifest (round 30), and the settle's handoff
+	// for a transferred handle is the requeue — the next in-process restore
+	// of this child re-claims it without flock churn.
+	pool := root2.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the restored root has no retained-scratch pool after the failed delegate restore")
 	}
-	if err := handle.Retain(); err != nil {
-		t.Fatal(err)
+	pool.mu.Lock()
+	requeued := pool.handles[canonicalScratchDir(scratch.Dir)]
+	pool.mu.Unlock()
+	if requeued == nil {
+		t.Fatalf("adopted retained scratch %q was not requeued into the pool for the next restore", scratch.Dir)
 	}
 }
 
@@ -471,13 +476,19 @@ func TestDelegateSandboxedRestoreFailurePreservesAdoptedUnsandboxedScratch(t *te
 	if got, err := os.ReadFile(artifact); err != nil || string(got) != "durable" {
 		t.Fatalf("adopted retained artifact lost: bytes=%q err=%v", got, err)
 	}
-	owner := sandbox.ScratchOwner{StateDir: fixture.root.stateDir, RootSessionID: fixture.root.id}
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, fixture.ref)
-	if err != nil {
-		t.Fatalf("adopted retained scratch lease was not released: %v", err)
+	// Its lease is handed back to the pool rather than leaked: the failed
+	// restore settles by the manifest (round 30), and the settle's handoff
+	// for a transferred handle is the requeue — the next in-process restore
+	// of this child re-claims it without flock churn.
+	pool := fixture.root.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the restored root has no retained-scratch pool after the failed sandboxed restore")
 	}
-	if err := handle.Retain(); err != nil {
-		t.Fatal(err)
+	pool.mu.Lock()
+	requeued := pool.handles[canonicalScratchDir(fixture.ref.Dir)]
+	pool.mu.Unlock()
+	if requeued == nil {
+		t.Fatalf("adopted retained scratch %q was not requeued into the pool for the next restore", fixture.ref.Dir)
 	}
 }
 
@@ -728,5 +739,92 @@ func TestDelegatePartialAdoptionFailurePreservesRetainedScratch(t *testing.T) {
 		if !referenced {
 			t.Fatalf("retained reference for %s was erased: %+v", ref.Dir, after.References)
 		}
+	}
+}
+
+// --- roborev round 25: the poolless settle's transferred allocation ---
+
+// TestSettleFailedRestoreKeepsTransferredScratchWithoutAPool pins round 25's
+// first Medium. A partial adoption commits an earlier slot before failing on a
+// later one, leaving the environment holding a manifest-referenced allocation
+// the pool already handed over; when the pool then detaches — swept between
+// the adoption's legs and the settle — the settle's poolless created-
+// environment branch assumed every reference such an environment held was its
+// own fresh mint and disposed the transferred directory the manifest still
+// references, the exact leak this settle exists to prevent. The classification
+// is poolless by construction, so it must run for a detached pool too: the
+// transferred allocation is kept with its lease released for a later restore
+// to reacquire, and only the unreferenced mint dies with the failed
+// construction.
+func TestSettleFailedRestoreKeepsTransferredScratchWithoutAPool(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01R25DETACHED1"
+	const bindingID = "b-r25-detached"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	if err := os.WriteFile(filepath.Join(retainedDir, "durable.bin"), []byte("durable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The pool detaches after the partial adoption — the state a sweep between
+	// the adoption's legs and the settle leaves behind.
+	s.retainedScratch.Store(nil)
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+	// The partial adoption's committed leg: the retained unsandboxed
+	// allocation is transferred into the environment the failed construction
+	// created.
+	if err := env.SetScratchRetentionBinding(owner, bindingRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.RestoreSessionScratch(bindingID, sandbox.ScratchReference{Dir: retainedDir, Kind: sandbox.ScratchKindUnsandboxed}, slots[sandbox.ScratchKindUnsandboxed]); err != nil {
+		t.Fatalf("transfer the retained unsandboxed allocation: %v", err)
+	}
+
+	s.settleFailedRestoreScratch(env, consumerID, true)
+
+	// The transferred allocation survives the failed restore's teardown...
+	if got, err := os.ReadFile(filepath.Join(retainedDir, "durable.bin")); err != nil || string(got) != "durable" {
+		t.Fatalf("the settle destroyed the manifest-referenced transferred allocation %q: bytes=%q err=%v", retainedDir, got, err)
+	}
+	// ...and stays manifest-referenced for a later restore to reacquire.
+	after, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenced := false
+	for _, candidate := range after.References {
+		if filepath.Clean(candidate.Dir) == filepath.Clean(retainedDir) {
+			referenced = true
+		}
+	}
+	if !referenced {
+		t.Fatalf("the transferred allocation lost its manifest reference: %+v", after.References)
+	}
+	// The construction's own fresh mint dies with the failure.
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Fatalf("the settle kept the failed construction's fresh mint %q: %v", fresh, err)
+	}
+	// The settle released the transferred allocation's lease: a later restore
+	// reacquires it from the manifest.
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: retainedDir, Kind: sandbox.ScratchKindUnsandboxed})
+	if err != nil {
+		t.Fatalf("the settle did not release the transferred allocation's lease: %v", err)
+	}
+	if err := handle.Retain(); err != nil {
+		t.Fatal(err)
 	}
 }
