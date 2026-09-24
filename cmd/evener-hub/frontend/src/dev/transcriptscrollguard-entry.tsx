@@ -481,6 +481,46 @@ async function growContentAndSettle(): Promise<
   }
 }
 
+// The scroll PORT shrinking under a reader at the bottom: the pane header's
+// cadence trace appears (a 10px svg beside the 6px dot) the first time the
+// session clock ticks with a frame in its window, growing the header 4px and
+// shrinking the transcript's port 671 -> 667 with scrollTop held - no scroll
+// event, no content resize. Left alone the reader sits 4px short, which
+// isAtBottom's rounding tolerance still calls "at the bottom", so no pill.
+// The trace's own arrival is timed by a 3s interval (the guard hit it only
+// when contention stretched the run past the tick); this phase stages the same
+// header growth deterministically, on the real header's cadence slot.
+const PORT_SHRINK_PX = 4;
+const SHRINK_SETTLE_FRAMES = 30;
+const SHRINK_TRIPWIRE_MS = 8_000;
+async function shrinkPortAndSettle(): Promise<
+  { settled: boolean; tail: TranscriptScrollMetrics[]; beforeClientHeight: number } & TranscriptScrollMetrics
+> {
+  const el = scrollElement();
+  const before = geometryOf(el);
+  const slot = document.querySelector<HTMLElement>('[data-testid="pane-cadence-slot"]');
+  if (!slot) throw new Error("transcript harness: the pane header's cadence slot is not mounted");
+  const grown = slot.getBoundingClientRect().height + PORT_SHRINK_PX;
+  slot.style.minHeight = `${grown}px`;
+
+  const deadline = performance.now() + SHRINK_TRIPWIRE_MS;
+  let stableFrames = 0;
+  const tail: TranscriptScrollMetrics[] = [];
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("scroll port shrink");
+    const m = metrics();
+    tail.push(m);
+    if (tail.length > SHRINK_SETTLE_FRAMES) tail.shift();
+    const shrunk = m.clientHeight < before.clientHeight;
+    if (shrunk && !m.pill && Math.abs(m.bottomGap) <= 1) stableFrames++;
+    else stableFrames = 0;
+    const measured = { tail, beforeClientHeight: before.clientHeight };
+    if (stableFrames >= SHRINK_SETTLE_FRAMES) return { ...measured, settled: true, ...m };
+    if (performance.now() > deadline) return { ...measured, settled: false, ...m };
+  }
+}
+
 declare global {
   interface Window {
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
@@ -489,6 +529,7 @@ declare global {
     appendLargeTurns: typeof appendLargeTurns;
     clickPillAndSettle: typeof clickPillAndSettle;
     growContentAndSettle: typeof growContentAndSettle;
+    shrinkPortAndSettle: typeof shrinkPortAndSettle;
   }
 }
 
@@ -498,3 +539,4 @@ window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
 window.appendLargeTurns = appendLargeTurns;
 window.clickPillAndSettle = clickPillAndSettle;
 window.growContentAndSettle = growContentAndSettle;
+window.shrinkPortAndSettle = shrinkPortAndSettle;
