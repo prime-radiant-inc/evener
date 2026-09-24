@@ -1419,10 +1419,7 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   // contributed nothing; a side holding every input contributed
   // everything; absorbed tool results answer through the fold's own
   // supersession test, recorded where the absorption happened.
-  itemSideContributes: (
-    item: ItemModel,
-    side: (input: ItemModel) => boolean,
-  ) => boolean;
+  itemSideContributes: (item: ItemModel, side: (input: ItemModel) => boolean) => boolean;
 }
 
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
@@ -1927,10 +1924,7 @@ function itemSideContributesOf(
     const results = context?.toolResultFolds.get(item) ?? [];
     const keptCalls = calls.filter((call) => !side(call));
     const keptResults = results.filter((result) => !side(result));
-    if (
-      keptCalls.length === calls.length &&
-      keptResults.length === results.length
-    ) {
+    if (keptCalls.length === calls.length && keptResults.length === results.length) {
       return false;
     }
     // The item itself came from the named side when every identity leaf
@@ -1943,16 +1937,10 @@ function itemSideContributesOf(
       spine: ItemModel,
       groupCalls: readonly ItemModel[],
       groupResults: readonly ItemModel[],
-    ): ItemModel =>
-      groupResults.length > 0
-        ? toolRewriteOf(spine, groupCalls, groupResults, side)
-        : spine;
+    ): ItemModel => (groupResults.length > 0 ? toolRewriteOf(spine, groupCalls, groupResults, side) : spine);
     const full = finish(foldItemSpine(calls), calls, results);
     const without = finish(foldItemSpine(keptCalls), keptCalls, keptResults);
-    return (
-      !sameModelFields(full, without) ||
-      itemTextPresence(full) !== itemTextPresence(without)
-    );
+    return !sameModelFields(full, without) || itemTextPresence(full) !== itemTextPresence(without);
   };
 }
 
