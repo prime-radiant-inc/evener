@@ -216,6 +216,10 @@ type daemonRetirementProcessEvents struct {
 	// watchdog scales its hang tripwire to this observation rather than tripping
 	// on a fixed budget.
 	slowestReaction time.Duration
+	// carriedReaction is the slowest reaction a prior daemon of the same fixture
+	// demonstrated. A replacement stream starts from it, so a resume after a slow
+	// predecessor does not fall back to the bare floor.
+	carriedReaction time.Duration
 	// lastEventAt stamps the previous arrival, so every inter-event gap the
 	// daemon completes is itself an observed reaction.
 	lastEventAt time.Time
@@ -280,6 +284,23 @@ func (e *daemonRetirementProcessEvents) observeReactionLocked(d time.Duration) {
 	if d > e.slowestReaction {
 		e.slowestReaction = d
 	}
+}
+
+// observedReaction is the slowest per-step reaction this stream has seen.
+func (e *daemonRetirementProcessEvents) observedReaction() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.slowestReaction
+}
+
+// daemonRetirementCarriedReaction is the slowest per-step reaction among prior
+// streams: the observation a replacement daemon's stream starts from.
+func daemonRetirementCarriedReaction(prior []*daemonRetirementProcessEvents) time.Duration {
+	var slowest time.Duration
+	for _, events := range prior {
+		slowest = max(slowest, events.observedReaction())
+	}
+	return slowest
 }
 
 // watchdogBudget is the hang-tripwire budget for a wait on this stream.
@@ -429,6 +450,43 @@ func TestDaemonRetirementWatchdogScalesWithObservedReaction(t *testing.T) {
 		<-done
 		if err != nil {
 			t.Fatalf("the scaled watchdog tripped on a slow-but-correct reaction: %v", err)
+		}
+	})
+}
+
+// TestDaemonRetirementWatchdogCarriesReactionToReplacementStream proves a
+// replacement daemon's stream does not fall back to the bare floor: the fixture
+// seeds it with the slowest reaction a prior daemon demonstrated, so a resume
+// after a slow predecessor keeps the load-aware tripwire. Without the carry the
+// replacement's first event wait would trip on this delayed reaction exactly
+// like the fixed budget it replaced.
+func TestDaemonRetirementWatchdogCarriesReactionToReplacementStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const floor = 200 * time.Millisecond
+		const priorReaction = 100 * time.Millisecond
+		const injectedReaction = 500 * time.Millisecond
+		prior := newDaemonRetirementProcessEvents()
+		prior.noteReaction(priorReaction)
+		replacement := newDaemonRetirementProcessEvents()
+		replacement.testOnlyBaseBudget = floor
+		replacement.carriedReaction = daemonRetirementCarriedReaction([]*daemonRetirementProcessEvents{prior})
+		replacement.testOnlyAppendDelay = func(ev daemonRetirementProcessEvent) time.Duration {
+			if ev.Kind == "beat" && ev.Name == "claim_consumed" {
+				return injectedReaction
+			}
+			return 0
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			replacement.add(daemonRetirementProcessEvent{Kind: "beat", Name: "claim_consumed"})
+		}()
+		_, err := replacement.waitFor("replacement stream claim_consumed", func(ev daemonRetirementProcessEvent) bool {
+			return ev.Kind == "beat" && ev.Name == "claim_consumed"
+		})
+		<-done
+		if err != nil {
+			t.Fatalf("the replacement stream did not inherit the family observation: %v", err)
 		}
 	})
 }
@@ -600,6 +658,7 @@ func (f *daemonRetirementProcessFixture) launchCommand(_ string, args, env []str
 		}
 		return cmd.Process.Kill()
 	}
+	handle.events.carriedReaction = f.observedSlowestReactionLocked()
 	f.handles = append(f.handles, handle)
 	return cmd
 }
@@ -709,6 +768,23 @@ func (f *daemonRetirementProcessFixture) watchdogBudget() time.Duration {
 		budget = max(budget, handle.events.watchdogBudget())
 	}
 	return budget
+}
+
+// observedSlowestReactionLocked collects this fixture's daemon streams for
+// daemonRetirementCarriedReaction. Callers must hold f.mu.
+func (f *daemonRetirementProcessFixture) observedSlowestReactionLocked() time.Duration {
+	streams := make([]*daemonRetirementProcessEvents, 0, len(f.handles))
+	for _, handle := range f.handles {
+		streams = append(streams, handle.events)
+	}
+	return daemonRetirementCarriedReaction(streams)
+}
+
+// observedSlowestReaction is observedSlowestReactionLocked without the lock.
+func (f *daemonRetirementProcessFixture) observedSlowestReaction() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.observedSlowestReactionLocked()
 }
 
 // advance drives the daemon's fake clock and waits for the pipe
@@ -1289,6 +1365,7 @@ func (f *daemonRetirementProcessFixture) startDirectServe(t *testing.T, timeoutA
 		childEvt: evtW,
 		waitErr:  make(chan error, 1),
 	}
+	handle.events.carriedReaction = f.observedSlowestReaction()
 	handle.kill = func() error {
 		if cmd.Process == nil {
 			return nil
