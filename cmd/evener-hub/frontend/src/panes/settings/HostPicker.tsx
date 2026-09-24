@@ -7,76 +7,16 @@
 // A host that has left the registry keeps an option, so the current selection
 // stays visible; the pane consuming the selection decides what an unknown host
 // renders (CredentialsHostScope says so honestly).
-import type { HostRow } from "@evener/appwire-client";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useConnectionStore } from "../../stores/connection";
 import { isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
-import { type HostsLoadState, hostIdentity, hostsStore, useHostsStore } from "../../stores/hosts";
+import { hostsStore, isConfiguredHost, selectableHostRows, useHostsStore } from "../../stores/hosts";
 import { FormRow, Select, type SelectOption } from "../../widgets";
 import { HOST_POLL_MS } from "./sections/hosts";
 import { useConnectedEffect } from "./sections/useConnectedEffect";
 import { useSettingsHost } from "./settingsHost";
 
 export const HOST_SELECT_ID = "settings-host";
-
-/** selectableHostRows is the registry's non-removed rows, or none while it is
- * still loading or has failed. Shared by the picker and by the panes that must
- * decide what an unknown host means. */
-export function selectableHostRows(load: HostsLoadState): HostRow[] {
-  return load.phase === "ready" ? load.hosts.filter((row) => !row.removed) : [];
-}
-
-/** isConfiguredHost answers whether the registry currently lists `host`. A
- * false while the registry is still unread is ambiguous, so callers pair it
- * with the load phase (see CredentialsHostScope). */
-export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
-  return selectableHostRows(load).some((row) => row.name === host);
-}
-
-/** hostIdentityFor is the registry's identity for `host` (hosts.ts's
- * hostIdentity), or null while the registry does not list it - still being read,
- * removed, or not configured at all. Cached rows are only the current host's
- * while this matches the identity they were read under. */
-export function hostIdentityFor(load: HostsLoadState, host: string): string | null {
-  const row = selectableHostRows(load).find((candidate) => candidate.name === host);
-  return row === undefined ? null : hostIdentity(row);
-}
-
-/** HostRegistryFacts is what a host-scoped pane needs from the registry, as of
- * the last READY answer. */
-export interface HostRegistryFacts {
-  /** The identity the host's cached rows are keyed on - the configured entry, so
-   * live state cannot invalidate a good listing. */
-  identity: string | null;
-  /** The host's attachment state. LIVE data, deliberately kept OUT of the
-   * identity (folding it in would invalidate a listing on every detach) and used
-   * only to decide when a failed read is worth retrying. */
-  attached: boolean;
-}
-
-/** useHostRegistryFacts is the registry's identity and attachment state for
- * `host`, remembering the last READY answer. A registry re-read that fails, or is
- * still in flight, cannot say the name now means another host or that the host is
- * gone - so it must not discard what the last successful answer established, nor
- * flap the remote reads keyed on it (a flap re-issues the host's listing once per
- * phase). Only a ready answer replaces it. */
-export function useHostRegistryFacts(load: HostsLoadState, host: string): HostRegistryFacts {
-  const known = useRef<{ host: string; facts: HostRegistryFacts }>({
-    host,
-    facts: { identity: null, attached: false },
-  });
-  if (known.current.host !== host || load.phase === "ready") {
-    const row = selectableHostRows(load).find((candidate) => candidate.name === host);
-    known.current = {
-      host,
-      // hostIdentityFor is the same identity query the picker's own isConfigured
-      // check resolves against, so the settings layer has ONE identity
-      // computation instead of two that could drift (L2, round 6).
-      facts: { identity: hostIdentityFor(load, host), attached: row?.attached ?? false },
-    };
-  }
-  return known.current.facts;
-}
 
 export function HostPicker() {
   const { host, selectHost } = useSettingsHost();

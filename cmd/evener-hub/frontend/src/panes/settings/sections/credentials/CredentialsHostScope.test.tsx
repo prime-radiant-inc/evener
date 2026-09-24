@@ -360,10 +360,10 @@ test("a transition that orphans the first read never reads as 'no instances'", a
   expect(await screen.findByText("on-beta")).toBeTruthy();
 });
 
-// L-1: with no successful read, readIdentity is null and the pane is pending -
-// but an ERROR is an answer, and a loading skeleton beside it reads as "still
-// working" when the host has already refused. The skeleton is for the state it
-// was written for: nothing (and no failure) yet.
+// L-1: with no successful read the partition is pending (read is false) - but an
+// ERROR is an answer, and a loading skeleton beside it reads as "still working"
+// when the host has already refused. The skeleton is for the state it was written
+// for: nothing (and no failure) yet.
 test("an error without a successful read shows no loading skeleton", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
@@ -382,11 +382,10 @@ test("an error without a successful read shows no loading skeleton", async () =>
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
 });
 
-// M-1 (round 4): attachment is LIVE registry data, so it is deliberately not part
-// of the cache identity - but a read keyed on host/identity/connection alone never
-// retries, so an offline host that fails and later attaches stays failed with no
-// retry control. The attachment transition is the trigger; the identity is
-// unchanged by it (that is the point).
+// M-1 (round 4): attachment is live registry data, so a host that attaches
+// advances the registry revision - but a read keyed on host/connection alone never
+// retried, so an offline host that fails and later attaches stayed failed with no
+// retry control. The attachment change is the trigger.
 test("an attachment transition retries a failed remote read", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
@@ -481,7 +480,10 @@ test("a fresh deep-link does not read the remote host until the registry names i
 // The gate must not turn a registry that never answers into an eternal skeleton:
 // once the registry has FAILED, no identity is coming, so the pane reads anyway
 // and shows the host's own refusal instead of hanging.
-test("a registry read that fails still shows the host's own refusal", async () => {
+// With the registry unread there is no registration to check a listing against,
+// so the pane says exactly that and offers the registry's own read to retry - it
+// does not read a host whose registration it cannot check.
+test("a registry read that fails shows the honest unverifiable state", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => {
@@ -494,7 +496,8 @@ test("a registry read that fails still shows the host's own refusal", async () =
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  expect(await screen.findByText(/host "beta" is not attached/)).toBeTruthy();
+  expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
 });
 
 // The fallback's SUCCESS path must be honest too: with a failed registry no
@@ -541,10 +544,10 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
   expect(await screen.findByText("on-beta")).toBeTruthy();
 });
 
-// M4 (round 6): useHostRegistryFacts retains the last READY identity across a
-// later registry failure, so the phase alone is the wrong key for "unverifiable":
-// it can render the registration-unknown banner beside a listing that is in fact
-// verified. The state is keyed on the identity being absent, not the phase.
+// M4 (round 6): a registry re-read that FAILS leaves the registry revision where
+// it was, so a listing already read under it is still current and verified: the
+// phase alone is the wrong key for "unverifiable", and the banner must not sit
+// beside a listing the registry did name.
 test("a retained identity keeps a verified listing shown when the registry later fails", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
@@ -555,8 +558,8 @@ test("a retained identity keeps a verified listing shown when the registry later
   render(<CredentialsHostScope sectionId="credentials" />);
   await screen.findByText("on-beta");
 
-  // The registry's next read fails. The last ready identity is retained, so the
-  // rows are still tied to a known registration.
+  // The registry's next read fails. The revision does not move for a failure, so
+  // the rows are still read under the current one.
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
 
   expect(screen.queryByText(/Couldn't check/)).toBeNull();

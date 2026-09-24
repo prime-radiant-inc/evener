@@ -7,10 +7,10 @@ import type {
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import { CONNECTION_REPLACED_ERROR } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { CONNECTION_REPLACED_ERROR, WireError } from "@evener/appwire-client";
+import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
@@ -24,8 +24,9 @@ import {
   StaleListingRefusal,
   staleListingHeld,
   useCredentialsStore,
+  useHostInstances,
 } from "./credentials";
-import { hostIdentity, hostsStore } from "./hosts";
+import { hostsStore } from "./hosts";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 function connectFakeClient(): FakeClient {
@@ -2619,100 +2620,27 @@ describe("notification-triggered refetch", () => {
     expect(listSpy.mock.calls.length).toBe(readsBefore + 1);
   });
 
-  // The partition map is keyed by NAME, so the identity a read was issued under
-  // is the only thing that says whose rows these are. A name that now means a
-  // different host must not keep the previous registration's rows on screen.
-  test("rows read under one registry identity are not kept for another", async () => {
+  // A read is stamped with the registry revision it was issued under, so a
+  // snapshot that arrives afterwards - including the registry's FIRST answer -
+  // supersedes it, and nothing read under an older one is ever current.
+  test("a read records the registry revision it was issued under", async () => {
     const fake = connectFakeClient();
     serveRemoteList(fake, REMOTE_LIST);
-    await fetchHost("buildbox", "entry-a");
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe("entry-a");
-
-    let finish!: (value: HostForwardedResult) => void;
-    fake.on(
-      "evener/host/request",
-      () =>
-        new Promise<HostForwardedResult>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    const read = fetchHost("buildbox", "entry-b");
-    await Promise.resolve();
-    // The previous host's rows are gone rather than shown while this read is out.
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([]);
-
-    const replaced: InstanceListResponse = {
-      instances: [{ ...REMOTE_INSTANCE, name: "replaced-anthropic" }],
-      availableProviders: [],
-    };
-    finish(replaced as unknown as HostForwardedResult);
-    await read;
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe("entry-b");
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(replaced.instances);
-  });
-
-  // Removal is the sharpest form of "this name is not that host any more", and
-  // the registry's ready snapshot is what says so. Re-registering the name later
-  // therefore starts from nothing rather than from the old registration's rows.
-  test("a removed host's partition is forgotten, so a re-registered name starts empty", async () => {
-    const fake = connectFakeClient();
-    serveRemoteList(fake, REMOTE_LIST);
-    await fetchHost("buildbox", "entry-a");
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
-
-    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
-
-    expect(hostInstancesStore.getState().hosts).toEqual({});
     hostsStore.getState().resetForTests();
-  });
 
-  // The contested half of the identity question: a name can be removed and
-  // re-registered, and a read issued by the PRIOR registration can still be in
-  // flight when that happens. Forgetting the partition has to refuse that
-  // answer too, or it re-creates the partition the drop just removed.
-  test("an answer in flight when the host is removed cannot re-create its partition", async () => {
-    const fake = connectFakeClient();
-    let finish!: (value: HostForwardedResult) => void;
-    fake.on(
-      "evener/host/request",
-      () =>
-        new Promise<HostForwardedResult>((resolve) => {
-          finish = resolve;
-        }),
+    await fetchHost("buildbox"); // issued while the registry is unread
+    const issued = hostPartition(hostInstancesStore.getState(), "buildbox");
+    expect(issued.registryRevision).toBe(0);
+    expect(hostsStore.getState().revision).toBe(0);
+
+    // The registry answers, naming the host: that is a different answer, so the
+    // revision advances and the rows read before it are no longer current.
+    hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+    expect(hostsStore.getState().revision).toBe(1);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).not.toBe(
+      hostsStore.getState().revision,
     );
-    const read = fetchHost("buildbox", "entry-a");
-    await Promise.resolve();
-
-    // Removed: the registry's ready snapshot no longer lists the name at all.
-    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
-    expect(hostInstancesStore.getState().hosts).toEqual({});
-
-    // The old answer lands last. It was issued by a registration that is gone.
-    finish(REMOTE_LIST as unknown as HostForwardedResult);
-    await read;
-
-    expect(hostInstancesStore.getState().hosts).toEqual({});
     hostsStore.getState().resetForTests();
-  });
-
-  // Adjudication evidence, pinned in code: the listing carries no registration
-  // generation, and `removed` is live state rather than identity - so a host
-  // removed and re-added with the identical entry is, to this frontend, exactly
-  // the same host. Only a changed entry is a different one.
-  test("a re-registration with the identical entry is the same identity", () => {
-    const configured: HostRow = {
-      name: "buildbox",
-      address: "a.example",
-      user: "j",
-      roots: [],
-      origin: "sidecar",
-      attached: true,
-      midAttach: false,
-      removed: false,
-    };
-    expect(hostIdentity({ ...configured, removed: true, attached: false })).toBe(hostIdentity(configured));
-    expect(hostIdentity({ ...configured, attached: false })).toBe(hostIdentity(configured));
-    expect(hostIdentity({ ...configured, address: "b.example" })).not.toBe(hostIdentity(configured));
   });
 });
 
@@ -2722,78 +2650,207 @@ function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostR
   return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
 }
 
-// L2 (roborev round 5): an identity-less read (the spawn form's fetchHost(host),
-// stores/credentials.ts:223's default) recorded NO identity, and survivesRegistry
-// treated "no identity" as proof of no mismatch - so a name re-registered as a
-// DIFFERENT host kept the previous registration's rows for that consumer. Every
-// read now records the registration the registry names at read time.
-test("an identity-less read does not survive a re-registration under the same name", async () => {
+function remoteReads(fake: FakeClient): number {
+  return fake.calls.filter((call) => call.method === "evener/host/request").length;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+// --- The registry-revision rule (round 7 consolidation) ----------------------
+//
+// ONE rule ties every remote listing to the registry: a partition is current only
+// while it was read under the registry's CURRENT revision, and useHostInstances is
+// the one place a host is (re)read - when a consumer watches a host the registry
+// names and there is no partition for the current revision. Every corner below is
+// that same rule, entered by a different door; nothing tracks dropped partitions.
+
+// (a) The name is re-registered as a different machine.
+test("a re-registered host's rows are withheld and re-read", async () => {
   const fake = connectFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
-  const first = registryRow({ name: "buildbox", address: "a.example" });
-  hostsStore.setState({ load: { phase: "ready", hosts: [first] } });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] } });
 
-  await fetchHost("buildbox"); // no identity handed, like panes/spawn/useProviderSetup
-  const partition = hostPartition(hostInstancesStore.getState(), "buildbox");
-  expect(partition.instances).toEqual([REMOTE_INSTANCE]);
-  expect(partition.readIdentity).toBe(hostIdentity(first));
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
 
-  // The name now means a different host: the previous registration's rows are
-  // dropped and the store re-reads the name under the registration it names now,
-  // so the rows never carry over even for an identity-less consumer.
-  const second = registryRow({ name: "buildbox", address: "b.example" });
-  hostsStore.setState({ load: { phase: "ready", hosts: [second] } });
+  // The name now means a different machine, and the new host's listing is held
+  // open so the withholding is observable.
+  const replaced = deferred<HostForwardedResult>();
+  const replacedList: InstanceListResponse = {
+    instances: [{ ...REMOTE_INSTANCE, name: "replaced-anthropic" }],
+    availableProviders: [],
+  };
+  fake.on("evener/host/request", () => replaced.promise);
+  await act(async () => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] },
+    });
+  });
 
-  await vi.waitFor(() =>
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe(hostIdentity(second)),
-  );
+  // The previous registration's rows are not shown, and the store re-reads the
+  // name under the registry's new snapshot.
+  expect(result.current.instances).toEqual([]);
+  expect(remoteReads(fake)).toBe(2);
+
+  await act(async () => replaced.resolve(replacedList as unknown as HostForwardedResult));
+  await waitFor(() => expect(result.current.instances).toEqual(replacedList.instances));
   hostsStore.getState().resetForTests();
 });
 
-// The trap the fix must avoid: making "no identity" mean "does not survive a
-// ready snapshot" would drop an identity-less partition on every poll tick. Two
-// ready snapshots of the SAME registration must keep the rows and issue no new
-// read.
-test("an identity-less read survives two ready snapshots of the same registration without re-reading", async () => {
+// (b) The host is removed and re-added while a consumer is mounted.
+test("a host removed and re-added while mounted is read again", async () => {
   const fake = connectFakeClient();
-  const row = registryRow({ name: "buildbox", address: "a.example" });
-  hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
-  serveRemoteList(fake, REMOTE_LIST);
+  let configured = true;
+  fake.on("evener/host/request", () => {
+    if (!configured) throw new WireError("host buildbox is not configured", -32000);
+    return REMOTE_LIST as unknown as HostForwardedResult;
+  });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
 
-  await fetchHost("buildbox");
-  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
 
-  // The registry's poll republishes the SAME registration as a fresh snapshot.
-  hostsStore.setState({ load: { phase: "ready", hosts: [{ ...row }] } });
+  // Removed: its rows are dropped and the hub refuses the name, so nothing is
+  // shown - the old registration is not left on screen.
+  configured = false;
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+  });
+  await waitFor(() => expect(remoteReads(fake)).toBe(2));
+  expect(result.current.instances).toEqual([]);
 
-  expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
-  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+  // Re-added: the store reads it again, with no remount and no bookkeeping.
+  configured = true;
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+  });
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(3);
   hostsStore.getState().resetForTests();
 });
 
-// M3 (round 6): a read issued while the registry was still unread recorded no
-// identity, and survivesRegistry treated "no identity" as proof of no mismatch -
-// so those rows survived every later registration, including a name re-registered
-// as a different host. A read is now tied to the registration it was issued
-// under, and an untied read does not survive the registry's first ready snapshot.
-test("a read issued while the registry was unread does not survive its first ready snapshot", async () => {
+// (c) The connection's client is replaced while a registry read is in flight.
+// The superseded client's answer must not publish over the replacement's view.
+test("a registry read in flight across a client swap cannot publish the old hub's hosts", async () => {
+  const a = connectFakeClient();
+  const releaseA = deferRequest<unknown>(a, "evener/host/list");
+  const fromA = hostsStore.getState().fetch();
+  await Promise.resolve();
+
+  // Replaced before A answers, with B's own registry read also still out.
+  const b = connectFakeClient();
+  const releaseB = deferRequest<unknown>(b, "evener/host/list");
+  const fromB = hostsStore.getState().fetch();
+  await Promise.resolve();
+
+  await act(async () => releaseA({ hosts: [registryRow({ name: "oldhub", address: "a.example" })] }));
+  await fromA;
+  const mid = hostsStore.getState().load;
+  expect(mid.phase === "ready" && mid.hosts.some((row) => row.name === "oldhub")).toBe(false);
+
+  await act(async () => releaseB({ hosts: [registryRow({ name: "newhub", address: "b.example" })] }));
+  await fromB;
+  const settled = hostsStore.getState().load;
+  expect(settled.phase === "ready" && settled.hosts.map((row) => row.name)).toEqual(["newhub"]);
+  hostsStore.getState().resetForTests();
+});
+
+// The rule's cost ceiling: an unchanged snapshot advances no revision, so the
+// poll cadence re-reads nothing.
+test("an unchanged registry snapshot never re-reads a host", async () => {
   const fake = connectFakeClient();
   serveRemoteList(fake, REMOTE_LIST);
-  expect(hostsStore.getState().load.phase).toBe("loading");
-
-  await fetchHost("buildbox"); // identity-less, registry unread
-  expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBeNull();
-
-  // The registry answers, naming the host. The untied rows cannot be attributed
-  // to that registration, so they are dropped and re-read under it.
-  const row = registryRow({ name: "buildbox", address: "a.example" });
+  const row = registryRow({ name: "buildbox" });
   hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
 
-  await vi.waitFor(() =>
-    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe(hostIdentity(row)),
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+
+  // Two quiet polls carrying the same registration as fresh arrays, the way the
+  // wire does: the read count must not move.
+  fake.on("evener/host/list", () => ({ hosts: [{ ...row }] }));
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+
+  expect(remoteReads(fake)).toBe(1);
+  expect(result.current.instances).toEqual([REMOTE_INSTANCE]);
+  hostsStore.getState().resetForTests();
+});
+
+// The read waits for a registry read that is already on its way, rather than
+// reading under an answer that is about to be replaced (one wasted request per
+// deep-link otherwise).
+test("a remote host waits for a registry read that is in flight", async () => {
+  const fake = connectFakeClient();
+  const registry = deferRequest<unknown>(fake, "evener/host/list");
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.getState().resetForTests();
+  const reading = hostsStore.getState().fetch();
+  await act(async () => {});
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await act(async () => {});
+  expect(remoteReads(fake)).toBe(0);
+  expect(result.current.instances).toEqual([]);
+
+  await act(async () => {
+    registry({ hosts: [registryRow({ name: "buildbox" })] });
+  });
+  await reading;
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+  hostsStore.getState().resetForTests();
+});
+
+// An answer that lands after the registry moved on was issued under the old
+// snapshot: it is committed to the partition but never shown, and the read for
+// the current snapshot is what a consumer sees.
+test("an answer issued under an older registry snapshot is never shown", async () => {
+  const fake = connectFakeClient();
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] } });
+  const answers: Array<(value: HostForwardedResult) => void> = [];
+  fake.on(
+    "evener/host/request",
+    () =>
+      new Promise<HostForwardedResult>((resolve) => {
+        answers.push(resolve);
+      }),
   );
-  expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
-  // The untied read plus the store's own re-read under the registration.
-  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(2);
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await act(async () => {});
+  expect(answers).toHaveLength(1);
+
+  // The registry re-registers the name while that read is out.
+  await act(async () => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] },
+    });
+  });
+  expect(answers).toHaveLength(2);
+
+  // The superseded answer lands, and is withheld.
+  await act(async () => {
+    answers[0]?.(REMOTE_LIST as unknown as HostForwardedResult);
+  });
+  expect(result.current.instances).toEqual([]);
+
+  await act(async () => {
+    answers[1]?.(REMOTE_LIST as unknown as HostForwardedResult);
+  });
+  expect(result.current.instances).toEqual([REMOTE_INSTANCE]);
   hostsStore.getState().resetForTests();
 });

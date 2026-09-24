@@ -12,10 +12,11 @@ import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
+import { useEffect } from "react";
 import { createStore, useStore } from "zustand";
-import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
+import { type ConnectionStoreState, connectionStore, onConnectionNotification, useConnectionStore } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
-import { type HostsLoadState, hostIdentity, hostsStore } from "./hosts";
+import { hostsStore, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 
 export {
@@ -77,23 +78,18 @@ export interface HostInstanceState {
   writesRefused: boolean;
   loading: boolean;
   error: string | null;
-  /** The registry identity (hosts.ts's hostIdentity) these rows were read UNDER,
-   * recorded only when the read succeeded. The map is keyed by host NAME, so a
-   * name re-registered as a different host would otherwise inherit the previous
-   * registration's rows: a reader compares this against the identity the
-   * registry gives the name now and refuses to show rows they do not match.
-   * Null means no successful read under a known identity yet, which is why an
-   * unanswered read can never pass for an empty listing. */
-  readIdentity: string | null;
-  /** The registration the MOST RECENT read of this name was issued under - the
-   * identity the registry named at that moment, or null when the registry was
-   * still unread then. Unlike readIdentity (success-only, for display
-   * verification), this is set when the read STARTS, so it also ties a failed or
-   * still-in-flight read to a registration. It is what survivesRegistry
-   * invalidates against: rows that cannot be tied to the registration the
-   * registry names now - including a read taken while the registry was unread -
-   * do not outlive the registry's first ready snapshot. */
-  readRegistration: string | null;
+  /** hostsStore's revision when this partition's most recent read was issued, or
+   * null before any read. It is the ONE tie between a partition and the registry:
+   * the partition is current only while this equals the registry's revision, and
+   * that revision advances whenever the registry's answer could have changed (a
+   * different published snapshot, or a replacement connection client). Set when
+   * the read STARTS, so a failed or still-in-flight read is tied to a registry
+   * state too. */
+  registryRevision: number | null;
+  /** True once a read under `registryRevision` completed successfully. That is
+   * what makes an unanswered (or transition-orphaned) read unable to pass for an
+   * empty listing. */
+  read: boolean;
 }
 
 /** The empty partition, a module constant rather than a fresh literal: a host
@@ -106,8 +102,18 @@ export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
   writesRefused: false,
   loading: false,
   error: null,
-  readIdentity: null,
-  readRegistration: null,
+  registryRevision: null,
+  read: false,
+});
+
+/** PENDING_HOST_INSTANCE_STATE is what a consumer sees while there is no
+ * partition for the current registry revision: a read is on its way (or the
+ * registry has yet to name the host), so "loading" is the honest state - never
+ * "empty". A frozen constant, like the empty one, so a consumer's snapshot stays
+ * stable and it does not re-render forever. */
+export const PENDING_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
+  ...EMPTY_HOST_INSTANCE_STATE,
+  loading: true,
 });
 
 export interface HostInstancesState {
@@ -148,83 +154,57 @@ connectionStore.subscribe((state) => {
   }));
 });
 
-// A partition is cached under a host NAME, so a host removed - or re-registered
-// under the same name pointing somewhere else - must not inherit the previous
-// registration's rows. The registry is the authority for which host a name means
-// now, but only once it has answered: a registry still being read says nothing
-// about that, so invalidation waits for its ready snapshot.
-hostsStore.subscribe((state) => {
-  forgetPartitionsForRegistry(state.load);
-});
-
-// survivesRegistry answers whether `partition` may be kept for `name`: the
-// registry must still list the name, and the registration the partition's most
-// recent read was issued under must be the one the registry names now. An untied
-// read (readRegistration null - the registry was unread when it was issued, M3)
-// cannot be attributed to any registration, so it does not survive a ready
-// snapshot that names the host; only a partition with nothing read yet (which
-// the map never holds) would be kept. readRegistration is meaningful for a
-// FAILED or in-flight read too, so a re-registration also retires those.
-function survivesRegistry(
-  load: Extract<HostsLoadState, { phase: "ready" }>,
-  name: string,
-  partition: HostInstanceState,
-): boolean {
-  const row = load.hosts.find((candidate) => candidate.name === name && !candidate.removed);
-  if (row === undefined) return false;
-  return partition.readRegistration !== null && partition.readRegistration === hostIdentity(row);
-}
-
-/** forgetPartitionsForRegistry drops every partition whose rows were read under
- * a registration the registry no longer lists: the name is gone (removed, or no
- * longer configured) or its entry has changed, so the rows belong to a host this
- * browser can no longer name.
- *
- * Dropping also invalidates the reads already in flight for that name - the same
- * per-host ordering guard two overlapping reads of one host use - because such
- * an answer was issued by the registration being forgotten and would otherwise
- * re-create the partition this drop just removed.
- *
- * The store then RE-READS every dropped name the registry still lists, under the
- * registration it names now (M2). The drop removes rows a consumer may be
- * showing; a consumer that keys only on the partition - the spawn form's
- * useProviderSetup, the model-catalog pane - has no other trigger, and without
- * this it would sit on the empty partition the drop left (a false "no
- * providers"). Owning the refresh here is what keeps that defect closed for
- * every consumer instead of each one learning about registry identity. */
-export function forgetPartitionsForRegistry(load: HostsLoadState): void {
-  if (load.phase !== "ready") return;
-  const current = hostInstancesStore.getState().hosts;
-  const forgotten = new Set(
-    Object.entries(current)
-      .filter(([name, partition]) => !survivesRegistry(load, name, partition))
-      .map(([name]) => name),
-  );
-  if (forgotten.size === 0) return;
-  hostInstancesStore.setState((previous) => ({
-    ...previous,
-    hosts: Object.fromEntries(Object.entries(previous.hosts).filter(([name]) => !forgotten.has(name))) as Record<
-      string,
-      HostInstanceState
-    >,
-  }));
-  for (const name of forgotten) {
-    hostRequestVersions.set(name, (hostRequestVersions.get(name) ?? 0) + 1);
-    // A removed name has nothing to re-read; a re-registered (or newly-named)
-    // one is re-read under the identity the snapshot gives it.
-    const row = load.hosts.find((candidate) => candidate.name === name && !candidate.removed);
-    if (row !== undefined) void fetchHost(name, hostIdentity(row));
-  }
-}
-
-/** hostPartition reads one host's own partition, or the empty one before that
- * host has ever been loaded. */
+/** hostPartition reads one host's own partition exactly as stored, INCLUDING a
+ * partition whose registryRevision is no longer current. Consumers read through
+ * useHostInstances, which withholds a stale partition; this raw accessor is for
+ * the store's own bookkeeping and for tests that need to see what was read. */
 export function hostPartition(state: HostInstancesState, host: string): HostInstanceState {
   return state.hosts[host] ?? EMPTY_HOST_INSTANCE_STATE;
 }
 
+/** useHostInstances is one host's own listing as of the CURRENT registry
+ * snapshot, and the ONE place a remote listing is read: a consumer watching a
+ * remote host, with no partition from the current revision, gets a read issued
+ * here. Consumers never have to know about registry revisions, which is what
+ * keeps the next consumer - and the one after that - correct.
+ *
+ * A partition from an older revision is withheld (the pending state) rather than
+ * shown, because the registry that produced it no longer describes this host and
+ * its replacement read is already on its way. Absence counts as stale, which is
+ * what lets a host removed and re-added converge with nothing having to track
+ * which partitions were dropped. */
 export function useHostInstances(host: string): HostInstanceState {
-  return useStore(hostInstancesStore, (state) => hostPartition(state, host));
+  const partition = useStore(hostInstancesStore, (state) => hostPartition(state, host));
+  const revision = useHostsStore((state) => state.revision);
+  const load = useHostsStore((state) => state.load);
+  const reading = useHostsStore((state) => state.reading);
+  const { client, state: connection } = useConnectionStore();
+  const current = partition.registryRevision !== null && partition.registryRevision === revision;
+  // Two states hold the read back, and they are the only two:
+  //  - the registry has FAILED (see CredentialsHostScope's unverifiable state) -
+  //    its failure is what the pane shows, so a read taken then is not fetched,
+  //    and
+  //  - a registry read is already on its way, whose answer is what this read
+  //    would have to be stamped with, so it waits for that one rather than
+  //    reading under an answer that is about to be replaced (one wasted request
+  //    per deep-link otherwise).
+  const shouldRead =
+    !isLocalHost(host) && client !== null && connection === "ready" && !current && load.phase !== "error";
+  // `revision` and `reading` are deliberate trigger-only dependencies: the effect
+  // decides with the LIVE store (a sibling's mount effect can have started a
+  // registry read in this same commit), but a registry answer or the settling of
+  // a registry read is what makes that decision change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger-only deps - see comment above
+  useEffect(() => {
+    if (!shouldRead) return;
+    // Re-checked against the store rather than the rendered values: a sibling's
+    // own mount effect can have started a registry read in this same commit, and
+    // this read has to wait for that one.
+    const live = hostsStore.getState();
+    if (live.reading || live.load.phase === "error") return;
+    void fetchHost(host);
+  }, [shouldRead, host, revision, reading]);
+  return current ? partition : PENDING_HOST_INSTANCE_STATE;
 }
 
 /** hostRequestVersions is one monotonic sequence per host, the same ordering
@@ -239,89 +219,56 @@ export function useHostInstances(host: string): HostInstanceState {
  * listing is the one that describes the host. */
 const hostRequestVersions = new Map<string, number>();
 
-/** registryIdentityFor is hosts.ts's identity for `host` as of the registry's
- * current READY snapshot - the same snapshot forgetPartitionsForRegistry
- * invalidates against - or null while that snapshot does not name the host. A
- * read handed no identity still records this, so a name re-registered as a
- * different host is detectable for an identity-less consumer too; an unread
- * registry records nothing, exactly as the identity-less read always did. */
-function registryIdentityFor(host: string): string | null {
-  const load = hostsStore.getState().load;
-  if (load.phase !== "ready") return null;
-  const row = load.hosts.find((candidate) => candidate.name === host && !candidate.removed);
-  return row === undefined ? null : hostIdentity(row);
-}
-
 /** fetchHost reads `host`'s own instance listing through evener/host/request
  * (component 07b), so the spawn form's provider setup describes the machine the
  * launch will use. The controller's host is not a partition - its rows are the
  * package store's - so this is a no-op for LOCAL_HOST and for an absent host;
  * callers read the controller's own store for those.
  *
- * `identity` is the registry identity (hosts.ts's hostIdentity) the caller knows
- * the name by - the settings scope passes the one the registry gives the
- * selected host. It is recorded on a successful read and compared at the start
- * of the next one, so rows read under a different registration are dropped
- * rather than kept for a name that now means another host. Callers with no
- * registry row to hand (the spawn form, the wrapped-notification refetch) omit
- * it, and the read records instead the identity the registry names for the host
- * RIGHT NOW (registryIdentityFor) - so that consumer's rows are still tied to a
- * registration, and a later re-registration drops them too. An unread registry
- * cannot tie the read to any registration (readRegistration null), so the rows
- * are invalid and re-read as soon as the registry first answers. */
-export async function fetchHost(host: string, identity: string | null = null): Promise<void> {
+ * The read is stamped with the registry revision it was issued under, so the
+ * partition it commits is current only while the registry still holds that
+ * answer. Starting it also CLEARS the partition: rows read under an older
+ * revision must not show while this read is out. */
+export async function fetchHost(host: string): Promise<void> {
   if (isLocalHost(host)) return;
   const client = connectionStore.getState().client;
   if (!client) return;
   const version = (hostRequestVersions.get(host) ?? 0) + 1;
   hostRequestVersions.set(host, version);
   const generation = hostInstancesStore.getState().generation;
-  // What this read records: the identity handed in, or the registry's current one
-  // for the name when the caller had none to hand (see this function's doc).
-  const readIdentity = identity ?? registryIdentityFor(host);
-  setHostPartition(host, (previous) => ({
-    ...startHostRead(previous, readIdentity),
-    loading: true,
-    error: null,
-    // Ties even an unanswered or failing read to the registration it was issued
-    // under, so a later re-registration retires it (survivesRegistry).
-    readRegistration: readIdentity,
-  }));
+  const registryRevision = hostsStore.getState().revision;
+  setHostPartition(host, (previous) => startHostRead(previous, registryRevision));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
-    setHostPartition(host, (previous) => {
-      // The registration these rows are attributed to, never lowered to unknown:
-      // a read that resolved to no identity cannot erase what a read that had one
-      // established. readRegistration mirrors it, so the rows survive exactly the
-      // registration they are attributed to (and an untied read stays untied).
-      const recorded = readIdentity ?? previous.readIdentity;
-      return {
-        instances: resp.instances,
-        availableProviders: resp.availableProviders,
-        diagnostics: resp.diagnostics ?? [],
-        writesRefused: resp.writesRefused ?? false,
-        loading: false,
-        error: null,
-        readIdentity: recorded,
-        readRegistration: recorded,
-      };
-    });
+    setHostPartition(host, () => ({
+      instances: resp.instances,
+      availableProviders: resp.availableProviders,
+      diagnostics: resp.diagnostics ?? [],
+      writesRefused: resp.writesRefused ?? false,
+      loading: false,
+      error: null,
+      registryRevision,
+      read: true,
+    }));
   } catch (err) {
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
-    setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err) }));
+    setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err), read: false }));
   }
 }
 
-// startHostRead begins a read of `host`'s listing under `identity`. Rows read
-// under a DIFFERENT registry identity are not this host's, so they are dropped
-// rather than kept on screen for a name that now means something else; an
-// unknown identity on either side proves no mismatch and keeps them.
-function startHostRead(previous: HostInstanceState, identity: string | null): HostInstanceState {
-  if (previous.readIdentity !== null && identity !== null && previous.readIdentity !== identity) {
-    return { ...EMPTY_HOST_INSTANCE_STATE };
+// startHostRead begins a read of `host`'s listing against `registryRevision`.
+// Rows read under the SAME revision (a retry, a notification refetch) are kept
+// while the read is out - they are still this host's as far as the registry is
+// concerned. Rows from an OLDER revision (or none) are not: they are cleared, so
+// nothing read under a snapshot the registry has moved past is ever shown.
+// `read` is left as it was in the kept case, and false in the cleared one, so an
+// unanswered read can never pass for an empty listing.
+function startHostRead(previous: HostInstanceState, registryRevision: number): HostInstanceState {
+  if (previous.registryRevision === registryRevision) {
+    return { ...previous, loading: true, error: null };
   }
-  return previous;
+  return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision };
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in

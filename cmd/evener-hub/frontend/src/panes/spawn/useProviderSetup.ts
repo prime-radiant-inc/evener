@@ -34,7 +34,12 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
     let cancelled = false;
     setCheckedClient(null);
     if (client && connection === "ready") {
-      void load()
+      // A remote host's listing is read by useHostInstances (the one place that
+      // knows the registry revision); the controller's own listing is still read
+      // here. `checkedClient` marks the same moment either way - the effect
+      // registered by useHostInstances above has already started that read.
+      const attempted = targetIsLocal ? load() : Promise.resolve();
+      void attempted
         .finally(() => {
           if (!cancelled) setCheckedClient(client);
         })
@@ -43,7 +48,7 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
     return () => {
       cancelled = true;
     };
-  }, [client, connection, load]);
+  }, [client, connection, load, targetIsLocal]);
 
   const configured = instances.some(
     (instance) =>
