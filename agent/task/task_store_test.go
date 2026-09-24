@@ -295,6 +295,29 @@ func TestUpdate_SnapshotReportsSettledTransitions(t *testing.T) {
 	}
 }
 
+func TestUpdate_SettleThenReopenInOneBatchIsNotASettle(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "a"}})
+	id := added[0].ID
+
+	// The batch's net effect is no change: the task ends open with no
+	// stamp, so the settled map must not claim a settle the batch undid -
+	// the tool gates auto-advance on this map.
+	snap, err := s.UpdateWithSnapshot([]TaskUpdate{
+		{ID: id, Status: TaskDone},
+		{ID: id, Status: TaskOpen},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Settled[id] {
+		t.Errorf("settle-then-reopen: Settled = %v, want task %d absent", snap.Settled, id)
+	}
+	if snap.After[0].CompletedAt != nil {
+		t.Errorf("settle-then-reopen: CompletedAt = %v, want cleared", snap.After[0].CompletedAt)
+	}
+}
+
 func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
 	s := newTestStore(t)
 	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})

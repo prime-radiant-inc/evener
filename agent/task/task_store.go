@@ -118,7 +118,8 @@ type TaskUpdateSnapshot struct {
 	// terminal status. It is recorded where the store mints CompletedAt -
 	// the same per-update prev != u.Status rule - so the marker and the
 	// stamp cannot disagree: a round-trip batch that re-settles a task
-	// restamps AND reports it, while a reassertion does neither.
+	// restamps AND reports it, a reassertion does neither, and a batch that
+	// settles a task and then reopens it nets to neither.
 	Settled map[int]bool
 }
 
@@ -787,6 +788,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) (map[int]bool, error) {
 					}
 				} else if u.Status != "" {
 					s.tasks[i].CompletedAt = nil
+					delete(settled, u.ID)
 				}
 				found = true
 				break

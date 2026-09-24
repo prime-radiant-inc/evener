@@ -282,6 +282,26 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 			t.Fatalf("task 2 status = %q, want still open (no auto-start on an annotation)", next.Status)
 		}
 	})
+
+	t.Run("settle-then-reopen in one batch neither settles nor advances", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "bounce", Prompt: "bounce"}})
+		result := h.update(t,
+			map[string]any{"id": 1, "status": "done"},
+			map[string]any{"id": 1, "status": "open"},
+		)
+		if result.IsError {
+			t.Fatalf("settle-reopen update failed: %s", result.Output)
+		}
+		// The batch nets to no change, so nothing may auto-advance - not
+		// even flipping the reopened task itself back to in_progress.
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Status != taskpkg.TaskOpen {
+			t.Fatalf("task 1 status = %q, want still open (auto-advance must not flip it back)", entry.Status)
+		}
+		if len(h.steers) != 0 {
+			t.Fatalf("net no-op steered %d times: %q, want none", len(h.steers), h.steers)
+		}
+	})
 }
 
 func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
