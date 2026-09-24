@@ -107,16 +107,19 @@ export function recoveredComposerText(
 }
 
 // Whether a record can offer a restore at all, independent of the composer: a
-// rejected mutation whose text a restore can write and which carries no
-// attachment a text-only restore would drop. This is the record-aware half of
-// the fence; the screen owns the other half - whether the composer can accept a
-// restore right now - and passes its result in, so no converter logic lives
-// here.
+// rejected, non-interrupt mutation whose text a restore can write and which
+// carries no attachment a text-only restore would drop. A Stop's interrupt is
+// never restorable - it carries no composer text to replay - so the fence is
+// explicit rather than inferred from the text alone. This is the record-aware
+// half of the fence; the screen owns the other half - whether the composer can
+// accept a restore right now - and passes its result in, so no converter logic
+// lives here.
 export function recordOffersRestore(
 	record: MutationRecoveryRecord<MutationAttachmentRef>,
 ): boolean {
 	return (
 		record.recoveryKind === "rejected" &&
+		record.method !== "turn/interrupt" &&
 		recoveredComposerText(record).length > 0 &&
 		!recordCarriesAttachments(record)
 	);

@@ -149,6 +149,20 @@ it("offers an ordinary eligible rejected record restore and discard", () => {
 	expect(rows[0].actions).toEqual(["restore", "discard"]);
 });
 
+it("never offers restore for a rejected interrupt, even when it somehow carries text", () => {
+	const interrupt = recovery(TARGET_A, "interrupt", 1, "rejected", {
+		method: "turn/interrupt",
+		composerText: "stop",
+	});
+	expect(nativeMutationRecoveryActions(interrupt, true)).toEqual(["discard"]);
+	const rows = projectNativeMutationRecovery(
+		TARGET_A,
+		snapshot([interrupt]),
+		() => true,
+	);
+	expect(rows[0].actions).toEqual(["discard"]);
+});
+
 it("reports the payload's text when a record carries no composer text", () => {
 	expect(
 		recoveredComposerText(
