@@ -1193,6 +1193,54 @@ func TestTranscriptExists_RejectsSymlinkedFile(t *testing.T) {
 	}
 }
 
+// TestTranscriptExists_RejectsDirectoryAtTranscriptPath asserts that a
+// directory placed at the transcript path (where <id>.transcript.jsonl should
+// be a regular file) does not count as a match. Pre-fix: existsNonSymlink only
+// checked ModeSymlink — a directory has no ModeSymlink bit, so it passed and
+// transcriptExists returned true, surfacing a non-file as a readable transcript.
+// Post-fix: existsNonSymlink requires Mode().IsRegular() so a directory is
+// rejected. The session must also not surface in find results, since
+// recordsUpTo calls transcriptExists before building a record.
+func TestTranscriptExists_RejectsDirectoryAtTranscriptPath(t *testing.T) {
+	t.Parallel()
+	bucket := newBucket(t)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+
+	// Write a meta so find would consider this session a candidate.
+	saveFindMeta(t, bucket, findMetaSpec{
+		id:   sid,
+		name: "directory session",
+	})
+
+	// Create a directory at the transcript path instead of a regular file.
+	dirPath := transcriptPath(bucket, sid)
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatalf("mkdir at transcript path: %v", err)
+	}
+
+	// transcriptExists must return false — a directory is not a regular file.
+	if transcriptExists(bucket, sid) {
+		t.Fatal("transcriptExists returned true for a directory at the transcript path; " +
+			"existsNonSymlink must require IsRegular so non-regular entries are rejected")
+	}
+
+	// find must not return a record for this session — recordsUpTo gates on
+	// transcriptExists, so a directory-as-transcript must not surface.
+	deps := &toolDeps{stateDir: bucket, sessionID: "02wMz5TxvAAAAAAAAAAAAAA"}
+	env := decodeEnvelope(t, marshalFind(t, deps, map[string]any{}))
+	// matches may be nil if the directory-as-transcript was the only candidate
+	// and was rejected — that is the expected outcome.
+	if raw, ok := env["matches"]; ok && raw != nil {
+		for _, m := range matchesFromEnvelope(t, env) {
+			title, _ := m["title"].(string)
+			if title == "directory session" {
+				t.Fatalf("session with a directory at the transcript path surfaced in " +
+					"find results; transcriptExists must reject non-regular entries")
+			}
+		}
+	}
+}
+
 // TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch asserts that
 // findBareIDBuckets does not count a bucket whose sessions/ is a symlink as
 // a match. existsNonSymlink uses symlinkErrorDeep with the bucket dir as
