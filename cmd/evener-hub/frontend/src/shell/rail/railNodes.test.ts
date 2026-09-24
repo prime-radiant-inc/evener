@@ -60,6 +60,10 @@ function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatch
   };
 }
 const closed = () => false;
+// The archived builders' launch-host resolution needs the manifest's
+// sources; the cache-and-children tests below don't care about hosts, so
+// they pass the empty manifest shape.
+const NO_SOURCES: readonly Source[] = [];
 
 test("adapts resource-local session summaries into stable recursive rail rows", () => {
   const child = session({ row_id: "navigation:child", ref: "child", kind: "subagent", state: "active" });
@@ -410,7 +414,7 @@ describe("resource projection semantics", () => {
       "frontend (repoA)",
       "frontend (repoB)",
     ]);
-    expect(archivedSessionGroups([a], closed)[0]?.children[0]).toMatchObject({ id: "navigation:old-a" });
+    expect(archivedSessionGroups([a], closed, NO_SOURCES)[0]?.children[0]).toMatchObject({ id: "navigation:old-a" });
   });
   test("counts archived rows plus archived remainder in active and test projects", () => {
     const active = project({ sessions: [session({ tier: "archived" })], more_archived: 4 });
@@ -418,14 +422,18 @@ describe("resource projection semantics", () => {
   });
   test("keeps archived stubs visible with a loading child and hydrated roots projectable", () => {
     const stub = project({ key: "archived", is_archived: true, session_count: 3 });
-    expect(archivedProjectNodes([stub], new Map(), closed)[0]?.children[0]).toMatchObject({ kind: "loading" });
+    expect(archivedProjectNodes([stub], new Map(), closed, NO_SOURCES)[0]?.children[0]).toMatchObject({
+      kind: "loading",
+    });
     const hydrated = project({
       ...stub,
       sessions: [session({ ref: "old", row_id: "navigation:old" })],
       more_archived: 2,
     });
     expect(
-      archivedProjectNodes([stub], new Map([["archived", hydrated]]), closed)[0]?.children.map((row) => row.id),
+      archivedProjectNodes([stub], new Map([["archived", hydrated]]), closed, NO_SOURCES)[0]?.children.map(
+        (row) => row.id,
+      ),
     ).toEqual(["navigation:old", "projectnode:archived:overflow"]);
     expect(archivedCount([stub], [])).toBe(3);
     expect(archivedCount([hydrated], [])).toBe(3);
@@ -461,13 +469,13 @@ describe("resource projection semantics", () => {
     expect(activeRepeated).toBe(activeBefore);
     expect(activeRepeated?.children).toBe(activeBefore?.children);
 
-    const groupBefore = archivedSessionGroups([archivedInActive], closed)[0];
-    const groupRepeated = archivedSessionGroups([archivedInActive], closed)[0];
+    const groupBefore = archivedSessionGroups([archivedInActive], closed, NO_SOURCES)[0];
+    const groupRepeated = archivedSessionGroups([archivedInActive], closed, NO_SOURCES)[0];
     expect(groupRepeated).toBe(groupBefore);
     expect(groupRepeated?.children).toBe(groupBefore?.children);
 
-    const archivedBefore = archivedProjectNodes([archivedStub, archivedSibling], details, closed);
-    const archivedRepeated = archivedProjectNodes([archivedStub, archivedSibling], details, closed);
+    const archivedBefore = archivedProjectNodes([archivedStub, archivedSibling], details, closed, NO_SOURCES);
+    const archivedRepeated = archivedProjectNodes([archivedStub, archivedSibling], details, closed, NO_SOURCES);
     expect(archivedRepeated[0]).toBe(archivedBefore[0]);
     expect(archivedRepeated[0]?.children).toBe(archivedBefore[0]?.children);
     expect(archivedRepeated[1]).toBe(archivedBefore[1]);
@@ -483,6 +491,7 @@ describe("resource projection semantics", () => {
         [archivedSibling.key, siblingDetail],
       ]),
       closed,
+      NO_SOURCES,
     );
     expect(archivedAfter[0]).not.toBe(archivedBefore[0]);
     expect(archivedAfter[0]?.children[0]).toMatchObject({ session: { title: "After" } });
@@ -888,6 +897,35 @@ describe("host grouping (organize by)", () => {
     // source exists, so every project is this hub's own.
     const [flat] = projectNodes([remote], closed);
     expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
+  });
+
+  test("archived and test-run rows name their launch host, whatever the grouping", () => {
+    const remote = project({
+      key: "remote",
+      sources: ["devbox"],
+      sessions: [on("devbox", "a1", { tier: "archived" })],
+    });
+    // The Archived sessions section's group row and the whole-archived
+    // project row both name the host: a remote-owned directory must not
+    // fall back to this hub from an archived row either.
+    expect(archivedSessionGroups([remote], closed, sources)[0]).toMatchObject({
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    });
+    const whole = project({ key: "old", sources: ["devbox"], session_count: 3 });
+    expect(archivedProjectNodes([whole], new Map(), closed, sources)[0]).toMatchObject({
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    });
+    // Test-run project rows render flat but still name the host.
+    const run = project({ key: "run", sources: ["devbox"], sessions: [on("devbox", "t1")] });
+    expect(projectNodes([run], closed, sources)[0]).toMatchObject({
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    });
+    // The flat Projects tier keeps today's hostless rows: flat means no
+    // remote source exists.
+    expect(projectNodes([run], closed)[0]).not.toHaveProperty("spawnHost");
   });
 
   test("a reveal routes an archived-tier row to the archived group fold, whatever the grouping", () => {

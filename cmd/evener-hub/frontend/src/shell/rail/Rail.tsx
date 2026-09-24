@@ -1695,8 +1695,9 @@ function NavigationRail({
           .map((p) => [p.key, p]),
       ),
       isExpanded,
+      displaySources,
     ),
-    ...archivedSessionGroups(unarchived, isExpanded),
+    ...archivedSessionGroups(unarchived, isExpanded, displaySources),
   ];
   if (resources.catalogOverflow?.archived_projects) {
     const ov = resources.catalogOverflow.archived_projects;
@@ -1852,7 +1853,7 @@ function NavigationRail({
               <RailSection
                 title="Test runs"
                 nodes={withCatalogOverflow(
-                  projectNodes(resources.testRuns, isExpanded),
+                  projectNodes(resources.testRuns, isExpanded, displaySources),
                   resources.catalogOverflow?.test_runs,
                   "catalog:test_runs",
                   "test_runs",

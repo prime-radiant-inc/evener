@@ -133,19 +133,21 @@ export interface ProjectRailNode extends WidgetTreeNode {
   children: RailNode[];
   resourceError?: string;
   retry?: () => void;
-  // The host a "Host, then project" copy nests under, or the first owning
-  // host in rail order on a "Project, then host" project row: the row's
-  // launch affordances target that host, not this hub. The flat variant
-  // leaves it absent - no remote source exists in flat mode, so every
-  // project is this hub's own.
+  // The host a row's launch affordances target, not this hub: the host a
+  // "Host, then project" copy nests under, or the first owning host in
+  // rail order on every row that renders a project's own shape
+  // (project-first, test-runs, and the archived tiers). The flat
+  // Projects tier leaves it absent - no remote source exists in flat
+  // mode, so every project is this hub's own.
   spawnHost?: string;
   // True on the ONE row that renders the project's aggregate facts - the
   // overflow row and the rollup signal/badge - so they read once instead of
-  // claiming per-host counts the wire does not carry: the project's own row
-  // in project-first mode, or the first rows-bearing copy in rail order in
-  // host-first. The flat, archived, and test-run project rows carry no
-  // mark - they claim no launch host, and RailRow reads their aggregate
-  // role from that absence.
+  // claiming per-host counts the wire does not carry: every row that
+  // renders a project's own shape (project-first, test-runs, the
+  // archived tiers), or the first rows-bearing copy in rail order in
+  // host-first. The flat Projects tier carries no mark - its rows claim
+  // no launch host, and RailRow reads their aggregate role from that
+  // absence.
   canonicalCopy?: boolean;
 }
 
@@ -730,9 +732,25 @@ export function topLevelAncestorRef(projects: readonly RailProject[], ref: strin
  * cmd/evener-hub/web_api_tree.go's apiTreeProject doc comment), so both use
  * this same builder. Sessions sort needs-you-first (vbh8, §2.2) - a stable
  * partition (Array.prototype.sort is stable in the target engines), so
- * sessions that don't need you keep their incoming relative order. */
-export function projectNodes(projects: readonly RailProject[], isExpanded: IsExpanded): ProjectRailNode[] {
-  return projectNodesWith(projects, isExpanded, "active", (p, id) => activeChildren(p, id, isExpanded));
+ * sessions that don't need you keep their incoming relative order.
+ *
+ * With sources the rows name their launch host - the test-runs tier does
+ * this, so a remote-owned project's "+" cannot fall back to this hub
+ * whatever the grouping. Without them the row stays hostless, the flat
+ * Projects tier's shape, where no remote source exists. */
+export function projectNodes(
+  projects: readonly RailProject[],
+  isExpanded: IsExpanded,
+  sources?: readonly Source[],
+): ProjectRailNode[] {
+  return projectNodesWith(
+    projects,
+    isExpanded,
+    sources ? `active:${sourcesSignature(sources)}` : "active",
+    (p, id) => activeChildren(p, id, isExpanded),
+    sources ? (p) => projectLaunchHost(p, sources) : undefined,
+    sources !== undefined,
+  );
 }
 
 /** The shared shape of the flat and project-first builders: one cached node
@@ -1329,7 +1347,11 @@ function archivedGroupId(key: string): string {
  *
  * Carries the REAL project object, so the row's menu acts on the project
  * itself rather than on a synthetic stand-in. */
-export function archivedSessionGroups(projects: readonly RailProject[], isExpanded: IsExpanded): ProjectRailNode[] {
+export function archivedSessionGroups(
+  projects: readonly RailProject[],
+  isExpanded: IsExpanded,
+  sources: readonly Source[],
+): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   const groups: ProjectRailNode[] = [];
   for (const p of projects) {
@@ -1342,10 +1364,15 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
       ...archived.map((n) => toSessionNode(n, isExpanded)),
       ...projectOverflowNode(id, p, ["archived"]),
     ]);
+    // The launch host rides the node cache's key, so a manifest that
+    // reorders or renames sources rebuilds the row instead of serving a
+    // stale host (the same reason host-branches' variant carries a
+    // sources signature).
+    const variant = `archived-group:${sourcesSignature(sources)}`;
     const cached = projectNodeCache
       .get(p as object)
       ?.get(isExpanded)
-      ?.get("archived-group");
+      ?.get(variant);
     if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded) {
       groups.push(cached.value);
       continue;
@@ -1358,8 +1385,10 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
       displayName,
       expanded,
       children,
+      spawnHost: projectLaunchHost(p, sources),
+      canonicalCopy: true,
     };
-    cacheProjectNode(p, isExpanded, "archived-group", { children, displayName, expanded, value: result });
+    cacheProjectNode(p, isExpanded, variant, { children, displayName, expanded, value: result });
     groups.push(result);
   }
   return groups;
@@ -1399,6 +1428,7 @@ export function archivedProjectNodes(
   projects: readonly RailProject[],
   projectDetails: ReadonlyMap<string, RailProject>,
   isExpanded: IsExpanded,
+  sources: readonly Source[],
 ): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
@@ -1419,10 +1449,11 @@ export function archivedProjectNodes(
     }
     const displayName = labels.get(p.key);
     const expanded = isExpanded(id, false);
+    const variant = `archived-project:${sourcesSignature(sources)}`;
     const cached = projectNodeCache
       .get(p as object)
       ?.get(isExpanded)
-      ?.get("archived-project");
+      ?.get(variant);
     if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded)
       return cached.value;
     const result: ProjectRailNode = {
@@ -1432,8 +1463,10 @@ export function archivedProjectNodes(
       displayName,
       expanded,
       children,
+      spawnHost: projectLaunchHost(p, sources),
+      canonicalCopy: true,
     };
-    cacheProjectNode(p, isExpanded, "archived-project", { children, displayName, expanded, value: result });
+    cacheProjectNode(p, isExpanded, variant, { children, displayName, expanded, value: result });
     return result;
   });
 }
