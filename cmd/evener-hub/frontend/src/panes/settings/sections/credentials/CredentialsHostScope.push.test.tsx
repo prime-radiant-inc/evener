@@ -1,12 +1,12 @@
 import type { HostPushCredentialsResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../../../stores/credentials";
-import { hostsStore } from "../../../../stores/hosts";
+import { HOST_GATE_TIMEOUT_MS, hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -376,11 +376,79 @@ test("the push action is not offered while the host is unverifiable", async () =
   expect(fake.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
 });
 
+// L1 (roborev on 81d1e20): `unverifiable` only covered a registry read that
+// FAILED, so a deep link - or the Retry that leaves the registry reading again -
+// offered a live credential mutation for a name nothing had confirmed was still
+// a configured host. The action is gated on the registry's CURRENT answer naming
+// the host: absent is not enough, it must have answered.
+const REGISTRY_UNNAMED_NOTICE = /hosts list has no answer for beta yet/;
+
+test("the push action is held until the registry's own listing names the host", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  const registry = deferRequest<unknown>(fake, "evener/host/list");
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => {
+    throw new Error("a push must not be offered for a host the registry has not named");
+  });
+
+  // A deep link: the route selects beta while the registry's read is still out.
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  // deferRequest arms its resolver one microtask after the request is issued.
+  await act(async () => {});
+
+  const held = screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement;
+  expect(held.disabled).toBe(true);
+  expect(screen.getByText(REGISTRY_UNNAMED_NOTICE)).toBeTruthy();
+  // A disabled control cannot be fired, so nothing reaches the wire.
+  await userEvent.setup().click(held);
+  expect(fake.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
+
+  // The registry answers, naming the host: the listing and its action are live.
+  await act(async () => {
+    registry({ hosts: [hostRow({ name: "beta", attached: true })] });
+  });
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByText(REGISTRY_UNNAMED_NOTICE)).toBeNull();
+});
+
+// The same gate, on the state a previous round deliberately kept: a verified
+// listing OUTLIVES a registry re-read that fails (its revision does not move, so
+// the rows are still the registry's own answer). The rows stay - read-only, as
+// they always were - and the write is what waits for the registry to answer
+// again, rather than a stale answer being treated as a live confirmation.
+test("a verified listing that outlives a failed registry read keeps its rows, with the push held", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(false);
+
+  // The registry's next read fails. The revision does not move for a failure,
+  // so beta's rows are still read under the current one and stay on screen.
+  act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
+
+  expect(screen.getByText("on-beta")).toBeTruthy();
+  expect(screen.queryByText(/Couldn't check/)).toBeNull();
+  // ...and the action is held until the registry answers again.
+  expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(REGISTRY_UNNAMED_NOTICE)).toBeTruthy();
+});
+
 // MEDIUM 3: a push performs many sequential remote operations over SSH, so the
 // client's 30s default deadline can fire while the remote mutation is still
 // going. It passes the longer host-mutation bound other host operations use
-// (stores/hosts.ts's HOST_GATE_TIMEOUT_MS, 35 minutes) - asserted by value, not
-// by the constant's existence.
+// (stores/hosts.ts's HOST_GATE_TIMEOUT_MS) - asserted AGAINST THE CONSTANT, so
+// the call and the store can never drift apart, plus a check that the constant
+// is still a longer bound than the client's own 30s default (the regression the
+// longer bound exists to prevent, which equality with the constant alone cannot
+// catch: a constant edited down to 30s would satisfy it).
 test("the push call passes the host-mutation timeout, not the client's 30s default", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
@@ -401,9 +469,88 @@ test("the push call passes the host-mutation timeout, not the client's 30s defau
   await screen.findByRole("status", { name: "Push report for beta" });
 
   const call = fake.calls.find((entry) => entry.method === "evener/host/pushCredentials");
-  // 35 minutes, the value stores/hosts.ts's HOST_GATE_TIMEOUT_MS carries for a
-  // host RPC that queues on or holds the per-host gate.
-  expect(call?.opts).toEqual({ timeoutMs: 35 * 60_000 });
+  // The store's own bound for a host RPC that queues on or holds the per-host
+  // gate - read from the store rather than restated here.
+  expect(call?.opts).toEqual({ timeoutMs: HOST_GATE_TIMEOUT_MS });
+  // ...and that bound is still longer than the client's own deadline
+  // (AppwireClient's DEFAULT_REQUEST_TIMEOUT_MS, 30s), which is the whole
+  // reason the call names one at all.
+  expect(HOST_GATE_TIMEOUT_MS).toBeGreaterThan(30_000);
+});
+
+// MEDIUM 1 (roborev on 81d1e20): the client's own deadline expiring is NOT the
+// host refusing. The request was on the wire and no answer came back, so whether
+// the host applied the keys is unknowable from this page - and the old code
+// rendered the client's internal "timed out after Nms" text as an ordinary
+// failure beside a live, identically-labelled button, which invited a second
+// click of a mutation that may already have landed: the keys applied twice, or a
+// value the host took since overwritten by this hub's older one.
+const TIMED_OUT = 'AppwireClient: "evener/host/pushCredentials" timed out after 2100000ms';
+const UNKNOWN_OUTCOME_NOTICE = /not known here: beta may have applied the keys/;
+
+test("a push that times out reads as an unknown outcome, not as the host's refusal", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => {
+    throw new RequestTimeoutError(TIMED_OUT);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+
+  // The outcome is stated as unknown - the host may have applied the keys - and
+  // the settled attempt is never reported as beta's own refusal.
+  const warning = await screen.findByRole("alert");
+  expect(warning.textContent).toMatch(UNKNOWN_OUTCOME_NOTICE);
+  expect(screen.queryByText(/Couldn't push credentials to beta/)).toBeNull();
+  // The client's internal deadline text is not passed off as the host's answer.
+  expect(screen.queryByText(/timed out after/)).toBeNull();
+  // No blind retry: the action that was clicked is gone, and the only way to
+  // send the keys again is the deliberate re-send, under the warning.
+  expect(screen.queryByRole("button", { name: "Push credentials to beta" })).toBeNull();
+  const again = screen.getByRole("button", { name: "Push credentials to beta again" }) as HTMLButtonElement;
+  expect(again.disabled).toBe(false);
+  // Nothing was re-issued behind the user's back.
+  expect(fake.calls.filter((call) => call.method === "evener/host/pushCredentials")).toHaveLength(1);
+});
+
+// The unknown outcome is not a dead end either: the deliberate re-send still
+// pushes, and a real answer replaces the warning - so the guard above cannot
+// pass by leaving the keys unsendable forever.
+test("the deliberate re-send after a timeout pushes again and its own report lands", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  let attempts = 0;
+  fake.on("evener/host/pushCredentials", () => {
+    attempts += 1;
+    if (attempts === 1) throw new RequestTimeoutError(TIMED_OUT);
+    return { host: "beta", results: [{ instance: "on-beta", action: "updated" }] };
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  await screen.findByRole("alert");
+
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta again" }));
+
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(within(report).getByRole("listitem").textContent).toBe("on-betaupdated");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "evener/host/pushCredentials")).toHaveLength(2);
 });
 
 // LOW: the zero-result report is reachable (app_host_credentials.go returns an
@@ -607,4 +754,49 @@ test("the connection that issued a push still renders that push's own report", a
   expect(rows.map((row) => row.textContent)).toEqual(["new-connection-keyupdated"]);
   expect(screen.queryByText("old-connection-key")).toBeNull();
   expect(screen.queryByText(REPLACED_CONNECTION_NOTICE)).toBeNull();
+});
+
+// MEDIUM 2 (roborev on 81d1e20): the generation guard dropped a settlement that
+// arrived AFTER a replacement - but a report (or a failure) already on screen
+// kept rendering as the new connection's outcome while the listing beneath it
+// was re-read for that new connection. The pane then paired a fresh listing with
+// the connection that was gone. The attempt's generation now travels WITH its
+// outcome, and an outcome from a generation this action is no longer on is
+// withheld, with the reason said out loud.
+const SETTLED_THEN_REPLACED_NOTICE = /was replaced after the push to beta settled/;
+
+test("a report on screen is withheld once the connection it described is replaced", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => ({
+    host: "beta",
+    results: [{ instance: "on-beta", action: "added" }],
+  }));
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  // The report really was on screen before the replacement, so the guard cannot
+  // pass by never rendering one.
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(within(report).getByRole("listitem").textContent).toBe("on-betaadded");
+
+  // The connection is replaced; the listing under the report is re-read for the
+  // connection that is current now.
+  await act(async () => {
+    connectReplacementClient();
+  });
+
+  expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
+  expect(screen.getByText(SETTLED_THEN_REPLACED_NOTICE)).toBeTruthy();
+  // The action is not a dead end: the listing is the new connection's, and a
+  // push from here goes to the connection that is current.
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(false);
 });
