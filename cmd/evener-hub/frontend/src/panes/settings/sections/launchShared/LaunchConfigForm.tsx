@@ -11,6 +11,10 @@
 // launchServer.tsx/project.tsx), or the diagnostics panel (launchServer-only,
 // rendered from resolve()/setLayer()'s own returned diagnostics, which this
 // component exposes via onSaved rather than rendering itself).
+//
+// It DOES own the host boundary: `current` and `onSave` both describe the host
+// selected now, and this form is handed a new host without being unmounted, so
+// the draft is reseeded whenever `host` changes (see the seeding below).
 
 import {
   asEnvObjects,
@@ -105,14 +109,34 @@ export function LaunchConfigForm({
   onSaved,
 }: LaunchConfigFormProps) {
   const supportedOptions = useMemo(() => options.filter((opt) => optionSupportsLayer(opt, layer)), [options, layer]);
-  // Seeded once - this form is mounted fresh per page-load; the parent
-  // doesn't re-fetch `current` mid-session (see this file's own top comment).
   const [state, setState] = useState<LaunchFormState>(() => buildFormState(supportedOptions, current));
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // The draft belongs to ONE host. A host-scoped parent hands this form a
+  // different host - and with it a different `current`, a different `onSave`
+  // and a different `paths` - while it stays mounted (the frame above a real
+  // pane remounts the body on a switch, and this form's own contract has to
+  // hold on its own too): a draft seeded once would then be shown as the new
+  // host's settings and submitted to the NEW host by Save.
+  //
+  // Reseeded DURING render rather than from an effect, which is what makes the
+  // commit that carries the new host the first one that renders it: an effect
+  // lands after that commit is painted, leaving a frame in which the old host's
+  // values stand under the new host's selection. Reset on the host and NOT on
+  // `current`: a same-host re-render (a refetch, a reconnect) brings a
+  // referentially new `current` and must not throw away what is being typed.
+  const [seededHost, setSeededHost] = useState<string | undefined>(host);
   const [status, setStatusText] = useState("");
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
+  if (seededHost !== host) {
+    setSeededHost(host);
+    setState(buildFormState(supportedOptions, current));
+    setFieldErrors({});
+    setStatusText("");
+    clearTimeout(clearTimerRef.current);
+  }
 
   function setStatus(text: string): void {
     clearTimeout(clearTimerRef.current);

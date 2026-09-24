@@ -47,6 +47,15 @@ function controllerLaunchCalls(fake: FakeClient): string[] {
   return fake.calls.map((call) => call.method).filter((method) => method.startsWith("evener/launch/"));
 }
 
+/** The launch-layer writes the pane issued against the SELECTED host through
+ * the proxy. */
+function hostSetLayerCalls(fake: FakeClient) {
+  return fake.calls.filter(
+    (call) =>
+      call.method === "evener/host/request" && (call.params as { method: string }).method === "evener/launch/setLayer",
+  );
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetLaunchConfigStoreForTests();
@@ -174,4 +183,48 @@ test("a host that is no longer configured says so instead of falling back to thi
   act(() => hostsStore.setState({ load: { phase: "ready", hosts: [] } }));
 
   expect(await screen.findByText(/is no longer configured/)).toBeTruthy();
+});
+
+// A host switch must not submit what the user typed for the host they left.
+// The pane's own load clears and the form is re-seeded from the new host's
+// layer, and the frame above it remounts the body outright - so the values that
+// go out are the NEW host's, whichever mechanism is doing the work.
+test("switching hosts writes the NEW host's values, never the previous host's unsaved draft", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/launch/schema", () => schema("controller schema"));
+  fake.on("evener/launch/getLayer", () => ({ agent: "controller-agent" }));
+  fake.on("evener/launch/resolve", () => ({ effective: { agent: "controller-agent" }, layers: {}, provenance: {} }));
+  fake.on("evener/launch/setLayer", () => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent: "beta-agent" } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    if (forwarded.method === "evener/launch/setLayer")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  const user = userEvent.setup();
+  const agent = (await screen.findByLabelText("Agent")) as HTMLInputElement;
+  await user.clear(agent);
+  await user.type(agent, "typed-on-this-hub");
+  expect(agent.value).toBe("typed-on-this-hub");
+
+  const select = screen.getByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent"));
+
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  await waitFor(() => expect(hostSetLayerCalls(fake)).toHaveLength(1));
+  const write = hostSetLayerCalls(fake)[0];
+  if (write === undefined) throw new Error("no launch-layer write reached the selected host");
+  expect((write.params as { params: { config: unknown } }).params.config).toEqual({ agent: "beta-agent" });
+  // And the draft the user left behind never reached this hub's own layer.
+  expect(fake.calls.some((call) => call.method === "evener/launch/setLayer")).toBe(false);
 });
