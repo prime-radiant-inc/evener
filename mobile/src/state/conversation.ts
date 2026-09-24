@@ -489,8 +489,9 @@ export function createConversationStore() {
   // memory and per-refresh merge/sum cost grew with the whole loaded
   // transcript. A retained turn now keeps its full payloads only inside the
   // keep-window: while any of its items intersects the retained display
-  // rows (the 500-row cap's final set — the same boundary pruneEvictedIds
-  // settles item ownership against). Outside that window, boundRetainedTurns
+  // rows (the 500-row cap's final set — the same boundary
+  // recordPageItemIds and clearPageOwnershipForFrameRemovals settle item
+  // ownership against). Outside that window, boundRetainedTurns
   // trims the turn to compact identity + usage: every loaded turn's id and
   // usage must survive for sessionTokens' turn-summed fallback to keep
   // covering what was actually loaded, so ONLY the display-fallback
@@ -1279,7 +1280,7 @@ export function createConversationStore() {
 
   // #1919 follow-up: bound retained page-turn data. The keep-window is the
   // retained display set itself — the final capped rows at the publish site
-  // (loadOlder's pageMerged, rehydrate's rehydrateCapped). A turn whose items
+  // (loadOlder's pageMerged, rehydrate's rehydrateSeated). A turn whose items
   // intersect it keeps full payloads: those are exactly the turns a fresh
   // reread's window can fragment-merge against, so trimming them would
   // change mergeTurnHistory's fresh-wins/older-supplies behavior. A turn
