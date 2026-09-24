@@ -869,7 +869,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 	// word-break), and a '$' (shell expansion).
 	// --sessions reproduction line: a comma (CLI splits it), a space (shell
 	// word-break), a '$' (shell expansion), and a '*' (shell glob expansion).
-	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b", "a\x0bb", "a\x0cb"} {
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b", "a\x0bb", "a\x0cb", "a:b"} {
 		t.Run(bucketName, func(t *testing.T) {
 			base := t.TempDir()
 			bucket := stateHomeBucket(base, bucketName)
@@ -907,7 +907,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			// The ref must not contain a comma (which would split into an
 			// invalid selector) or a space/shell metacharacter (injection).
 			for _, ref := range splitRefs {
-				if strings.ContainsAny(ref, ", \t\x0b\x0c$\x00*?[]%^") {
+				if strings.ContainsAny(ref, ", \t\x0b\x0c$\x00*?[]%^:") {
 					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
 				}
 			}
@@ -1982,21 +1982,21 @@ func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) 
 		t.Fatalf("no run-timeout finding")
 	}
 	desc := runTimeout.Description
-	// The Description must disclose the command-side omission: 202
-	// reproducible selectors exceed the 200-entry command cap, so 2
-	// selectors are omitted from DoctorCommand.
-	if !strings.Contains(desc, "omitted from command") {
-		t.Errorf("Description %q must disclose command-side omission (round 11 finding 3): %d reproducible selectors exceed the %d-entry command cap", desc, totalSessions, evidenceSessionRefCap)
-	}
-	// The omission count must be exactly 2 (202 - 200). Assert the
-	// exact phrase so the test fails for any wrong count — the weak
-	// substring check (strconv.Itoa(2)) passed regardless because "2"
-	// appears in "202", "200", etc. (round 12 finding 4).
+	// The reproducible-over-cap omission is disclosed once by the
+	// reproducible-portion cap marker (joinSessionRefs' "…and N more").
+	// 202 reproducible selectors exceed the 200-entry cap, so 2 are
+	// omitted — the marker must carry exactly that count (round 14
+	// finding 2: the separate "omitted from command" clause is gone;
+	// the single marker discloses the omission from both the Description
+	// ref list and the DoctorCommand --sessions value).
 	wantOmitted := totalSessions - evidenceSessionRefCap
-	wantPhrase := fmt.Sprintf("%d sessions omitted from command (cap %d)", wantOmitted, evidenceSessionRefCap)
-	wantPhraseMore := fmt.Sprintf("%d more sessions omitted from command (cap %d)", wantOmitted, evidenceSessionRefCap)
-	if !strings.Contains(desc, wantPhrase) && !strings.Contains(desc, wantPhraseMore) {
-		t.Errorf("Description %q must contain exact phrase %q or %q (round 12 finding 4)", desc, wantPhrase, wantPhraseMore)
+	wantMarker := fmt.Sprintf("…and %d more", wantOmitted)
+	if !strings.Contains(desc, wantMarker) {
+		t.Errorf("Description %q must contain the reproducible-portion cap marker %q (round 14 finding 2: single-disclosure contract)", desc, wantMarker)
+	}
+	// No separate command-side omission clause — it would double-report.
+	if strings.Contains(desc, "omitted from command") {
+		t.Errorf("Description %q must not contain a separate command-side omission clause — the reproducible-portion cap marker is the sole disclosure (round 14 finding 2)", desc)
 	}
 	// The command itself must carry at most 200 selectors.
 	dc := runTimeout.Evidence.DoctorCommand
@@ -2243,5 +2243,52 @@ func TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc(t *testing.T) {
 	// The omission must still be disclosed.
 	if !strings.Contains(desc, "non-reproducible sessions omitted") {
 		t.Errorf("Description %q must disclose the non-reproducible session omission (round 13 finding 4)", desc)
+	}
+}
+
+// TestRunAudit_R14F2_NoDoubleReportReproducibleOmission is the round 14
+// finding-2 RED case: when reproCount > evidenceSessionRefCap and there are
+// zero non-reproducible sessions, the cmdOmitted clause (audit.go:1029-1035)
+// reports "N sessions omitted from command (cap X)" for the same N = reproCount
+// - cap already disclosed by joinSessionRefs' "…and N more" marker. A consumer
+// tallying omissions double-counts (2N instead of N). Fix: remove the
+// cmdOmitted clause — the "…and N more" marker from joinSessionRefs is the sole
+// disclosure of the reproducible-over-cap omission.
+func TestRunAudit_R14F2_NoDoubleReportReproducibleOmission(t *testing.T) {
+	base := t.TempDir()
+	// 201 reproducible sessions in one canonical bucket (cap+1), zero
+	// non-reproducible.
+	bucket := stateHomeBucket(base, hash1)
+	const extra = 1
+	total := evidenceSessionRefCap + extra
+	for range total {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The omission MUST be disclosed (joinSessionRefs' "…and N more" marker).
+	if !strings.Contains(desc, "more") {
+		t.Errorf("Description %q must disclose the reproducible-over-cap omission via the …and N more marker (round 14 finding 2)", desc)
+	}
+	// The cmdOmitted clause double-reports the same N. Pre-fix, it fires
+	// "N sessions omitted from command (cap X)" alongside the "…and N more"
+	// marker — a consumer tallying omissions double-counts.
+	if strings.Contains(desc, "omitted from command") {
+		t.Errorf("Description %q double-reports the reproducible-over-cap omission: 'omitted from command' clause alongside the …and N more marker — one disclosure must carry the omission (round 14 finding 2)", desc)
 	}
 }
