@@ -763,4 +763,68 @@ describe("host grouping (organize by)", () => {
     const second = projectNodesWithHostBranches([evener], [local(), devbox()], closed);
     expect(second[0]?.children).toBe(first[0]?.children);
   });
+
+  test("the overflow follows the first host in rail order when that order changes", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["devbox", "render-farm"],
+      sessions: [on("devbox", "d1"), on("render-farm", "r1")],
+      more_current: 7,
+    });
+    const online = (): Source[] => [
+      { id: "devbox", label: "devbox", kind: "appwire", online: true },
+      { id: "render-farm", label: "Alpha box", kind: "appwire", online: true },
+    ];
+    const offline = (): Source[] => [
+      { id: "devbox", label: "devbox", kind: "appwire", online: true },
+      { id: "render-farm", label: "Alpha box", kind: "appwire", online: false },
+    ];
+    // "Alpha box" sorts ahead of "devbox", so it carries the overflow.
+    const first = hostProjectNodes([evener], online(), closed);
+    const alphaCopy = first.find((node) => node.id === "host:render-farm")?.children[0];
+    const devboxCopy = first.find((node) => node.id === "host:devbox")?.children[0];
+    expect(childIds(alphaCopy)).toEqual(["navigation:render-farm:r1", "projectnode:evener@render-farm:overflow"]);
+    expect(childIds(devboxCopy)).toEqual(["navigation:devbox:d1"]);
+    // The farm drops offline and behind devbox; the overflow must move
+    // with the new first host instead of duplicating or disappearing.
+    const second = hostProjectNodes([evener], offline(), closed);
+    const devboxAfter = second.find((node) => node.id === "host:devbox")?.children[0];
+    const alphaAfter = second.find((node) => node.id === "host:render-farm")?.children[0];
+    expect(childIds(devboxAfter)).toEqual(["navigation:devbox:d1", "projectnode:evener@devbox:overflow"]);
+    expect(childIds(alphaAfter)).toEqual(["navigation:render-farm:r1"]);
+  });
+
+  test("a clustered project groups under its members' host, never a synthetic cluster host", () => {
+    const member = (host: string, ref: string) =>
+      session({
+        row_id: `navigation:${host}:${ref}`,
+        ref: `${host}:${ref}`,
+        session_id: ref,
+        host_id: host,
+        kind: "session",
+        state: "ended",
+        children: [],
+      });
+    // The hub names no host for a synthetic cluster row: its wire host_id
+    // is the "cluster" scope prefix of the row's id (navigationNodeRef
+    // falls back to the node ID), which names no manifest source.
+    const clustered = session({
+      row_id: "navigation:cluster:ab",
+      ref: "cluster:ab",
+      session_id: "ab",
+      host_id: "cluster",
+      kind: "cluster",
+      state: "ended",
+      children: [member("devbox", "m1")],
+    });
+    const evener = project({ key: "evener", sources: [], sessions: [clustered] });
+    const hosts = hostProjectNodes([evener], sources, closed);
+    expect(hosts.map((node) => node.id)).toEqual(["host:devbox"]);
+    expect(childIds(hosts[0]?.children[0])).toContain("navigation:cluster:ab");
+    // A reveal to a member walks the cluster's home host, not "cluster".
+    expect(revealExpansionIds([evener], [], "devbox:m1", "host-project")).toEqual([
+      "host:devbox",
+      "projectnode:evener@devbox",
+    ]);
+  });
 });

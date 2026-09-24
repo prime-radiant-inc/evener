@@ -789,7 +789,7 @@ function projectIsLoading(p: RailProject): boolean {
  * project's own list. */
 function activeSessionNodes(p: RailProject, isExpanded: IsExpanded, hostId?: string): SessionRailNode[] {
   return p.sessions
-    .filter((n) => !isArchivedTier(n) && (hostId === undefined || n.host_id === hostId))
+    .filter((n) => !isArchivedTier(n) && (hostId === undefined || sessionGroupHostId(n) === hostId))
     .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
     .map((n) => toSessionNode(n, isExpanded));
 }
@@ -887,6 +887,18 @@ function orderedHosts(hostIds: Iterable<string>, sources: readonly Source[]): Ho
     .map(({ id, label, online }) => ({ id, label, online }));
 }
 
+/** The host a row groups under. A CLUSTER row's own host_id is synthetic -
+ * "cluster", the scope prefix of its id, because the hub names no host for a
+ * row it folded out of repeated titles (navigationNodeRef falls back to the
+ * node ID, so the wire carries "cluster:<hex>"). It groups under its
+ * most-recent member's host, the member the cluster itself carries recency
+ * from; a memberless cluster (the hub never builds one) falls back to this
+ * hub so the row still renders somewhere. */
+function sessionGroupHostId(n: RailSession): string {
+  if (n.kind !== "cluster") return n.host_id;
+  return n.children[0]?.host_id ?? LOCAL_HOST;
+}
+
 /** Every host a project's rows can appear under: its owning sources plus any
  * host its loaded sessions name (a project whose summary predates a host
  * still lands where its rows are). A project naming neither is this hub's
@@ -902,7 +914,7 @@ function projectHostIds(p: RailProject): string[] {
   const cached = projectHostIdsCache.get(p);
   if (cached && cached.sources === p.sources && cached.sessions === p.sessions) return cached.hosts;
   const hosts = new Set<string>(p.sources ?? []);
-  for (const n of p.sessions) hosts.add(n.host_id);
+  for (const n of p.sessions) hosts.add(sessionGroupHostId(n));
   if (hosts.size === 0) hosts.add(LOCAL_HOST);
   const result = [...hosts];
   projectHostIdsCache.set(p, { sources: p.sources, sessions: p.sessions, hosts: result });
@@ -989,7 +1001,10 @@ function hostProjectCopyNode(
   isExpanded: IsExpanded,
   carryProjectOverflow: boolean,
 ): ProjectRailNode {
-  const variant = `host:${hostId}`;
+  // The carry decision rides the variant: it is derived from the live host
+  // order (see hostProjectNodes), so the same copy must not reuse children
+  // cached under the other decision when that order changes.
+  const variant = `host:${hostId}:${carryProjectOverflow ? "overflow" : "rows"}`;
   const id = hostProjectCopyId(projectNodeExpansionKey(p.key), hostId);
   const expanded = isExpanded(id, p.default_expanded ?? false);
   const children = projectChildren(p, isExpanded, variant, () =>
@@ -1117,13 +1132,14 @@ export function revealExpansionIds(
     // projects do; see archivedProjectNodes).
     if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key)];
     const id = projectNodeExpansionKey(p.key);
-    if (mode === "host-project") return [hostGroupId(carrier.host_id), hostProjectCopyId(id, carrier.host_id)];
+    const carrierHost = sessionGroupHostId(carrier);
+    if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost)];
     if (mode === "project-host") {
       // Branches render only while the project's loaded rows span hosts
       // (hostBranchNodes draws the same line), so a single-host chain stops
       // at the project fold instead of naming a fold that does not exist.
-      const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map((n) => n.host_id));
-      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrier.host_id)] : [id];
+      const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map(sessionGroupHostId));
+      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost)] : [id];
     }
     return [id];
   }
