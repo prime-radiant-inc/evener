@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/doctor"
@@ -389,40 +390,58 @@ func readDaemonRetirementProcessEvents(r *os.File) *daemonRetirementProcessEvent
 // TestDaemonRetirementWatchdogScalesWithObservedReaction is the fault-injection
 // proof that the family's hang tripwire is load-aware. CI cannot summon a
 // loaded runner on demand, so the delay is injected into the fixture's own
-// event stream -- the exact join a slow-but-correct runner stalls on -- and the
-// production scaling constants are used unchanged.
+// event stream -- the exact join a slow-but-correct runner stalls on -- under
+// testing/synctest, whose bubble makes both the injected reaction and the
+// tripwire's clock deterministic. The production scaling constants are used
+// unchanged; only the tripwire floor is lowered so the proof is instant.
 //
-// The fixture has observed a prior step react in slowestReaction. The next
-// reaction is then delayed past the fixed floor: a fixed budget (the
+// The stream first observes one slow-but-correct step (an event lands after a
+// delayed reaction), exactly the way the production fixture observes reactions.
+// The next reaction is then delayed past the fixed floor: a fixed budget (the
 // pre-scaling behavior) trips on it, while a budget scaled to the observed
-// per-step reaction absorbs it. The test-only base keeps the mechanical proof
-// fast; only the floor changes, never the scaling.
+// per-step reaction absorbs it.
 func TestDaemonRetirementWatchdogScalesWithObservedReaction(t *testing.T) {
-	events := newDaemonRetirementProcessEvents()
-	const fixedFloor = 200 * time.Millisecond
-	const observedReaction = 100 * time.Millisecond
-	const injectedReaction = 500 * time.Millisecond
-	events.testOnlyBaseBudget = fixedFloor
-	// The fixture observed a prior step react in observedReaction. Under a fixed
-	// budget that evidence is inert; under the scaled budget it is the proof
-	// that this runner is slow, so the next wait may take a multiple of it
-	// before the tripwire fires.
-	events.noteReaction(observedReaction)
-	// The next reaction is delayed past the fixed floor.
-	events.testOnlyAppendDelay = func(ev daemonRetirementProcessEvent) time.Duration {
-		if ev.Kind == "beat" && ev.Name == "claim_consumed" {
-			return injectedReaction
+	synctest.Test(t, func(t *testing.T) {
+		events := newDaemonRetirementProcessEvents()
+		const fixedFloor = 200 * time.Millisecond
+		const observedReaction = 100 * time.Millisecond
+		const injectedReaction = 500 * time.Millisecond
+		events.testOnlyBaseBudget = fixedFloor
+		events.testOnlyAppendDelay = func(ev daemonRetirementProcessEvent) time.Duration {
+			if ev.Kind == "beat" && ev.Name == "claim_consumed" {
+				return injectedReaction
+			}
+			return 0
 		}
-		return 0
-	}
-	go func() {
-		events.add(daemonRetirementProcessEvent{Kind: "beat", Name: "claim_consumed"})
-	}()
-	if _, err := events.waitFor("retirement beat claim_consumed", func(ev daemonRetirementProcessEvent) bool {
-		return ev.Kind == "beat" && ev.Name == "claim_consumed"
-	}); err != nil {
-		t.Fatalf("the scaled watchdog tripped on a slow-but-correct reaction: %v", err)
-	}
+		// The stream observes a slow step: disarmed lands observedReaction after
+		// armed. Under the fixed floor that evidence was inert.
+		go func() {
+			events.add(daemonRetirementProcessEvent{Kind: "armed"})
+			time.Sleep(observedReaction)
+			events.add(daemonRetirementProcessEvent{Kind: "disarmed"})
+		}()
+		if _, err := events.waitFor("observed slow step", func(ev daemonRetirementProcessEvent) bool {
+			return ev.Kind == "disarmed"
+		}); err != nil {
+			t.Fatalf("observed slow step: %v", err)
+		}
+		// The next reaction is delayed past the fixed floor, so only the budget
+		// scaled to the observed step can absorb it.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			events.add(daemonRetirementProcessEvent{Kind: "beat", Name: "claim_consumed"})
+		}()
+		_, err := events.waitFor("retirement beat claim_consumed", func(ev daemonRetirementProcessEvent) bool {
+			return ev.Kind == "beat" && ev.Name == "claim_consumed"
+		})
+		// Let the injected reaction land so the bubble drains before the
+		// assertion; a bare failure would otherwise leave the producer blocked.
+		<-done
+		if err != nil {
+			t.Fatalf("the scaled watchdog tripped on a slow-but-correct reaction: %v", err)
+		}
+	})
 }
 
 // daemonRetirementProcessFixture owns the private roots, the Hub spawner, the
