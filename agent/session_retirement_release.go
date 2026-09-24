@@ -254,6 +254,14 @@ func (s *Session) releaseChildRuntimeForRetirement(ctx context.Context) error {
 // session can be restored at its original paths. It never writes the Released
 // tombstone and never removes a durable pin.
 func (s *Session) releaseRetirementScratch() {
+	// Seal before the detach, exactly like the terminal and child-teardown
+	// paths: the retired session is never resumed in-process, and the
+	// retirement consumes closeOnce — the terminal release that would sweep a
+	// republished pool can never run afterward — so a refresh pass interleaved
+	// between the detach and its seed CAS would publish a pool nothing can
+	// ever release, holding every retained directory's lease for the daemon's
+	// life (round 28).
+	s.sealRetainedScratch()
 	s.mu.Lock()
 	current := s.env
 	parentShared := s.parentSharedEnv
@@ -276,7 +284,10 @@ func (s *Session) releaseRetirementScratch() {
 	for _, env := range abandoned {
 		env.RetainSessionScratch()
 	}
-	releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
+	s.detachRetainedScratch()
+	if hook := s.cfg.testOnly.scratchRetirementAfterDetach; hook != nil {
+		hook()
+	}
 }
 
 // releaseTerminalScratchRetention writes the terminal tombstone for this
@@ -300,8 +311,34 @@ func (s *Session) releaseTerminalScratchRetention() {
 	// session has already been torn down earlier in the terminal close, so no
 	// consumer can adopt a pooled handle after this point. Retain() releases each
 	// lease without deleting the directory, preserving the retention semantics.
-	releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
-	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+	// The seal comes first: a refresh pass can still be mid-install — the
+	// detach takes no manifest lock its install hold would serialize on — and
+	// a seed published after the detach would never be swept, holding its
+	// pins against the collector for the daemon's life. Sealed, a pass that
+	// wins the seed CAS after the detach undoes its own publish and hands the
+	// leases back; a pass that published before the seal is swept by the
+	// detach itself.
+	s.sealRetainedScratch()
+	s.detachRetainedScratch()
+	if hook := s.cfg.testOnly.scratchTerminalReleaseAfterDetach; hook != nil {
+		hook()
+	}
+	// The manifest's update lock is fail-fast, so a concurrent in-process
+	// writer — a refresh pass's install hold, a mint's pin transaction — can
+	// refuse the tombstone with ErrScratchRetentionLockHeld. That refusal is
+	// transient by construction (holds last fsync-scale and every writer is
+	// mortal), while giving up after one attempt leaves the tombstone
+	// unwritten and the pins durable forever with every consumer already
+	// gone — so the release retries the refusal with the same bounded,
+	// growing backoff every other scratch writer uses before warning.
+	var releaseAttempt int
+	if err := sandbox.RetryScratchLockContention(func() error {
+		releaseAttempt++
+		if hook := s.cfg.testOnly.scratchTerminalReleaseAttempt; hook != nil {
+			hook(releaseAttempt)
+		}
+		return sandbox.ReleaseScratchRetention(owner)
+	}); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("scratch retention release failed: %v", err)})
 	}
 }

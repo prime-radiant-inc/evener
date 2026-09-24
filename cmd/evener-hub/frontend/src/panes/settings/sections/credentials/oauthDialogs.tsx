@@ -15,7 +15,7 @@ import type { AuthDevicePollResponse } from "@evener/appwire-client";
 import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
-import { credentialsStore, isStaleListingRefusal } from "../../../../stores/credentials";
+import { credentialsStore, devicePollOnHost, fetchHost, isStaleListingRefusal } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { copyText } from "./clipboard";
@@ -30,6 +30,7 @@ const CLASS = {
   error: requireClass(styles.error, "oauthDialogs.module.css", "error"),
   code: requireClass(styles.code, "oauthDialogs.module.css", "code"),
   status: requireClass(styles.status, "oauthDialogs.module.css", "status"),
+  url: requireClass(styles.url, "oauthDialogs.module.css", "url"),
 };
 
 export interface OAuthRedirectDialogProps {
@@ -126,6 +127,13 @@ export interface DeviceCodeDialogProps {
   userCode: string;
   verificationUrl: string;
   intervalSeconds: number;
+  /** When set, this dialog signs in an instance ON that remote host: it polls
+   * through evener/host/request (component 07d), refreshes THAT host's own
+   * listing, and shows the verification URL as text so the user can complete it
+   * from any device (there is no browser on the host). Absent - the controller's
+   * own listing - this is exactly today's dialog, using the credential store's
+   * plain devicePoll. */
+  host?: string;
   onCancel: () => void;
   onSuccess: () => void;
   /** "Start again" - re-runs the same start-flow handler CredentialsSection
@@ -141,6 +149,7 @@ export function DeviceCodeDialog({
   userCode,
   verificationUrl,
   intervalSeconds,
+  host,
   onCancel,
   onSuccess,
   onRestart,
@@ -166,11 +175,17 @@ export function DeviceCodeDialog({
     // being asked for twice; the next refused tick asks again.
     let askInFlight = false;
     const delayMs = Math.max(1, intervalSeconds || 5) * 1000;
+    // Which hub this flow is driven against: the selected remote host through
+    // evener/host/request (component 07d), or this hub's own credential store.
+    // Both are the same two RPCs - only the address differs - so the poll loop,
+    // its cadence, and its stop conditions stay one implementation.
+    const pollOnce = (id: string): Promise<AuthDevicePollResponse> =>
+      host === undefined ? credentialsStore.getState().devicePoll(name, id) : devicePollOnHost(host, name, id);
 
     async function tick(): Promise<void> {
       let resp: AuthDevicePollResponse;
       try {
-        resp = await credentialsStore.getState().devicePoll(name, flowId);
+        resp = await pollOnce(flowId);
       } catch (err) {
         // A poll the store refused because the rows it read on screen belong to
         // a replaced connection (requireWritableClient) is not a poll outcome:
@@ -209,9 +224,15 @@ export function DeviceCodeDialog({
       // the status line goes back to what the flow itself is doing.
       setWaitingForConnection(false);
       if (resp.state === "authorized") {
-        await refreshListingAfterMutation();
+        // The listing that proves the sign-in is the one belonging to the hub
+        // that ran the flow: the remote host's own partition, never this hub's.
+        if (host === undefined) {
+          await refreshListingAfterMutation();
+        } else {
+          await fetchHost(host);
+        }
         if (cancelled || !active.current) return;
-        toast.push("success", `Signed in to ${name}`);
+        toast.push("success", host === undefined ? `Signed in to ${name}` : `Signed in to ${name} on ${host}`);
         onSuccess();
         return;
       }
@@ -235,7 +256,7 @@ export function DeviceCodeDialog({
     // caller-supplied onSuccess WOULD restart this poll's timer on every
     // parent re-render, which is the actual bug this dependency list guards
     // against, not just a lint nicety.
-  }, [name, flowId, intervalSeconds, onSuccess, toast.push, active]);
+  }, [name, flowId, intervalSeconds, host, onSuccess, toast.push, active]);
 
   async function handleCopy(): Promise<void> {
     const ok = await copyText(userCode);
@@ -268,10 +289,18 @@ export function DeviceCodeDialog({
         : "Waiting for you to authorize…");
 
   return (
-    <Dialog open onClose={onCancel} title={`Sign in to ${name}`}>
+    <Dialog open onClose={onCancel} title={host === undefined ? `Sign in to ${name}` : `Sign in to ${name} on ${host}`}>
       <div className={CLASS.body}>
-        <p className={CLASS.help}>Copy this code, then continue to OpenAI and paste it to authorize:</p>
+        <p className={CLASS.help}>
+          {host === undefined
+            ? "Copy this code, then continue to OpenAI and paste it to authorize:"
+            : `Copy this code, then open the verification URL below on any device and paste it to authorize the sign-in to ${name} on ${host}:`}
+        </p>
         <p className={CLASS.code}>{userCode}</p>
+        {/* The URL as text, not only behind the button: the sign-in happens on a
+            machine that is not this one, and the user has to be able to read or
+            copy the address to reach it from wherever they are. */}
+        {host !== undefined && <p className={CLASS.url}>{verificationUrl}</p>}
         <p className={CLASS.status} role="status" aria-live="polite">
           {statusText}
         </p>

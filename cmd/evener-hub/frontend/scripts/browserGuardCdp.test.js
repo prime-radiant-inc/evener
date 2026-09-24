@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test, vi } from "vitest";
 
@@ -33,13 +33,16 @@ import {
   harnessStylesheetsLoadedInPage,
   navigateTo,
   PROBE_ATTEMPT_TIMEOUT_MS,
+  STARTUP_DEADLINE_CAP_MS,
   STARTUP_DEADLINE_MS,
+  startupDeadlineMs,
   waitForFonts,
   waitForHttp,
 } from "./browserGuardCdp.mjs";
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -60,7 +63,9 @@ test("preserves the announced endpoint host when building HTTP URLs", () => {
 
 test("one startup deadline aborts the pending HTTP readiness phase", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const deadline = createStartupDeadline();
+  // An explicit budget: this pins the deadline MECHANISM at a known floor, not
+  // the (now load-aware) default, which would otherwise vary with the runner.
+  const deadline = createStartupDeadline(30_000);
   const pending = waitForHttp("http://127.0.0.1:1/json/version", "chrome", () => null, {
     signal: deadline.signal,
   });
@@ -68,6 +73,62 @@ test("one startup deadline aborts the pending HTTP readiness phase", async () =>
   vi.advanceTimersByTime(30_000);
   await assert.rejects(pending, /browser startup deadline exceeded after 30000ms/);
   deadline.clear();
+});
+
+// The startup deadline is an ENVIRONMENT TRIPWIRE, not an assertion about
+// startup time: a machine that is demonstrably oversubscribed must not read a
+// correct-but-slow startup as broken. Before this it was a fixed floor
+// regardless of load, which is how runs 33803871850 and 34257184696 died on a
+// cold, contended runner. These pin the load-aware default.
+test("a loaded machine widens the default startup deadline past the fixed floor", async () => {
+  vi.spyOn(os, "loadavg").mockReturnValue([16, 16, 16]);
+  vi.spyOn(os, "availableParallelism").mockReturnValue(16);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deadline = createStartupDeadline();
+  let aborted = false;
+  deadline.signal.addEventListener("abort", () => {
+    aborted = true;
+  });
+
+  await vi.advanceTimersByTimeAsync(STARTUP_DEADLINE_MS);
+  assert.equal(
+    aborted,
+    false,
+    `the startup tripwire still fired at the fixed ${STARTUP_DEADLINE_MS}ms floor on a loaded machine`,
+  );
+  deadline.clear();
+});
+
+// Widening the tripwire must not make it infinite: a startup that never comes
+// up still fails, and it fails with the budget it actually had.
+test("a loaded machine's widened deadline still fires at the ceiling", async () => {
+  vi.spyOn(os, "loadavg").mockReturnValue([32, 32, 32]);
+  vi.spyOn(os, "availableParallelism").mockReturnValue(16);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deadline = createStartupDeadline();
+  let reason = null;
+  deadline.signal.addEventListener("abort", () => {
+    reason = deadline.signal.reason;
+  });
+
+  await vi.advanceTimersByTimeAsync(120_000);
+  assert.ok(reason, "the widened deadline never fired");
+  assert.match(String(reason?.message), /browser startup deadline exceeded after 120000ms/);
+  deadline.clear();
+});
+
+test("startupDeadlineMs interpolates from the floor to the ceiling with load per core", () => {
+  assert.equal(startupDeadlineMs({ load1: 0, cores: 16 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: 8, cores: 16 }), 75_000);
+  assert.equal(startupDeadlineMs({ load1: 16, cores: 16 }), STARTUP_DEADLINE_CAP_MS);
+  assert.equal(startupDeadlineMs({ load1: 64, cores: 16 }), STARTUP_DEADLINE_CAP_MS);
+});
+
+test("startupDeadlineMs treats an unreadable load or core count as idle", () => {
+  assert.equal(startupDeadlineMs({ load1: Number.NaN, cores: 16 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: -1, cores: 16 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: 8, cores: 0 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: Number.NaN, cores: Number.NaN }), STARTUP_DEADLINE_MS);
 });
 
 /**
@@ -248,6 +309,11 @@ test("a probe abandoned because the browser died does not leave its request runn
 // bound apiece, ten minutes of polling, with nothing to stop it. Callers now
 // get a deadline whether they bring one or not.
 test("a poll with no caller deadline arms one of its own", async () => {
+  // An idle machine so the load-aware default is deterministic: it stays at the
+  // floor. (loadavg/availableParallelism are read at deadline-creation time,
+  // which is here.)
+  vi.spyOn(os, "loadavg").mockReturnValue([0, 0, 0]);
+  vi.spyOn(os, "availableParallelism").mockReturnValue(16);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const before = liveTimers();
   const pending = waitForHttp("http://127.0.0.1:1/json/version", "vite dev server", () => null, {

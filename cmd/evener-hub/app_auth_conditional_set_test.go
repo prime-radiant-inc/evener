@@ -9,12 +9,16 @@ package hub
 // silently clobbering a credential that changed underneath the caller.
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // gcpADCInstanceToml is one instance on the Google application-default
@@ -53,6 +57,71 @@ base_url = "http://127.0.0.1:9/v1"
 Authorization = "Bearer $WORK_HDR_KEY"
 `
 
+// authoredAuthHeaderInstanceToml is one instance on the header scheme whose own
+// auth header is supplied by its authored credential_headers: `auth_header`
+// points the key at X-Custom-Key, and a credential_headers entry supplies that
+// very header. The registry resolves a credential source from the Authorization
+// entry alone (llm/registry/instances.go), so this instance resolves "none" —
+// or "store" once a key is stored — even though the authored header wins over
+// any key (llm/authenticators.go's credentialHeaderWins, spec §10): the key
+// such a push stores is one nothing ever sends.
+const authoredAuthHeaderInstanceToml = `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+`
+
+// authoredAuthHeaderCaseVariantInstanceToml is the same shape with the authored
+// header spelled in a different case: credentialHeaderWins compares
+// case-insensitively, so the header still wins, while the registry's
+// Authorization lookup (exact) still finds nothing.
+const authoredAuthHeaderCaseVariantInstanceToml = `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+x-custom-key = "hdr-token"
+`
+
+// bearerAuthoredAuthorizationInstanceToml is the bearer half of the same
+// exposure: the Authorization header is authored under a different case, which
+// the registry's exact Authorization lookup does not see (so the source is not
+// "credential_headers") but credentialHeaderWins does, so the bearer the scheme
+// would derive from a key is never sent.
+const bearerAuthoredAuthorizationInstanceToml = `[providers.gateway-bearer]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.gateway-bearer.credential_headers]
+AUTHORIZATION = "Bearer hdr-token"
+`
+
+// gatewayBearerInstanceToml is authNoneInstanceToml's instance re-authored onto
+// a key-capable scheme under the same name, which is what makes a client's
+// earlier view of it stale rather than merely changed.
+const gatewayBearerInstanceToml = `[providers.gateway]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+`
+
+// headerWithoutAuthoredHeaderInstanceToml is the control: the same header
+// scheme with no authored credential_headers entry at all, so the instance
+// really does read a stored key and the push must still add it.
+const headerWithoutAuthoredHeaderInstanceToml = `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+`
+
 func loadStoredKey(t *testing.T, credsDir, name string) (string, bool) {
 	t.Helper()
 	store, err := credentials.LoadStore(filepath.Join(credsDir, "credentials.toml"))
@@ -65,6 +134,94 @@ func loadStoredKey(t *testing.T, credsDir, name string) (string, bool) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Requirement 2: AuthStatusResponse / InstanceEntry carry ConfigRevision.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// credentialDestinationInstanceToml is one instance with every field
+// destinationIdentity fingerprints spelled out, plus the auth header, so a
+// revision test can vary one of them at a time and prove the revision covers
+// them all: a credential push prepared against one of these and applied after
+// the field moved would otherwise land a secret aimed somewhere the client
+// never reviewed.
+const credentialDestinationInstanceToml = `[providers.gateway]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+endpoint = "/v1/chat/completions"
+stream_endpoint = "/v1/chat/stream"
+models_endpoint = "/v1/models"
+count_tokens_endpoint = "/v1/count-tokens"
+`
+
+// authoredGapInstanceToml is one instance whose credential is authored in
+// providers.toml but resolves to nothing: api_key names a variable that is not
+// set. The authored layer is terminal - registry.credential returns "none" at
+// it without consulting the file store or the environment - so a key stored
+// under this name is one nothing reads.
+const authoredGapInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+api_key = "$AUTHORED_GAP_KEY"
+`
+
+// authoredHeaderGapInstanceToml is the same shape through the other terminal
+// authored layer: an Authorization credential_headers entry whose variable is
+// unset.
+const authoredHeaderGapInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.authored-gap.credential_headers]
+Authorization = "Bearer $AUTHORED_GAP_HDR"
+`
+
+// authoredGapCredentiallessInstanceToml is the same instance with no authored
+// credential at all: the shape the revision has to distinguish from the two
+// above, since all three resolve source "none".
+const authoredGapCredentiallessInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+`
+
+// The four fixtures below are the same authored-gap shape through the two
+// terminal branches that expand rather than skip: an empty ${VAR:-} default
+// and a default that fills in nothing but an auth scheme word. Both resolve
+// "none" without consulting the store or the environment, exactly like the
+// unset-variable shape above, so a key pushed here is one nothing sends.
+
+const authoredGapEmptyDefaultInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+api_key = "${AUTHORED_GAP_KEY:-}"
+`
+
+const authoredGapSchemeWordInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+api_key = "${AUTHORED_GAP_KEY:-Bearer}"
+`
+
+const authoredHeaderGapEmptyDefaultInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.authored-gap.credential_headers]
+Authorization = "${AUTHORED_GAP_HDR:-}"
+`
+
+const authoredHeaderGapSchemeWordInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.authored-gap.credential_headers]
+Authorization = "${AUTHORED_GAP_HDR:-Bearer}"
+`
 
 // TestAuth_StatusExposesConfigRevision proves AuthStatusResponse carries a
 // non-empty ConfigRevision, that it is stable while the instance's credential
@@ -113,10 +270,343 @@ func TestAuth_StatusExposesConfigRevision(t *testing.T) {
 	}
 }
 
+// TestAuth_ConfigRevisionCoversTheCredentialDestination proves the revision
+// fence covers every destination field the endpoint fingerprint covers - the
+// fields destinationIdentity digests - plus the instance's auth header, because
+// the revision is the push's only no-clobber fence: the conditional set checks
+// no endpoint fingerprint of its own. Changing any of them moves where the
+// secret is sent (or, for the auth header, whether it is sent at all), so a
+// revision that ignored one would let a stale push pass both fences and land a
+// credential at a destination the client never reviewed.
+func TestAuth_ConfigRevisionCoversTheCredentialDestination(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+		want  string
+		toml  string
+	}{
+		{
+			name: "auth-header", field: "auth_header", want: "X-Other-Key",
+			toml: strings.Replace(credentialDestinationInstanceToml, "auth_header = \"X-Custom-Key\"", "auth_header = \"X-Other-Key\"", 1),
+		},
+		{
+			name: "base-url", field: "base_url", want: "http://127.0.0.1:9/v2",
+			toml: strings.Replace(credentialDestinationInstanceToml, "base_url = \"http://127.0.0.1:9/v1\"", "base_url = \"http://127.0.0.1:9/v2\"", 1),
+		},
+		{
+			name: "endpoint", field: "endpoint", want: "/v1/other-completions",
+			toml: strings.Replace(credentialDestinationInstanceToml, "endpoint = \"/v1/chat/completions\"", "endpoint = \"/v1/other-completions\"", 1),
+		},
+		{
+			name: "stream-endpoint", field: "stream_endpoint", want: "/v1/other-stream",
+			toml: strings.Replace(credentialDestinationInstanceToml, "stream_endpoint = \"/v1/chat/stream\"", "stream_endpoint = \"/v1/other-stream\"", 1),
+		},
+		{
+			name: "models-endpoint", field: "models_endpoint", want: "/v2/models",
+			toml: strings.Replace(credentialDestinationInstanceToml, "models_endpoint = \"/v1/models\"", "models_endpoint = \"/v2/models\"", 1),
+		},
+		{
+			name: "count-tokens-endpoint", field: "count_tokens_endpoint", want: "/v1/other-count-tokens",
+			toml: strings.Replace(credentialDestinationInstanceToml, "count_tokens_endpoint = \"/v1/count-tokens\"", "count_tokens_endpoint = \"/v1/other-count-tokens\"", 1),
+		},
+	}
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	writeProvidersToml(t, dir, credentialDestinationInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, filepath.Join(dir, "providers.toml"))
+	base, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("Status(gateway): %v", err)
+	}
+	if base.ConfigRevision == "" {
+		t.Fatal("ConfigRevision is empty; there is nothing to fence on")
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.toml == credentialDestinationInstanceToml {
+				t.Fatalf("the %s fixture does not differ from the base providers.toml", tc.field)
+			}
+			writeProvidersToml(t, dir, tc.toml)
+			if err := ctrl.reg.Reload(); err != nil {
+				t.Fatalf("reload after changing %s: %v", tc.field, err)
+			}
+			resolved, err := ctrl.registry().ResolveInstance("gateway")
+			if err != nil {
+				t.Fatalf("ResolveInstance(gateway): %v", err)
+			}
+			got := map[string]string{
+				"auth_header":           resolved.Transport.AuthHeader,
+				"base_url":              resolved.Transport.BaseURL,
+				"endpoint":              resolved.Transport.Endpoint,
+				"stream_endpoint":       resolved.Transport.StreamEndpoint,
+				"models_endpoint":       resolved.Transport.ModelsEndpoint,
+				"count_tokens_endpoint": resolved.Transport.CountTokensEndpoint,
+			}[tc.field]
+			if got != tc.want {
+				t.Fatalf("the fixture does not set %s: resolved %q, want %q", tc.field, got, tc.want)
+			}
+			changed, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+			if err != nil {
+				t.Fatalf("Status(gateway) after changing %s: %v", tc.field, err)
+			}
+			if changed.ConfigRevision == base.ConfigRevision {
+				t.Fatalf("the revision did not move when %s changed (%q): a push prepared before the change would pass the fence and send the key to a destination the client never reviewed", tc.field, changed.ConfigRevision)
+			}
+		})
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing
+// pins the other direction of the same class the authored-header skip closes:
+// an authored credential that resolves to nothing — an unset variable, an
+// empty ${VAR:-} default, a scheme-word placeholder — is terminal, so the
+// instance resolves "none" (registry.credential returns there without
+// consulting the file store or the environment) while a stored key is never
+// read. Reported as "added" it is a live credential that is dead.
+// TestAuth_ApiKeyConditionalSet_RefusesCommandExpression pins the stored-key
+// contract on the conditional surface too: the store never expands
+// $(command) expressions, so a push carrying one would store the literal
+// text, report success over a usable key, and send the expression verbatim
+// at the first request. The refusal is the same one ApiKeySet gives, before
+// any fence or classification, so nothing is written and the client is
+// pointed at the authoring surface for expressions.
+func TestAuth_ApiKeyConditionalSet_RefusesCommandExpression(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	_, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "work-ant", Value: "$(get-gateway-token)"})
+	if err == nil || !strings.Contains(err.Error(), "credential header") {
+		t.Fatalf("err = %v; want a refusal pointing at the credential header field", err)
+	}
+	if _, has := loadStoredKey(t, dir, "work-ant"); has {
+		t.Fatal("a refused expression must not be stored")
+	}
+}
+
+func TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing(t *testing.T) {
+	cases := []struct {
+		name     string
+		toml     string
+		instance string
+		layer    string
+	}{
+		{name: "api-key-var-unset", toml: authoredGapInstanceToml, instance: "authored-gap", layer: "api_key"},
+		{name: "credential-headers-var-unset", toml: authoredHeaderGapInstanceToml, instance: "authored-gap", layer: "credential_headers"},
+		{name: "api-key-empty-default", toml: authoredGapEmptyDefaultInstanceToml, instance: "authored-gap", layer: "api_key"},
+		{name: "api-key-scheme-word-default", toml: authoredGapSchemeWordInstanceToml, instance: "authored-gap", layer: "api_key"},
+		{name: "credential-header-empty-default", toml: authoredHeaderGapEmptyDefaultInstanceToml, instance: "authored-gap", layer: "credential_headers"},
+		{name: "credential-header-scheme-word-default", toml: authoredHeaderGapSchemeWordInstanceToml, instance: "authored-gap", layer: "credential_headers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := t.TempDir()
+			ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, tc.toml))
+			before, err := ctrl.Status(appwire.AuthStatusParams{Provider: tc.instance})
+			if err != nil {
+				t.Fatalf("Status(%s): %v", tc.instance, err)
+			}
+			// The premise, from the client's own read: nothing resolves here, so
+			// "none" is what the push echoes back as ExpectedSource.
+			if before.ActiveSource != "none" {
+				t.Fatalf("ActiveSource = %q, want none", before.ActiveSource)
+			}
+			resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+				Provider:       tc.instance,
+				Value:          "sk-pushed",
+				ExpectedSource: before.ActiveSource,
+			})
+			if err != nil {
+				t.Fatalf("ApiKeyConditionalSet(%s): %v", tc.instance, err)
+			}
+			if resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+				t.Fatalf("Action = %q, want skipped: providers.toml authors this instance's %s and outranks the store", resp.Action, tc.layer)
+			}
+			if !strings.Contains(resp.Reason, tc.layer) {
+				t.Fatalf("Reason = %q, want it to name the authored %s layer", resp.Reason, tc.layer)
+			}
+			if _, has := loadStoredKey(t, dir, tc.instance); has {
+				t.Fatal("a key was stored for an instance whose authored credential outranks the store")
+			}
+		})
+	}
+}
+
+// TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer pins the marker in the
+// revision: an instance that authors a credential that resolves to nothing —
+// unset variables, empty defaults, scheme-word placeholders — resolves "none",
+// exactly like one that authors nothing, so without the marker a push prepared
+// against the credentialless instance and applied after the authored layer
+// appeared would pass both fences - and the key it stores is one nothing reads.
+func TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	writeProvidersToml(t, dir, authoredGapCredentiallessInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, filepath.Join(dir, "providers.toml"))
+	credentialless, err := ctrl.Status(appwire.AuthStatusParams{Provider: "authored-gap"})
+	if err != nil {
+		t.Fatalf("Status(authored-gap): %v", err)
+	}
+	if credentialless.ActiveSource != "none" {
+		t.Fatalf("ActiveSource = %q, want none", credentialless.ActiveSource)
+	}
+
+	for _, tc := range []struct {
+		name string
+		toml string
+	}{
+		{name: "api-key-var-unset", toml: authoredGapInstanceToml},
+		{name: "credential-headers-var-unset", toml: authoredHeaderGapInstanceToml},
+		{name: "api-key-empty-default", toml: authoredGapEmptyDefaultInstanceToml},
+		{name: "api-key-scheme-word-default", toml: authoredGapSchemeWordInstanceToml},
+		{name: "credential-header-empty-default", toml: authoredHeaderGapEmptyDefaultInstanceToml},
+		{name: "credential-header-scheme-word-default", toml: authoredHeaderGapSchemeWordInstanceToml},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeProvidersToml(t, dir, tc.toml)
+			if err := ctrl.reg.Reload(); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			authored, err := ctrl.Status(appwire.AuthStatusParams{Provider: "authored-gap"})
+			if err != nil {
+				t.Fatalf("Status(authored-gap): %v", err)
+			}
+			// The source is the same "none" both sides of the change, so the
+			// revision is the only thing that can carry the difference.
+			if authored.ActiveSource != "none" {
+				t.Fatalf("ActiveSource = %q, want none", authored.ActiveSource)
+			}
+			if authored.ConfigRevision == credentialless.ConfigRevision {
+				t.Fatalf("the revision did not move when providers.toml gained an authored credential that resolves to nothing (%q)", authored.ConfigRevision)
+			}
+		})
+	}
+}
+
 // TestAuth_InstanceEntryExposesConfigRevision proves the evener/instance/list
 // row carries the same revision AuthStatusResponse does, so the credential
 // push's implicit-provider fallback has a defined source for
 // ExpectedRevision too.
+// TestAuth_ConfigRevisionCoversTheCredentialHeaderNames pins the last
+// field of the fence: which credential headers exist decides whether a
+// stored key is sent at all, so a configuration that adds one must fence
+// off a view captured before it. The names come from the presence
+// resolution — mint-free (spec §10.1) — and the digest reads them as
+// names, never the values.
+func TestAuth_ConfigRevisionCoversTheCredentialHeaderNames(t *testing.T) {
+	// One controller, one key: the revision is a keyed MAC, so two fresh
+	// state dirs would differ on the key alone. The comparisons below
+	// are meaningful only through one hub state, rewriting and reloading
+	// the configuration between reads.
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	revisionFor := func(t *testing.T, toml string) string {
+		t.Helper()
+		writeProvidersToml(t, dir, toml)
+		if err := ctrl.reg.Reload(); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway-key"})
+		if err != nil {
+			t.Fatalf("Status(gateway-key): %v", err)
+		}
+		if status.ConfigRevision == "" {
+			t.Fatal("ConfigRevision is empty for a resolvable instance under a usable key")
+		}
+		return status.ConfigRevision
+	}
+	one := revisionFor(t, `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+`)
+	two := revisionFor(t, `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+X-Other = "other-token"
+`)
+	if one == two {
+		t.Fatal("the revision ignored the credential-header set: adding a header a launch would send must fence off the earlier view")
+	}
+	// A command-bearing header counts as present without running: the
+	// fence must see the name even though the value stays unexpanded on
+	// this read path (spec §10.1).
+	withCommand := revisionFor(t, `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+X-Minted = "$(echo minted-header-token)"
+`)
+	if one == withCommand {
+		t.Fatal("the revision ignored a command-bearing credential header: a header the launch may send must fence off the earlier view")
+	}
+}
+
+// TestAuth_ConfigRevisionIgnoresDroppedCredentialHeaders pins the drop
+// half of the names rule: a header whose variables are unset never
+// reaches the wire, so it must read the same as a configuration that
+// never authored it — the fence follows what a launch would send, not
+// what its author typed.
+func TestAuth_ConfigRevisionIgnoresDroppedCredentialHeaders(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	revisionFor := func(t *testing.T, toml string) string {
+		t.Helper()
+		writeProvidersToml(t, dir, toml)
+		if err := ctrl.reg.Reload(); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway-key"})
+		if err != nil {
+			t.Fatalf("Status(gateway-key): %v", err)
+		}
+		if status.ConfigRevision == "" {
+			t.Fatal("ConfigRevision is empty for a resolvable instance under a usable key")
+		}
+		return status.ConfigRevision
+	}
+	plain := revisionFor(t, `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+`)
+	withDropped := revisionFor(t, `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+X-Never = "$NEVER_SET_ANYWHERE"
+`)
+	if plain != withDropped {
+		t.Fatal("the revision counted a credential header whose variables are unset: a header the launch never sends must read as absent")
+	}
+}
+
 func TestAuth_InstanceEntryExposesConfigRevision(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -133,6 +623,114 @@ func TestAuth_InstanceEntryExposesConfigRevision(t *testing.T) {
 	}
 	if row.ConfigRevision != status.ConfigRevision {
 		t.Fatalf("InstanceEntry.ConfigRevision = %q, want the status value %q", row.ConfigRevision, status.ConfigRevision)
+	}
+}
+
+// TestAuth_ConfigRevisionAgreesAcrossRowOverrides pins the depth the two
+// revision paths share: presence resolves the default row's merged
+// transport, so a row override moves the digest the same way in the
+// listing entry and the status read. A full model-less resolve would
+// describe the provider's own shape instead — two digests for one
+// configuration, and a fence that bites at random.
+func TestAuth_ConfigRevisionAgreesAcrossRowOverrides(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	// A none-pinned default row keeps the provider derivable as an
+	// instance (it needs no credential), while its digest still separates
+	// the row-aware presence depth from a model-less provider resolve.
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"none\"\n")
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, map[string]string{"AWS_REGION": "us-east-1"})
+	row := entry(t, ctl.List(), "amazon-bedrock")
+	if row.ConfigRevision == "" {
+		t.Fatal("InstanceEntry.ConfigRevision is empty for a resolvable implicit provider")
+	}
+	// Both controllers must read the providers file under the same ambient
+	// env: the revision MACs the resolved destination, and bedrock's
+	// base URL folds AWS_REGION into it, so a controller without the var
+	// legitimately digests a different configuration.
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "amazon-bedrock"})
+	if err != nil {
+		t.Fatalf("Status(amazon-bedrock): %v", err)
+	}
+	if row.ConfigRevision != status.ConfigRevision {
+		t.Fatalf("row-override revision = %q, want the status value %q: one configuration must MAC to one revision wherever it is read", row.ConfigRevision, status.ConfigRevision)
+	}
+}
+
+// TestAuth_ConfigRevisionIsKeyedWithTheHubKey pins the H1 fix: the revision the
+// credential push fences against is a keyed MAC over the configuration, not a
+// bare digest. The configuration's destination half can carry a secret in a
+// part a listing strips - a password in userinfo, a short query-string token in
+// base_url - and an unkeyed digest of a guessable secret is a guessable
+// function of it, so a reader who can see the revision could recover the secret
+// offline. The property that separates keyed from unkeyed: a bare digest of one
+// configuration is one value, while a keyed MAC follows the hub's key.
+func TestAuth_ConfigRevisionIsKeyedWithTheHubKey(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	// The revision is keyed with the same hub-held key the endpoint fingerprints
+	// use, resolved through the same seam, so a fixed key here is a fixed hub key.
+	prev := resolveEndpointFingerprintKey
+	t.Cleanup(func() { resolveEndpointFingerprintKey = prev })
+	revisionWithKey := func(key []byte) string {
+		resolveEndpointFingerprintKey = func(string) ([]byte, error) { return key, nil }
+		status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work-ant"})
+		if err != nil {
+			t.Fatalf("Status(work-ant): %v", err)
+		}
+		return status.ConfigRevision
+	}
+
+	first := revisionWithKey([]byte("hub-key-one"))
+	if first == "" {
+		t.Fatal("ConfigRevision is empty for a resolvable instance under a usable key")
+	}
+	if again := revisionWithKey([]byte("hub-key-one")); again != first {
+		t.Fatalf("ConfigRevision moved for one unchanged configuration under one key: %q then %q", first, again)
+	}
+	if other := revisionWithKey([]byte("hub-key-two")); other == first {
+		t.Fatalf("ConfigRevision is identical under two different hub keys (%q): it is not keyed, so a secret in the destination it covers is brute-forceable from the served value", first)
+	}
+}
+
+// TestAuth_ConditionalSetRefusesWhenTheRevisionKeyIsUnavailable pins the other
+// half of H1: an empty revision means "no revision fence" to a client, so a hub
+// that cannot key its revision must NOT answer that way and then accept the
+// writes that follow. With a state root that cannot yield its key the host
+// serves no revision (the same key powers the endpoint fingerprint, whose
+// absence the listing already diagnoses) and the conditional set refuses a
+// write - whether the client asserted a stale revision or nothing at all -
+// rather than landing the key in an unverifiable configuration.
+func TestAuth_ConditionalSetRefusesWhenTheRevisionKeyIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	unkeyableStateRoot(t, stateDir)
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work-ant"})
+	if err != nil {
+		t.Fatalf("Status(work-ant): %v", err)
+	}
+	if status.ConfigRevision != "" {
+		t.Fatalf("ConfigRevision = %q, want empty when the hub cannot key its revision", status.ConfigRevision)
+	}
+
+	for _, expected := range []string{"", "a-revision-from-an-older-read"} {
+		_, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+			Provider:         "work-ant",
+			Value:            "sk-must-not-land",
+			ExpectedRevision: expected,
+		})
+		if err == nil {
+			t.Fatalf("ApiKeyConditionalSet landed a key with no usable revision key (ExpectedRevision=%q)", expected)
+		}
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	if value, ok := loadStoredKey(t, dir, "work-ant"); ok {
+		t.Fatalf("stored key = %q, want nothing written while the revision cannot be keyed", value)
 	}
 }
 
@@ -377,6 +975,248 @@ func TestAuth_ApiKeyConditionalSet_ClassifiesNonWritableSchemes(t *testing.T) {
 				t.Fatalf("a key was stored for a skipped instance %q", tc.instance)
 			}
 		})
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey pins
+// the classification spec §10 needs on the authored-header shapes: this PR's
+// resolver reads the transport's auth-header slot — whatever header the
+// scheme writes, in whatever case its author wrote it — as the credential
+// slot, so an authored header that resolves IS the instance's credential,
+// resolves source "credential_headers", and owns the wire slot a stored key
+// would be sent to. The providers.toml classification skips those pushes —
+// reporting "added"/"updated" here would report a live credential that is
+// dead — while the control case (no authored header) still writes.
+func TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey(t *testing.T) {
+	cases := []struct {
+		name     string
+		toml     string
+		instance string
+		// stored is a key written through the auth surface before the
+		// conditional set, which makes the instance resolve from "store" rather
+		// than "none" — the other writable classification. The header-authored
+		// cases resolve "credential_headers" whether or not a key was stored
+		// first: the authored header shadows a seeded store too (spec §10), so
+		// the over-store cases pin the same skip.
+		stored string
+		// wantScheme pins the auth scheme the fixture must actually resolve, so a
+		// case cannot pass by skipping for some reason other than the header it
+		// is about.
+		wantScheme string
+		wantSource string
+		// wantAction is skipped for a shadowed instance and added for the
+		// control, so the test cannot pass by skipping on the header scheme
+		// wholesale.
+		wantAction string
+	}{
+		{
+			name: "header-authored-header-exact", toml: authoredAuthHeaderInstanceToml, instance: "gateway-key",
+			wantScheme: registry.AuthHeader, wantSource: "credential_headers", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "header-authored-header-exact-over-store", toml: authoredAuthHeaderInstanceToml, instance: "gateway-key", stored: "sk-old",
+			wantScheme: registry.AuthHeader, wantSource: "credential_headers", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "header-authored-header-case-variant", toml: authoredAuthHeaderCaseVariantInstanceToml, instance: "gateway-key", stored: "sk-old",
+			wantScheme: registry.AuthHeader, wantSource: "credential_headers", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "bearer-authored-authorization-case-variant", toml: bearerAuthoredAuthorizationInstanceToml, instance: "gateway-bearer",
+			wantScheme: registry.AuthBearer, wantSource: "credential_headers", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "control-header-without-authored-header", toml: headerWithoutAuthoredHeaderInstanceToml, instance: "gateway-key",
+			wantScheme: registry.AuthHeader, wantSource: "none", wantAction: appwire.ApiKeyConditionalSetActionAdded,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := t.TempDir()
+			ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, tc.toml))
+			if tc.stored != "" {
+				if _, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: tc.instance, Value: tc.stored}); err != nil {
+					t.Fatalf("seed %s: %v", tc.instance, err)
+				}
+			}
+			inst, ok := ctrl.registry().Instance(tc.instance)
+			if !ok {
+				t.Fatalf("%s does not resolve on this fixture", tc.instance)
+			}
+			if inst.Auth != tc.wantScheme {
+				t.Fatalf("%s resolves auth = %q, want %q: the fixture does not exercise the scheme this case is about", tc.instance, inst.Auth, tc.wantScheme)
+			}
+			if inst.CredentialSource != tc.wantSource {
+				t.Fatalf("%s resolves its credential source = %q, want %q", tc.instance, inst.CredentialSource, tc.wantSource)
+			}
+			before, err := ctrl.Status(appwire.AuthStatusParams{Provider: tc.instance})
+			if err != nil {
+				t.Fatalf("Status(%s): %v", tc.instance, err)
+			}
+			resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+				Provider:       tc.instance,
+				Value:          "sk-pushed",
+				ExpectedSource: before.ActiveSource,
+			})
+			if err != nil {
+				t.Fatalf("ApiKeyConditionalSet(%s): %v", tc.instance, err)
+			}
+			if resp.Action != tc.wantAction {
+				t.Fatalf("Action = %q, want %q (reason %q)", resp.Action, tc.wantAction, resp.Reason)
+			}
+			if tc.wantAction == appwire.ApiKeyConditionalSetActionSkipped && resp.Reason == "" {
+				t.Fatal("Reason is empty for a skip; the report cannot say why")
+			}
+			value, has := loadStoredKey(t, dir, tc.instance)
+			switch tc.wantAction {
+			case appwire.ApiKeyConditionalSetActionAdded:
+				if !has || value != "sk-pushed" {
+					t.Fatalf("stored key = %q present=%v, want the pushed value", value, has)
+				}
+			default:
+				if tc.stored == "" {
+					if has {
+						t.Fatalf("a key was stored for a skipped instance: %q", value)
+					}
+				} else if !has || value != tc.stored {
+					t.Fatalf("stored key = %q present=%v, want the pre-existing %q untouched", value, has, tc.stored)
+				}
+			}
+		})
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_SkipsACorruptCodexRecordInsteadOfConflicting
+// pins the one place the client's observed source legitimately differs from the
+// host's re-resolution, and the outcome the design's classification table gives
+// for it.
+//
+// A Codex instance whose auth/<name>.json is unreadable is "none" to
+// evener/auth/status — openAIInstanceStatus treats a corrupt record as absent,
+// the state the spawn gate refuses — and "oauth" to registry resolution, which
+// asks only whether the record file exists (registry.credential). The push
+// echoes that observed source back as ExpectedSource, so a source fence applied
+// to a scheme that consumes no key turns the documented skip into a Conflict:
+// "... no longer resolves its credential from \"none\" (it is now \"oauth\"):
+// re-read the instance and start the push again" — a remedy re-reading cannot
+// deliver, because every read reproduces the pair. The push reports "failed"
+// where the design says "skipped".
+func TestAuth_ApiKeyConditionalSet_SkipsACorruptCodexRecordInsteadOfConflicting(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, codexInstanceToml))
+	record := authopenai.AuthFilePath(stateDir, "work")
+	if err := os.MkdirAll(filepath.Dir(record), 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(record), err)
+	}
+	if err := os.WriteFile(record, []byte("{ not an auth record"), 0o600); err != nil {
+		t.Fatalf("write corrupt record: %v", err)
+	}
+
+	// The two reads of one instance that the push pairs: the status read it
+	// fences with, and the resolution the host classifies from.
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("Status(work): %v", err)
+	}
+	if status.ActiveSource != "none" {
+		t.Fatalf("Status(work).ActiveSource = %q, want none: openAIInstanceStatus treats a corrupt record as absent", status.ActiveSource)
+	}
+	inst, ok := ctrl.registry().Instance("work")
+	if !ok {
+		t.Fatal("work does not resolve on this fixture")
+	}
+	if inst.CredentialSource != "oauth" {
+		t.Fatalf("registry CredentialSource = %q, want oauth: the record file exists and the scheme reads it", inst.CredentialSource)
+	}
+
+	resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider:         "work",
+		Value:            "sk-pushed",
+		ExpectedSource:   status.ActiveSource,
+		ExpectedRevision: status.ConfigRevision,
+	})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(work) with the source evener/auth/status reported: %v", err)
+	}
+	if resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+		t.Fatalf("Action = %q, want skipped: a Codex instance consumes no key (reason %q)", resp.Action, resp.Reason)
+	}
+	if resp.Reason == "" {
+		t.Fatal("Reason is empty for a skip; the report cannot say why")
+	}
+	if _, has := loadStoredKey(t, dir, "work"); has {
+		t.Fatal("a key was stored for a Codex instance")
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_RefusesAStaleViewOfANonKeyCapableScheme proves
+// that classifying a non-key-capable scheme before the source fence did not drop
+// the no-clobber fence for the case that fence exists for: a client that
+// observed such an instance and then pushed at one re-authored onto a
+// key-capable scheme. The revision fence still refuses it, which is why it is
+// checked first - the revision hashes the resolved scheme and source, so the
+// re-authoring moves it. (This is a guard, not a behavior change: it holds both
+// before and after that reordering.)
+func TestAuth_ApiKeyConditionalSet_RefusesAStaleViewOfANonKeyCapableScheme(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, authNoneInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	before, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("Status(gateway): %v", err)
+	}
+	if before.ActiveSource != "none" || before.ConfigRevision == "" {
+		t.Fatalf("status = %+v, want an auth-none instance with a revision to fence on", before)
+	}
+
+	// The same name, now key-capable: the client's view of it is stale from here.
+	writeProvidersToml(t, dir, gatewayBearerInstanceToml)
+	if err := ctrl.reg.Reload(); err != nil {
+		t.Fatalf("reload after re-authoring gateway: %v", err)
+	}
+
+	if _, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider:         "gateway",
+		Value:            "sk-pushed",
+		ExpectedSource:   before.ActiveSource,
+		ExpectedRevision: before.ConfigRevision,
+	}); err == nil {
+		t.Fatal("ApiKeyConditionalSet applied a write carrying the stale revision of a scheme that has since become key-capable")
+	} else {
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	if _, has := loadStoredKey(t, dir, "gateway"); has {
+		t.Fatal("a key was stored for an instance whose observed configuration no longer matched")
+	}
+
+	// Positive control: the same call on a freshly read view of that same
+	// re-authored instance lands, so the Conflict above is the stale revision
+	// refusing it and not some other refusal the reordering introduced.
+	fresh, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("Status(gateway) after the re-authoring: %v", err)
+	}
+	if fresh.ConfigRevision == before.ConfigRevision {
+		t.Fatalf("the revision did not move when the scheme changed: %q", fresh.ConfigRevision)
+	}
+	resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider:         "gateway",
+		Value:            "sk-pushed",
+		ExpectedSource:   fresh.ActiveSource,
+		ExpectedRevision: fresh.ConfigRevision,
+	})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(gateway) with the fresh view: %v", err)
+	}
+	if resp.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("Action = %q, want added for a key-capable instance with no credential (reason %q)", resp.Action, resp.Reason)
+	}
+	if value, has := loadStoredKey(t, dir, "gateway"); !has || value != "sk-pushed" {
+		t.Fatalf("stored key = %q present=%v, want the pushed value", value, has)
 	}
 }
 

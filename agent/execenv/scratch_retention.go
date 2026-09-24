@@ -20,10 +20,63 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 	}
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
+	// The PREVIOUS identity decides the reset: reading the field only
+	// before it is overwritten below, or the comparison would match the new
+	// binding against itself and never fire.
+	prevID := e.retentionBinding.BindingID
 	e.retentionOwner = owner
 	e.retentionBinding = cloneScratchBinding(binding)
 	e.retentionSet = true
+	// A genuinely new binding identity re-derives contention for every kind
+	// this cycle, so a pending marker must not outlive it. The SAME identity
+	// re-installed is a transfer or a re-adoption of one logical environment
+	// (a re-rooted clone inheriting its binding, an adoption cycle) and its
+	// pending kinds travel with it: clearing them here would let the first
+	// publication on the receiving environment claim a contended retained
+	// slot and end the continuity retry (round 12).
+	if prevID != binding.BindingID {
+		e.retentionPending = nil
+	}
 	return nil
+}
+
+// MarkRetainedSlotPending records that kind's retained owning slot was skipped
+// by adoption because its lease is held elsewhere in this process — typically
+// the idle-release teardown racing the restore. While the kind is pending,
+// PinOwnedScratch pins any fresh fallback mint as a bare protected reference
+// instead of claiming the binding's slot for it, so the manifest row keeps
+// naming the retained directory and a later refresh re-probes it once the
+// contention settles.
+func (e *LocalExecutionEnvironment) MarkRetainedSlotPending(kind string) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	if e.retentionPending == nil {
+		e.retentionPending = make(map[string]struct{})
+	}
+	e.retentionPending[kind] = struct{}{}
+}
+
+// RetentionPendingKinds returns the kinds whose retained owning slot this
+// environment recorded as contended-pending, for carrying the marker across a
+// binding transfer to another environment object.
+func (e *LocalExecutionEnvironment) RetentionPendingKinds() []string {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	kinds := make([]string, 0, len(e.retentionPending))
+	for kind := range e.retentionPending {
+		kinds = append(kinds, kind)
+	}
+	return kinds
+}
+
+// ScratchRetentionOwner returns the manifest owner this environment's binding
+// was installed under, reporting whether any binding is installed at all. A
+// caller uses it to tell an identity this owner's manifest lost to a reset
+// from one installed under a different root's manifest.
+func (e *LocalExecutionEnvironment) ScratchRetentionOwner() (sandbox.ScratchOwner, bool) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	return e.retentionOwner, e.retentionSet
 }
 
 // PinOwnedScratch publishes this environment's installed binding and pins every
@@ -44,6 +97,7 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 	}
 	owner := e.retentionOwner
 	binding := cloneScratchBinding(e.retentionBinding)
+	pending := maps.Clone(e.retentionPending)
 	handles := make(map[string]*sandbox.SessionScratch)
 	if e.ownedSessionTmp != nil {
 		handles[sandbox.ScratchKindSandbox] = e.ownedSessionTmp
@@ -65,17 +119,52 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 		}
 		owned[kind] = handle
 	}
-	if len(handles) > 0 && len(owned) == 0 {
+	// Nothing owned live: there is nothing to pin, and the installed binding's
+	// stale slots — naming allocations a moved allocation or a manifest reset
+	// took away — must not be submitted: their validation failure would
+	// reject the slotless republish the reinstall performs next. The
+	// inherited-identity case was always meant to no-op here (round 18).
+	// Ownership has moved on, so a prior recoverable race — a lock holder that
+	// has since let go, a released manifest a reset went on to repair — must
+	// not keep failing preparation either: every later pin no-ops, so nothing
+	// else could ever clear the record. The recovery clear preserves genuine
+	// durability verdicts (round 59).
+	if len(owned) == 0 {
+		e.clearRecoverableRetentionPinError()
 		return nil
 	}
 	// Pinning one handle at a time and publishing the binding afterwards left the
 	// earlier pins' durable references owned by no binding whenever a later pin or
 	// the publication failed, which restore cannot attribute and nothing can
 	// collect (round 19). One transaction publishes them together.
-	if err := sandbox.PinScratchBinding(owner, binding, owned); err != nil {
+	// The manifest's update lock is fail-fast, so a concurrent in-process
+	// writer — a delegate restore's refresh install, another environment's
+	// mint — can refuse this pin with lock-held for as long as its fsync-scale
+	// hold lasts. That refusal is transient by construction, never a
+	// durability verdict, so the pin retries it with backoff before recording
+	// anything sticky: a lock race must not permanently poison a live
+	// environment's retention state.
+	pin := 0
+	err := sandbox.RetryScratchLockContention(func() error {
+		pin++
+		if e.scratchPinProbe != nil {
+			e.scratchPinProbe(pin)
+		}
+		return sandbox.PinScratchBinding(owner, binding, owned, pending)
+	})
+	if err != nil {
 		e.recordRetentionPinError(err)
 		return err
 	}
+	// A pin that succeeded under the manifest that exists now proves any
+	// earlier released- or lock-held race healed — the reset reinitialized the
+	// tombstone this very pin raced, and the lock holder that exhausted the
+	// retry bound has since let go — so keeping either failure sticky would
+	// fail preparation forever on a state that no longer holds. Other pin
+	// failures are durability verdicts that a later success does not
+	// retroactively explain away (round 9's sticky contract, round 27's and
+	// round 58's recoverable carve-outs).
+	e.clearRecoverableRetentionPinError()
 	return nil
 }
 
@@ -94,6 +183,23 @@ func (e *LocalExecutionEnvironment) recordRetentionPinError(err error) {
 	e.scratchMu.Lock()
 	if e.retentionPinErr == nil {
 		e.retentionPinErr = err
+	}
+	e.scratchMu.Unlock()
+}
+
+// clearRecoverableRetentionPinError drops a sticky pin failure that a later
+// successful pin proves was a race, not a durability verdict: the released
+// and lock-held sentinels both describe contention against transient
+// manifest state — the tombstone a reset went on to reinitialize, the
+// fail-fast update lock a concurrent writer went on to release — so a pin
+// that has since succeeded clears them (round 27's carve-out, round 58's
+// extension to the exhausted lock race).
+func (e *LocalExecutionEnvironment) clearRecoverableRetentionPinError() {
+	e.scratchMu.Lock()
+	if e.retentionPinErr != nil &&
+		(errors.Is(e.retentionPinErr, sandbox.ErrScratchRetentionReleased) ||
+			errors.Is(e.retentionPinErr, sandbox.ErrScratchRetentionLockHeld)) {
+		e.retentionPinErr = nil
 	}
 	e.scratchMu.Unlock()
 }
@@ -119,10 +225,14 @@ func (e *LocalExecutionEnvironment) ScratchRetentionBinding() (sandbox.ScratchBi
 	if binding.Slots == nil {
 		binding.Slots = make(map[string]sandbox.ScratchSlot)
 	}
-	if e.ownedSessionTmp != nil && e.ownedSessionTmp.HasLease() {
+	// A pending kind's durable truth is the installed slot — the retained
+	// directory the manifest row still names — not the live fallback mint.
+	_, pendingSandbox := e.retentionPending[sandbox.ScratchKindSandbox]
+	_, pendingUnsandboxed := e.retentionPending[sandbox.ScratchKindUnsandboxed]
+	if e.ownedSessionTmp != nil && e.ownedSessionTmp.HasLease() && !pendingSandbox {
 		binding.Slots[sandbox.ScratchKindSandbox] = sandbox.ScratchSlot{Dir: e.ownedSessionTmp.Dir, OwnsLease: true}
 	}
-	if e.unsandboxedScratch != nil && e.unsandboxedScratch.HasLease() {
+	if e.unsandboxedScratch != nil && e.unsandboxedScratch.HasLease() && !pendingUnsandboxed {
 		binding.Slots[sandbox.ScratchKindUnsandboxed] = sandbox.ScratchSlot{Dir: e.unsandboxedScratch.Dir, OwnsLease: true}
 	}
 	return binding, nil
@@ -152,7 +262,14 @@ func (e *LocalExecutionEnvironment) RestoreSessionScratch(bindingID string, ref 
 	if scratch == nil || strings.TrimSpace(scratch.Dir) == "" {
 		return errors.New("execenv: restore requires a scratch handle")
 	}
-	if filepath.Clean(ref.Dir) != filepath.Clean(scratch.Dir) {
+	// The restored directory may be spelled differently from the binding
+	// row's slot (a relative spelling canonicalizes to the handle's
+	// absolute path): compare canonically, the same normalization every
+	// pool key uses, or the same directory named two ways is refused as a
+	// mismatch (round 43).
+	refDir, refErr := filepath.Abs(ref.Dir)
+	scratchDir, scratchErr := filepath.Abs(scratch.Dir)
+	if refErr != nil || scratchErr != nil || filepath.Clean(refDir) != filepath.Clean(scratchDir) {
 		return fmt.Errorf("execenv: restored scratch %q does not match reference %q", scratch.Dir, ref.Dir)
 	}
 	e.scratchMu.Lock()
@@ -177,6 +294,9 @@ func (e *LocalExecutionEnvironment) RestoreSessionScratch(bindingID string, ref 
 		e.scratchMu.Unlock()
 		return fmt.Errorf("execenv: unknown scratch kind %q", ref.Kind)
 	}
+	// The retained slot for this kind was adopted: the environment owns the
+	// retained directory again, so later mints publish normally.
+	delete(e.retentionPending, ref.Kind)
 	e.scratchMu.Unlock()
 	e.invalidateSandboxFS()
 	return nil

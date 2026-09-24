@@ -752,3 +752,56 @@ describe("DeviceCodeDialog", () => {
     expect(calls).toBe(callsAtUnmount);
   });
 });
+
+// L2 (roborev round 6): the remote dialog and its success toast dropped the
+// instance name - "Sign in on beta" / "Signed in on beta" - while the local
+// variants carry it, so with several Codex-capable instances on one host the
+// code on screen belonged to no instance in particular. Both name both now.
+test("a remote device dialog names the instance AND the host", () => {
+  connectFakeClient();
+  render(
+    <DeviceCodeDialog
+      name="work"
+      flowId="flow-2"
+      userCode="ABCD-EFGH"
+      verificationUrl="https://verify"
+      intervalSeconds={5}
+      host="beta"
+      onCancel={() => {}}
+      onSuccess={() => {}}
+      onRestart={() => {}}
+    />,
+  );
+  expect(screen.getByRole("dialog", { name: "Sign in to work on beta" })).toBeTruthy();
+});
+
+test("a completed remote sign-in names the instance AND the host in its toast", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/auth/device/poll") return { state: "authorized" };
+    if (params.method === "evener/instance/list") return { instances: [], availableProviders: [] };
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+  const onSuccess = vi.fn();
+  render(
+    <>
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        host="beta"
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+        onRestart={() => {}}
+      />
+      <Toast />
+    </>,
+  );
+  await advanceTime(1000);
+  await advanceTime(0);
+  expect(onSuccess).toHaveBeenCalled();
+  expect(getToasts().some((toast) => toast.text === "Signed in to work on beta")).toBe(true);
+});

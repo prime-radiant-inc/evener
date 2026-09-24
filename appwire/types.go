@@ -1074,7 +1074,7 @@ type EvenerDiagnostics struct {
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
-	Plugins    []EvenerPluginInfo      `json:"plugins,omitempty"`
+	Plugins    []EvenerPluginInfo      `json:"plugins,omitzero"` // nil (a source that cannot report plugins) is absent; empty is sent as []
 	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
@@ -1096,31 +1096,6 @@ type EvenerDiagnostics struct {
 	// SkillDiagnostics is the explicit source-detail view, so the two never
 	// borrow each other's identity.
 	SkillDiagnostics []EvenerSkillDiagnostic `json:"skillDiagnostics,omitempty"`
-}
-
-// MarshalJSON preserves an explicit empty plugin inventory while keeping a
-// nil inventory absent for old or unwired sources that cannot report it.
-func (d EvenerDiagnostics) MarshalJSON() ([]byte, error) {
-	type alias EvenerDiagnostics
-	a := alias(d)
-	a.Plugins = nil
-	raw, err := json.Marshal(a)
-	if err != nil {
-		return nil, err
-	}
-	if d.Plugins == nil {
-		return raw, nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
-	}
-	plugins, err := json.Marshal(d.Plugins)
-	if err != nil {
-		return nil, err
-	}
-	fields["plugins"] = plugins
-	return json.Marshal(fields)
 }
 
 type EvenerToolInfo struct {
@@ -1580,6 +1555,11 @@ type ThreadListParams struct {
 	Statuses         []string `json:"statuses,omitempty"`
 	SourceIDs        []string `json:"sourceIds,omitempty"`
 	IncludeSubagents bool     `json:"includeSubagents,omitempty"`
+	// StatusOnly asks a daemon for the diagnostics a liveness probe reads and
+	// nothing else: each row's Diagnostics carries only Jobs, Watches, and
+	// Delegates reduced to delegateId, childSessionId and lifecycle. A daemon
+	// that predates the field, and a hub, ignore it and return the full answer.
+	StatusOnly bool `json:"statusOnly,omitempty"`
 }
 
 type ThreadListResponse struct {
@@ -2442,14 +2422,19 @@ type AuthStatusResponse struct {
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
 	Error          string `json:"error,omitempty"`
 	// ConfigRevision is this instance's effective credential-configuration
-	// revision: a stable, non-reversible digest the host re-resolves from the
-	// same state a credential write lands in (cmd/evener-hub/app_auth.go +
-	// hubcore.CredentialConfigRevision). The remote credential push captures it
-	// from this read and echoes it as
+	// revision: a stable, keyed MAC the host re-resolves from the same state a
+	// credential write lands in (cmd/evener-hub/app_auth.go +
+	// hubcore.CredentialConfigRevision). It is keyed with the hub-held secret
+	// the endpoint fingerprints use, so a reader who can see it cannot recover a
+	// secret the covered destination carries - a base URL can hold one in its
+	// userinfo or query string, which this field must not expose. The remote
+	// credential push captures it from this read and echoes it as
 	// ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
 	// write prepared against a configuration that has since changed. It is
 	// deliberately empty (JSON-omitted) when the host cannot resolve the
-	// instance: the zero value asserts no revision fence, and the source fence
+	// instance or cannot key a revision: the zero value asserts no revision
+	// fence to a client, but a host that cannot key one refuses the conditional
+	// set rather than reading that zero as permission, and the source fence
 	// still applies.
 	ConfigRevision string `json:"configRevision,omitempty"`
 }
@@ -3089,7 +3074,7 @@ type ApiKeyConditionalSetParams struct {
 	// InstanceEntry.ActiveSource). The host re-resolves the source under its
 	// credential write lock and refuses a non-empty value that no longer
 	// matches; empty asserts no source fence. The resolved source also decides
-	// the classification (see AuthApiKeyConditionalSetResponse.Action).
+	// the classification (see ApiKeyConditionalSetResponse.Action).
 	ExpectedSource string `json:"expectedSource,omitempty"`
 	// ExpectedRevision is the ConfigRevision the client observed for Provider.
 	// The host re-resolves it under the same lock and refuses a non-empty value
@@ -3117,7 +3102,7 @@ const (
 
 // ApiKeyConditionalSetResponse is the result of
 // evener/auth/apiKey/conditionalSet. Action is one of the
-// AuthApiKeyConditionalSet* values, Reason is a human-readable explanation
+// ApiKeyConditionalSetAction* values, Reason is a human-readable explanation
 // (chiefly for a skip), and Status is the instance's post-write
 // AuthStatusResponse — the state the host resolved under the same lock, which a
 // skip leaves unchanged.
@@ -4052,11 +4037,12 @@ type HostPushCredentialsResponse struct {
 type HostCredentialPushResult struct {
 	Instance string `json:"instance"`
 	// Action is "added" | "updated" | "skipped" | "failed". "added" and
-	// "updated" are the host's own conditional-set actions; "skipped" is either
-	// the host's classification (a source a pushed key must not shadow) or this
-	// controller's "no matching instance on the host"; "failed" is a per-instance
-	// failure (chiefly a refused or stale-revision conditional set) that does not
-	// abort the remaining entries.
+	// "updated" are the host's own conditional-set actions; "skipped" is the
+	// host's classification (a source a pushed key must not shadow, or a scheme
+	// that reads no key), or a controller-side skip whose Reason names why (no
+	// matching instance on the host, or a local value that is not an API key);
+	// "failed" is a per-instance failure (chiefly a refused or stale-revision
+	// conditional set) that does not abort the remaining entries.
 	Action string `json:"action"`
 	Reason string `json:"reason,omitempty"`
 }

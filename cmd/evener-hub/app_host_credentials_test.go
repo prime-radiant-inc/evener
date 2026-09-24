@@ -429,6 +429,476 @@ func TestHostPushCredentials_BlankLocalEntryStillGetsARow(t *testing.T) {
 	}
 }
 
+// pushLeakMarker is a substring of the Google credential JSON this file seeds
+// into the store. It is deliberately a plain token rather than anything a JSON
+// encoder would rewrite, so "does this request carry the credential" can be
+// asked of the raw params bytes: the leak this test hunts would arrive escaped
+// inside a Value, where a comparison against the whole document would miss it.
+const pushLeakMarker = "PUSHLEAK-9f3"
+
+// googleCredentialJSONForPush is a Google credential JSON the registry's own
+// gate accepts (registry.CheckCredentialJSON), which is the shape
+// evener/auth/credentialJson/set stores for a gcp-adc instance.
+const googleCredentialJSONForPush = `{"type":"authorized_user","client_id":"cid","client_secret":"` + pushLeakMarker + `","refresh_token":"rtoken-` + pushLeakMarker + `"}`
+
+// truncatedCredentialJSONForPush is the same kind of credential document cut off
+// mid-object: it parses no better than it gates (json.Valid and
+// registry.CheckCredentialJSON both refuse it), which is exactly the shape a
+// hand-edited credentials.toml holds. A validity test therefore answers "this is
+// a key" for it, and the push would hand a pasted service-account key to another
+// host as an API key; the first-character shape rule is what refuses it.
+const truncatedCredentialJSONForPush = `{"type":"service_account","private_key":"` + pushLeakMarker + ``
+
+// TestHostPushCredentials_MatchesAHostInstanceSpelledInAnotherCase pins the join
+// against spelling. The local store lowercases the keys it holds (Store.Set and
+// Store.Get), while the host spells its instances as its own providers.toml
+// authors them, so an exact lookup skipped a mixed-case host instance as "no
+// matching instance on the host" without ever contacting the host - a push that
+// silently did nothing for an instance it did have.
+func TestHostPushCredentials_MatchesAHostInstanceSpelledInAnotherCase(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	// Stored under "openai" whatever case the operator typed.
+	if err := store.Set("OpenAI", "sk-openai-local"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "OpenAI", Auth: "bearer"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			return statusReply("none", "rev-openai")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{Action: appwire.ApiKeyConditionalSetActionAdded, Status: appwire.AuthStatusResponse{Provider: "OpenAI", ActiveSource: "store"}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if got := resultFor(t, resp, "openai"); got.Action != appwire.HostCredentialPushAdded {
+		t.Fatalf("result = %+v, want added: the host has the instance under another spelling", got)
+	}
+	// The host's own spelling is what travels as the Provider: the host is the
+	// side that resolves it.
+	var providers []string
+	for _, params := range countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet) {
+		var decoded appwire.ApiKeyConditionalSetParams
+		if err := json.Unmarshal(params, &decoded); err != nil {
+			t.Fatalf("decode conditionalSet params: %v", err)
+		}
+		providers = append(providers, decoded.Provider)
+	}
+	if len(providers) != 1 || providers[0] != "OpenAI" {
+		t.Fatalf("conditionalSet providers = %v, want exactly the host's own spelling [OpenAI]", providers)
+	}
+	var statusProviders []string
+	for _, params := range countedMethod(t, h.calls(), appwire.MethodEvenerAuthStatus) {
+		statusProviders = append(statusProviders, providerOf(t, params))
+	}
+	if len(statusProviders) != 1 || statusProviders[0] != "OpenAI" {
+		t.Fatalf("auth/status providers = %v, want exactly the host's own spelling [OpenAI]", statusProviders)
+	}
+}
+
+// TestHostPushCredentials_NeverSendsAGoogleCredentialJSON pins the leak: the
+// credential push's unit is every credentials-store entry, and that store holds
+// two kinds of secret under one namespace of instance names - API keys
+// (evener/auth/apiKey/set) and Google credential JSON
+// (evener/auth/credentialJson/set, which the gcp-adc scheme reads). Sending the
+// second kind as a Value hands a service-account or authorized-user JSON to
+// another host, which stores it as an api key even when the instance there can
+// never use it.
+//
+// One rule now, asserted against every outgoing request rather than against the
+// reported action: a value that is not an API key is never sent, so the bytes
+// never leave this controller even to be refused on the other side. A host
+// entry's scheme is deliberately NOT a controller-side skip any more - the
+// host's locked conditional set classifies that (see
+// TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost).
+func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("key-only", "sk-real-key"); err != nil {
+		t.Fatal(err)
+	}
+	// A key-capable instance on the host holding a credential JSON locally: the
+	// host would store it as an api key and its registry would never read it.
+	if err := store.Set("json-to-keyed", googleCredentialJSONForPush); err != nil {
+		t.Fatal(err)
+	}
+	// A keyless-scheme entry on the host: its value is a credential document, so
+	// the value-kind skip refuses it whatever the host's scheme is - the scheme
+	// itself is no longer a controller-side decision.
+	if err := store.Set("json-to-adc", googleCredentialJSONForPush); err != nil {
+		t.Fatal(err)
+	}
+	// A TRUNCATED credential document under a key-capable host entry: neither gate
+	// accepts it and it is not valid JSON, so only the shape rule keeps its private
+	// material off the wire.
+	if err := store.Set("json-truncated", truncatedCredentialJSONForPush); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+				{Name: "key-only", Auth: "bearer"},
+				{Name: "json-to-keyed", Auth: "bearer"},
+				{Name: "json-to-adc", Auth: "gcp-adc"},
+				{Name: "json-truncated", Auth: "bearer"},
+			}}}
+		case appwire.MethodEvenerAuthStatus:
+			return statusReply("none", "rev")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{Action: appwire.ApiKeyConditionalSetActionAdded, Status: appwire.AuthStatusResponse{Provider: "x", ActiveSource: "store"}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	// The load-bearing assertion: the credential JSON is nowhere in what went
+	// out, on any method.
+	for _, call := range h.calls() {
+		if strings.Contains(string(call.params), pushLeakMarker) {
+			t.Fatalf("%s carried the Google credential JSON: %s", call.method, call.params)
+		}
+	}
+
+	// No non-key entry was even asked about: no status read, no conditional set,
+	// so the bytes never reached a host to be refused.
+	var asked []string
+	for _, method := range []string{appwire.MethodEvenerAuthStatus, appwire.MethodEvenerAuthApiKeyConditionalSet} {
+		for _, params := range countedMethod(t, h.calls(), method) {
+			asked = append(asked, providerOf(t, params))
+		}
+	}
+	if len(asked) == 0 {
+		t.Fatal("the push never asked the host about the one entry that is an API key")
+	}
+	for _, name := range asked {
+		if name != "key-only" {
+			t.Fatalf("the push asked the host about %q; only the API-key entry may be sent: %v", name, asked)
+		}
+	}
+
+	key := resultFor(t, resp, "key-only")
+	if key.Action != appwire.HostCredentialPushAdded {
+		t.Fatalf("key-only result = %+v, want added: the entry that is an api key must still be pushed", key)
+	}
+	for _, name := range []string{"json-to-keyed", "json-to-adc", "json-truncated"} {
+		result := resultFor(t, resp, name)
+		if result.Action != appwire.HostCredentialPushSkipped {
+			t.Fatalf("%s result = %+v, want skipped", name, result)
+		}
+		if result.Reason == "" {
+			t.Fatalf("%s has no reason; the report cannot say why nothing was pushed", name)
+		}
+	}
+	// The local store still holds both documents: the push never writes here.
+	if got, ok := store.Get("json-to-adc"); !ok || got != googleCredentialJSONForPush {
+		t.Fatalf("local entry json-to-adc = %q present=%v, want it untouched", got, ok)
+	}
+	if got, ok := store.Get("json-truncated"); !ok || got != truncatedCredentialJSONForPush {
+		t.Fatalf("local entry json-truncated = %q present=%v, want it untouched", got, ok)
+	}
+}
+
+// TestCredentialPushValueIsKeyRefusesAJSONShapedValue pins the shape rule
+// directly, which is the High finding's fix. The rule used to require json.Valid
+// as well, so a TRUNCATED document - one cut off mid-object, the shape a
+// hand-edited credentials.toml holds - failed the registry gate and json.Valid
+// alike and was answered "this is an API key": the push then handed a pasted
+// service-account key to another host as a key. The first non-whitespace
+// character decides now, whether or not the body parses, and leading whitespace
+// must not hide it.
+func TestCredentialPushValueIsKeyRefusesAJSONShapedValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "an ordinary api key", value: "sk-live-abc123", want: true},
+		{name: "an opaque bearer-style token", value: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0", want: true},
+		{name: "an empty value", value: "", want: true},
+		{name: "a key that merely contains braces", value: "sk-a{b}c", want: true},
+		{name: "a google credential json the gate accepts", value: googleCredentialJSONForPush, want: false},
+		{name: "a truncated service-account json", value: truncatedCredentialJSONForPush, want: false},
+		{name: "a truncated array", value: `[{"type":"service_account"`, want: false},
+		{name: "an object with nothing in it", value: "{}", want: false},
+		{name: "an empty array", value: "[]", want: false},
+		{name: "an object with leading whitespace", value: "  \n\t{\"type\":\"service_account\",", want: false},
+		{name: "an array with leading whitespace", value: " [1,", want: false},
+		{name: "a brace-led value that is not json at all", value: "{not json", want: false},
+		{name: "a bracket-led value that is not json at all", value: "[not json", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := credentialPushValueIsKey(tc.value); got != tc.want {
+				t.Fatalf("credentialPushValueIsKey(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHostPushCredentials_ValueKindSkipReasonDescribesWhatWasObserved pins the
+// reason a non-key value carries. The rule cannot tell a credential document
+// from a key whose first character happens to be "{" or "[": credentials.Store
+// carries no kind (Get returns a bare string), so the skip reason must describe
+// what was observed - the value's shape - and must not assert that the entry
+// holds a credential document, which is a cause the controller cannot prove and
+// is false for such a key. Both shapes appear here so the reason cannot drift
+// back into that claim.
+func TestHostPushCredentials_ValueKindSkipReasonDescribesWhatWasObserved(t *testing.T) {
+	const wantReason = "the stored value is shaped like a JSON document (it begins with a brace or a bracket) and no API key begins with either, so it cannot be told apart from a credential document: it is not sent to another host as a key, because a credential document's private material must never leave this controller"
+
+	store := newTestCredentialsStore(t)
+	// A truncated service-account document: the leak this rule exists to close.
+	if err := store.Set("truncated", truncatedCredentialJSONForPush); err != nil {
+		t.Fatal(err)
+	}
+	// A value that is not a document at all but is brace-led - the finding's case,
+	// a key that merely begins with "{" - so the report cannot claim it holds one.
+	if err := store.Set("brace-led", "{sk-brace-led-not-a-document"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+				{Name: "truncated", Auth: "bearer"},
+				{Name: "brace-led", Auth: "bearer"},
+			}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	for _, name := range []string{"truncated", "brace-led"} {
+		result := resultFor(t, resp, name)
+		if result.Action != appwire.HostCredentialPushSkipped {
+			t.Fatalf("%s result = %+v, want skipped", name, result)
+		}
+		if result.Reason != wantReason {
+			t.Fatalf("%s reason = %q, want %q", name, result.Reason, wantReason)
+		}
+	}
+
+	// Neither value left the controller, and neither was even asked about: the
+	// skip is pre-wire.
+	for _, call := range h.calls() {
+		encoded := string(call.params)
+		if strings.Contains(encoded, pushLeakMarker) || strings.Contains(encoded, "brace-led") {
+			t.Fatalf("%s carried a non-key value: %s", call.method, call.params)
+		}
+	}
+	for _, method := range []string{appwire.MethodEvenerAuthStatus, appwire.MethodEvenerAuthApiKeyConditionalSet} {
+		if n := len(countedMethod(t, h.calls(), method)); n != 0 {
+			t.Fatalf("%s calls = %d, want none for a non-key value", method, n)
+		}
+	}
+}
+
+// TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost pins the Medium
+// fix: the controller no longer decides a keyless scheme's capability from the
+// instance-list snapshot. That snapshot is stale by construction - the host's
+// providers.toml can change between the listing and the push, turning a gcp-adc
+// row into a key-capable one - and the design puts the classification on the
+// host's locked conditional set (spec 07: "The policy must be applied atomically
+// on the host"). So an entry the listing says is gcp-adc still goes through
+// auth/status + apiKey/conditionalSet, and the host's own typed "skipped" with
+// its reason is what the report carries.
+func TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("vertexish", "sk-real-key"); err != nil {
+		t.Fatal(err)
+	}
+	const hostReason = "vertexish authenticates with Google application-default credentials, which do not read an API key"
+	var setValue string
+	var statusCalls int
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "vertexish", Auth: "gcp-adc"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			statusCalls++
+			return statusReply("none", "rev-vertexish")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			var decoded appwire.ApiKeyConditionalSetParams
+			if err := json.Unmarshal(params, &decoded); err != nil {
+				t.Fatalf("decode conditionalSet params: %v", err)
+			}
+			setValue = decoded.Value
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{
+				Action: appwire.ApiKeyConditionalSetActionSkipped,
+				Reason: hostReason,
+				Status: appwire.AuthStatusResponse{Provider: "vertexish"},
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	result := resultFor(t, resp, "vertexish")
+	if result.Action != appwire.HostCredentialPushSkipped {
+		t.Fatalf("result = %+v, want the host's typed skip", result)
+	}
+	if result.Reason != hostReason {
+		t.Fatalf("reason = %q, want the host's own reason %q verbatim: the controller must not classify a scheme from the listing snapshot", result.Reason, hostReason)
+	}
+	// The entry reached the host: one status read and one conditional set, with
+	// the key as the Value. The host, not the controller, decides a keyless scheme.
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthStatus)); n != 1 {
+		t.Fatalf("auth/status calls = %d, want 1: a keyless-scheme entry is classified by the host now", n)
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 1 {
+		t.Fatalf("conditionalSet calls = %d, want 1: the host's classification is the authority", n)
+	}
+	if setValue != "sk-real-key" {
+		t.Fatalf("conditionalSet Value = %q, want the local key: the controller no longer withholds it for a keyless scheme", setValue)
+	}
+	if statusCalls != 1 {
+		t.Fatalf("scripted status reads = %d, want 1", statusCalls)
+	}
+}
+
+// TestHostPushCredentials_EmptyActionIsAFailedEntry pins the one part of the
+// host's answer the controller may not pass through verbatim. A newer host's
+// action name is reported as it stands - a controller that mapped unknown names
+// onto today's four would mislabel the host's own decision - but an empty or
+// whitespace-only action is not an unknown action, it is a malformed answer with
+// no outcome in it, and reporting it would hand the pane a result whose action
+// is outside the documented added/updated/skipped/failed contract.
+func TestHostPushCredentials_EmptyActionIsAFailedEntry(t *testing.T) {
+	for _, tc := range []struct{ name, action string }{
+		{name: "empty", action: ""},
+		{name: "whitespace", action: "  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestCredentialsStore(t)
+			if err := store.Set("openai", "sk-openai-local"); err != nil {
+				t.Fatal(err)
+			}
+			h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+				switch method {
+				case appwire.MethodEvenerInstanceList:
+					return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "openai"}}}}
+				case appwire.MethodEvenerAuthStatus:
+					return statusReply("none", "rev-openai")
+				case appwire.MethodEvenerAuthApiKeyConditionalSet:
+					return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{Action: tc.action, Status: appwire.AuthStatusResponse{Provider: "openai"}}}
+				default:
+					return hostAdminReply{result: appwire.EmptyResponse{}}
+				}
+			})
+
+			resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+			if err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+			result := resultFor(t, resp, "openai")
+			if result.Action != appwire.HostCredentialPushFailed {
+				t.Fatalf("result = %+v, want failed: %q is not an outcome the report can carry", result, tc.action)
+			}
+			if result.Reason == "" {
+				t.Fatal("Reason is empty for a failed entry; the report cannot say why")
+			}
+		})
+	}
+}
+
+// TestHostPushCredentials_UnknownActionBecomesAFailedEntryCarryingIt pins the
+// other half of that line, and reverses an earlier decision: the report's
+// documented contract is added|updated|skipped|failed, so an action outside it
+// reaching the pane is a contract violation a newer - or hostile - host can
+// drive, and the pane keys on those four names. The host's own text is not
+// thrown away with it: the failed entry's reason quotes it verbatim, which is
+// what the earlier "pass it through" was protecting.
+func TestHostPushCredentials_UnknownActionBecomesAFailedEntryCarryingIt(t *testing.T) {
+	const futureAction = "deferred"
+	store := newTestCredentialsStore(t)
+	if err := store.Set("openai", "sk-openai-local"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "openai"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			return statusReply("none", "rev-openai")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{Action: futureAction, Reason: "queued on the host", Status: appwire.AuthStatusResponse{Provider: "openai"}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	result := resultFor(t, resp, "openai")
+	if result.Action != appwire.HostCredentialPushFailed {
+		t.Fatalf("result = %+v, want failed: %q is outside the report's contract", result, futureAction)
+	}
+	if !strings.Contains(result.Reason, futureAction) {
+		t.Fatalf("reason = %q, want the host's own action text %q in it", result.Reason, futureAction)
+	}
+}
+
+// TestHostPushCredentials_WritesRefusedOnTheHostIsAWholeCallFailure pins the
+// reporting-lies case: when the host cannot load its own providers.toml, its
+// instance list is empty or partial and its own mutators refuse, but the pusher
+// still joins the local store keys against that list - so every key comes back
+// "skipped: no matching instance on the host" and the operator reads a push
+// that completed against a host that could not read its own instances. The
+// listing is the host's own authority for "present", so the refusal has to end
+// the call, the way the host's own surfaces refuse the write while
+// WritesRefused stands (app_instances.go's refuseWhenBroken).
+func TestHostPushCredentials_WritesRefusedOnTheHostIsAWholeCallFailure(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("openai", "sk-openai-local"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{
+				Instances:     []appwire.InstanceEntry{},
+				Diagnostics:   []string{"providers.toml: parse error at line 3"},
+				WritesRefused: true,
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	if _, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"}); err == nil {
+		t.Fatalf("Push succeeded against a host that refuses its own writes; every local key was reported as %q", "no matching instance on the host")
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 0 {
+		t.Fatalf("conditionalSet calls = %d, want none: a push that cannot establish the host's instances must not write", n)
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthStatus)); n != 0 {
+		t.Fatalf("auth/status calls = %d, want none: there is no instance list to join against", n)
+	}
+}
+
 // TestHostPushCredentials_RefusesRemoteOriginatedBeforeAnyDial pins the shared
 // origin guard: a bridge-originated push is refused typed, reaches no remote
 // host, and never dials.
@@ -548,6 +1018,100 @@ func TestHostPushCredentials_ServedOverHubRPC(t *testing.T) {
 	}
 	if resp.Host != "m4" || len(resp.Results) != 1 || resp.Results[0].Instance != "openai" || resp.Results[0].Action != appwire.HostCredentialPushAdded {
 		t.Fatalf("response = %+v, want one added result for openai", resp)
+	}
+	if n := len(countedMethod(t, calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 1 {
+		t.Fatalf("conditionalSet calls = %d, want 1", n)
+	}
+}
+
+// TestHostPushCredentials_ResolvesTheAuthControllersOwnStore pins the one-store
+// rule: a hub built with no explicit CredsStore — the shape these constructors
+// tolerate, and the one an embedder reaches through newHubAppServer* rather than
+// main.go — must resolve the on-disk store once and hand the same one to the
+// auth controller and to the credential push. Resolving it inside the auth
+// controller alone supported evener/auth/apiKey/set on such a hub while the push
+// answered InternalError "credential push requires a local credentials store":
+// one hub, two answers to "which store is mine".
+//
+// startHubRPCTestServer, not newHubRPCTestServerWithWeb: the latter mints a
+// store whenever CredsStore is nil, which is exactly the resolution under test.
+func TestHostPushCredentials_ResolvesTheAuthControllersOwnStore(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	// The store a nil CredsStore already resolves to: credentials.toml beside
+	// the state root the auth controller keeps its OAuth records under
+	// (newHubAuthControllerWithStore's fallback).
+	credentialsPath := filepath.Join(root, "credentials.toml")
+	store, err := credentials.LoadStore(credentialsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credentialsPath, err)
+	}
+	providersToml := writeProvidersToml(t, root, bearerInstanceToml)
+	reg := newTestRegistry(t, stateDir, providersToml, store, nil)
+
+	client, calls, _ := newScriptedAdminClient(t, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "work-ant"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			return statusReply("none", "rev-work-ant")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{
+				Action: appwire.ApiKeyConditionalSetActionAdded,
+				Status: appwire.AuthStatusResponse{Provider: "work-ant", ActiveSource: "store"},
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+
+	srv, web := startHubRPCTestServer(t, hubcore.WebConfig{
+		HubStateRoot:        stateDir,
+		RemoteHostRegistry:  hosts,
+		Registry:            reg,
+		CredentialsPath:     credentialsPath,
+		ProvidersConfigPath: providersToml,
+		// CredsStore deliberately unset: this is the nil-store hub whose two
+		// credential surfaces have to agree.
+	})
+	defer srv.Close()
+	web.sources.Add(source)
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// The key enters through the auth surface, so the row the push reports
+	// exists only because both surfaces resolved the same store.
+	var status appwire.AuthStatusResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "sk-work-ant"}, &status); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	seeded, err := credentials.LoadStore(credentialsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credentialsPath, err)
+	}
+	if value, ok := seeded.Get("work-ant"); !ok || value != "sk-work-ant" {
+		t.Fatalf("credentials.toml[work-ant] = %q/%v, want the key the auth surface just wrote: the auth controller did not resolve %s", value, ok, credentialsPath)
+	}
+
+	var resp appwire.HostPushCredentialsResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerHostPushCredentials, appwire.HostPushCredentialsParams{Host: "m4"}, &resp); err != nil {
+		t.Fatalf("evener/host/pushCredentials: %v", err)
+	}
+	result := resultFor(t, resp, "work-ant")
+	if result.Action != appwire.HostCredentialPushAdded {
+		t.Fatalf("result = %+v, want the added result for the key the auth surface wrote", result)
 	}
 	if n := len(countedMethod(t, calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 1 {
 		t.Fatalf("conditionalSet calls = %d, want 1", n)

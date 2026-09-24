@@ -218,7 +218,7 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 // has to come from the same resolution - otherwise the first key for a
 // credential-requiring provider would be refused as a moved endpoint.
 func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry.Instance, bool) {
-	resolved, err := r.ResolveInstance(id)
+	resolved, err := r.ResolveInstancePresence(id)
 	if err != nil {
 		return registry.Instance{}, false
 	}
@@ -260,7 +260,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 	// nil controller.
 	var status appwire.AuthStatusResponse
 	if c.auth != nil {
-		status = c.auth.instanceStatus(inst, resolved)
+		status = c.auth.instanceStatusKeyed(key, inst, resolved)
 	}
 	entry := appwire.InstanceEntry{
 		Name:                inst.Name,
@@ -384,26 +384,6 @@ func fingerprintWithKey(key []byte, identity string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// destinationIdentity is what destinationFingerprint digests: the base URL an
-// instance resolves, the protocol that selects its request templates, and every
-// request path those templates contribute. A credential-bearing request is
-// built from exactly these, so a change to any of them moves where the secret
-// is sent - and a change to the protocol or a path template can leave the
-// sanitized URL the listing displays byte-identical, which is why the digest
-// cannot be of that URL alone. Nothing secret-bearing is here: not the
-// credential, not either header map, not vars.
-func destinationIdentity(resolved registry.Resolved) string {
-	t := resolved.Transport
-	return strings.Join([]string{
-		strings.TrimSpace(t.BaseURL),
-		resolved.Protocol,
-		strings.TrimSpace(t.Endpoint),
-		strings.TrimSpace(t.StreamEndpoint),
-		strings.TrimSpace(t.ModelsEndpoint),
-		strings.TrimSpace(t.CountTokensEndpoint),
-	}, "\x00")
-}
-
 // destinationInstance reports the instance behind inst when it has a
 // destination this hub can name at all: not hidden, resolvable, and carrying a
 // base URL. Whether the hub can *key* that destination's fingerprint is a
@@ -433,7 +413,12 @@ func resolvedRowInstance(r *registry.Registry, inst registry.Instance) (registry
 	if r == nil {
 		return registry.Resolved{}, false
 	}
-	resolved, err := r.ResolveInstance(inst.Name)
+	// Presence depth: the row's destination and the credential's source
+	// label, with no value materialized and no command expression executed
+	// (spec §10.1) — the pane renders this on every refresh, and the
+	// revision the entry serves resolves at this same depth so one
+	// configuration MACs to one revision wherever it is read.
+	resolved, err := r.ResolveInstancePresence(inst.Name)
 	if err != nil {
 		return registry.Resolved{}, false
 	}
@@ -476,7 +461,7 @@ func rowEndpointFingerprint(key []byte, inst registry.Instance, resolved registr
 	if !ok || !hasRowDestination(inst, resolved) {
 		return ""
 	}
-	return fingerprintWithKey(key, destinationIdentity(resolved))
+	return fingerprintWithKey(key, hubcore.DestinationIdentity(resolved))
 }
 
 // endpointFingerprintKeyFile is the key's name under the auth state root, the
@@ -865,6 +850,24 @@ func (c *hubInstancesController) requireAuth() error {
 	return nil
 }
 
+// requireCredentialStore refuses a mutation that has to read or move the
+// credentials store when this controller has no usable one. hubCredentialStore
+// leaves creds nil when credentials.toml cannot be loaded, and Store.Get, Move
+// and Clear all take the receiver's lock, so a nil store panics inside the RPC
+// handler. That unreadable store is a first-class state - the credential
+// surfaces answer from it rather than dereferencing it (hubAuthController's
+// storedKey and credentialsUnavailable) - so the instance mutations answer the
+// same way: typed, and before any providers.toml write, rather than panicking or
+// silently leaving a credential behind under a name they just gave up.
+//
+// Every caller runs requireAuth first, so c.auth is non-nil here.
+func (c *hubInstancesController) requireCredentialStore() error {
+	if c.auth.creds == nil {
+		return c.auth.credentialsUnavailable()
+	}
+	return nil
+}
+
 // refuseWhenBroken stops every write while there is no registry to write
 // against: a providers.toml that does not load (the hub has no way to rewrite
 // a file it could not read without destroying what the user wrote — spec §10,
@@ -1130,6 +1133,17 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		// overwrite it. The refusal belongs here rather than there: by the
 		// time moveCredentials runs the file is re-keyed and the registry
 		// reloaded, so there is no longer anything to refuse.
+		// The destination check below and the move at the end of this call both
+		// read and move the credentials store, and neither can be done without
+		// one: an unreadable credentials.toml (creds nil) would panic a direct
+		// Store.Get, and - worse than the panic - a rename that reached
+		// writeAndReload and then failed to move the key would leave the key
+		// stranded under the old name after providers.toml had moved. So the
+		// refusal is made here, before the destination check and long before any
+		// config change is persisted, rather than after the file is re-keyed.
+		if err := c.requireCredentialStore(); err != nil {
+			return err
+		}
 		if held := c.credentialsUnder(newName); len(held) > 0 {
 			return appwire.Conflict(fmt.Sprintf("renaming %q to %q would overwrite %s; clear that first", name, newName, strings.Join(held, " and ")))
 		}
@@ -1294,7 +1308,12 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 // credential the hub merely failed to read is the same loss.
 func (c *hubInstancesController) credentialsUnder(name string) []string {
 	var held []string
-	if _, ok := c.auth.creds.Get(name); ok {
+	// Through storedKey, which answers "no key" rather than panicking when the
+	// hub has no usable store: the rename flow refuses such a rename up front
+	// (requireCredentialStore), but this read must be safe wherever it is
+	// reached from. "Not found" is still the only signal that nothing is there,
+	// so a record that exists but does not read back still counts as present.
+	if _, ok := c.auth.storedKey(name); ok {
 		held = append(held, fmt.Sprintf("a credentials.toml entry for %q", name))
 	}
 	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
@@ -1351,6 +1370,13 @@ func removeApplied(err error) error {
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
 	var problems []string
+	// A backstop for the rename flow's own up-front refusal: with no usable
+	// store there is no Move to make, and dereferencing the nil store would
+	// panic. The flow refuses before it writes providers.toml; this keeps the
+	// primitive itself honest if a caller ever reaches it another way.
+	if err := c.requireCredentialStore(); err != nil {
+		return err
+	}
 	// One persist, so the key is never briefly filed under both names or
 	// neither: a copy-then-clear pair whose second half failed would leave
 	// the old name resolving a credential the config no longer names.
@@ -1569,6 +1595,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		return err
 	}
 
+	// The credential cleanup below reads and clears the store, and a removal
+	// that cannot see it would either panic (a direct Store.Get) or leave a
+	// stored key behind under a name nothing curates once the config entry is
+	// gone. As on the rename path, the refusal is made before anything is
+	// deleted, so no half-removal reaches providers.toml.
+	if err := c.requireCredentialStore(); err != nil {
+		return err
+	}
+
 	// Credentials first, then the authored entry: a cleanup that cannot
 	// complete fails the removal while the instance and its name still exist,
 	// so the caller can retry it. The reverse order would report a deletion
@@ -1580,7 +1615,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// removal failed, so the instance the caller still has must still
 	// authenticate. Capture and restore both sit inside this held lock, so no
 	// writer can slip between them.
-	storedKey, hasStoredKey := c.auth.creds.Get(name)
+	storedKey, hasStoredKey := c.auth.storedKey(name)
 	oauthBytes, hasOAuth, err := c.captureOAuthFile(name)
 	if err != nil {
 		return err
@@ -1995,7 +2030,13 @@ func (e removalLeftoversError) Error() string { return e.problems }
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
 	var deleted deletedCredentials
-	if _, stored := c.auth.creds.Get(name); stored {
+	// A backstop for the removal flow's own up-front refusal (see
+	// requireCredentialStore): the read below must not dereference a nil store,
+	// and the clear is a write the nil-store seam already refuses.
+	if err := c.requireCredentialStore(); err != nil {
+		return deleted, err
+	}
+	if _, stored := c.auth.storedKey(name); stored {
 		if err := c.auth.clearCredential(name); err != nil {
 			return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
 		}

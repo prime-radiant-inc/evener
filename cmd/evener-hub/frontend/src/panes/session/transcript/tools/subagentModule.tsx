@@ -452,12 +452,13 @@ registerToolRenderer({
   },
   body: DelegateBody,
   statusLine: DelegateStatusLine,
-  // A delegate call is a status card, not a fold-to-open tool row - the same
-  // reasoning as task_list's own `autoExpand: () => true`. Child watching
-  // exists only while the body is expanded, for quotes and stats; the
-  // collapsed lifecycle word comes from the stable owner projection. Opening
-  // at settle makes the card visible without a click; a manual collapse
+  // A delegate call is a status card, not a fold-to-open tool row: opening
+  // at settle makes the card visible without a click. Child watching exists
+  // only while the body is expanded, for quotes and stats; the collapsed
+  // lifecycle word comes from the stable owner projection. A manual collapse
   // afterward still sticks (ToolCallItem's own autoDefault vs. store-backed
-  // toggle).
+  // toggle). This descriptor's own autoExpand is the delegate's posture -
+  // task_list settles FOLDED instead (its folded line already carries the
+  // news), so do not unify the two.
   autoExpand: () => true,
 });

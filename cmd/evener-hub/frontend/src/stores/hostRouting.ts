@@ -58,26 +58,48 @@ export function isLocalHost(host: string | null | undefined): boolean {
   return host == null || host === "" || host === LOCAL_HOST;
 }
 
+/** normalizeHost maps an absent, empty, or `local` spelling onto LOCAL_HOST - the
+ * hostless default - and leaves every real host name alone. This is the ONE
+ * spelling rule: the settings store's reading of its URL and shell/routing.ts's
+ * carry of the selected host both go through it (it lives here, beside
+ * isLocalHost, because those two modules must not import each other). */
+export function normalizeHost(raw: string | null): string {
+  return isLocalHost(raw) ? LOCAL_HOST : (raw as string);
+}
+
 /**
  * hostRequest issues `method` against the selected `host`.
  *
- * For the local host it is exactly `client.request(method, params)`, so every
- * existing local behavior is unchanged. For a remote host it is
- * `client.request("evener/host/request", {host, method, params})`, whose result
- * is the forwarded method's own result verbatim, so callers type it as the
- * underlying method's result.
+ * For the local host it is exactly `client.request(method, params, opts)`, so
+ * every existing local behavior is unchanged. For a remote host it is
+ * `client.request("evener/host/request", {host, method, params}, opts)`, whose
+ * result is the forwarded method's own result verbatim, so callers type it as
+ * the underlying method's result.
+ *
+ * `opts` is the caller's per-call deadline. It is honoured on both sides: the
+ * local call bounds the method itself, the remote call bounds the proxy request
+ * that carries it (see below) - a deadline is never dropped on the floor.
  */
 export function hostRequest<M extends MethodName>(
   client: AppwireClientLike,
   host: string | null | undefined,
   method: M,
   params: MethodTypes[M]["params"],
+  opts?: { timeoutMs?: number },
 ): Promise<MethodTypes[M]["result"]> {
   if (isLocalHost(host)) {
-    return client.request(method, params);
+    return client.request(method, params, opts);
   }
   const forwarded: HostRequestParams = { host: host as string, method, params };
+  // The caller's deadline rides the ONE call that carries their wait, the proxy
+  // request itself: evener/host/request's params are {host, method, params} and
+  // have no deadline field (none is invented here), so without this a caller who
+  // asked for a longer budget than the client's own default would silently run
+  // under that default instead. The bound is then the whole forwarded round trip
+  // (the SSH hop plus the remote hub's handling), which is the closest
+  // equivalent the wire admits; a deadline error names evener/host/request
+  // rather than the method it forwarded.
   return client
-    .request("evener/host/request", forwarded)
+    .request("evener/host/request", forwarded, opts)
     .then((result) => result as unknown as MethodTypes[M]["result"]);
 }

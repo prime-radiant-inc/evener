@@ -7,9 +7,10 @@
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
-import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
+import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
 import { Button, Chevron, ConfirmDialog, Input, Loader, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
 const CLASS = {
@@ -43,9 +44,10 @@ export interface BrowseSectionProps {
 }
 
 export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }: BrowseSectionProps) {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces) ?? [];
-  const plugins = useExtensionsStore((s) => s.plugins) ?? [];
-  const browseCatalogs = useExtensionsStore((s) => s.browseCatalogs);
+  const store = useExtensionsHostStore();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
+  const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
+  const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
   const toasts = useToasts();
 
   const [filterQuery, setFilterQuery] = useState("");
@@ -82,23 +84,23 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       void (async () => {
         const generation = ++filterGeneration.current;
         try {
-          const current = extensionsStore.getState().marketplaces ?? [];
+          const current = store.getState().marketplaces ?? [];
           // A catalog someone else already started - a click, a retire, an
           // earlier query - is as unusable to this query as an absent one,
           // and nothing reruns the filter once it lands, so both are waited
           // for. browseMarketplace resolves either way.
           const unsettled = current.filter((m) => {
-            const cache = extensionsStore.getState().browseCatalogs.get(m.name);
+            const cache = store.getState().browseCatalogs.get(m.name);
             return cache === undefined || cache.status === "loading";
           });
           if (unsettled.length > 0) {
             setFilterLoading(true);
-            await Promise.all(unsettled.map((m) => extensionsStore.getState().browseMarketplace(m.name)));
+            await Promise.all(unsettled.map((m) => store.getState().browseMarketplace(m.name)));
             if (cancelled) return;
           }
           const next = new Set<string>();
           for (const m of current) {
-            const cache = extensionsStore.getState().browseCatalogs.get(m.name);
+            const cache = store.getState().browseCatalogs.get(m.name);
             if (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery))) {
               next.add(m.name);
             }
@@ -116,8 +118,10 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
     // setExpandedMarketplaces is a useState setter (stable identity, either
     // this component's own or the parent's - see BrowseSectionProps), so
     // listing it changes nothing behaviorally; only trimmedQuery actually
-    // varying is what should ever re-arm this debounce.
-  }, [trimmedQuery, setExpandedMarketplaces]);
+    // varying is what should ever re-arm this debounce. `store` is the
+    // selected host's store, stable per host, so it re-arms only when the host
+    // changes - when this debounce must read the new host's catalogs.
+  }, [trimmedQuery, setExpandedMarketplaces, store]);
 
   function toggleExpanded(name: string) {
     const wasExpanded = expandedMarketplaces.has(name);
@@ -127,8 +131,8 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       else next.add(name);
       return next;
     });
-    if (!wasExpanded && !extensionsStore.getState().browseCatalogs.has(name)) {
-      void extensionsStore.getState().browseMarketplace(name);
+    if (!wasExpanded && !store.getState().browseCatalogs.has(name)) {
+      void store.getState().browseMarketplace(name);
     }
   }
 
@@ -145,7 +149,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
     if (target === null) return;
     setInstallBusy(true);
     try {
-      await extensionsStore.getState().installPlugin(target.plugin, target.marketplace);
+      await store.getState().installPlugin(target.plugin, target.marketplace);
       toasts.push("success", `Installed ${target.plugin}`);
       setPendingInstall(null);
     } catch (err) {
@@ -241,6 +245,7 @@ function MarketplaceNode({
   onToggle: () => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
+  const store = useExtensionsHostStore();
   // An expanded node's catalog can be retired out from under it - a
   // marketplace change from another client retires every cached one - and only
   // a toggle would otherwise ask for a replacement, so the node asks for its
@@ -249,8 +254,8 @@ function MarketplaceNode({
   // re-enter.
   useEffect(() => {
     if (!expanded || cache !== undefined) return;
-    void extensionsStore.getState().browseMarketplace(marketplace.name);
-  }, [expanded, cache, marketplace.name]);
+    void store.getState().browseMarketplace(marketplace.name);
+  }, [expanded, cache, marketplace.name, store]);
 
   const rows =
     cache?.status === "loaded"

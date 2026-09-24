@@ -199,7 +199,7 @@ no router (reserved).
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
 | `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here. |
 | `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused. |
-| `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): the local store's entry keys are sent verbatim as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
+| `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 
 ## Notifications (server → client)
 
@@ -812,6 +812,15 @@ _(no fields)_
 | `os` | `string` | yes |  |
 | `arch` | `string` | yes |  |
 | `features` | `*appwire.FeatureSet` | yes |  |
+
+
+### `HostCredentialPushResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `instance` | `string` |  |  |
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
 
 
 ### `HostEntry`
@@ -1928,6 +1937,7 @@ _(no fields)_
 | `statuses` | `[]string` | yes |  |
 | `sourceIds` | `[]string` | yes |  |
 | `includeSubagents` | `bool` | yes |  |
+| `statusOnly` | `bool` | yes |  |
 
 
 ### `ThreadListResponse`

@@ -1,6 +1,7 @@
-// The rail header's three icons, drawn on the app's 16x16 icon grid (the same
-// grammar as widgets/chevron, openbutton's OpenIcon and TreeDrawer's
-// SessionsIcon).
+// The rail's drawn icons, on the app's 16x16 icon grid (the same grammar
+// as widgets/chevron, openbutton's OpenIcon and TreeDrawer's
+// SessionsIcon). Gear/Search/Sidebar lead the header; TuneIcon is the rail
+// body's organize-by control.
 //
 // They replace the text glyphs the header used to render. global.css subsets
 // Inter to Latin, so those code points came from whatever system fallback
@@ -48,6 +49,20 @@ export function SidebarIcon() {
     <svg {...ICON} aria-hidden="true">
       <rect x="2" y="3" width="12" height="10" rx="1.5" {...STROKE} />
       <path d="M6 3v10" {...STROKE} />
+    </svg>
+  );
+}
+
+// The organize-by control's mark: three lines with staggered knobs - the
+// cross-platform "arrange this view" convention (Finder's view options,
+// Material's tune), so an icon-only control still reads. The knobs are
+// round-cap zero-length paths at a heavier stroke, the same dot idiom the
+// host glyph uses (RailRow's HostGlyph).
+export function TuneIcon() {
+  return (
+    <svg {...ICON} aria-hidden="true">
+      <path d="M2.25 4.25h11.5M2.25 8h11.5M2.25 11.75h11.5" {...STROKE} />
+      <path d="M10.75 4.25h.01M5.25 8h.01M9.25 11.75h.01" {...STROKE} strokeWidth={2.5} />
     </svg>
   );
 }

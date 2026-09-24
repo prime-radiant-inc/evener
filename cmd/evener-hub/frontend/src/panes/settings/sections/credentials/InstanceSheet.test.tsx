@@ -751,6 +751,26 @@ describe("the form", () => {
     });
   });
 
+  test("a command expression in the credential header saves as authored", async () => {
+    // The hub's authoring rule accepts command expressions as credential
+    // material; the sheet's save-time check only requires a $, so the
+    // expression must cross the form and the wire unrefused and unaltered.
+    const V = instance({ name: "work", providerId: "openai" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({ instances: [V], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(V, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Credential header"));
+    await user.type(field("Credential header"), "Authorization=Bearer $(get-gateway-token)");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      credentialHeader: "Authorization=Bearer $(get-gateway-token)",
+      originClientId: "test-tab",
+    });
+  });
+
   test("Save is disabled until a field changes, and while writesRefused", async () => {
     renderSheet(WORK, {}, [OPENAI]);
     expect(saveButton().disabled).toBe(true);

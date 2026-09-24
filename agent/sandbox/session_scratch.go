@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -132,7 +133,11 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 // no workspace — so a base the filter would refuse for allocation (a workspace
 // that CONTAINS /tmp, or is /tmp itself) still holds containers, and dropping it
 // from this list would leave them unreclaimable forever.
-func sessionScratchBases(requested, workspaceRoot string) []string {
+//
+// A malformed EVENER_HOST_TEMP_BASES is returned as the error beside the scratch
+// bases, which are still listed: the world temp bases are then left out
+// entirely rather than replaced by the defaults.
+func sessionScratchBases(requested, workspaceRoot string) ([]string, error) {
 	var bases []string
 	add := func(base string) {
 		if base != "" && !slices.Contains(bases, base) {
@@ -152,15 +157,20 @@ func sessionScratchBases(requested, workspaceRoot string) []string {
 	// Only where a session temp container can exist: elsewhere the bases are
 	// meaningless names, and walking them would let the reclaim scan directories
 	// evener never allocated in.
-	if SessionTmpSupported {
-		for _, candidate := range worldTempBases {
-			base, ok := validWorldTempBase(candidate)
-			if ok {
-				add(base)
-			}
+	if !SessionTmpSupported {
+		return bases, nil
+	}
+	candidates, err := worldTempBaseCandidates()
+	if err != nil {
+		return bases, err
+	}
+	for _, candidate := range candidates {
+		base, ok := validWorldTempBase(candidate)
+		if ok {
+			add(base)
 		}
 	}
-	return bases
+	return bases, nil
 }
 
 // preferredSessionScratchCandidate is the base a caller asked for, or the temp
@@ -243,11 +253,11 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	if err != nil {
 		return err
 	}
-	bases := sessionScratchBases("", canonicalWorkspace)
+	bases, basesErr := sessionScratchBases("", canonicalWorkspace)
 	if len(bases) == 0 {
-		return noSessionScratchBaseError(workspaceRoot)
+		return errors.Join(basesErr, noSessionScratchBaseError(workspaceRoot))
 	}
-	var failures []error
+	failures := []error{basesErr}
 	for _, base := range bases {
 		if err := sweepCrashedSessionScratch(base); err != nil {
 			failures = append(failures, err)
@@ -256,14 +266,117 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	return errors.Join(failures...)
 }
 
+// crashedSessionScratchTombstoneSuffix marks the dot-prefixed tombstone a
+// sweeper renames a candidate to before removing it.
+const crashedSessionScratchTombstoneSuffix = ".reclaiming"
+
+// crashedSessionScratchTombstone names the tombstone dir is renamed to
+// before its removal. The dot prefix hides it from the sweep's candidate
+// filter — enumerated by nobody, removed exactly once — and reclaims it
+// under the same ownership, age, and lease gates.
+func crashedSessionScratchTombstone(dir string) string {
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+crashedSessionScratchTombstoneSuffix)
+}
+
+// isCrashedSessionScratchTombstone reports whether a base entry is the
+// tombstone a sweeper renames a candidate to before removing it, so a sweep
+// that crashed between the rename and the removal can be cleaned up by a
+// later one.
+func isCrashedSessionScratchTombstone(name string) bool {
+	return strings.HasPrefix(name, "."+sessionScratchPrefix) && strings.HasSuffix(name, crashedSessionScratchTombstoneSuffix)
+}
+
+// sweepTombstoneReferenceSurvived reports whether the rename-back after a
+// failed tombstone removal is safe: the pin inside the tombstone must still be
+// named by its owner's live manifest. The removal ran outside every lock
+// (round 71), so a manifest reset may have carried — and dropped — the
+// directory's reference in the window; renaming back over that state
+// resurrects the orphan pin round 18 documented, a pin beside an unreleased
+// manifest that names nothing, which the collector must retain forever. A
+// pin absent from the tombstone means the failed removal already took it, so
+// restoring the directory resurrects nothing collectible. Every unreadable
+// answer leaves the tombstone in place — the tombstone sweep reclaims it
+// under the same gates — because the alternative is gambling an orphan on a
+// doubt (round 83).
+func sweepTombstoneReferenceSurvived(dir, tombstone string) bool {
+	pin, err := readScratchDirectoryPin(tombstone)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	lock, lockErr := acquireScratchRetentionLock(pin.Owner)
+	if lockErr != nil {
+		// A writer holds the manifest: the answer is in motion, so doubt
+		// keeps the tombstone.
+		return false
+	}
+	defer func() { _ = lock.Release() }()
+	manifest, err := loadScratchRetention(pin.Owner)
+	if err != nil || manifest.Released {
+		return false
+	}
+	canonical, err := canonicalScratchPath(dir)
+	if err != nil {
+		return false
+	}
+	for _, ref := range manifest.References {
+		refDir, refErr := canonicalScratchPath(ref.Dir)
+		if refErr == nil && refDir == canonical && ref.Kind == pin.Kind {
+			return true
+		}
+	}
+	return false
+}
+
+// scratchSweepBeforeRemove is a nil-in-production test seam fired while the
+// sweep holds the candidate's lease, the reclamation mutex, and — when the
+// candidate carries a pin — the pin owner's manifest lock, after the retention
+// check read the directory collectible and just before the invalidating rename.
+// Tests use it to run a concurrent manifest reset inside that window.
+var scratchSweepBeforeRemove func()
+
+// scratchSweepAfterRename is a nil-in-production test seam fired once the
+// invalidating rename succeeded and every lock is down — the reclamation
+// mutex and the pin owner's manifest lock — with the tombstone in place, the
+// directory lease still held, and the removal of the dead tombstone next.
+// The removal window is the one place a concurrent manifest reset can act on
+// the tombstoned directory (round 71 moved the removal outside every lock);
+// tests use the seam to run that reset and then fail the removal.
+var scratchSweepAfterRename func()
+
+// scratchResetBeforeReclaimLock fires just before the manifest reset attempts
+// the reclamation lock, inside the retry closure and ahead of the lock's
+// blocking section. Tests use it to synchronize the reset's arrival at the
+// lock while the sweep holds it, instead of sleeping and hoping the goroutine
+// reached the window in time.
+var scratchResetBeforeReclaimLock func()
+
+// scratchReclamationMu serializes this process's scratch reclamation with its
+// manifest reset. The sweep's retention check reads the Released tombstone
+// without any lock the reset's resurrection takes, and the reset's carry pass
+// reclaims rows without taking the directory lease (round 25's contract
+// leaves contended pins untouched), so without serialization a reset could
+// carry a directory's rows into an unreleased manifest between the sweep's
+// check and its removal — the sweep would then delete the scratch the
+// resurrected manifest names. Both orders are safe under the mutex: a reset
+// that runs first leaves !Released for the sweep's check to read, and one
+// that comes second finds the directory gone and its pair dies with the
+// tombstone. Every lock each side takes besides this one is fail-fast, so
+// neither holder blocks on anything while holding it. Resets in OTHER
+// processes sharing the state directory serialize through the pin owner's
+// manifest lock instead, which the sweep holds across the same window
+// (round 67): the mutex covers this process, the durable lock covers the
+// rest, and both use the same both-orders-safe argument.
+var scratchReclamationMu sync.Mutex
+
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
 // lease is currently acquirable. A candidate whose lease is held, or whose age
 // cannot be read, is left untouched and is not an error: it is someone else's.
 // A candidate carrying a retention pin is skipped while that owner's manifest is
-// unreleased, held through the retention check and any removal so a concurrent
-// same-path restore cannot interleave, and its identity is verified after the
-// lease is acquired. A malformed or conflicting pin is conservatively retained
-// with a bounded diagnostic.
+// unreleased, held through the retention check and the invalidating rename so a
+// concurrent same-path restore cannot interleave, and its identity is verified
+// after the lease is acquired. The renamed tombstone is then removed outside
+// every lock. A malformed or conflicting pin is conservatively retained with a
+// bounded diagnostic.
 func sweepCrashedSessionScratch(base string) error {
 	entries, err := sessionScratchReadDir(base)
 	if err != nil {
@@ -272,7 +385,40 @@ func sweepCrashedSessionScratch(base string) error {
 	cutoff := time.Now().Add(-crashedSessionScratchMaxAge)
 	var failures []error
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
+		if !entry.IsDir() {
+			continue
+		}
+		if isCrashedSessionScratchTombstone(entry.Name()) {
+			// A sweeper that crashed between its invalidating rename and the
+			// removal left this behind: post-validation garbage the
+			// candidate filter can never enumerate again. Reclaim it under
+			// the same age, ownership, and lease gates — the lease is what
+			// excludes a live remover mid-removal, whose held flock a
+			// crashed one released — but skip the pin and manifest checks:
+			// the rename already committed the collectibility verdict, and
+			// no reference can ever name the dead path. No second rename
+			// either: a removal that fails leaves the same tombstone for the
+			// next sweep to retry.
+			info, infoErr := entry.Info()
+			if infoErr != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			tombstone := filepath.Join(base, entry.Name())
+			owned, ownerErr := scratchEntryOwnedByProcess(tombstone)
+			if ownerErr != nil || !owned {
+				continue
+			}
+			lease, contended, leaseErr := acquireScratchLease(filepath.Join(tombstone, sessionScratchLeaseName))
+			if leaseErr != nil || contended {
+				continue
+			}
+			if removeErr := os.RemoveAll(tombstone); removeErr != nil {
+				failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch tombstone %q: %w", tombstone, removeErr))
+			}
+			_ = lease.Release()
+			continue
+		}
+		if !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
 			continue
 		}
 		info, err := entry.Info()
@@ -308,20 +454,112 @@ func sweepCrashedSessionScratch(base string) error {
 			_ = lease.Release()
 			continue
 		}
-		retain, retentionErr := scratchDirectoryRetained(dir)
+		// Cross-process serialization (round 67): the reclamation mutex below
+		// is process-local, but resets run in every process sharing this state
+		// directory, and ScratchDirectoryRetained reads a RELEASED manifest's
+		// pinned directory collectible — so another process's reset could carry
+		// the reference on its contended branch and commit an unreleased
+		// manifest naming this very directory while the sweep holds its lease
+		// mid-removal. The pin owner's manifest lock is the mutex's durable
+		// equivalent: the reset already runs under it, so a sweep holding it
+		// across the check and the invalidating rename excludes every process's
+		// reset, and a reset that went first leaves !Released for the check to
+		// read. The acquisition is fail-fast — the sweep never blocks holding
+		// the directory lease; contention skips the candidate for a later sweep
+		// to retry. A candidate with no pin needs no lock: every carry branch
+		// dies on the absent pin, and writers refuse a released manifest, so
+		// nothing can begin carrying for it while the removal runs.
+		var manifestLock scratchLease
+		if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil {
+			lock, lockErr := acquireScratchRetentionLock(pin.Owner)
+			if lockErr != nil {
+				if !errors.Is(lockErr, ErrScratchRetentionLockHeld) {
+					failures = append(failures, lockErr)
+				}
+				_ = lease.Release()
+				continue
+			}
+			manifestLock = lock
+		}
+		scratchReclamationMu.Lock()
+		retain, retentionErr := ScratchDirectoryRetained(dir)
 		if retentionErr != nil {
+			scratchReclamationMu.Unlock()
+			if manifestLock != nil {
+				_ = manifestLock.Release()
+			}
 			failures = append(failures, retentionErr)
 			_ = lease.Release()
 			continue
 		}
 		if retain {
+			scratchReclamationMu.Unlock()
+			if manifestLock != nil {
+				_ = manifestLock.Release()
+			}
 			_ = lease.Release()
 			continue
 		}
-		// Hold the lease through removal: releasing first would let a same-path
-		// restore acquire the lease and be deleted out from under it.
-		if err := os.RemoveAll(dir); err != nil {
+		if scratchSweepBeforeRemove != nil {
+			scratchSweepBeforeRemove()
+		}
+		// The invalidating rename is the destructive step, and it is atomic
+		// and size-independent: the live path dies while every lock is still
+		// held, and no same-path restore can ever re-create it, because
+		// MkdirTemp mints unique names. The dot-prefixed tombstone fails the
+		// sweep's own prefix filter, so nothing enumerates it and it is
+		// removed exactly once. After the rename the locks guard nothing —
+		// the removal of the dead tombstone runs outside all of them, so the
+		// manifest lock is never held across work whose duration scales with
+		// the directory's contents (round 71): every concurrent writer of
+		// this root contends only with the millisecond-scale checks and the
+		// rename itself.
+		tombstone := crashedSessionScratchTombstone(dir)
+		renameErr := os.Rename(dir, tombstone)
+		scratchReclamationMu.Unlock()
+		if manifestLock != nil {
+			_ = manifestLock.Release()
+		}
+		// The directory lease is held through the removal: the tombstone
+		// reclamation above — this pass, a later one, or another process's —
+		// excludes a live remover by the lease, while a crash between the
+		// rename and the release lets the next sweep reclaim the tombstone.
+		if renameErr != nil {
+			_ = lease.Release()
+			// A candidate that vanished mid-sweep mirrors the removal's
+			// IsNotExist tolerance; anything else is a real failure and the
+			// directory stays for a later sweep to retry.
+			if !os.IsNotExist(renameErr) {
+				failures = append(failures, fmt.Errorf("sandbox: rename crashed session scratch %q for reclamation: %w", dir, renameErr))
+			}
+			continue
+		}
+		if scratchSweepAfterRename != nil {
+			scratchSweepAfterRename()
+		}
+		if err := os.RemoveAll(tombstone); err != nil {
+			// A failed removal must not leave the candidate renamed: the
+			// sweep's contract with an unremovable directory is to leave it
+			// at its original path — where the operator expects it and a
+			// later sweep retries it — while a leaked dot-prefixed tombstone
+			// would be invisible to every later sweep and would wedge the
+			// base's own cleanup. Rename it back; only a rename-back that
+			// itself fails leaves a tombstone behind, and that residual is
+			// reported alongside.
+			//
+			// Round 83 qualifies the rename-back: the removal ran outside
+			// every lock, so a manifest reset may have carried — and dropped
+			// — this directory's reference in the window, and restoring the
+			// pin over that state orphans it forever. Rename back only while
+			// the pin's manifest still names the directory; every other
+			// verdict keeps the tombstone dead, reported here and reclaimed
+			// by the tombstone sweep.
 			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
+			if sweepTombstoneReferenceSurvived(dir, tombstone) {
+				if backErr := os.Rename(tombstone, dir); backErr != nil {
+					failures = append(failures, fmt.Errorf("sandbox: restore unremoved crashed session scratch %q from %q: %w", dir, tombstone, backErr))
+				}
+			}
 		}
 		_ = lease.Release()
 	}

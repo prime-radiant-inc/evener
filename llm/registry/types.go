@@ -181,6 +181,15 @@ type CostTier struct {
 type Credential struct {
 	Value  string `json:"-"`
 	Source string `json:"source,omitempty"` // api_key | credential_headers | store | env:<VAR> | oauth | adc | none
+	// AuthoredLayer names the layer providers.toml authors whose variables are
+	// unset - "api_key" or "credential_headers" - and is empty otherwise. Such a
+	// layer is terminal (spec §10): resolution returns "none" at it without
+	// consulting the file store or the environment at all, so a stored key under
+	// that name is one nothing reads. It carries no secret (the layer's name, not
+	// the variable or its value) and never serializes; the hub's credential
+	// writers are its callers, and they skip the name rather than describing a
+	// stored key that is dead.
+	AuthoredLayer string `json:"-"`
 }
 
 // Resolved is the fully materialized record adapters consume (spec §4.4).
@@ -209,6 +218,14 @@ type Resolved struct {
 	Headers           map[string]string `json:"headers,omitempty"`
 	Credential        Credential        `json:"-"`
 	CredentialHeaders map[string]string `json:"-"`
+	// CredentialHeaderNames lists the credential headers the launch would
+	// actually send, names only: a presence-mode resolution exposes the
+	// names — which headers exist decides whether a stored key is sent at
+	// all — without expanding the values, whose wire material may be
+	// command-bearing and must not run on the hub's read paths (spec
+	// §10.1). Sorted; nil outside presence mode, where CredentialHeaders
+	// carries the expanded map instead.
+	CredentialHeaderNames []string `json:"-"`
 	// ShadowedEnvVar names an environment variable that is set but loses to
 	// Credential (spec §10); empty when nothing shadows it. Hidden from
 	// JSON alongside Credential - a caller that needs it re-exposes it on

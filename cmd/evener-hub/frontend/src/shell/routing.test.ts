@@ -226,3 +226,96 @@ test("navigate to /new?dir=... from /new updates the query and notifies", () => 
   expect(window.location.search).toBe("?dir=/tmp/project-b");
   expect(handler).toHaveBeenCalledTimes(1);
 });
+
+// --- navigate: the settings route carries its host (component 07b) --------
+//
+// The selected host is part of the settings route, so an app-built navigation
+// to a settings URL keeps the host the address bar already names. That is what
+// lets every builder which cannot know the selection (the palette's
+// navigate("/settings"), AppShell's settings.open chord, the mobile shell's own
+// URL sync, a hand-off from another pane) avoid silently dropping it - and what
+// makes a hostless settings URL mean the local hub. The opt-out exists for the
+// one navigation whose point IS to remove the parameter.
+
+test("navigate carries the current host onto a settings target", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("?host=beta");
+});
+
+test("navigate carries the host onto the bare settings route", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  navigate("/settings");
+  expect(window.location.pathname).toBe("/settings");
+  expect(window.location.search).toBe("?host=beta");
+});
+
+test("navigate leaves a settings target that already names a host alone", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  navigate("/settings/credentials?host=gamma");
+  expect(window.location.search).toBe("?host=gamma");
+});
+
+test("carrySettingsHost: false leaves the target without a host", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  navigate("/settings/credentials", { carrySettingsHost: false });
+  expect(window.location.pathname).toBe("/settings/credentials");
+  expect(window.location.search).toBe("");
+});
+
+test("navigate carries a host alongside a settings target's other query parameters", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  navigate("/settings/project?cwd=/x");
+  const params = new URLSearchParams(window.location.search);
+  expect(params.get("cwd")).toBe("/x");
+  expect(params.get("host")).toBe("beta");
+});
+
+test("navigate does not touch a non-settings target", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  navigate("/new");
+  expect(window.location.pathname).toBe("/new");
+  expect(window.location.search).toBe("");
+});
+
+test("navigate carries nothing when the current route names no host", () => {
+  window.history.pushState({}, "", "/settings/credentials");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});
+
+// M-4: the host belongs to the settings route, so only a settings route may
+// carry one out of itself. A non-settings URL that merely carries a `host`
+// parameter must not leak it onto a settings target.
+test("navigate does not carry a host out of a non-settings route", () => {
+  window.history.pushState({}, "", "/new?host=ghost");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});
+
+test("navigate does not carry a host out of a session route", () => {
+  window.history.pushState({}, "", "/s/local:abc?host=ghost");
+  navigate("/settings");
+  expect(window.location.pathname).toBe("/settings");
+  expect(window.location.search).toBe("");
+});
+
+// L-2 (round 4): the carry check only looked for an ABSENT parameter, so a
+// current `?host=local` - or an empty `?host=` - was propagated onto a settings
+// target as a non-canonical URL instead of the canonical hostless local one.
+test("navigate does not carry a local host parameter", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=local");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});
+
+test("navigate does not carry an empty host parameter", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});

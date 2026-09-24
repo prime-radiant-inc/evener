@@ -111,6 +111,13 @@ type Session struct {
 	// adoption or release. It is an atomic pointer (a single swapped reference,
 	// never held across work), so it is not a sampling-relevant mutex.
 	retainedScratch atomic.Pointer[retainedScratchPool]
+	// retainedScratchSealed is set once the terminal scratch release begins,
+	// before the pool is detached: a refresh pass still mid-install at that
+	// point must decline its seed publish and hand its reacquired leases back
+	// rather than leave a pool nothing will ever sweep. It only ever
+	// transitions false→true (a session is sealed at most once) and is read
+	// after the publish CAS, so a plain atomic Bool is sufficient.
+	retainedScratchSealed atomic.Bool
 	// scratchRetentionErr records the first sticky scratch-retention
 	// publication failure this session observed after an environment swap: the
 	// durable manifest diverged from the live environment and no later swap
@@ -890,6 +897,9 @@ type Session struct {
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
+	// attentionFoldCursor is the incremental fold of this Session's own
+	// transcript behind its attention reads. Guarded by attentionMu.
+	attentionFoldCursor delegateAttentionFoldCursor
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
@@ -948,22 +958,6 @@ type Session struct {
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
 	pendingTranscriptTurns []schema.Turn
-
-	// restoredTranscript holds the decoded transcript a RESUME read while
-	// validating the session it was asked to restore: the header (with its
-	// SessionID already checked against this session's id) and the retained
-	// entries. It exists so serve's app-identity projection can reuse that
-	// one strict decode instead of re-reading and re-decoding the whole
-	// append-only file; it is populated only on the restore path, after any
-	// delegate-delivery refresh, and is never updated after construction.
-	// Guarded by s.mu.
-	restoredTranscriptHeader transcript.Header
-	restoredTranscript       []transcript.Entry
-
-	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
-	// whether restore opened a transcript, captured at the open so a later
-	// refresh cannot flip it. Guarded by s.mu.
-	restoredTranscriptOpened bool
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -2457,30 +2451,4 @@ func (s *Session) TranscriptPath() string {
 		return ""
 	}
 	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-}
-
-// setRestoredTranscript installs the final restore-time transcript view. It
-// runs once, at the end of restore construction, with the entry list that any
-// delegate-delivery replay already refreshed from disk. opened reports
-// whether restore opened a transcript at all, independent of the entry
-// slice's emptiness.
-func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
-	s.mu.Lock()
-	s.restoredTranscriptHeader = header
-	s.restoredTranscript = entries
-	s.restoredTranscriptOpened = opened
-	s.mu.Unlock()
-}
-
-// RestoredTranscript returns the header and decoded entry list this resume
-// validated, for a caller (serve's app-identity projection) that would
-// otherwise re-read the transcript file. ok is true exactly when restore
-// opened a transcript, including a header-only one; the slice aliases
-// retained state and must be treated as read-only.
-func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
-	s.mu.Lock()
-	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
-	opened := s.restoredTranscriptOpened
-	s.mu.Unlock()
-	return header, entries, opened
 }

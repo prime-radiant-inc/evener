@@ -320,6 +320,39 @@ func TestProvidersProbeOnANonOpenAIProtocolProbesOnlyItsOwn(t *testing.T) {
 	}
 }
 
+// The probe judges the instance the way its own requests resolve: a default
+// model row that pins a protocol is the shape the listing and every probe
+// request speak, so the probe tries that protocol as itself, not the
+// provider head's pair (spec §11.2).
+func TestProvidersProbeUsesTheDefaultRowProtocol(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+		case "/messages":
+			_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"m1","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	root := providersTestEnv(t, nil)
+	writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \""+srv.URL+"\"\ndefault_model = \"m1\"\n\n[providers.gw.models.\"m1\"]\nprotocol = \"anthropic\"\n")
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"probe", "gw"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("probe: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "anthropic: ok") {
+		t.Fatalf("the default row's protocol must be the probe's own candidate:\n%s", out)
+	}
+	if strings.Contains(out, "openai-chat") || strings.Contains(out, "openai-responses") {
+		t.Fatalf("a default row pinning anthropic must not be probed on the OpenAI protocols:\n%s", out)
+	}
+}
+
 func TestProvidersProbeWriteRecordsTheOneProtocolThatSucceeded(t *testing.T) {
 	srv := openAIProbeServer(t)
 	root := providersTestEnv(t, nil)

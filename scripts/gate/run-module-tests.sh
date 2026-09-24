@@ -37,6 +37,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 # inspected as script text; see gatebounded_test.go.
 . "$script_dir/../lib/gate-bounded.sh"
 . "$script_dir/../lib/gate-scratch-root.sh"
+. "$script_dir/../lib/gate-root-shards.sh"
 # The RAM-backed scratch must hold the gate's peak: test binaries, go build
 # work directories and every test's temp files across concurrent streams. A
 # full `make test` peaked at ~600MB (2026-09-22); 2GiB leaves room for growth
@@ -126,22 +127,12 @@ done
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
-# Root-module packages run as cost-balanced shards beside the root go test,
-# one "label PREFIX package-dir" entry each: evener dev <label>-shards runs
-# them, and <PREFIX>_SHARD_* configure them. The prefix is spelled out rather
-# than derived with ${label^^}, which macOS's stock bash 3.2 cannot parse.
-# <PREFIX>_SHARDS=0 (HUB_SHARDS, CLI_SHARDS) tests that package inside the
-# root module's single go test instead; the -race gate sets both for the same
-# oversubscription reason as AGENT_SHARDS=0.
-ROOT_SHARDED=("hub HUB cmd/evener-hub" "cli CLI cmd/evener")
-HUB_SHARDS=${HUB_SHARDS:-1}
-CLI_SHARDS=${CLI_SHARDS:-1}
-
-# root_shard_enabled PREFIX — whether <PREFIX>_SHARDS leaves that package sharded.
-root_shard_enabled() {
-	local toggle="${1}_SHARDS"
-	[ "${!toggle:-1}" -ne 0 ]
-}
+# ROOT_SHARDED, <PREFIX>_SHARDS and ROOT_REST: see scripts/lib/gate-root-shards.sh.
+# The -race gate keeps the hub and CLI sharded: their tests are mostly serial,
+# so one process uses about one core, and on a 4-core runner sharding took the
+# race root wave from ~690-790s to ~430s. Refuse a mistyped toggle up front.
+root_shard_excluded_packages >/dev/null || exit 2
+root_rest_enabled || [ "$?" -eq 1 ] || exit 2
 # The agent module's test count has grown past the point where 4 shards
 # (the agentshards default) keep each shard's -run pattern under the OS
 # argument-list limit. The shard runner now writes the -run regex to a file
@@ -396,22 +387,22 @@ run_module() {
 		derive_list_flags "$m" || return $?
 		run_enumeration "$m" "$package_list" || return $?
 		local -a sharded=()
-		local entry label prefix dir
-		for entry in "${ROOT_SHARDED[@]}"; do
-			read -r label prefix dir <<<"$entry"
-			root_shard_enabled "$prefix" && sharded+=("primeradiant.com/evener/$dir")
-		done
+		local excluded label prefix
+		while IFS= read -r excluded; do
+			sharded+=("$excluded")
+		done < <(root_shard_excluded_packages)
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
 					continue
 					;;
 			esac
-			# A sharded package runs beside this go test instead; see below.
+			# A sharded package runs beside this go test instead (see below), or
+			# in another job entirely.
 			[[ " ${sharded[*]-} " == *" $pkg "* ]] && continue
 			packages+=("$pkg")
 		done <"$package_list"
-		if [ "${#packages[@]}" -eq 0 ]; then
+		if root_rest_enabled && [ "${#packages[@]}" -eq 0 ]; then
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
@@ -425,17 +416,17 @@ run_module() {
 		# "real" line) covers whichever stream finished last.
 		local -a shard_pids=()
 		local skip_var status=0 root_status=0
-		for entry in "${ROOT_SHARDED[@]}"; do
-			read -r label prefix dir <<<"$entry"
-			root_shard_enabled "$prefix" || continue
+		while read -r label prefix; do
 			skip_var="${prefix}_SHARD_SKIP"
-			env "$skip_var=$(gate_shard_skip "$root_skip" "${!skip_var:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev "$label-shards" ${test_flags[@]+"${test_flags[@]}"} &
+			env "$skip_var=$(gate_shard_skip "$root_skip" "${!skip_var:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev "$label-shards" ${test_flags[@]+"${test_flags[@]}"} </dev/null &
 			shard_pids+=("$!")
-		done
+		done < <(root_shard_runners)
 		# ROOT_FULL removes short mode through module_test_flags_array while
 		# retaining the regular Test/Example name filter. Fuzz-owned targets and
 		# sanity functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}" || root_status=$?
+		if root_rest_enabled; then
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}" || root_status=$?
+		fi
 		local pid rc
 		for pid in ${shard_pids[@]+"${shard_pids[@]}"}; do
 			rc=0
@@ -578,8 +569,10 @@ run_wave $WAVE2
 # package reports "[no tests to run]" and exits 0, so every module reports PASS
 # and the gate proves nothing. Go's own per-package status lines are the only
 # evidence available here - a package that executed tests prints "ok <pkg>
-# <time>" with no "[no tests to run]"/"[no test files]" note. If not one
-# scheduled module has such a line, the run was a silent no-op. Checked only
+# <time>" with no "[no tests to run]"/"[no test files]" note, and a shard
+# runner's shard that executed tests prints "PASS  <label>:<n> <time> (<count>
+# tests)" (the race gate's hub lane runs only shards). If not one scheduled
+# module has such a line, the run was a silent no-op. Checked only
 # when nothing else failed (a failure already tells the reader to look) and only
 # when Go work was actually scheduled (an explicitly web-only run has no Go
 # tests to account for).
@@ -589,7 +582,8 @@ if [ "$fail" -eq 0 ] && [ -n "$WAVE1$WAVE2" ]; then
 	for m in $WAVE1 $WAVE2; do
 		log="$(logpath "$m")"
 		[ -f "$log" ] || continue
-		if grep -E '^ok[[:space:]]' "$log" | grep -qv -e '\[no tests to run\]' -e '\[no test files\]'; then
+		if grep -E '^ok[[:space:]]' "$log" | grep -qv -e '\[no tests to run\]' -e '\[no test files\]' ||
+			grep -qE '^PASS +[a-z]+:[0-9]+ .*\([1-9][0-9]* tests\)' "$log"; then
 			zero_test_run=0
 			break
 		fi

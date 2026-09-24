@@ -103,6 +103,19 @@ test("preserves the explicit task-start marker from a mutation snapshot", () => 
   ]);
 });
 
+test("preserves the explicit terminal-settle marker from a mutation snapshot", () => {
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "a", prompt: "", status: "done", settled: true },
+    { id: 2, type: "implement", description: "b", prompt: "", status: "done", settled: false },
+    { id: 3, type: "implement", description: "c", prompt: "", status: "cancelled", settled: "yes" },
+  ]);
+  expect(rows?.map((row) => ({ id: row.id, settled: row.settled }))).toEqual([
+    { id: 1, settled: true },
+    { id: 2, settled: false },
+    { id: 3, settled: undefined },
+  ]);
+});
+
 test("carries created_at/updated_at/completed_at onto the row", () => {
   const rows = parseTaskListData([
     {
@@ -184,6 +197,18 @@ test("skips individual malformed entries (missing a required field) rather than 
     { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
     { id: 3, type: "implement", description: "also good", prompt: "", status: "done" },
   ]);
+});
+
+test("drops a row carrying a status outside the daemon's four-status enum rather than casting it to TaskStatus", () => {
+  // TaskStatus is the closed enum the Go store mints (open/in_progress/
+  // done/cancelled), but the wire field is a bare string: a status a
+  // newer daemon adds must not survive the cast into a settled group it
+  // does not belong to (groupTasks routes everything unmatched there).
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
+    { id: 2, type: "implement", description: "unrecognized", prompt: "", status: "blocked" },
+  ]);
+  expect(rows).toEqual([{ id: 1, type: "implement", description: "good", prompt: "", status: "open" }]);
 });
 
 test("the aggregate reads 'N of M tasks left' while work remains", () => {

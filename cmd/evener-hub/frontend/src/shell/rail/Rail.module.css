@@ -150,6 +150,24 @@
   padding-right: var(--space-3);
 }
 
+/* The organize-by switcher row: sits between the Live section and the
+ * Hosts/Projects section it controls. Icon-only and hard right, with the
+ * same right inset the pinned-section heading menus use
+ * (.sectionHeadingAction), so it lines up with that family of controls. */
+.organizeRow {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+}
+
+/* The organize-by popover's content padding - widgets/popover supplies
+ * position/surface/radius, the caller pads (modelswitch.module.css's
+ * .popoverPanel is the precedent). */
+.organizePanel {
+  padding: var(--space-3);
+}
+
 .sectionDisclosure {
   display: flex;
   align-items: center;

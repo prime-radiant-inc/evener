@@ -10,7 +10,7 @@ import {
 	useLiveReadiness,
 	useRenderClient,
 } from "./connectionDisplay";
-import { Action, Copy } from "./ui";
+import { Action, Copy, ErrorMessage } from "./ui";
 
 /** What a retained ready-only screen says when the route names a hub the
  * active profile has moved off: the data behind the screen belongs to a hub
@@ -62,6 +62,10 @@ export interface RetainedScreenConnection {
 	state: ConnectionState;
 	/** The connection's manual retry: what the wall's Reconnect action fires. */
 	retry(): void;
+	/** The connection's own failure copy - on a fatal close, the
+	 * compatibility message that says why the wall replaced the screen's
+	 * content (see `fatal`). */
+	error: string | null;
 	/** What the screen shows for the connection: "wall" before anything has
 	 * been shown or after a fatal close, "banner" over the mounted screen
 	 * for a flap it survives, "none" while ready. */
@@ -79,8 +83,8 @@ export interface RetainedScreenConnection {
 export function useRetainedScreenConnection(
 	routeHubId: string,
 ): RetainedScreenConnection {
-	const { activeProfile, client, state, fatal, retry } = useConnection();
-	const display = useConnectionDisplay(activeProfile?.id, state, fatal);
+	const { activeProfile, client, state, fatal, error, retry } = useConnection();
+	const display = useConnectionDisplay(activeProfile?.id, state, fatal, client);
 	const canUseConnection = useLiveReadiness(routeHubId, client, state);
 	const renderClient = useRenderClient(client, state, activeProfile?.id);
 	return {
@@ -88,6 +92,7 @@ export function useRetainedScreenConnection(
 		client,
 		state,
 		retry,
+		error,
 		display,
 		canUseConnection,
 		renderClient,
@@ -99,22 +104,31 @@ export function useRetainedScreenConnection(
  * close no retry can clear has taken the connection - and the screen offers
  * the way back. `purpose` is the screen's own phrase for what it shows once
  * connected ("manage plugins", "view hub settings"), and the action is the
- * connection's own manual retry. */
+ * connection's own manual retry. The connection's own error copy renders
+ * beside it: on a fatal close (a protocol mismatch) that copy is the
+ * compatibility message, and without it the wall offers a reconnect that
+ * reads as ineffective - the reason a retry cannot clear the close yet is
+ * the one thing the wall did not say. */
 export function ConnectionWall({
 	hubName,
 	purpose,
+	error,
 	onReconnect,
 }: {
 	hubName: string;
 	/** What the screen offers once connected, phrased to follow "Connect to
 	 * <hub> to ". */
 	purpose: string;
+	/** The connection's own failure copy (useConnection's error): rendered
+	 * here so a fatal wall says why the screen's content is gone. */
+	error?: string | null;
 	onReconnect(): void;
 }) {
 	return (
 		<View style={{ padding: 20 }}>
 			<Copy>{`Connect to ${hubName} to ${purpose}.`}</Copy>
 			<Action onPress={onReconnect}>Reconnect</Action>
+			<ErrorMessage message={error ?? null} />
 		</View>
 	);
 }

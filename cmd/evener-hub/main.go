@@ -223,6 +223,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer release()
 
+	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
+		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	defer stopPprof()
+
 	var appwireTrace *appserver.WebSocketTrace
 	if opts.appwireTrace != "" {
 		tracePath, absErr := filepath.Abs(opts.appwireTrace)
@@ -969,6 +978,7 @@ func printHubEnvVars(w io.Writer) {
 		envvars.GeminiAPIKey,
 		envvars.GoogleAPIKey,
 		envvars.OpenRouterAPIKey,
+		envvars.EVENERPprofAddr,
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}

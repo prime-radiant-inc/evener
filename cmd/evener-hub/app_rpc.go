@@ -1021,7 +1021,15 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			KeybindingsSettings:       true,
 		},
 	})
-	authController := newHubAuthControllerWithStore(hubAuthStateRoot(cfg.Registry), cfg.CredsStore)
+	// One credentials store for every credential surface this server builds.
+	// One store for every credential surface, resolved once by the auth
+	// controller's constructor (hubCredentialStore) and read back below: each
+	// surface resolving the fallback on its own let a hub built with no explicit
+	// CredsStore — the embedder shape, and the one these constructors tolerate —
+	// serve evener/auth/apiKey/set while refusing the push with "credential push
+	// requires a local credentials store".
+	authStateRoot := hubAuthStateRoot(cfg.Registry)
+	authController := newHubAuthControllerWithStore(authStateRoot, cfg.CredsStore)
 	authController.reg = cfg.Registry
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	authController.noUserLayer = cfg.NoUserLayer
@@ -1114,7 +1122,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// (web.go) keeps the handle so main.go can bind hostAttached to the
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
-	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, cfg.CredsStore)
+	// The push gets that same store, with the error of resolving it when there
+	// was none: a credentials.toml that cannot be read is then one fact both
+	// surfaces answer from (the controller's writes refuse, and so does the
+	// push) instead of a nil store one of them dereferences.
+	credsStore, credsErr := authController.credentialStore()
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
 	return server, hostAdmin, hostManage
 }
 

@@ -93,6 +93,140 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 	}
 }
 
+// TestHubRelayEndsWithItsServer pins who owns a relay: the AppWire server
+// that serves it. A relay outlives the thread/read that started it, but
+// Shutdown cancels the server's Lifetime, and a relay that ignored it kept
+// dialing its source until an idle tick happened to find no subscribers —
+// forever, for a subscriber the shutdown never unregisters. The idle interval
+// is an hour here so the only thing that can end the relay is the shutdown.
+func TestHubRelayEndsWithItsServer(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Hour
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	thread := appwire.Thread{ID: "thread", SessionID: "session", Source: "remote", Evener: appwire.EvenerThread{Ref: "remote:thread"}}
+	source := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, canceled: make(chan struct{})}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	var relays hubRelayFunctions
+	observeHubRelayFunctions = func(got hubRelayFunctions) { relays = got }
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
+	observeHubRelayFunctions = nil
+	server.NewConnection("subscriber").Subscribe("remote:thread")
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread); err != nil {
+		t.Fatalf("startRelay: %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-source.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("the relay's source subscription outlived its server's Shutdown")
+	}
+}
+
+// TestHubRelayInitialSubscribeEndsWithItsServer covers the window before the
+// relay is established: the starting request's cancellation is detached from
+// the relay, so a Shutdown that lands while the first SubscribeThread is still
+// blocked must cancel that subscribe itself, and the relay must end instead of
+// going on to start a supervisor.
+func TestHubRelayInitialSubscribeEndsWithItsServer(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Hour
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	thread := appwire.Thread{ID: "thread", SessionID: "session", Source: "remote", Evener: appwire.EvenerThread{Ref: "remote:thread"}}
+	source := &exactRPCSource{
+		scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread},
+		started:           make(chan struct{}, 1),
+		release:           make(chan struct{}),
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	var relays hubRelayFunctions
+	observeHubRelayFunctions = func(got hubRelayFunctions) { relays = got }
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
+	observeHubRelayFunctions = nil
+	server.NewConnection("subscriber").Subscribe("remote:thread")
+	started := make(chan error, 1)
+	go func() {
+		started <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread)
+	}()
+	<-source.started // the initial subscribe is blocked until release or cancellation
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-started:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRelay after Shutdown = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(source.release)
+		t.Fatal("the relay's initial subscribe outlived its server's Shutdown")
+	}
+}
+
+// TestHubRelayCanonicalEndsWithItsServer is TestHubRelayEndsWithItsServer
+// for a RelaySession source, whose relay is a canonical fan-out rather than a
+// per-key supervisor.
+func TestHubRelayCanonicalEndsWithItsServer(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Hour
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	const rootRef = "local:canonical-root"
+	leaseClosed := make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "canonical-root", Source: "local",
+				Evener: appwire.EvenerThread{Ref: rootRef},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(leaseClosed) },
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := appServer.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-leaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("the canonical relay's RelaySession lease outlived its server's Shutdown")
+	}
+}
+
 func TestHubRelayCanonicalIdleRetiresChildBeforeRoot(t *testing.T) {
 	previousInterval := hubRelayIdleInterval
 	hubRelayIdleInterval = time.Millisecond

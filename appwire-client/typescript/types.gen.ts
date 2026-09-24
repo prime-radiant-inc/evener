@@ -34,7 +34,7 @@ export interface ApiKeyConditionalSetParams {
    * InstanceEntry.ActiveSource). The host re-resolves the source under its
    * credential write lock and refuses a non-empty value that no longer
    * matches; empty asserts no source fence. The resolved source also decides
-   * the classification (see AuthApiKeyConditionalSetResponse.Action).
+   * the classification (see ApiKeyConditionalSetResponse.Action).
    */
   expectedSource?: string;
   /**
@@ -286,14 +286,19 @@ export interface AuthStatusResponse {
   error?: string;
   /**
    * ConfigRevision is this instance's effective credential-configuration
-   * revision: a stable, non-reversible digest the host re-resolves from the
-   * same state a credential write lands in (cmd/evener-hub/app_auth.go +
-   * hubcore.CredentialConfigRevision). The remote credential push captures it
-   * from this read and echoes it as
+   * revision: a stable, keyed MAC the host re-resolves from the same state a
+   * credential write lands in (cmd/evener-hub/app_auth.go +
+   * hubcore.CredentialConfigRevision). It is keyed with the hub-held secret
+   * the endpoint fingerprints use, so a reader who can see it cannot recover a
+   * secret the covered destination carries - a base URL can hold one in its
+   * userinfo or query string, which this field must not expose. The remote
+   * credential push captures it from this read and echoes it as
    * ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
    * write prepared against a configuration that has since changed. It is
    * deliberately empty (JSON-omitted) when the host cannot resolve the
-   * instance: the zero value asserts no revision fence, and the source fence
+   * instance or cannot key a revision: the zero value asserts no revision
+   * fence to a client, but a host that cannot key one refuses the conditional
+   * set rather than reading that zero as permission, and the source fence
    * still applies.
    */
   configRevision?: string;
@@ -1013,11 +1018,12 @@ export interface HostCredentialPushResult {
   instance: string;
   /**
    * Action is "added" | "updated" | "skipped" | "failed". "added" and
-   * "updated" are the host's own conditional-set actions; "skipped" is either
-   * the host's classification (a source a pushed key must not shadow) or this
-   * controller's "no matching instance on the host"; "failed" is a per-instance
-   * failure (chiefly a refused or stale-revision conditional set) that does not
-   * abort the remaining entries.
+   * "updated" are the host's own conditional-set actions; "skipped" is the
+   * host's classification (a source a pushed key must not shadow, or a scheme
+   * that reads no key), or a controller-side skip whose Reason names why (no
+   * matching instance on the host, or a local value that is not an API key);
+   * "failed" is a per-instance failure (chiefly a refused or stale-revision
+   * conditional set) that does not abort the remaining entries.
    */
   action: string;
   reason?: string;
@@ -2931,6 +2937,13 @@ export interface ThreadListParams {
   statuses?: string[];
   sourceIds?: string[];
   includeSubagents?: boolean;
+  /**
+   * StatusOnly asks a daemon for the diagnostics a liveness probe reads and
+   * nothing else: each row's Diagnostics carries only Jobs, Watches, and
+   * Delegates reduced to delegateId, childSessionId and lifecycle. A daemon
+   * that predates the field, and a hub, ignore it and return the full answer.
+   */
+  statusOnly?: boolean;
 }
 
 export interface ThreadListResponse {

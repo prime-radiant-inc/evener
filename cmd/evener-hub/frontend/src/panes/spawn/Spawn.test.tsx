@@ -28,9 +28,10 @@ import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
-import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
+import { hostsStore } from "../../stores/hosts";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
@@ -40,7 +41,13 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
-import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import {
+  applySpawnURL,
+  resetSpawnDraftsForTests,
+  selectSpawnDirectory,
+  setDraftField,
+  spawnDraftsStore,
+} from "./spawnDrafts";
 import { SPAWN_SLASH_CATALOG_DEBOUNCE_MS } from "./useSpawnSlashCatalog";
 
 let modelListOverride: ModelDescriptor[] | null = null;
@@ -1314,6 +1321,10 @@ beforeEach(() => {
   localStorage.clear();
   resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
+  // The registry and the remote-host partitions are module singletons: a
+  // leftover ready snapshot from another test would gate a remote read.
+  resetHostInstancesForTests();
+  hostsStore.getState().resetForTests();
   resetNavigationStoreForTests();
   modelListOverride = null;
 });
@@ -6296,6 +6307,23 @@ test("host picker lists sources, preselects local, and disables offline hosts", 
   expect(offline.textContent).toContain("offline");
 });
 
+// The Host row sits above the working directory: the folder list, recents,
+// and validation all come from the selected machine (hostRequest), so the
+// form reads pick-the-machine first, then the folder on it. Asserted in DOM
+// order, not visually, so keyboard focus follows the same path.
+test("the host row renders above the working directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  const host = screen.getByLabelText("Host");
+  const dir = workingDir();
+  expect(host.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 // Selecting an already-online remote host is NOT an attach request: the
 // manifest reports the host online (its channel is attached), so the picker must
 // not spend a redundant evener/host/attach on it. Only a host the manifest
@@ -9261,4 +9289,24 @@ test("a create confirmation waits for the selected host's catalogs before creati
     cwd: "/srv/unsettled-create",
   });
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a ?host= prefill seeds the draft's launch host (the rail's project-copy spawn carries it)", () => {
+  window.history.replaceState({}, "", "/new?dir=/repo/x&host=devbox");
+  applySpawnURL();
+  const draft = spawnDraftsStore.getState().current;
+  expect(draft?.fields.getState().source).toBe("devbox");
+  window.history.replaceState({}, "", "/");
+});
+
+test("a ?host=local prefill overrides the draft's last-chosen host for the same directory", () => {
+  window.history.replaceState({}, "", "/new?dir=/repo/x&host=devbox");
+  applySpawnURL();
+  expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("devbox");
+  // The same project's local copy launches with the same cwd; the prefill
+  // must retarget the draft, not leave the remote host sticky.
+  window.history.replaceState({}, "", "/new?dir=/repo/x&host=local");
+  applySpawnURL();
+  expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("local");
+  window.history.replaceState({}, "", "/");
 });

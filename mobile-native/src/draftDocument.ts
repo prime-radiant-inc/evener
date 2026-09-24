@@ -305,4 +305,65 @@ export class DraftDocument {
 			/* Unsaved recovered text stays visible. */
 		}
 	}
+
+	// Whether the composer can accept a recovered restore right now. A recovery
+	// surface reads this before offering the action, so a restore is disabled
+	// with an explanation instead of silently doing nothing when the composer
+	// already holds a draft or an image.
+	canRestoreRecoveredDraft(): boolean {
+		const { record, loaded, submitting, error } = this.snapshot;
+		return (
+			!this.forgotten &&
+			loaded &&
+			!submitting &&
+			error === null &&
+			record.draft === "" &&
+			(record.images?.length ?? 0) === 0
+		);
+	}
+
+	// Why a restore is currently blocked, in the user's terms, or null when the
+	// composer can accept one. It tells an occupied composer apart from a draft
+	// that is still loading/sending or whose last save failed, so a disabled
+	// restore never tells the user to clear a draft that isn't there.
+	recoveredRestoreHint(): string | null {
+		const { record, loaded, submitting, error } = this.snapshot;
+		if (this.forgotten) return "The draft is unavailable on this device.";
+		if (!loaded) return "Wait for the draft to load to restore this message.";
+		if (submitting)
+			return "Wait for the current draft to finish sending to restore this message.";
+		if (error !== null) return "Retry saving the draft to restore this message.";
+		if ((record.images?.length ?? 0) > 0)
+			return "Remove the draft's image to restore this message.";
+		if (record.draft !== "")
+			return "Clear or send your current draft to restore this message.";
+		return null;
+	}
+
+	// Restores a rejected mutation's recovered text into the composer in one
+	// savepointed repository write (DraftRepository.write), so a failed restore
+	// can never leave the draft half-written. It refuses to clobber a composer
+	// that already holds a draft or an image, and preserves an uncertain
+	// submission's own unconfirmed text and images while it restores. Returns
+	// whether the text was written; a failed write leaves the stored draft
+	// untouched and surfaces through the snapshot's error.
+	restoreRecoveredDraft(text: string): boolean {
+		if (text.length === 0 || !this.canRestoreRecoveredDraft()) return false;
+		const { record } = this.snapshot;
+		try {
+			this.persist(
+				{
+					draft: text,
+					unconfirmed: record.unconfirmed,
+					...(record.unconfirmedImages?.length
+						? { unconfirmedImages: record.unconfirmedImages }
+						: {}),
+				},
+				false,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 }

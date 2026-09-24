@@ -198,6 +198,7 @@ type serveDeps struct {
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
+	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
 	register         func(*rvreg.Registration, string, rendezvous.Entry) error
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
@@ -275,6 +276,7 @@ func defaultServeDeps() serveDeps {
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		startLivePprof:                cmdutil.StartLivePprof,
 		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
 		rendezvousRetryPause:          func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
 		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
@@ -487,6 +489,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		defer stop()
 	}
+	_, stopPprof, pprofErr := deps.startLivePprof(func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	})
+	if pprofErr != nil {
+		return pprofErr
+	}
+	defer stopPprof()
 
 	// Resolve working directory.
 	wd := *workDir
@@ -675,8 +684,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	var sess *agent.Session
+	// restored is the transcript a resume already strict-decoded, handed over
+	// for the app-identity projection below.
+	var restored struct {
+		header  transcript.Header
+		entries []transcript.Entry
+		opened  bool
+	}
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			OnRestoredTranscript: func(header transcript.Header, entries []transcript.Entry, opened bool) {
+				restored.header, restored.entries, restored.opened = header, entries, opened
+			},
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -747,12 +766,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// serve, because every read after it would silently start mid-conversation.
 	workspaceRef := appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
 	var prepared server.PreparedAppIdentity
-	if header, entries, ok := sess.RestoredTranscript(); ok {
+	if restored.opened {
 		// Resume already strict-decoded this transcript once (restore's
 		// OpenWriterForSession pass) and validated its header against the
 		// session id; projecting from those entries keeps the daemon's
 		// startup from re-reading and re-decoding the whole append-only file.
-		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, sess.TranscriptPath(), header, entries)
+		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, sess.TranscriptPath(), restored.header, restored.entries)
+		// Only the projection outlives startup; the decoded entries must not
+		// stay reachable from this function's frame for the daemon's life.
+		restored.entries = nil
 	} else {
 		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	}
@@ -1972,6 +1994,7 @@ func printServeEnvVars(w io.Writer) {
 		envvars.EVENERHubSpawned,
 		envvars.EVENERAllowedDecisions,
 		envvars.EVENERProvidersConfig,
+		envvars.EVENERPprofAddr,
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}

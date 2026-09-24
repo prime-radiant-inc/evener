@@ -79,8 +79,10 @@ var remoteHostAdminMethods = map[string]struct{}{
 
 	// Auth and credentials (hubAuthController, app_auth.go). The host's own
 	// refusals (a stored key under a Codex or gcp-adc instance) pass through
-	// unchanged; 07c's credential push uses apiKey/conditionalSet through this
-	// same list (apiKey/set remains the unconditional path).
+	// unchanged. apiKey/conditionalSet is on this list so a CLIENT may proxy it
+	// like any other forwarded auth method - the controller's own credential
+	// push does NOT go through the list (see the row for it below) - and
+	// apiKey/set remains the unconditional path.
 	appwire.MethodEvenerAuthStatus:        {},
 	appwire.MethodEvenerAuthTest:          {},
 	appwire.MethodEvenerAuthList:          {},
@@ -307,7 +309,7 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 // an EventAttached wakes the navigation snapshot but not a fan-out sleeping in
 // backoff, which may then wait up to hostNotificationRetryMax before
 // subscribing while the new client's notification buffer fills.
-func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry, creds *credentials.Store) *hubHostAdminController {
+func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry, creds *credentials.Store, credsErr error) *hubHostAdminController {
 	// hosts is the one live registry the server constructor resolved — the
 	// same instance the attach and host-management handlers share — so the
 	// proxy's unknown-host authority covers a host added at runtime instead
@@ -318,7 +320,7 @@ func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, ho
 	// The credential push shares this controller's host/source resolution, so its
 	// remote dispatch rides the same per-host client seam (and the same origin
 	// guard) as the proxy.
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPushCredentials, (&hubHostCredentialsPusher{admin: controller, creds: creds}).Push)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPushCredentials, (&hubHostCredentialsPusher{admin: controller, creds: creds, credsErr: credsErr}).Push)
 	controller.start(ctx)
 	return controller
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -13,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1014,6 +1017,145 @@ func TestDelegateIdleRelease_FiredArmIsNeverInstalled(t *testing.T) {
 	if got := fake.BlockedCount() - timersBefore; got != 0 {
 		t.Fatalf("%d waiters remain after the fired arm stopped", got)
 	}
+}
+
+// TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch pins the scratch
+// continuity of the same-process cold restore: an idle-released delegate's next
+// send must resume in its ORIGINAL scratch directory, artifacts intact, not in
+// a fresh mint. The retained-scratch pool is a snapshot of the root's manifest
+// at init; a delegate created after init never entered it, and the release
+// gives the lease back without the pool learning — so the restore path must
+// converge to the live manifest (the same rows a fresh daemon adopts from)
+// rather than trust the init-time pool alone. The second release/restore cycle
+// additionally pins that a released runtime's stale adoption record cannot
+// strand the delegate: the reacquire proves the record stale and clears it.
+func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
+	// Isolate TMPDIR (this test is not parallel): the sandboxed children mint
+	// their scratch under the ambient base, and this test's root stateDir is a
+	// TempDir that vanishes at cleanup — a child dir left in the SHARED base
+	// would keep a pin pointing at the deleted manifest and trip every later
+	// sweep that validates that base's pins. Under an isolated base the
+	// cleanup removes directory and pin together.
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+	_, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done one") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done two") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done three") },
+	}})
+	shortGrace := 100 * time.Millisecond
+	s := newSession(t, withClient(client), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "scratch-continuity-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:          true,
+			minimalSystemPrompt:      true,
+			noSyncJobStore:           true,
+			sandboxProber:            sandbox.FakeProber{Facts: facts},
+			delegateIdleReleaseDelay: &shortGrace,
+		},
+	}))
+	defer s.Close()
+	tree := s.delegateController
+
+	// TRIPWIRE: scripted adapters plus an in-process sandboxed child; the runs
+	// and releases normally settle in well under a second each. 30s per stage
+	// only bounds a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res := s.createDelegate(ctx, delegateArgs{Task: "own scratch", Sandbox: "workspace-write", DelegationAllowance: new(0)})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	child := s.subagents.get(res.ChildSessionID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", res.ChildSessionID)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("delegate run did not finish: %v", ctx.Err())
+	}
+
+	// The child env owns exactly the sandbox scratch EnableSandbox minted; pin
+	// its identity and leave an artifact in it that only continuity preserves.
+	scratchDir := sandboxedChildScratchDir(t, child.sess)
+	artifact := filepath.Join(scratchDir, "artifact.txt")
+	if err := os.WriteFile(artifact, []byte("durable"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	restoreAndCheck := func(label string, prev *subagent) *subagent {
+		t.Helper()
+		// TRIPWIRE: the 100ms grace normally fires within moments of the run
+		// finishing; 15s only bounds a genuine hang.
+		waitForCondition(t, 15*time.Second, "idle release of "+label, func() bool {
+			tree.mu.Lock()
+			released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
+			tree.mu.Unlock()
+			return released
+		})
+		// TRIPWIRE: the scripted send and restore complete in well under a
+		// second; 30s only bounds a genuine hang.
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer sendCancel()
+		send := (delegateRuntime{owner: s}).send(sendCtx, res.DelegateID, "run "+label, 0).result
+		if send.Err != nil {
+			t.Fatalf("delegate_send after idle release (%s): %+v", label, send)
+		}
+		var restored *subagent
+		// TRIPWIRE: the cold restore normally appears within milliseconds of
+		// the send; 15s only bounds a genuine hang.
+		waitForCondition(t, 15*time.Second, "cold-restored record for "+label, func() bool {
+			restored = s.subagents.get(res.ChildSessionID)
+			return restored != nil && restored != prev && restored.sess != nil
+		})
+		restored.mu.Lock()
+		rdone := restored.done
+		restored.mu.Unlock()
+		select {
+		case <-rdone:
+		case <-sendCtx.Done():
+			t.Fatalf("restored run (%s) did not finish: %v", label, sendCtx.Err())
+		}
+		if got := sandboxedChildScratchDir(t, restored.sess); filepath.Clean(got) != filepath.Clean(scratchDir) {
+			t.Fatalf("restored delegate (%s) resumed in fresh scratch %q, want the retained original %q", label, got, scratchDir)
+		}
+		if data, err := os.ReadFile(artifact); err != nil || string(data) != "durable" {
+			t.Fatalf("restored delegate (%s) lost its scratch artifact: read err = %v", label, err)
+		}
+		return restored
+	}
+	child = restoreAndCheck("first restore", child)
+	_ = restoreAndCheck("second restore", child)
+}
+
+// sandboxedChildScratchDir returns the sandbox scratch directory the child
+// session's own environment holds, the identity a cold restore must preserve.
+func sandboxedChildScratchDir(t *testing.T, sess *Session) string {
+	t.Helper()
+	local, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("child env is not a LocalExecutionEnvironment")
+	}
+	refs, err := local.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatalf("child scratch references: %v", err)
+	}
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			return ref.Dir
+		}
+	}
+	t.Fatal("sandboxed child owns no sandbox scratch")
+	return ""
 }
 
 // TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle

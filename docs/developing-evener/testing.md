@@ -562,9 +562,11 @@ also ran ordinary tests in cmd/evener-fuzzcov and cmd/evener-fuzz-harvest; all f
 coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
-explicitly set. The CI web job runs make test-web, make build-web, and
-make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
-test so frontend tests are not duplicated.
+explicitly set. The CI web check runs as two lanes on separate runners,
+web-unit (make test-web) and web-browser (make build-web and make
+test-web-browser), and the required `web` job passes only when both do; the
+deterministic Go job runs ROOT_FULL=1 WEB=0 make test so frontend tests are
+not duplicated.
 
 Three packages run as cost-balanced shards: the agent module through
 `evener dev agent-shards`, and cmd/evener-hub and cmd/evener, beside the rest
@@ -576,7 +578,19 @@ splitting it across processes is what bounds its wall time (hub: ~80s serial,
 the package's TestMain applies with `shardrun.ConfigureRunFile` and then
 unsets, so a test that re-execs its own binary as a helper keeps its explicit
 `-test.run`. `AGENT_SHARDS=0`, `HUB_SHARDS=0` and `CLI_SHARDS=0` fall back to
-one `go test`.
+one `go test`. `HUB_SHARDS=elsewhere` and `CLI_SHARDS=elsewhere` leave that
+package out of the run entirely, because another job runs it, and
+`ROOT_REST=0` skips the root `go test` itself: the CI race lanes use them to
+run the hub on one runner and the rest of the root module on another
+(scripts/lib/gate-root-shards.sh, `RACE_ROOT_PART`). A TestMain that dropped that call would still pass: every
+shard would just run the whole package. One that made the call before
+`flag.Parse` would let any `-test.run` on the command line override the file.
+So each sharded package pins the wiring with a one-line test,
+`shardrun.RequireTestMainAppliesRunFile(t)`, which re-execs the binary with
+`-test.run=^$` on the command line and a run file naming only that test, and
+fails unless exactly that test ran: a dropped call runs nothing, and so does
+a misordered one, because the command line wins. A newly sharded package
+adds the same test.
 
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
@@ -609,10 +623,39 @@ same way it treats `/tmp`; sandbox tests therefore behave the same with
 alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
 their workspace under it.
 
+Tests clean up after themselves without the runner, too: a direct `go test`
+must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
+that harder than it looks. A closing session retains its scratch directory and
+its world-usable temp container for the crashed-scratch sweep's 24h reclaim
+(`sandbox.SweepCrashedSessionScratch`), which a test binary never runs, and
+the container lives in `/tmp` or `/var/tmp`, which no `TMPDIR` moves. So a
+package whose tests run sessions routes its TestMain through
+`agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
+TestMain that does more, point `TMPDIR` and the container bases into one root
+and remove it when the run ends. Self-exec helper children inherit that
+`TMPDIR`, so what they leave when they are killed on purpose goes with it.
+The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
+`evener serve` a test starts inherits them too. That matters beyond leftovers:
+each of those processes runs the crashed-scratch sweep at startup, and without
+the variable it reclaims other sessions' abandoned scratch from the
+developer's real `/tmp` and `/var/tmp`. A TestMain that clears every product
+`EVENER_*` variable after `RedirectHostTemp` keeps that one value
+(`sandboxtest.Redirected`), and a test that builds a child environment from
+scratch must pass it on. A test that sets the bases itself has to prove they
+are in force before it mints or sweeps anything, so a regression fails the
+test instead of reaching `/tmp`.
+
 A test that drives the crashed-scratch sweep itself confines it to scratch it
 owns (its own `TMPDIR` and user cache dir, no container bases; see
-`confineSessionScratchSweep` in agent), because the sweep deletes any aged, unleased scratch it can see,
-including another process's.
+`confineSessionScratchSweep` in agent), because the sweep deletes any aged,
+unleased scratch it can see, including another process's.
+
+A fixture built once and cached for the whole package run (a `sync.Once`
+repo, a built binary) belongs in the package's own fixture root, never in
+`os.MkdirTemp("", ...)`: tests point `TMPDIR` at their own `t.TempDir()`, so
+a cache made under whichever `TMPDIR` the first caller had is deleted by that
+test's cleanup, and every later user fails. In agent that root is
+`sharedAgentTempRoot` (`packageFixtureTempDir` for a helper with a `t`).
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
@@ -670,6 +713,27 @@ workers, and src/testSetup.ts fails the second file that lands in a used
 context. Running one file with `--maxWorkers=1` is fine.
 Workers are recycled at `vmMemoryLimit` (512MB); VM contexts otherwise grow a
 worker's memory file after file, and the unbounded suite peaked at 8.3GB.
+
+A test that has to get past a real debounce or timer uses Vitest's fake
+timers rather than waiting it out, with two pieces of wiring so Testing
+Library keeps working: `vi.stubGlobal("jest", { advanceTimersByTime:
+vi.advanceTimersByTime })`, because `waitFor` and `findBy*` only advance a
+faked clock when they find a `jest` global, and `userEvent.setup({
+advanceTimers: vi.advanceTimersByTime })`, so typing delays advance it too.
+Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
+"setInterval", "clearInterval"]`); src/panes/spawn/Spawn.test.tsx is the
+worked example.
+
+`await user.click(...)` returns once the event is dispatched, not once the
+handler's async work finishes. An effect that sits behind an `await`, such as
+`threadsStore.forceStop`, which writes its cancellation durably before the
+RPC, has to be waited for with `waitFor` or a `findBy*` on the result, never
+asserted right after the click. The failure is worse than a flake in one
+test: the store calls `requireClient()` when the RPC finally goes out, which
+by then can be the next test's fake client, so the next test sees an extra
+call. For the same reason a suite resets every global store it renders
+against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
+toast from the previous test can satisfy this test's assertion.
 
 ### Whole-system residue audit
 
@@ -799,7 +863,8 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   real virtualization stack and drives NATIVE scroll events: the
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
-  there.
+  there, including after content grows below the reader and after the
+  scroll port itself shrinks (the pane header growing).
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
@@ -821,13 +886,13 @@ separately rather than as a sixth `scripts/<guard>/run.mjs` case:
   REAL `evener serve` daemons compiled from `cmd/evener`'s own test binary —
   the only scripted piece sits at the external LLM provider adapter. The
   browser asserts the composer's chips, drafts, queue, steering, attachments,
-  capability-loss refusal, failed-activation retry, and offline outbox
-  behavior through real DOM gestures; the Go test asserts what the daemons
-  ACTUALLY received (provider request payloads, `<skill-context>` documents,
-  durable transcripts, held-turn choreography through the fixture's control
-  IPC). The five guards above test the frontend against scripted stores; this
-  one is the only place the frontend's skill contract is tested against the
-  daemons and hub that must honor it. It needs the BUILT frontend (the hub
+  failed-activation retry, and offline outbox behavior through real DOM
+  gestures; the Go test asserts what the daemons ACTUALLY received (provider
+  request payloads, `<skill-context>` documents, durable transcripts,
+  held-turn choreography through the fixture's control IPC). The five guards
+  above test the frontend against scripted stores; this one is the only place
+  the frontend's skill contract is tested against the daemons and hub that
+  must honor it. It needs the BUILT frontend (the hub
   serves the embedded dist), so `test-web-browser.sh` builds it when missing
   rather than skipping.
 
@@ -1123,6 +1188,41 @@ cross-reference offsets from the bytes as they are written and
 attempt pasted an opaque blob whose comment claimed validity while three of its
 four offsets pointed at nothing; every `%PDF`/`xref`/`trailer`/`startxref`
 marker was present, which is why grepping for markers is not validation.
+
+## A Subprocess Can Outlive Its Context
+
+A context on `exec.CommandContext` bounds the child, not the pipes. Captured
+stdout and stderr are read until EOF, and EOF waits for every process holding
+the write end: a child that backgrounds anything (a wrapper script, a shell rc
+file, a hook, ssh's ProxyCommand) hands it to a grandchild the context never
+kills, and `Wait` lasts as long as that grandchild. So an Evener call that
+captures a child's output must set `cmd.WaitDelay`, which caps how long exec
+waits for the pipes once the context ends or the child exits, and passes the
+result through `orphanpipe.ChildErr`, which reads `exec.ErrWaitDelay` after a
+successful exit as the success it was.
+
+Prove the bound with `internal/orphanpipe/orphanpipetest` rather than a
+stopwatch. `New` stages the FIFOs, `WriteScript` writes the fake executable,
+`Spawn` is the shell fragment that backgrounds a grandchild holding the
+script's stdout and stderr, `AwaitStarted` waits until it holds them, and
+`Await` returns the call's result while the grandchild still does, failing
+the test if the call only returned once the grandchild was released.
+
+## Prove a Wait with a Signal, Not a Window
+
+"X does not happen while Y is held" is tempting to test by holding Y for a
+second or two and checking that X did not happen. That window is a guess: on
+a loaded host a broken implementation can take longer than the window to do
+the wrong thing, so the test passes anyway. Give the code a test-only seam
+that fires at the moment in question instead, nil in production, and let the
+test hold the work until the seam says the code is waiting:
+`SessionConfig.testOnly.closeAwaitingEnvWork` fires when a close blocks at its
+environment-work join; the shard runner's `shardsConfig.slotWait` fires when
+it holds a shard back for a free slot. A seam that fires just before the wait
+it reports needs its own test that the wait really follows: see
+`TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds`, which spends the
+join's budget from inside the seam and requires the warning only a parked
+join can produce.
 
 ## Real `git` in Worktree Tests
 
@@ -1425,7 +1525,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
-| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, HUB_SHARDS=0, CLI_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. | Any race report, test failure, or setup failure is nonzero. |
+| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A bless writes every package it measured and preserves the rest of the file, so a narrowed run refreshes part of the file instead of deleting the entries it did not measure. Under CHECK=1 in a CI-shaped environment a package over 1.5x its budget or any per-test ceiling breach is nonzero too; a missing or empty budget file always exits zero. |
 
