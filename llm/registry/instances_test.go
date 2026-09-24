@@ -1688,6 +1688,32 @@ func TestLaunchMintsIgnoresAuthlessGlobs(t *testing.T) {
 	}
 }
 
+// The default row's headers hash as wire material, verbatim: the
+// values are already resolved, and re-parsing them as authored
+// $-expression text shreds a value that itself contains '$' — an
+// embedded unset ref contributes nothing, so two different wire
+// values hash alike and a header rotation keeps publishing stale rows
+// under the old value's identity.
+func TestAuthFingerprintRowHeaderWireValue(t *testing.T) {
+	mk := func(t *testing.T, org string) string {
+		t.Helper()
+		const config = "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"none\"\n" +
+			"default_model = \"house-model\"\n" +
+			"[providers.gw.headers]\n" +
+			"X-Org = \"$ORG\"\n" +
+			"[providers.gw.models.\"house-model\"]\n"
+		fp, _ := fixtureLoad(t, map[string]string{"ORG": org}, config).AuthFingerprint("gw")
+		return fp
+	}
+	if mk(t, "a $B") == mk(t, "a $C") {
+		t.Fatal("the fingerprint hashed two different wire header values alike: a header rotation would not rotate the identity")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never

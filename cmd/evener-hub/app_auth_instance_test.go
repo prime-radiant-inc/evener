@@ -649,6 +649,42 @@ func TestAuth_ImplicitProviderRowSchemeNeedsNoCredential(t *testing.T) {
 	}
 }
 
+// The gate judges the launch it was asked about: a named model's row
+// can pin a scheme neither the provider nor its default row carries,
+// and demanding the default's credential for a launch whose own row
+// needs none is the same divergence the default-row fix closed.
+func TestAuth_ImplicitProviderModelRowSchemeNeedsNoCredential(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-haiku*\"]\nauth = \"none\"\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	if err := validateProviderCredentials("amazon-bedrock", "anthropic.claude-haiku-4-5", ctrl.reg); err != nil {
+		t.Fatalf("the spawn gate demanded a credential for a launch whose named row's scheme is none: %v", err)
+	}
+}
+
+// When the gate cannot resolve the named row at all — a disabled model,
+// say — the default row's presence still names the scheme the bare
+// launch uses, and the remediation follows it.
+func TestAuth_ImplicitProviderGateErrorFallsBackToDefaultRowScheme(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"gcp-adc\"\n"+
+		"[models.\"*claude-haiku*\"]\ndisabled = true\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	err := validateProviderCredentials("amazon-bedrock", "anthropic.claude-haiku-4-5", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted a launch it cannot resolve")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "application-default credentials") {
+		t.Fatalf("err = %q, want the default row's ADC remedy when the named row cannot resolve", msg)
+	}
+	if strings.Contains(msg, "apiKey/set") {
+		t.Fatalf("err = %q, must not offer the api-key flow the default row's scheme cannot read", msg)
+	}
+}
+
 // The status fallback for an implicit provider (env unset, so no
 // credential and no instance of its own) resolves at presence depth and
 // still answers with the full resolve's shape.

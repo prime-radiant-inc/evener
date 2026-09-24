@@ -619,8 +619,13 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		// depth so no credential stage ever runs.
 		if res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveFacts); err == nil {
 			for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
-				_, _ = fmt.Fprintf(sum, "row\x01%s\x01", k)
-				hashSlot(res.Headers[k])
+				// The resolved value hashes verbatim: it is wire
+				// material, not authored text, and re-parsing a value
+				// that itself contains '$' would shred it — an embedded
+				// unset ref contributes nothing, so two different wire
+				// values would hash alike and a header rotation would
+				// keep publishing stale rows under the old identity.
+				_, _ = fmt.Fprintf(sum, "row\x01%s\x01%s\x01", k, res.Headers[k])
 			}
 		}
 	} else {

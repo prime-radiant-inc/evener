@@ -899,16 +899,30 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
-		// The judgment is the launch's own — the default row's merged
-		// transport, the same presence resolution the status pane shows —
-		// not the provider's model-less shape: a row override that flips
-		// the scheme flips the remedy with it, or the gate points at a
-		// credential the launch never reads. No none/optional-bearer case
-		// appears here: a provider whose launch needs no credential
-		// derives an instance of its own and takes the instance branch
-		// above, so this branch only speaks for schemes that demand one.
+		// The judgment is the launch's own — the named model's row, or
+		// the default row when the caller named none — resolved the way
+		// the instance branch's gate resolves it, never executing a
+		// command. Not the provider's model-less shape: a row override
+		// that flips the scheme flips the remedy with it, or the gate
+		// points at a credential the launch never reads.
 		scheme := p.Transport.Auth
-		if pres, perr := r.ResolveInstancePresence(name); perr == nil {
+		if res, err := r.ResolveGateCredential(name, model); err == nil {
+			// The named launch's own judgment: its row's scheme and
+			// credential. A row pinned to none or optional-bearer
+			// launches with nothing to configure; a resolved credential
+			// is satisfied; anything else takes the remediation for the
+			// row's own scheme below.
+			switch res.Transport.Auth {
+			case registry.AuthNone, registry.AuthOptionalBearer:
+				return nil
+			}
+			if res.Credential.Source != "none" {
+				return nil
+			}
+			scheme = res.Transport.Auth
+		} else if pres, perr := r.ResolveInstancePresence(name); perr == nil {
+			// The gate could not resolve the named row; the default
+			// row's presence names the scheme the bare launch uses.
 			scheme = pres.Transport.Auth
 		}
 		// The Codex transport reads no key at all (spec §5.1), so its
