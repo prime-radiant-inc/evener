@@ -1091,6 +1091,11 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 				if !s.installConsumerRefresh(pool, consumer, binding, handles, contended) {
 					return errScratchRefreshPoolDetached
 				}
+				// The fold landed the current rows; the sweep against this
+				// same manifest drops the debris an earlier world left —
+				// handles, marks, claims, and rows for allocations the
+				// manifest no longer references (round 53).
+				s.reconcileRetainedScratchPool(pool, fresh)
 				return nil
 			}
 			// No pool was ever published — the root initialized before the
@@ -1252,6 +1257,71 @@ func (s *Session) sleepScratchLockBackoff(attempt int) {
 		return
 	}
 	time.Sleep(sandbox.ScratchLockContentionDelay(attempt))
+}
+
+// reconcileRetainedScratchPool sweeps the pool against the manifest the fold
+// just landed under, releasing and removing every entry whose allocation the
+// live manifest no longer references: the debris a reset or a slot move
+// leaves behind — pooled handles still holding their leases, contention
+// marks, adoption claims, and binding rows no current row can reach. The
+// sweep runs inside the manifest's durable update lock, the same hold the
+// fold lands in, so no writer can re-reference a directory between the
+// manifest this pass read and the entries it drops. An orphaned handle
+// hands its lease back: the pin, not the pool's lease, is what protects a
+// directory the collector must skip, so the release never exposes a pinned
+// directory — it only unblocks collection of the unpinned garbage. Consumer
+// rows stay with the decline machinery that already reconciles them
+// per-consumer (round 24).
+func (s *Session) reconcileRetainedScratchPool(pool *retainedScratchPool, manifest sandbox.ScratchManifest) {
+	referenced := make(map[string]struct{}, len(manifest.References))
+	for _, ref := range manifest.References {
+		referenced[canonicalScratchDir(ref.Dir)] = struct{}{}
+	}
+	liveBindings := make(map[string]struct{}, len(manifest.Bindings))
+	for _, binding := range manifest.Bindings {
+		liveBindings[binding.BindingID] = struct{}{}
+	}
+	pool.mu.Lock()
+	// The fold verified this pool is still the published one under its own
+	// mutex hold; a release can detach it between the two holds, so the
+	// sweep re-checks before touching anything — a detached pool's maps are
+	// the release's to clear, and a second Retain on handles it already
+	// released would race its own (round 15).
+	if s.retainedScratch.Load() != pool {
+		pool.mu.Unlock()
+		return
+	}
+	var released []*sandbox.SessionScratch
+	for key, handle := range pool.handles {
+		if _, ok := referenced[key]; ok {
+			continue
+		}
+		released = append(released, handle)
+		delete(pool.handles, key)
+	}
+	for key := range pool.adopted {
+		if _, ok := referenced[key]; !ok {
+			delete(pool.adopted, key)
+		}
+	}
+	for key := range pool.contended {
+		if _, ok := referenced[key]; !ok {
+			delete(pool.contended, key)
+		}
+	}
+	for id := range pool.bindings {
+		if _, ok := liveBindings[id]; !ok {
+			delete(pool.bindings, id)
+		}
+	}
+	pool.mu.Unlock()
+	// The leases are handed back outside the mutex: the entries are already
+	// gone from the maps, so no pool reader can reach these handles, and the
+	// detach — which Retains what the maps still hold — cannot release them
+	// a second time.
+	for _, handle := range released {
+		_ = handle.Retain()
+	}
 }
 
 // installConsumerRefresh folds one consumer's refreshed manifest rows into

@@ -1448,6 +1448,85 @@ func TestScratchRefreshDeclineDropsRowsTheManifestNoLongerHolds(t *testing.T) {
 	}
 }
 
+// TestScratchRefreshReconcilesEntriesTheManifestNoLongerReferences pins
+// round 53's Medium: the refresh folded newer rows into the pool but never
+// removed the stale ones — handles, contention marks, adoption claims, and
+// binding rows for allocations the manifest no longer references, the debris
+// a reset or a slot move leaves behind. The pooled handles kept their leases
+// held, so the sweeper could never collect the orphaned directories until
+// the pool teardown, and the stale records survived as adoption state no
+// current row could still reach. The fold now reconciles the whole pool
+// against the manifest it lands under.
+func TestScratchRefreshReconcilesEntriesTheManifestNoLongerReferences(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01STALEPOOLDEBRIS"
+	const liveBindingID = "b-live-reconcile"
+	const orphanBindingID = "b-orphan-debris"
+	const priorAdopterID = "01PREVIOUSADOPTER"
+	// The live world: a published binding the consumer maps onto, its lease
+	// free for the refresh to reacquire.
+	liveSlots, _ := mintRefreshScratchBinding(t, s, liveBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, liveBindingID)
+	liveDir := liveSlots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = liveSlots[sandbox.ScratchKindSandbox].Retain() })
+	if err := liveSlots[sandbox.ScratchKindSandbox].Retain(); err != nil {
+		t.Fatalf("release the live slot lease: %v", err)
+	}
+	// The debris: a real orphaned allocation with its lease held by a pooled
+	// handle, plus the contention mark, adoption claim, and binding row a
+	// pre-reset world left in the pool.
+	orphanHandle, err := sandbox.NewSessionScratch(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("mint the orphaned allocation: %v", err)
+	}
+	orphanKey := canonicalScratchDir(orphanHandle.Dir)
+	staleBinding := sandbox.ScratchBinding{
+		BindingID:      orphanBindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: orphanHandle.Dir, OwnsLease: true},
+		},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{orphanKey: orphanHandle},
+		bindings:  map[string]sandbox.ScratchBinding{orphanBindingID: staleBinding},
+		consumers: map[string]sandbox.ScratchConsumerBinding{},
+		adopted:   map[string]string{orphanKey: priorAdopterID},
+		contended: map[string]struct{}{orphanKey: {}},
+	})
+
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("the refresh must not fail the restore: %v", err)
+	}
+
+	if orphanHandle.HasLease() {
+		t.Fatal("the refresh left the orphaned allocation's lease held: the sweeper cannot collect it until pool teardown")
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the refresh detached the pool")
+	}
+	pool.mu.Lock()
+	_, staleHandle := pool.handles[orphanKey]
+	_, staleClaim := pool.adopted[orphanKey]
+	_, staleMark := pool.contended[orphanKey]
+	_, staleRow := pool.bindings[orphanBindingID]
+	_, liveHandle := pool.handles[canonicalScratchDir(liveDir)]
+	liveRow, liveRowOK := pool.bindings[liveBindingID]
+	pool.mu.Unlock()
+	if staleHandle || staleClaim || staleMark || staleRow {
+		t.Fatalf("the refresh kept pool debris for the orphaned allocation: handle=%v claim=%v mark=%v row=%v", staleHandle, staleClaim, staleMark, staleRow)
+	}
+	if !liveHandle || !liveRowOK || liveRow.BindingID != liveBindingID {
+		t.Fatalf("the reconcile over-deleted the live world: handle=%v row=%v", liveHandle, liveRow)
+	}
+}
+
 // TestRestoreAdoptionSurvivesPoolDetachBetweenLoads pins round 18's High: the
 // pool can detach between adoptConsumerScratch's row read and
 // adoptRetainedScratchFor's own pool load. The inner transfer silently no-ops
