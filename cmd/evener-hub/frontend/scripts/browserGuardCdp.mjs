@@ -198,14 +198,14 @@ export function startupDeadlineMs({
   load1 = os.loadavg()[0],
   cores = os.availableParallelism(),
 } = {}) {
-  // availableParallelism honors CPU affinity and a cgroup quota, so it reports
-  // the cores this process can actually run on, not the host's -- the same
-  // signal scripts/lib/load-aware-workers.sh derives from nproc and the cgroup
-  // quota. An uncharacterizable machine is treated as idle (pressure 0), never
-  // as pressured: unknown must not look worse than it is.
-  const coreCount = Number.isFinite(cores) && cores >= 1 ? cores : Number.POSITIVE_INFINITY;
+  // availableParallelism accounts for CPU affinity and, where the platform
+  // exposes one, a cgroup CPU quota -- the same effective-core signal
+  // scripts/lib/load-aware-workers.sh derives from nproc and the cgroup quota.
+  // An unreadable signal is treated as idle (pressure 0): an unknown machine
+  // must never look more pressured than it is.
+  const coresReadable = Number.isFinite(cores) && cores >= 1;
   const load = Number.isFinite(load1) && load1 > 0 ? load1 : 0;
-  const pressure = Math.min(1, load / coreCount);
+  const pressure = coresReadable ? Math.min(1, load / cores) : 0;
   return Math.round(floorMs + (capMs - floorMs) * pressure);
 }
 

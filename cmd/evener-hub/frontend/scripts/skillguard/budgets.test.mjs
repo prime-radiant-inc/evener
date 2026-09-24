@@ -78,14 +78,19 @@ function scriptedDriver() {
 }
 
 describe("waitPage budgets under an injected slow reaction", () => {
-  test("absorbs a slow-but-correct reaction once a slower step has been observed", async () => {
-    vi.useFakeTimers();
-    const { driver, reactAt } = scriptedDriver();
-    // An earlier step that demonstrably took this long under the current load.
+  // Drive one slow-but-correct step to completion so the driver has an
+  // observation to size the next wait's budget from.
+  async function establishSlowStep({ driver, reactAt }) {
     reactAt(80);
     const earlier = driver.waitPage("true", { timeoutMs: 200, label: "earlier slow-but-correct step" });
     await vi.advanceTimersByTimeAsync(500);
     await expect(earlier).resolves.toBe(true);
+  }
+
+  test("absorbs a slow-but-correct reaction once a slower step has been observed", async () => {
+    vi.useFakeTimers();
+    const { driver, reactAt } = scriptedDriver();
+    await establishSlowStep({ driver, reactAt });
     // The machine owes us this reaction; with a fixed 200ms budget the wait
     // would trip on correct work.
     reactAt(400);
@@ -98,10 +103,7 @@ describe("waitPage budgets under an injected slow reaction", () => {
   test("still trips when the reaction outruns the ceiling, so a wedged page is not waited on forever", async () => {
     vi.useFakeTimers();
     const { driver, reactAt } = scriptedDriver();
-    reactAt(80);
-    const earlier = driver.waitPage("true", { timeoutMs: 200, label: "earlier slow-but-correct step" });
-    await vi.advanceTimersByTimeAsync(500);
-    await expect(earlier).resolves.toBe(true);
+    await establishSlowStep({ driver, reactAt });
     reactAt(60_000);
     const wedged = driver.waitPage("true", { timeoutMs: 200, label: "wedged page" });
     const rejected = expect(wedged).rejects.toThrow(/timed out after 800ms/);

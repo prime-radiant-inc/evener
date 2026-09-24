@@ -673,14 +673,16 @@ export class Driver {
     // the budget decides only how long silence is tolerated (see budgets.mjs).
     const budgetMs = this.reactions.deadline(timeoutMs);
     let deadline = startedAt + budgetMs;
+    let heldSince = null;
     // A completed wait is the driver's observation of how slow the app is on
-    // this machine. The settle window is a proof barrier, not a reaction, so a
-    // hold counts from when the condition FIRST held, not from when it settled.
+    // this machine. With settleMs the reaction is the time to the FIRST hold --
+    // the settle window that follows is a proof barrier, not a reaction --
+    // and without it the condition held at this poll, which is now.
     const settled = (value) => {
-      this.reactions.observe((heldSince ?? Date.now()) - startedAt);
+      const reactedAt = settleMs > 0 ? heldSince : Date.now();
+      this.reactions.observe(reactedAt - startedAt);
       return value;
     };
-    let heldSince = null;
     let settleAccounted = false;
     // When the previous poll ATTEMPT landed, success or failure: the span a
     // failure excludes from the proof is measured from here.
