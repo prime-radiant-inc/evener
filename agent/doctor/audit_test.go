@@ -868,7 +868,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 	// word-break), and a '$' (shell expansion).
 	// --sessions reproduction line: a comma (CLI splits it), a space (shell
 	// word-break), a '$' (shell expansion), and a '*' (shell glob expansion).
-	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b"} {
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b"} {
 		t.Run(bucketName, func(t *testing.T) {
 			base := t.TempDir()
 			bucket := stateHomeBucket(base, bucketName)
@@ -906,7 +906,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			// The ref must not contain a comma (which would split into an
 			// invalid selector) or a space/shell metacharacter (injection).
 			for _, ref := range splitRefs {
-				if strings.ContainsAny(ref, ", \t$\x00*?[]") {
+				if strings.ContainsAny(ref, ", \t$\x00*?[]%^") {
 					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
 				}
 			}
@@ -1713,5 +1713,173 @@ func TestRunAudit_R9F3_DescriptionEmitsCapMarker(t *testing.T) {
 	// truncated before joinSessionRefs.
 	if !strings.Contains(runTimeout.Description, "and ") || !strings.Contains(runTimeout.Description, " more") {
 		t.Errorf("Description %q must emit a cut marker (…and N more) when session count exceeds the cap (round 9 finding 3)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_R10F1_CmdExeMetacharactersRejectedFromDoctorCommand is the
+// roborev round 10 finding-1 RED case: safeTokenForRepro's ContainsAny set
+// lacks '%' and '^'. A bucket named "%PATH%" or "a^b" passes BOTH
+// projectTokenOK (only rejects /, \, NUL) and safeTokenForRepro (no % or ^
+// in the reject set), so followSelector emits proj:%PATH%:<sid> or
+// proj:a^b:<sid> into DoctorCommand's --sessions value. On cmd.exe, %VAR%
+// is expanded and ^ escapes the next char, silently altering the
+// reproduction line. After the fix, safeTokenForRepro rejects % and ^ so
+// followSelector falls back to the bare sid (non-reproducible, disclosed).
+func TestRunAudit_R10F1_CmdExeMetacharactersRejectedFromDoctorCommand(t *testing.T) {
+	// %VAR% and ^ are cmd.exe metacharacters that pass the current
+	// safeTokenForRepro predicate.
+	for _, bucketName := range []string{"%PATH%", "a^b"} {
+		t.Run(bucketName, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, bucketName)
+			writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+			rb := mustParseFixtureRunbook(t)
+			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.SessionsChecked != 1 {
+				t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+			}
+			if len(res.Findings) == 0 {
+				t.Fatalf("no findings — the run-timeout check should trip")
+			}
+			dc := res.Findings[0].Evidence.DoctorCommand
+			// The bucket name must NOT appear in DoctorCommand: % and ^ are
+			// cmd.exe metacharacters. If safeTokenForRepro accepted the name,
+			// followSelector emitted proj:<bucket>:<sid> and the bucket name
+			// is in the command.
+			if strings.Contains(dc, bucketName) {
+				t.Errorf("DoctorCommand %q contains bucket name %q with cmd.exe metacharacters — safeTokenForRepro must reject %% and ^ (round 10 finding 1)", dc, bucketName)
+			}
+		})
+	}
+}
+
+// TestRunAudit_R10F2_EmptyDoctorCommandAlwaysSerialized is the roborev
+// round 10 finding-2 RED case: the DoctorCommand field carries omitempty,
+// so when all sessions are non-reproducible (DoctorCommand is ""), the
+// field is dropped from JSON output entirely. finding-contract.md says
+// "Always include doctorCommand" — the field must be present (empty
+// string), not absent. After the fix, omitempty is dropped and the JSON
+// always contains "doctorCommand":"".
+func TestRunAudit_R10F2_EmptyDoctorCommandAlwaysSerialized(t *testing.T) {
+	base := t.TempDir()
+	// Two unsafe buckets with the same sid: all sessions non-reproducible,
+	// so DoctorCommand is empty.
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	sel := "proj:has space-a:" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings")
+	}
+	dc := res.Findings[0].Evidence.DoctorCommand
+	if dc != "" {
+		t.Fatalf("DoctorCommand = %q, want empty (all sessions non-reproducible)", dc)
+	}
+	// Marshal the finding and verify doctorCommand is present in JSON
+	// (not omitted by omitempty when empty).
+	b, err := json.Marshal(res.Findings[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	evidence, _ := m["evidence"].(map[string]any)
+	if _, ok := evidence["doctorCommand"]; !ok {
+		t.Errorf("Finding JSON %s omits doctorCommand — the field must always be present (round 10 finding 2: omitempty drops empty)", b)
+	}
+}
+
+// TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro is the
+// roborev round 10 finding-3 RED case: Description independently includes
+// up to 200 reproducible session refs (joinSessionRefs cap) AND up to 200
+// non-reproducible disclosures (formatNonReproSessions cap), so a finding
+// with 150 reproducible + 100 non-reproducible sessions renders all 250
+// session entries in Description. The documented cap is 200 total. After
+// the fix, a single shared budget of 200 covers both, with a combined
+// omission count. Finding 4 (command-side omission disclosure) also
+// applies when the reproducible selector count exceeds the command cap
+// but SessionRefs dedups to fewer entries.
+func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T) {
+	base := t.TempDir()
+	// 150 reproducible sessions in a canonical bucket (hash1):
+	// followSelector emits proj:hash1:<sid>, all resolve via Locate.
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 150
+	for i := 0; i < reproCount; i++ {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	// 100 non-reproducible sessions across two unsafe buckets sharing
+	// the same sid: followSelector falls back to bare sid, ambiguous
+	// across buckets, non-reproducible. Each has its own sid so we
+	// create 50 distinct sids, each in both buckets = 100 sessions.
+	const nonReproPairs = 50
+	nonReproBucketA := stateHomeBucket(base, "has space-a")
+	nonReproBucketB := stateHomeBucket(base, "has space-b")
+	for i := 0; i < nonReproPairs; i++ {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, nonReproBucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, nonReproBucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	totalSessions := reproCount + nonReproPairs*2
+	if res.SessionsChecked != totalSessions {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, totalSessions)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The Description must not exceed a single 200-entry budget for
+	// session references. Currently joinSessionRefs emits up to 200
+	// reproducible refs AND formatNonReproSessions emits up to 200
+	// non-reproducible entries independently, so 150+100=250 entries
+	// appear — 50 over the 200 cap with no honest omission count.
+	//
+	// Count how many "in bucket" entries appear in the non-repro
+	// section (each non-reproducible session is "sid in bucket \"name\"").
+	// Plus the reproducible refs before the non-repro section.
+	// The total must not exceed evidenceSessionRefCap.
+	// Count reproducible refs in Description: the comma-separated refs
+	// before the "not reproducible" section (if any).
+	reproPart := desc
+	nonReproEntries := 0
+	if idx := strings.Index(desc, "not reproducible"); idx >= 0 {
+		reproPart = desc[:idx]
+		nonReproEntries = strings.Count(desc[idx:], " in bucket \"")
+	}
+	// Count comma-separated refs in the reproducible portion.
+	reproEntries := strings.Count(reproPart, ", ") + 1
+	if reproPart == "" {
+		reproEntries = 0
+	}
+	totalEntries := reproEntries + nonReproEntries
+	if totalEntries > evidenceSessionRefCap {
+		t.Errorf("Description has %d total session entries (%d repro + %d non-repro), want <= %d — a single shared budget must cover both reproducible and non-reproducible session references (round 10 finding 3)", totalEntries, reproEntries, nonReproEntries, evidenceSessionRefCap)
 	}
 }
