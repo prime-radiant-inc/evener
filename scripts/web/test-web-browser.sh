@@ -19,12 +19,26 @@ guards=(layoutguard overflowguard shellguard spawnguard transcriptscrollguard re
 guard_pids=()
 status=0; complete=0
 
+# owned_guard_running PID — whether PID is still one of this shell's running
+# jobs. Bash 3.2 (macOS) has no `wait -n`, so completion is found by asking
+# the job table, the same ownership test test-web.sh uses.
+owned_guard_running() {
+	local candidate
+	for candidate in $(jobs -pr); do
+		[ "$candidate" = "$1" ] && return 0
+	done
+	return 1
+}
+
 # stop_guards TERMs every guard still running and waits for each, so an
-# interruption waits for the cleanup each guard owns.
+# interruption waits for the cleanup each guard owns. A recorded pid whose job
+# has already exited is not signalled: the OS may have given that number to an
+# unrelated process since.
 stop_guards() {
 	local pid
 	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do
-		[ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || :
+		[ -n "$pid" ] && owned_guard_running "$pid" || continue
+		kill -TERM "$pid" 2>/dev/null || :
 	done
 	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do
 		[ -z "$pid" ] || wait "$pid" 2>/dev/null || :
@@ -123,17 +137,6 @@ slots=${BROWSER_GUARD_CONCURRENCY:-$(load_aware_workers 0)}
 case "$slots" in
 ''|*[!0-9]*|0) slots=1 ;;
 esac
-
-# owned_guard_running PID — whether PID is still one of this shell's running
-# jobs. Bash 3.2 (macOS) has no `wait -n`, so completion is found by asking
-# the job table, the same ownership test test-web.sh uses.
-owned_guard_running() {
-	local candidate
-	for candidate in $(jobs -pr); do
-		[ "$candidate" = "$1" ] && return 0
-	done
-	return 1
-}
 
 guard_status=()
 next=0 running=0 done_count=0
