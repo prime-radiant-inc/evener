@@ -202,7 +202,11 @@ const SYSTEM_NOTICE_FAMILY: Record<ThreadItemEventKind, NoticeFamily> = {
 
 function systemNoticeFamily(eventKind: string | undefined): NoticeFamily {
   if (eventKind === undefined || eventKind === "") return "unknown-system";
-  return SYSTEM_NOTICE_FAMILY[eventKind as ThreadItemEventKind] ?? "unknown-system";
+  // Own-property only: a bare index would answer an inherited name like
+  // "constructor", "toString" or "__proto__" with an Object.prototype member
+  // instead of the unknown-system family.
+  if (!Object.hasOwn(SYSTEM_NOTICE_FAMILY, eventKind)) return "unknown-system";
+  return SYSTEM_NOTICE_FAMILY[eventKind as ThreadItemEventKind];
 }
 
 // The projector reads only `turns` from a ThreadModel to classify a system

@@ -1169,6 +1169,9 @@ describe("projectThread", () => {
       ["model_switch", "lifecycle"],
       ["notes-context", "lifecycle"],
       ["future-event", "unknown-system"],
+      ["constructor", "unknown-system"],
+      ["toString", "unknown-system"],
+      ["__proto__", "unknown-system"],
       [undefined, "unknown-system"],
     ] as const)("classifies eventKind %s as %s", (eventKind, family) => {
       const t = thread([
