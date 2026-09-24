@@ -478,6 +478,18 @@ class Driver {
     );
   }
 
+  // setLocalStorage seeds a persisted value the app itself reads on mount, and
+  // returns what actually landed. It exists for panes whose working directory is
+  // NOT in the route: the in-repo pane takes its cwd from localStorage
+  // ("lastCwd", inrepo.tsx), which is how that pane has always been opened, so a
+  // ?cwd= deep link is ignored there while the project pane honours one.
+  setLocalStorage(key, value) {
+    return evaluate(
+      this.send,
+      `(() => { window.localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)}); return window.localStorage.getItem(${JSON.stringify(key)}); })()`,
+    );
+  }
+
   settingsURL(section, { cwd = null } = {}) {
     const params = new URLSearchParams();
     params.set("host", this.host);
@@ -622,15 +634,47 @@ async function runPane(driver, section) {
       return record;
     }
     case "inrepo": {
+      // The in-repo layer is contributed only once the HOST has trusted the file,
+      // so this case drives the pane's own Trust action rather than pretending the
+      // value applies by itself. Two host-only facts come out of it: the pane
+      // shows the FILE's own text, which exists only on the selected host, and the
+      // trust it then reports can only have been recorded there.
+      const c = expect.inrepo;
+      check(
+        c !== undefined &&
+          typeof c.cwd === "string" &&
+          c.cwd.length > 0 &&
+          typeof c.hostAgent === "string" &&
+          c.hostAgent.length > 0,
+        "inrepo: the fixture must provide {inrepo: {cwd, hostAgent}} - a working directory that exists only on the selected host, and the value in its in-repo layer - so this pane can assert host provenance instead of structure",
+      );
+      // This pane takes its working directory from localStorage, not the route:
+      // inrepo.tsx initialises cwd from `lastCwd` and a ?cwd= deep link is ignored
+      // (the project pane is the one that reads the query). Seed the value the
+      // pane actually reads, the way the app itself would have, rather than
+      // inventing a route parameter it does not honour.
+      const seeded = await driver.setLocalStorage("lastCwd", c.cwd);
+      check(
+        seeded === c.cwd,
+        `inrepo: could not seed the pane's working directory (localStorage lastCwd holds ${JSON.stringify(seeded)}, want ${JSON.stringify(c.cwd)})`,
+      );
       await driver.openPane(section);
+      const preview = await driver.waitPage(
+        `(() => { const el = document.querySelector("[data-testid='settings-content']"); if (el === null) return null; return el.innerText.includes(${JSON.stringify(c.hostAgent)}) ? el.innerText : null; })()`,
+        { label: `the in-repo pane to show the file that exists only on the selected host (${JSON.stringify(c.hostAgent)})` },
+      );
+      await driver.clickSettingsButton("Trust this file");
+      const trusted = await driver.waitPage(
+        `(() => { const el = document.querySelector("[data-testid='settings-content']"); if (el === null) return null; return el.innerText.includes("Trusted. Hash") ? el.innerText : null; })()`,
+        { timeoutMs: 30000, label: "the selected host to report the in-repo file trusted" },
+      );
       const text = await driver.settingsText();
       check(
-        typeof text === "string" && text.length > 0,
-        "inrepo: the pane rendered no content with a remote host selected",
+        !text.includes("No .evener/launch.toml in"),
+        `inrepo: the pane reported no in-repo file for a working directory whose file exists only on the selected host - which is what reading this hub instead of that host looks like; text was:\n${text}`,
       );
-      record.probe =
-        "Host picker value + pane body (structural: the in-repo pane needs a host-side repo/cwd to show a seeded value)";
-      record.evidence = { textExcerpt: text.slice(0, 400) };
+      record.probe = `working dir ${c.cwd} (exists only on the selected host), button "Trust this file", then the trusted status`;
+      record.evidence = { previewExcerpt: preview.slice(0, 400), trustedExcerpt: trusted.slice(0, 400) };
       record.ok = true;
       return record;
     }

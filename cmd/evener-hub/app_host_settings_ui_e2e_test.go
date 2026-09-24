@@ -118,6 +118,15 @@ const (
 	// asserts structure.
 	hostSettingsUIProjectAgent = "host-project-agent-5b2"
 	hostSettingsUIProjectDir   = "project-cwd"
+
+	// The in-repo pane's seed: another host-only working directory, this one
+	// holding the in-repo layer (<cwd>/.evener/launch.toml). That layer is
+	// contributed only once the HOST has trusted the file, so the driver drives
+	// the pane's own Trust action rather than pretending the value applies - and
+	// the trust write reaches the host through the proxy (launch/trustRepo is
+	// allow-listed, and classified as a mutation).
+	hostSettingsUIInRepoAgent = "host-inrepo-agent-9d4"
+	hostSettingsUIInRepoDir   = "inrepo-cwd"
 )
 
 // hostSettingsUIGate returns the t.Skip reason when the live settings-UI check
@@ -228,6 +237,12 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(filepath.Join(projectCwd, ".evener")))
 	host.writeFile(filepath.Join(projectCwd, ".evener", "launch.local.toml"),
 		[]byte("agent = \""+hostSettingsUIProjectAgent+"\"\n"))
+	// The in-repo pane's host-only working directory: the in-repo layer, untrusted
+	// until the pane's own Trust action runs.
+	inrepoCwd := filepath.Join(hostDir, hostSettingsUIInRepoDir)
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(filepath.Join(inrepoCwd, ".evener")))
+	host.writeFile(filepath.Join(inrepoCwd, ".evener", "launch.toml"),
+		[]byte("agent = \""+hostSettingsUIInRepoAgent+"\"\n"))
 	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostSettingsUIAddr, hostDir+"/state")))
 
 	// The two files this check must leave untouched: the host's REAL credential
@@ -379,7 +394,7 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	})
 
 	expectPath := filepath.Join(artifactRoot, "expect.json")
-	if err := os.WriteFile(expectPath, settingsUIExpectJSON(projectCwd), 0o600); err != nil {
+	if err := os.WriteFile(expectPath, settingsUIExpectJSON(projectCwd, inrepoCwd), 0o600); err != nil {
 		t.Fatalf("write the runner fixture %s: %v", expectPath, err)
 	}
 
@@ -515,9 +530,10 @@ func assertHubServesBuiltSPA(t *testing.T, addr, token string) {
 
 // settingsUIExpectJSON is the fixture the runner asserts against: the host's
 // seeded values it must find, and the controller's values it must never see.
-// projectCwd is the working directory the host (and only the host) holds, with
-// hostSettingsUIProjectAgent in its project layer.
-func settingsUIExpectJSON(projectCwd string) []byte {
+// projectCwd and inrepoCwd are the working directories the host (and only the
+// host) holds: the first with hostSettingsUIProjectAgent in its project layer,
+// the second with hostSettingsUIInRepoAgent in its in-repo layer.
+func settingsUIExpectJSON(projectCwd, inrepoCwd string) []byte {
 	doc := map[string]any{
 		"credentials": map[string]string{"hostText": hostSettingsUIHostInstance, "controllerText": hostSettingsUIControllerInstance},
 		"agentsMd": map[string]string{
@@ -530,6 +546,7 @@ func settingsUIExpectJSON(projectCwd string) []byte {
 		"pluginsDir":  map[string]string{"host": hostSettingsUIHostPluginsDir, "controller": hostSettingsUIControllerPluginsDir},
 		"mcpConfig":   map[string]string{"host": hostSettingsUIHostMCPConfig, "controller": hostSettingsUIControllerMCPConfig},
 		"project":     map[string]string{"cwd": projectCwd, "hostAgent": hostSettingsUIProjectAgent},
+		"inrepo":      map[string]string{"cwd": inrepoCwd, "hostAgent": hostSettingsUIInRepoAgent},
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

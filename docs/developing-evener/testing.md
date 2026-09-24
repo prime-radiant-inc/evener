@@ -408,15 +408,16 @@ Chrome with a real remote host selected, each host-scoped settings pane
 `plugins-manager`, `plugins`, `skills`, `mcp`) must render THAT HOST's own data,
 and one write goes through the UI (the host's `AGENTS.md`, via Save).
 
-Seven of the nine are held to a value seeded only on the host: the pane must
-render the HOST's value and must not render this hub's. Two assert structure
-instead — `inrepo`, whose layer is contributed only for a repository the host has
-TRUSTED (a freshly seeded file is untrusted by construction), and
-`plugins-manager`, whose catalog is a set of marketplaces CLONED under the host
-rather than a file. For those two the check proves the pane rendered, with no
-load error, carrying the selected host — not the provenance the other seven
-prove. That is the honest limit of this check, and it is why `project` was given
-a host-only working directory rather than left with the other two.
+Eight of the nine are held to a value seeded only on the host: the pane must
+render the HOST's value and must not render this hub's. `credentials`,
+`agents-md`, `launch-evener`, `project`, `plugins`, `skills` and `mcp` read a
+seeded host value; `inrepo` reads the host's own `.evener/launch.toml`, whose text
+the pane shows as a preview, and the check then drives the pane's own **Trust**
+action and requires the host to report the file trusted — so that pane proves the
+read AND exercises a host-side write. `plugins-manager` asserts structure — the
+pane rendered, with no load error, carrying the selected host — because its
+catalog is a set of marketplaces CLONED under the host rather than a file, so a
+file seed cannot produce a listing. That is the honest limit of this check.
 
 **This gate writes to the host and drives a browser**, so it is its own opt-in:
 a developer signed up for the push or deploy checks is not signed up for a UI
