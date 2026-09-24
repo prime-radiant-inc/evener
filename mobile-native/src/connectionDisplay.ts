@@ -21,34 +21,6 @@ export function isReady(state: ConnectionState): boolean {
 
 export type LiveReadiness = () => boolean;
 
-/** The pairing snapshot (`current`, `bornScope`) is settled by a passive
- * effect, so between a moved render's commit and that effect a callback from
- * the previous render still validated against the previous settle — the exact
- * window where a deferred request could fire on a hub the render has already
- * left. A generation counter closed it: the render that observes the pairing
- * move — the scope or client identity, or a connection-state drop that leaves
- * the settled snapshot reporting "ready" through the window — bumps the
- * counter synchronously, so every callback a
- * previous render captured refuses from that instant — the effect's settle
- * then makes the NEW callback usable, and the window never authorizes the old
- * one. The bump is the one render-phase write this hook allows, and it is
- * fail-closed by construction: a render React abandons midway leaves the
- * counter ahead of every callback memoized before it, so each of those
- * refuses (nothing stale is ever authorized). Recovery is memoization, not
- * the settle effect: the callback's dependency array carries the generation
- * it was born at, so the first committed render after an abandoned bump —
- * whose identity matches the last committed one, so no new bump happens —
- * rebuilds the callback from the current counter instead of returning the
- * stale one (round 29). The r21 ban on settling the STATE snapshot during
- * render is untouched — a generation bump carries no authorization data at
- * all. */
-/** The hub each client object last proved ready under, kept above the keyed
- * remount boundary that resets every hook instance's own state. A remount can
- * land on the previous hub's still-ready client — the store's selection
- * moves before the connection re-points — and a mount cannot tell from its
- * props whether the pairing it lands on is coherent; this record is the
- * memory that can (connectionIdentity's record, round 56). */
-
 /** Keeps a deferred request tied to the render that opened it: the current
  * state must still be ready for the same hub and client before it may run —
  * and in the re-key window, where the hub has moved while the connection

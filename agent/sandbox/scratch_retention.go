@@ -1172,7 +1172,19 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 	manifest.Released = true
 	manifest.Revision++
 	if err := writeScratchRetention(owner, manifest); err != nil {
-		return err
+		// A write can commit its rename before reporting the post-rename
+		// failure class, so re-read under this held lock: it makes every
+		// writer single, so a manifest that reads Released at exactly the
+		// revision this call attempted can only be this release's own
+		// commit (the reset's argument, round 45, applied at the release).
+		// Returning without that check would skip the pin cleanup below
+		// over a durable tombstone, pinning otherwise-reclaimable
+		// directories under the committed release (round 77).
+		fresh, rereadErr := loadScratchRetention(owner)
+		if rereadErr != nil || !fresh.Released || fresh.Revision != manifest.Revision {
+			return err
+		}
+		manifest = fresh
 	}
 	// The tombstone is durable before any pin is removed, so an interruption
 	// between the two can only leave an extra pin, never a pinless directory

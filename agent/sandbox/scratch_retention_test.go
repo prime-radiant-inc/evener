@@ -129,6 +129,54 @@ func TestScratchRetentionUnreferencedReleasedStillCollected(t *testing.T) {
 	}
 }
 
+// TestScratchRetentionReleaseFinishesCleanupWhenTheWriteReportsACommittedFailure
+// pins round 77's Medium: ReleaseScratchRetention returned on a write error
+// even when the manifest rename had already committed — the post-rename
+// failure class every other writer recognizes — so the tombstone was durable
+// while the pin cleanup it authorizes was skipped, leaving
+// otherwise-reclaimable directories pinned under the committed release.
+func TestScratchRetentionReleaseFinishesCleanupWhenTheWriteReportsACommittedFailure(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := ScratchReference{Dir: scratch.Dir, Kind: "sandbox"}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	// Free the directory's own lease so the release's cleanup can acquire it.
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	restore := SetScratchManifestWriteProbeForTesting(func() error {
+		return errors.New("probe: post-rename fsync failure")
+	})
+	defer restore()
+	err = ReleaseScratchRetention(owner)
+	// The pin cleanup the committed tombstone authorizes must have run: the
+	// directory's own pin is gone, so the sweep can actually collect the
+	// scratch the release released.
+	if _, statErr := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); !os.IsNotExist(statErr) {
+		t.Fatalf("the committed release left the directory pinned (release err=%v, stat=%v): the tombstone authorizes collection the pin now blocks", err, statErr)
+	}
+	if err != nil {
+		t.Fatalf("the release reported its committed write as failed: %v", err)
+	}
+	after, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !after.Released || after.Revision != before.Revision+1 {
+		t.Fatalf("the committed release is not durable: %+v", after)
+	}
+}
+
 // TestSweepRemovalSerializesWithTheManifestReset pins the round-31 finding:
 // the sweep's retention check reads the Released tombstone without any lock
 // the reset's resurrection takes, so a ResetScratchRetentionIfReleased that
