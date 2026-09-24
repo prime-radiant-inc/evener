@@ -747,20 +747,28 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 // start within 5 seconds.
 func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 	t.Helper()
+	return waitForServeTestRendezvousWithin(t, runDir, 5*time.Second)
+}
+
+// waitForServeTestRendezvousWithin is waitForServeTestRendezvous with the
+// startup ceiling named by the caller, for a serve that resumes a large
+// transcript before it can register.
+func waitForServeTestRendezvousWithin(t *testing.T, runDir string, within time.Duration) rendezvous.Entry {
+	t.Helper()
 
 	// Ensure the run directory exists before attaching the watcher.
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		t.Fatalf("waitForServeTestRendezvous: mkdir %s: %v", runDir, err)
+		t.Fatalf("waitForServeTestRendezvousWithin: mkdir %s: %v", runDir, err)
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		t.Fatalf("waitForServeTestRendezvous: new watcher: %v", err)
+		t.Fatalf("waitForServeTestRendezvousWithin: new watcher: %v", err)
 	}
 	defer watcher.Close()
 
 	if err := watcher.Add(runDir); err != nil {
-		t.Fatalf("waitForServeTestRendezvous: watch %s: %v", runDir, err)
+		t.Fatalf("waitForServeTestRendezvousWithin: watch %s: %v", runDir, err)
 	}
 
 	// findEntry scans the run dir for a ready rendezvous entry.
@@ -780,20 +788,20 @@ func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 		return e
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(within)
 	for {
 		select {
 		case _, ok := <-watcher.Events:
 			if !ok {
-				t.Fatal("waitForServeTestRendezvous: watcher closed unexpectedly")
+				t.Fatal("waitForServeTestRendezvousWithin: watcher closed unexpectedly")
 			}
 			if e, found := findEntry(); found {
 				return e
 			}
 		case werr := <-watcher.Errors:
-			t.Fatalf("waitForServeTestRendezvous: watcher error: %v", werr)
+			t.Fatalf("waitForServeTestRendezvousWithin: watcher error: %v", werr)
 		case <-deadline:
-			t.Fatalf("no rendezvous entry in %s after 5s", runDir)
+			t.Fatalf("no rendezvous entry in %s after %s", runDir, within)
 			return rendezvous.Entry{}
 		}
 	}

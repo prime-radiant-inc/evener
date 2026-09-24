@@ -62,6 +62,37 @@ go test ./agent/ -bench BenchmarkRoundOverhead -benchtime 10x -run "^$"
 
 This uses a mock LLM client with 10ms simulated latency and reports per-round overhead in microseconds. Useful for detecting framework regressions without real API calls.
 
+## Memory profiling
+
+`TestMemHarness` (cmd/evener/memharness_test.go) runs a real `evener serve`
+in-process, drives it over AppWire with a scripted provider at the LLM
+boundary, and writes heap profiles plus a `report.txt` line per sample (live
+heap, heap not yet returned to the OS, bytes allocated so far, transcript
+size). It is skipped unless `-memharness-out` names an output directory:
+
+```bash
+# 200 turns of 5 shell rounds each (realistic output sizes), compaction on
+go test ./cmd/evener -run 'TestMemHarness$' -count=1 -timeout 60m \
+  -memharness-out=/tmp/mem -memharness-turns=200 -memharness-every=25
+
+# Open every turn with a delegate, then idle past the delegate idle release
+go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
+  -memharness-out=/tmp/mem -memharness-turns=20 -memharness-delegates \
+  -memharness-idle=45s
+
+# What a resumed session costs: resume a COPY of real state (never point
+# -memharness-state at a live state directory; resuming appends to it)
+cp -r ~/.local/state/evener/projects/<project-id>/sessions /tmp/memstate/sessions
+go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
+  -memharness-out=/tmp/mem -memharness-state=/tmp/memstate \
+  -memharness-resume=<session-id> -memharness-turns=0
+```
+
+Read the profiles with `go tool pprof`: `-sample_index=inuse_space` for what
+is retained, `alloc_space` for churn, and `-diff_base` between two samples for
+growth, e.g.
+`go tool pprof -sample_index=inuse_space -top -cum -diff_base /tmp/mem/heap-t025.pprof /tmp/mem/heap-t200.pprof`.
+
 ## State paths and identifiers
 
 Profiling artifacts that inspect persisted sessions should use the canonical
