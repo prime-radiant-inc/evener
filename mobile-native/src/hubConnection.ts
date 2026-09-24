@@ -6,6 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { createConnectionStore } from "@evener/appwire-client/state/connection";
 import { createHubClient } from "./connection";
+import { recordClientReadyHub } from "./connectionIdentity";
 import { connectionFailure } from "./connectionRecovery";
 
 export interface HubConnection {
@@ -90,6 +91,14 @@ export function useHubConnection(
 					return new NativeWebSocket(url, null, options);
 				});
 				connectedFor.current = { key: targetKey, client: connection };
+				// The hub this client was dialed for is the one fact the
+				// display hooks cannot see for themselves (a route's key can
+				// outrun the connection's re-point), so the connection layer
+				// records it here at establishment — the moment the pairing is
+				// real — and the hooks consult the record instead of writing
+				// it against whatever route they happen to render under
+				// (connectionIdentity, round 59).
+				recordClientReadyHub(connection, activeId);
 				// The core's swap path publishes `state: client.state`
 				// (state/connection/core.ts), which for a freshly built,
 				// not-yet-dialed client is "idle" - overwriting "connecting" until

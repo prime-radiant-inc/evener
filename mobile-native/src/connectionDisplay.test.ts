@@ -13,6 +13,7 @@ import {
 	useRenderClient,
 	whenReady,
 } from "./connectionDisplay";
+import { recordClientReadyHub } from "./connectionIdentity";
 import { render, renderedText, renderHook } from "./renderNative.testkit";
 import type { LiveReadiness } from "./connectionDisplay";
 
@@ -529,6 +530,9 @@ it("a re-keyed remount refuses the previous hub's pairing on the render it lands
 it("useRenderClient refuses a previous hub's adopted client at a remount until the connection re-points", () => {
 	const first = {} as AppwireClient;
 	const replacement = {} as AppwireClient;
+	// The connection layer recorded the client for hub-1 when it dialed it —
+	// dial success is the record's only writer (hubConnection, round 59).
+	recordClientReadyHub(first, "hub-1");
 	// hub-1's live screen adopts the client while ready.
 	const adopted = renderHook(() => useRenderClient(first, "ready", "hub-1"));
 	adopted.rerender();
@@ -554,6 +558,9 @@ it("useRenderClient refuses a previous hub's adopted client at a remount until t
 it("useLiveReadiness refuses a previous hub's adopted client at a remount until the connection re-points", () => {
 	const first = {} as AppwireClient;
 	const replacement = {} as AppwireClient;
+	// The connection layer recorded the client for hub-1 when it dialed it —
+	// dial success is the record's only writer (hubConnection, round 59).
+	recordClientReadyHub(first, "hub-1");
 	// hub-1's live screen births the client while ready.
 	const adopted = renderHook(() => useLiveReadiness("hub-1", first, "ready"));
 	expect(adopted.result.current()).toBe(true);
@@ -790,4 +797,43 @@ it("whenReady reads readiness when the deferred callback runs", () => {
 	ready = true;
 	deferred();
 	expect(handler).toHaveBeenCalledOnce();
+});
+
+// Round 59's Medium: the hooks recorded the pairing they observed against
+// the ROUTE scope for ANY readiness state, so a connecting mount under
+// hub-2's route attributed hub-1's client to hub-2 — and the record, which
+// the store and the sign-in resume gate consult, then refused that client
+// for its OWN hub until a reconnection re-dialed it. The record's writer is
+// the connection layer (dial success, hubConnection); the hooks only consult.
+it("never attributes a client to a hub it did not dial for", () => {
+	const first = {} as AppwireClient;
+	// A screen keyed to hub-2 mounts while the connection still reports
+	// hub-1's client, mid-dial — the re-key outran the connection's
+	// re-point, and nothing has proved ready under hub-2.
+	const connecting = renderHook(() => useLiveReadiness("hub-2", first, "connecting"));
+	connecting.rerender();
+	// The pairing turns ready under hub-1 — the hub the connection dialed
+	// the client for. The client must serve it: a connecting mount under
+	// another hub's route must not have poisoned the record.
+	const ready = renderHook(() => useLiveReadiness("hub-1", first, "ready"));
+	expect(ready.result.current()).toBe(true);
+});
+
+// Round 59's Low: the bump compares against the last pairing the RENDER
+// PHASE bumped for, so a same-pairing render cannot bump twice and
+// over-invalidate the first committed render's callback. The memoized
+// callback's identity is the observable: only a pairing move rebuilds it.
+it("does not rebuild the readiness callback for a same-pairing rerender", () => {
+	const first = {} as AppwireClient;
+	const hook = renderHook(() => useLiveReadiness("hub-1", first, "ready"));
+	// The settle births the pairing; the first same-pairing rerender hands
+	// back the settled callback.
+	act(() => {
+		hook.rerender();
+	});
+	const settled = hook.result.current;
+	expect(hook.result.current()).toBe(true);
+	hook.rerender();
+	expect(hook.result.current).toBe(settled);
+	expect(hook.result.current()).toBe(true);
 });

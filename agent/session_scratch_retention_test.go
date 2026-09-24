@@ -2176,3 +2176,74 @@ func TestResumedRootUnsandboxedContendedSlotKeepsTheBindingRow(t *testing.T) {
 		t.Fatalf("the contended tail left the kind unmarked and the pin displaced the binding row's unsandboxed slot: got %+v, want the retained %q", row.Slots, retainedDir)
 	}
 }
+
+// TestResumedRootContendedTailPinsTheFallbackScratch pins round 59's first
+// Medium: the contended arm marked the kind pending but returned without
+// pinning the fallback the environment already holds — the launcher's mint
+// predates the binding identity's install, so no post-mint pin ever covered
+// it, and a crash or an idle teardown before the next command left it
+// unpinned, unreferenced, and sweeper-collectible, taking the one-cycle
+// fallback the pending marker exists to protect with it.
+func TestResumedRootContendedTailPinsTheFallbackScratch(t *testing.T) {
+	root := t.TempDir()
+	const sessionID = "01RESUMEROOTCONTENDEDPIN"
+	const bindingID = "b-resume-contended-pin"
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, sessionID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: {SessionID: sessionID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+	if _, err := env.ExecCommand(context.Background(), "true", 5000, root, nil); err != nil {
+		t.Fatalf("mint launcher scratch: %v", err)
+	}
+	launchMint := envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)
+	if launchMint == "" || filepath.Clean(launchMint) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture launcher scratch %q must exist apart from the retained %q", launchMint, retainedDir)
+	}
+
+	s.cfg.testOnly.scratchBeforeUnsandboxedTail = func() {
+		pool := s.retainedScratch.Load()
+		pool.mu.Lock()
+		pool.contended[canonicalScratchDir(retainedDir)] = struct{}{}
+		pool.mu.Unlock()
+	}
+	if err := s.adoptResumedRootScratch(env, sessionID); err != nil {
+		t.Fatalf("resumed-root adoption over the contended slot: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindUnsandboxed]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the contended tail displaced the binding row's unsandboxed slot: got %+v, want the retained %q", row.Slots, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(launchMint) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the contended tail left the fallback unpinned: a crash or idle teardown before the next command lets the sweep collect %q", launchMint)
+	}
+}

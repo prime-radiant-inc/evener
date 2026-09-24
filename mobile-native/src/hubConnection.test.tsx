@@ -9,6 +9,7 @@ import { act } from "react-test-renderer";
 import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
+import { clientServesHub } from "./connectionIdentity";
 import { type HubConnection, type HubTokenSource, useHubConnection } from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
@@ -230,4 +231,20 @@ it("releases the client's listener on unmount", async () => {
 	expect(fake.listenerCount).toBeGreaterThan(0);
 	hook.unmount();
 	expect(fake.listenerCount).toBe(0);
+});
+
+// Round 59's Medium: the record of which hub a client proved ready under
+// belongs to the connection layer — written at dial success, for the hub the
+// client was dialed for — so a connecting mount under any route can never
+// attribute a client to a hub it does not serve (connectionIdentity).
+it("records the hub a client was dialed for, at dial success", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook } = mount();
+	await act(async () => {});
+	act(() => fake.succeed());
+	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
+	// The dialed hub holds; every other hub is refused until a re-dial.
+	expect(clientServesHub(fake, "hub-a")).toBe(true);
+	expect(clientServesHub(fake, "hub-b")).toBe(false);
 });

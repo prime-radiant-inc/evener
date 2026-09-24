@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
-import { clientServesHub, recordClientReadyHub } from "./connectionIdentity";
+import { clientServesHub } from "./connectionIdentity";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
  * full-screen replacement ("wall" - there is nothing to show yet, or a
@@ -71,32 +71,42 @@ export function useLiveReadiness(
 	// so the settling effect records the first birth, and the render before
 	// it refuses the pairing the mount arrived with (round 32).
 	const bornScope = useRef<{ client: object | null; scope: string }>({ client: null, scope });
-	const lastObserved = useRef({ scope, client, state });
+	const lastBumped = useRef({ scope, client, state });
 	const generation = useRef(0);
 	// Synchronous on the observed pairing move, before any effect runs: this
 	// is what closes the commit-to-effect window. The state is part of the
 	// observed pairing for the same reason: a connection drop must refuse a
 	// ready-captured callback the moment the dropped render commits, and the
 	// settled snapshot keeps reporting the previous state through the window
-	// (round 30).
+	// (round 30). The comparison reads the last pairing THIS RENDER PHASE
+	// bumped for, not the effect-settled snapshot: a second render with the
+	// same pairing before the settle would otherwise bump again and
+	// invalidate the first committed render's callback for no observed move
+	// (round 59). The render-phase write persists across abandoned renders
+	// too, so the next committed render of a different pairing still bumps —
+	// the fail-closed round-27 property.
 	if (
-		lastObserved.current.scope !== scope ||
-		lastObserved.current.client !== client ||
-		lastObserved.current.state !== state
+		lastBumped.current.scope !== scope ||
+		lastBumped.current.client !== client ||
+		lastBumped.current.state !== state
 	) {
+		lastBumped.current = { scope, client, state };
 		generation.current += 1;
 	}
 	const myGeneration = generation.current;
 	useEffect(() => {
-		lastObserved.current = { scope, client, state };
 		if (client !== null && bornScope.current.client !== client) {
 			// The persistent record refuses the re-birth of a client that
 			// proved ready under another hub — the remount residual round 56
-			// closes; unknown and native clients birth exactly as before,
-			// and the settle bookkeeping below still runs for every client.
+			// closes; unknown and native clients birth exactly as before, and
+			// the settle bookkeeping below still runs for every client. The
+			// record's writer is the connection layer, which alone knows
+			// which hub a client was dialed for; this hook only consults it
+			// (round 59) — writing here would attribute the client to whatever
+			// route this mount happens to render under, before readiness and
+			// across the re-key window.
 			if (clientServesHub(client, scope)) {
 				bornScope.current = { client, scope };
-				recordClientReadyHub(client, scope);
 			}
 		}
 		current.current = { scope, client, state };
@@ -334,10 +344,11 @@ export function useRenderClient(
 			// The same persistent record as the birth: a client that proved
 			// ready under another hub is refused here too, so a remount that
 			// lands on the previous hub's still-ready pairing cannot
-			// re-authorize it under the new hub (round 56).
+			// re-authorize it under the new hub (round 56). The record is
+			// written where the pairing is real — dial success in the
+			// connection layer — and this hook only consults it (round 59).
 			if (clientServesHub(client, hubId)) {
 				setAdoption({ client, scope: hubId });
-				recordClientReadyHub(client, hubId);
 			}
 		}
 	}, [state, hubId, client, adoption.client]);

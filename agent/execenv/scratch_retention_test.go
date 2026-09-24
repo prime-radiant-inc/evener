@@ -380,6 +380,73 @@ func TestPinOwnedScratchRecoversFromExhaustedLockContention(t *testing.T) {
 	}
 }
 
+// TestPinOwnedScratchNoHandlesClearsARecoverableSticky pins round 59's second
+// Medium: the no-owned-handle no-op returned before the recovery clear, so a
+// prior lock-held or released-manifest error stayed sticky on an environment
+// whose ownership has since moved on — every later pin no-ops, nothing can
+// ever clear the record, and preparation is blocked forever over state that
+// no longer holds.
+func TestPinOwnedScratchNoHandlesClearsARecoverableSticky(t *testing.T) {
+	base, workspace := t.TempDir(), t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-sticky-nohandles"}
+	e := NewLocalExecutionEnvironment(workspace)
+	scratch, err := sandbox.NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Retain() })
+	if err := e.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{
+		BindingID:      "b-sticky-nohandles",
+		OwnerSessionID: owner.RootSessionID,
+		WorkingDir:     workspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.ownedSessionTmp = scratch
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	started := false
+	e.scratchPinProbe = func(attempt int) {
+		if !started {
+			started = true
+			close(takeLock)
+		}
+		<-lockTaken
+	}
+	err = e.PinOwnedScratch()
+	if err == nil || !errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+		t.Fatalf("the pin under a held lock must report lock contention, got %v", err)
+	}
+	if sticky := e.ScratchRetentionError(); sticky == nil {
+		t.Fatal("the exhausted contention was not recorded")
+	}
+	// Ownership moves on: the handle is handed off, so the environment owns
+	// nothing live and every later pin takes the no-op path.
+	close(releaseLock)
+	<-lockReleased
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PinOwnedScratch(); err != nil {
+		t.Fatalf("the pin with no owned handles: %v", err)
+	}
+	if sticky := e.ScratchRetentionError(); sticky != nil {
+		t.Fatalf("transferred ownership left the recoverable race sticky with nothing left to clear it: %v", sticky)
+	}
+}
+
 func manifestBinding(t *testing.T, owner sandbox.ScratchOwner, bindingID string) sandbox.ScratchBinding {
 	t.Helper()
 	manifest, err := sandbox.LoadScratchRetention(owner)

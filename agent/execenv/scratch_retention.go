@@ -124,7 +124,13 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 	// took away — must not be submitted: their validation failure would
 	// reject the slotless republish the reinstall performs next. The
 	// inherited-identity case was always meant to no-op here (round 18).
+	// Ownership has moved on, so a prior recoverable race — a lock holder that
+	// has since let go, a released manifest a reset went on to repair — must
+	// not keep failing preparation either: every later pin no-ops, so nothing
+	// else could ever clear the record. The recovery clear preserves genuine
+	// durability verdicts (round 59).
 	if len(owned) == 0 {
+		e.clearRecoverableRetentionPinError()
 		return nil
 	}
 	// Pinning one handle at a time and publishing the binding afterwards left the

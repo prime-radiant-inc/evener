@@ -2072,8 +2072,15 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		// unsandboxed flavor of the continuity loss the pending machinery
 		// exists to prevent. The mark makes the publication pin the
 		// launcher's scratch as a bare protected reference instead, and the
-		// next restore re-probes the original.
+		// next restore re-probes the original. The pin must happen here: the
+		// launcher's mint predates the binding identity's install, so no
+		// post-mint pin ever covered it, and leaving it unpinned lets a
+		// crash or an idle teardown take the one-cycle fallback the marker
+		// exists to protect (round 59).
 		env.MarkRetainedSlotPending(sandbox.ScratchKindUnsandboxed)
+		if err := env.PinOwnedScratch(); err != nil {
+			return err
+		}
 		return nil
 	}
 	if !ok || canonicalScratchDir(unsandboxed) == canonicalScratchDir(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
