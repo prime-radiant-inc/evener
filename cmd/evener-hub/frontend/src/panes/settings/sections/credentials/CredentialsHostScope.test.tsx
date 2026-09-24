@@ -1077,3 +1077,79 @@ test("'Sign in on host' follows the instance's auth scheme, not its provider id"
   expect(within(refusedRow as HTMLElement).queryByRole("button", { name: "Sign in on host" })).toBeNull();
   expect(within(remoteSection).getAllByRole("button", { name: "Sign in on host" })).toHaveLength(1);
 });
+
+// L1, the fallback half of the same clause: a restart the host answers with
+// `fallback` cannot open a browser on that host either, so it is the same failure
+// - and it must clear the expired editor it replaced just the same.
+test("a restart the host answers with fallback clears the expired dialog", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  let restarted = false;
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return restarted ? REMOTE_DEVICE_FALLBACK : REMOTE_DEVICE_START;
+    if (params.method === "evener/auth/device/poll") return { state: "expired" };
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  await screen.findByText("REMOTE-CODE");
+  const startAgain = await screen.findByRole("button", { name: "Start again" }, { timeout: 3000 });
+
+  restarted = true;
+  await user.click(startAgain);
+
+  expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByText("REMOTE-CODE")).toBeNull();
+});
+
+// The M fix's other half: the key is the REGISTRATION identity, which deliberately
+// excludes the live session state the hub reports on the same row
+// (stores/hosts.ts's sameHostRegistration). A host coming back online is live
+// state - it advances the registry revision and re-reads this host's listing - and
+// it must not unmount an editor that is mid-flow: the unmount would cancel the
+// poll with it, and the sign-in the user is completing would vanish from the pane.
+test("a host coming back online does not restart the sign-in it is not part of", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
+  fake.on(
+    "evener/host/request",
+    codexHostRequest(() => REMOTE_POLL_PENDING),
+  );
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta (offline)" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await screen.findByText("REMOTE-CODE");
+  await vi.waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(0), {
+    timeout: 3000,
+  });
+  const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
+
+  // The host comes back: attachment is live session state on the same
+  // registration, so the registry's next answer advances and beta's listing is
+  // re-read - and the sign-in the user is completing is not part of that.
+  act(() => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
+  });
+
+  // The same editor, still showing this flow's code, and still polling the host
+  // it was started on.
+  expect(screen.getByText("REMOTE-CODE")).toBeTruthy();
+  await vi.waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(polls), {
+    timeout: 3000,
+  });
+  expect(forwardedMethodCalls(fake, "evener/auth/device/poll").every((call) => call.host === "beta")).toBe(true);
+});
