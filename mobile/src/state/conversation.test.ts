@@ -458,20 +458,26 @@ class FakeConversationService implements LiveConversationService {
   ref: string | null = null;
   openConv: MobileConversation = makeConversation();
   olderCursor: string | null = null;
-  olderItems: {
-    // D23d: the page the service hands the store is its wire turns alone.
-    // Tests that still script row fixtures (the pre-D23d seam) may assign
-    // the legacy shape instead — the fake synthesizes one wire page from
-    // the rows below, so those scenarios still run the real merge and
-    // projection. Tests of the paging seams themselves script wire pages
-    // directly.
-    turnsPage?: ThreadTurnsListResponse;
-    nextCursor?: string;
-    hasEarlierItems?: boolean;
-    hasLaterItems?: boolean;
-  } & {
-    items?: MobileConversation["items"];
-  } = {
+  // RoboRev round 4 (panel M3): the two scripting seams are MUTUALLY
+  // EXCLUSIVE — the wire page the store's paging seams read, or the legacy
+  // row fixture the fake converts into one. A script that set both used to
+  // discard the rows silently, so the type keeps the pair disjoint and
+  // loadOlder throws on the dynamically-built scripts the type cannot see.
+  olderItems:
+    | {
+        turnsPage: ThreadTurnsListResponse;
+        items?: undefined;
+        nextCursor?: string;
+        hasEarlierItems?: boolean;
+        hasLaterItems?: boolean;
+      }
+    | {
+        turnsPage?: undefined;
+        items: MobileConversation["items"];
+        nextCursor?: string;
+        hasEarlierItems?: boolean;
+        hasLaterItems?: boolean;
+      } = {
     turnsPage: { data: [], nextCursor: undefined },
   };
   receipt: MutationReceipt = makeReceipt();
@@ -543,11 +549,17 @@ class FakeConversationService implements LiveConversationService {
       return this.olderItems;
     }
     const { items, turnsPage, ...rest } = this.olderItems;
-    if (turnsPage !== undefined || items === undefined) {
-      if (turnsPage === undefined) {
-        throw new Error("FakeConversationService: no page scripted");
-      }
-      return { ...rest, turnsPage };
+    if (items !== undefined && turnsPage !== undefined) {
+      // RoboRev round 4 (panel M3): the seams are mutually exclusive —
+      // silently discarding one of them is the same green-by-degradation
+      // class the fixture conversion stopped swallowing.
+      throw new Error(
+        "FakeConversationService.loadOlder: script either items or turnsPage, not both",
+      );
+    }
+    if (turnsPage !== undefined) return { ...rest, turnsPage };
+    if (items === undefined) {
+      throw new Error("FakeConversationService: no page scripted");
     }
     // The legacy row-fixture seam: one wire page synthesized from the
     // scripted rows, each row an item of its own turn (a failure row names
@@ -648,6 +660,29 @@ describe("makeConversation's row-fixture conversion", () => {
     });
     expect(conv.turns).toEqual([]);
     expect(conv.items.map((row) => row.id)).toEqual(["notice-1"]);
+  });
+});
+
+// RoboRev round 4 (panel M3): the fake's two loadOlder scripting seams are
+// mutually exclusive — a script that set BOTH the legacy row fixture and a
+// wire turns page used to discard the rows silently, the same silent
+// fixture degradation class the conversion seam's UnsupportedRowShapeError
+// fixed. The seam must throw, so a fixture that scripts both fails its test
+// at setup instead of running against a page it did not describe.
+describe("FakeConversationService.loadOlder's scripted page seams", () => {
+  it("refuses a script that sets both items and turnsPage", async () => {
+    const service = new FakeConversationService();
+    // The union type keeps the seams disjoint for every static script;
+    // the runtime throw covers the dynamically-built scripts this test
+    // deliberately builds, so the cast scripts what the type forbids.
+    service.olderItems = {
+      turnsPage: turnsPage([], undefined),
+      items: [{ kind: "user", id: "u1", text: "hello" }],
+      nextCursor: undefined,
+    } as unknown as typeof service.olderItems;
+    await expect(service.loadOlder("cursor-1")).rejects.toThrow(
+      /script either items or turnsPage, not both/,
+    );
   });
 });
 
@@ -4406,7 +4441,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -4469,7 +4503,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -6095,11 +6128,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
 
       service.olderItems = {
-        items: Array.from({ length: 8 }, (_, j) => ({
-          kind: "user" as const,
-          id: `w-${j}`,
-          text: `w-${j}`,
-        })),
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -6202,7 +6230,6 @@ describe("ConversationStore", () => {
       // The filler turn fills the window, so the cap evicts the page's own
       // row (the oldest in the merged weave) — the honest bounding path.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -6394,7 +6421,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
 
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -6575,7 +6601,6 @@ describe("ConversationStore", () => {
       // moves to the compact set — the preserve gate that keeps retained
       // turns across the reread reads exactly those sets.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -7992,7 +8017,6 @@ describe("ConversationStore", () => {
       // remembered id-only skeleton must not be injected beside the real
       // item, so nothing erases the retained text and re-adopts the page's.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -9040,7 +9064,6 @@ describe("ConversationStore", () => {
       // ta's content — its memory survived the alias fold — instead of
       // surviving beside it and double-counting usage.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -9625,7 +9648,6 @@ describe("ConversationStore", () => {
       // leaves the turn backed by the fa row through the recorded
       // ancestry — the item's own identity names no row.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -10584,15 +10606,6 @@ describe("ConversationStore", () => {
       // arrives keyless — the exact pair itemIdentityMatches still matches
       // by bare id.
       service.olderItems = {
-        items: [
-          {
-            kind: "assistant" as const,
-            id: "ra",
-            markdown: "row",
-            streaming: false,
-            transcriptKey: "rk",
-          },
-        ],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -10820,7 +10833,6 @@ describe("ConversationStore", () => {
       // A retained turn holds the item's fresh payload under
       // {id pa, transcriptKey pk}, in window.
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "pk", text: "pk row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -10854,7 +10866,6 @@ describe("ConversationStore", () => {
       // alias — the first identity match — and the untouched stale sibling
       // must not then fold over the fresh result.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11083,7 +11094,6 @@ describe("ConversationStore", () => {
       // A retained tool item whose wire omitted the text field — hydrated
       // with the omitted-text marker — carrying its CURRENT output.
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11119,7 +11129,6 @@ describe("ConversationStore", () => {
       // (the first identity match) — and its fields, not the stale
       // sibling's, must come out of the reconciliation.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11197,7 +11206,6 @@ describe("ConversationStore", () => {
       // identity and ordering fields only — no text, no arguments, no
       // output, no status. The projector rows it under its transcript key.
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11230,7 +11238,6 @@ describe("ConversationStore", () => {
       // merged item must not claim freshness, and the reconciliation must
       // let the later keyed sibling's restored fields stand.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11306,7 +11313,6 @@ describe("ConversationStore", () => {
       // no output. The status is real payload, so the fragment is not
       // identity-only; the projector rows it under its transcript key.
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11340,7 +11346,6 @@ describe("ConversationStore", () => {
       // came from the older alias, so the restored sibling's output must
       // still win the reconciliation.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11415,7 +11420,6 @@ describe("ConversationStore", () => {
       // identity and ordering fields plus a completed status — no text of
       // its own. The projector rows it under its transcript key.
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11448,7 +11452,6 @@ describe("ConversationStore", () => {
       // came from the older alias, so the restored sibling's text must
       // still win the reconciliation.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11540,7 +11543,6 @@ describe("ConversationStore", () => {
       // folds land, leaving two duplicates of the kk identity, the
       // fresh-text one ordered first.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11628,7 +11630,6 @@ describe("ConversationStore", () => {
       // inherits the stale raw; the reconciliation must let the later
       // sibling's own raw stand.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11713,7 +11714,6 @@ describe("ConversationStore", () => {
       // the bare alias (the first id match) and the fold GAINS the key —
       // which the keyed item ahead of it also carries.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11811,7 +11811,6 @@ describe("ConversationStore", () => {
       // output. The reconciliation keeps the corrected output; the
       // result fold must not read the stale alias first and restore it.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -11911,7 +11910,6 @@ describe("ConversationStore", () => {
       // alias fold keeps the clear; the reconciliation must keep it too,
       // not let the sibling's index back in.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -12002,7 +12000,6 @@ describe("ConversationStore", () => {
       // text and ANOTHER index. The alias fold keeps the clear; the
       // reconciliation must keep it too.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -12095,7 +12092,6 @@ describe("ConversationStore", () => {
       // leaves the turn backed by the fa row through the recorded
       // ancestry — the item's own identity names no row.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -12185,7 +12181,6 @@ describe("ConversationStore", () => {
       // COMPLETED status. The alias fold keeps the failure; the
       // reconciliation must let the sibling's completed status stand.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -12290,7 +12285,6 @@ describe("ConversationStore", () => {
       // An unrelated page load bounds the turns: no row backs rt's item,
       // so rt compacts to identity + usage.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -12720,7 +12714,6 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-1" });
 
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t1", 500, 20)]),
         nextCursor: undefined,
       };
@@ -12759,7 +12752,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
 
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
         nextCursor: "cursor-2",
       };
@@ -12812,7 +12804,6 @@ describe("ConversationStore", () => {
       // The page reaches the beginning of the old window. Its undefined
       // cursor must not replace a fresh cursor if the next reread is disjoint.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("turn-older", 500, 20)]),
         nextCursor: undefined,
       };
@@ -12856,7 +12847,6 @@ describe("ConversationStore", () => {
       };
       await store.getState().openProjected(service, sink, "ref-1");
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("turn-page-a", 500, 20)], "cursor-page-a"),
         nextCursor: "cursor-page-a",
       };
@@ -12920,10 +12910,6 @@ describe("ConversationStore", () => {
     // out-of-window under the retained-turn bound and moved to the
     // counterpart test below.)
     service.olderItems = {
-      items: [
-        { kind: "assistant", id: "old-only", markdown: "older-only item", streaming: false, transcriptKey: "old-only" },
-        { kind: "assistant", id: "old-shared", markdown: "older text", streaming: false, transcriptKey: "shared-item" },
-      ],
       turnsPage: turnsPage([
         wireTurnFragment(
           "t-fragment-old",
@@ -13199,7 +13185,6 @@ describe("ConversationStore", () => {
       // them all, so pageOwnedIds stays empty — but its nextCursor still
       // advances the store's own paging cursor.
       service.olderItems = {
-        items: [{ kind: "user", id: "existing", text: "existing" }],
         turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
         nextCursor: "cursor-2",
       };
@@ -13263,7 +13248,6 @@ describe("ConversationStore", () => {
       // empty) and the wire offers no next cursor, so the store's own
       // paging cursor honestly stops at null.
       service.olderItems = {
-        items: [{ kind: "user", id: "existing", text: "existing" }],
         turnsPage: turnsPage([wireTurn("t1", 500, 20)]),
         nextCursor: undefined,
       };
@@ -13488,7 +13472,6 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-1" });
 
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
         nextCursor: "cursor-2",
       };
@@ -13519,7 +13502,6 @@ describe("ConversationStore", () => {
       // dedupe concern F10 already covers for items) alongside a genuinely
       // new older turn on the same page.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t1", 500, 20), wireTurn("t2", 999, 999)]),
         nextCursor: undefined,
       };
@@ -16993,9 +16975,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "X", markdown: "page answer", streaming: false },
-        ],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -17448,17 +17427,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          {
-            kind: "activity",
-            id: "P",
-            transcriptKey: "kp",
-            family: "tool",
-            label: "shell",
-            state: "completed",
-            detail: { description: "page tool" },
-          },
-        ],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -17548,7 +17516,6 @@ describe("ConversationStore", () => {
       // An older page loads: turn history is preserved across rereads from
       // here on.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -17654,7 +17621,6 @@ describe("ConversationStore", () => {
       // An older page loads: the rehydrate merge is active from here on.
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -17742,7 +17708,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -17825,7 +17790,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -17914,7 +17878,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -17989,7 +17952,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18068,7 +18030,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18167,7 +18128,6 @@ describe("ConversationStore", () => {
       // id becomes page-owned while the turn stays live (RoboRev round 8).
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t1", 400, 10)], undefined),
         nextCursor: undefined,
       };
@@ -18269,7 +18229,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18309,7 +18268,6 @@ describe("ConversationStore", () => {
       // settle must stay adoptable, not read as authoritative.
       store.setState({ olderCursor: "cursor-2" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment("t1", [
@@ -18368,7 +18326,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18451,7 +18408,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18530,7 +18486,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18608,7 +18563,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18689,7 +18643,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18789,7 +18742,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18878,14 +18830,6 @@ describe("ConversationStore", () => {
       // page-owned history AND the running row.
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          {
-            kind: "assistant",
-            id: "item-a",
-            markdown: "Hello",
-            streaming: true,
-          } as unknown as MobileTimelineItem,
-        ],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -18955,7 +18899,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [{ kind: "user", id: "pagey", text: "paged content" } as MobileTimelineItem],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19021,7 +18964,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [{ kind: "user", id: "pagey", text: "paged content" } as MobileTimelineItem],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19178,7 +19120,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [{ kind: "user", id: "p-1", text: "paged" } as MobileTimelineItem],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19246,7 +19187,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [{ kind: "user", id: "p-1", text: "paged" } as MobileTimelineItem],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19307,7 +19247,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19452,7 +19391,6 @@ describe("ConversationStore", () => {
       // The page owns a bare usage FRAGMENT of the live turn — no failure
       // content among it.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t1", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19541,7 +19479,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19630,7 +19567,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -19819,7 +19755,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -20066,15 +20001,6 @@ describe("ConversationStore", () => {
       // The page carries a turn that FAILED, error and all: its projected
       // failure row is page-owned history.
       service.olderItems = {
-        items: [
-          { kind: "user", id: "m1", text: "page text" } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -20155,15 +20081,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -20264,15 +20181,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -20380,15 +20288,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -20548,15 +20447,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -21414,15 +21304,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -21534,15 +21415,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [
-          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
-          {
-            kind: "failure",
-            id: "failure:t0",
-            title: "page boom",
-            detail: "page boom",
-          } as MobileTimelineItem,
-        ],
         turnsPage: turnsPage(
           [
             {
@@ -21578,7 +21450,6 @@ describe("ConversationStore", () => {
       // carries the failure — the committed row and its page ownership
       // must follow.
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             {
@@ -21647,7 +21518,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -21737,7 +21607,6 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, sink, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
         nextCursor: undefined,
       };
@@ -21776,7 +21645,6 @@ describe("ConversationStore", () => {
       // fold the image back in behind it (RoboRev round 10).
       store.setState({ olderCursor: "cursor-2" });
       service.olderItems = {
-        items: [],
         turnsPage: turnsPage(
           [
             wireTurnFragment("t1", [
