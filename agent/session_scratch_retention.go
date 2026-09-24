@@ -1902,6 +1902,16 @@ func (p *retainedScratchPool) scratchSlotContended(key string) bool {
 	return contended
 }
 
+// scratchSlotClaimedBy reports whether the pool's claim record names adopterID
+// as the consumer that took slot key's lease. finishRetainedScratchSlot keeps
+// the adopted entry after the transfer precisely so a later settle can tell
+// this consumer's committed transfer from an allocation somebody else holds.
+func (p *retainedScratchPool) scratchSlotClaimedBy(key, adopterID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.adopted[key] == adopterID
+}
+
 // claimRetainedScratchSlot resolves one owning slot under the pool lock. A
 // reacquired handle is returned only after the transfer is claimed for
 // adopterID, so no concurrent adopter can take the same lease; already reports
@@ -2282,15 +2292,20 @@ func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir strin
 // references are append-only with no unpin API, so the root's retirement
 // preparation would refuse forever and a cold resume would fail the same way.
 //
-// Every referenced allocation the environment holds is therefore kept. A slot
-// this restore transferred is handed back and requeued in the pool with its
-// claim cleared, so a later adoption reacquires it rather than finding a
+// Every referenced allocation the environment holds is therefore kept on disk.
+// A slot this restore transferred is handed back and requeued in the pool with
+// its claim cleared, so a later adoption reacquires it rather than finding a
 // transfer with no handle behind it; any other referenced allocation is
 // released (its lease given up, its directory kept, as any handoff does). Both
 // handoffs work without a pool — the requeue is skipped and the release stands
 // — so a pool detached between the adoption and this settle still keeps the
-// transferred allocation alive (round 25). adopterID is the consumer the failed
-// adoption ran for. Only what the manifest does not reference — the
+// transferred allocation alive (round 25). A shared environment is not this
+// restore's to strip (round 65): the pool's claim record is the only
+// attribution the settle has, so only a slot the pool recorded this restore
+// claiming is detached and requeued, and every other referenced holding stays
+// attached with its lease for the live parent's close to release. adopterID is
+// the consumer the failed adoption ran for. Only what the manifest does not
+// reference — the
 // environment's own fresh mint — is disposed, and the disposal respects
 // ownership: an environment this restore created dies with the failure, dirs
 // and world-usable temp container both, while a shared one belongs to the live
@@ -2328,7 +2343,10 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 	// environment flavor keeps exactly what the manifest references: a created
 	// environment's transferred allocations survive with their leases released
 	// for a later restore to reacquire, its unreferenced mint dies with the
-	// failure, and a shared parent keeps its world-usable temp container.
+	// failure, and a shared parent keeps its world-usable temp container. The
+	// strip below is where the flavors part ways: only a slot the pool recorded
+	// this restore claiming may leave a shared parent, because the claim record
+	// is the one attribution the settle has (round 65).
 	referenced, ok := s.retainedScratchReferenceDirs()
 	if !ok {
 		local.RetainSessionScratch()
@@ -2338,6 +2356,19 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 	for _, ref := range refs {
 		key := canonicalScratchDir(ref.Dir)
 		if _, retained := referenced[key]; !retained {
+			continue
+		}
+		// A shared parent is not this restore's to strip (round 65). The
+		// pool's claim record is the only attribution the settle has: the
+		// adopted entry survives the transfer as the record of who took the
+		// lease, so a slot the pool recorded this restore claiming — the
+		// committed transfer the failed adoption installed — is this
+		// restore's to detach and requeue. Everything else the environment
+		// holds was there before the restore or minted in the window by a
+		// concurrent actor, as unattributable as the round-51 mint: it stays
+		// attached, lease and all, and the live parent's close releases for
+		// the sweeper.
+		if !createdEnv && (pool == nil || !pool.scratchSlotClaimedBy(key, adopterID)) {
 			continue
 		}
 		handle := local.ReleaseSessionScratch(ref.Kind)
