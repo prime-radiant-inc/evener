@@ -10,9 +10,9 @@
 // the selected host's own refusal, never this hub's.
 import type { ReactNode } from "react";
 import { isLocalHost } from "../../../stores/hostRouting";
-import { useHostsStore } from "../../../stores/hosts";
+import { isConfiguredHost, useHostsStore } from "../../../stores/hosts";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { HostPicker, isConfiguredHost } from "../HostPicker";
+import { HostPicker } from "../HostPicker";
 import { useSettingsHost } from "../settingsHost";
 import styles from "./hostScopedSurface.module.css";
 
