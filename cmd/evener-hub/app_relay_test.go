@@ -129,6 +129,51 @@ func TestHubRelayEndsWithItsServer(t *testing.T) {
 	}
 }
 
+// TestHubRelayInitialSubscribeEndsWithItsServer covers the window before the
+// relay is established: the starting request's cancellation is detached from
+// the relay, so a Shutdown that lands while the first SubscribeThread is still
+// blocked must cancel that subscribe itself, and the relay must end instead of
+// going on to start a supervisor.
+func TestHubRelayInitialSubscribeEndsWithItsServer(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Hour
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	thread := appwire.Thread{ID: "thread", SessionID: "session", Source: "remote", Evener: appwire.EvenerThread{Ref: "remote:thread"}}
+	source := &exactRPCSource{
+		scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread},
+		started:           make(chan struct{}, 1),
+		release:           make(chan struct{}),
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	var relays hubRelayFunctions
+	observeHubRelayFunctions = func(got hubRelayFunctions) { relays = got }
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, sources)
+	observeHubRelayFunctions = nil
+	server.NewConnection("subscriber").Subscribe("remote:thread")
+	started := make(chan error, 1)
+	go func() {
+		started <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, thread)
+	}()
+	<-source.started // the initial subscribe is blocked until release or cancellation
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-started:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRelay after Shutdown = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(source.release)
+		t.Fatal("the relay's initial subscribe outlived its server's Shutdown")
+	}
+}
+
 // TestHubRelayCanonicalEndsWithItsServer is TestHubRelayEndsWithItsServer
 // for a RelaySession source, whose relay is a canonical fan-out rather than a
 // per-key supervisor.

@@ -1588,6 +1588,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			existing := relayedThreads[relayKey]
 			if existing == nil {
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
+				// relayCtx keeps the starting request's values but not its
+				// cancellation, since the relay outlives that request. The
+				// server that serves the relay owns it instead, from the first
+				// subscribe on: its Shutdown ends the relay rather than leaving
+				// it to an idle tick, which never comes while a subscriber stays
+				// registered. The hook is released once the relay itself ends.
+				stopOnServerShutdown := context.AfterFunc(server.Lifetime(), cancelRelay)
+				context.AfterFunc(relayCtx, func() { stopOnServerShutdown() })
 				// Label every attach this relay issues with its own key. A source
 				// that keys its subscriptions by remote thread identity uses it to
 				// tell this relay re-attaching from a second relay that reached the
@@ -1661,6 +1669,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
+			cancelRelay()
 			return err
 		}
 		relayMu.Unlock()
@@ -1745,13 +1754,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			cfg.RelayHooks.BeforeSupervisor(threadID)
 		}
 		go func() {
-			// relayCtx keeps the starting request's values but not its
-			// cancellation, since the relay outlives that request. The server
-			// that serves the relay owns it instead: its Shutdown ends the
-			// relay rather than leaving it to an idle tick, which never comes
-			// while a subscriber stays registered.
-			stopOnServerShutdown := context.AfterFunc(server.Lifetime(), cancelRelay)
-			defer stopOnServerShutdown()
 			ticker := time.NewTicker(relayIdleInterval)
 			cleanupRelay := func() {
 				cancelRelay()
