@@ -1093,6 +1093,24 @@ test("the footer's Open button opens the session's Tasks pane", () => {
   open.mockRestore();
 });
 
+test("the footer's Open button renders even when the output carries no Progress (historical transcripts)", () => {
+  // The daemon now appends a Progress footer to every successful mutation,
+  // but transcripts recorded before that fix - or by older daemons - render
+  // the card from arguments alone. The whole-list affordance must survive
+  // that degradation: the aggregate and meter need the parsed progress, the
+  // Open button does not.
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "done" }] },
+      "Updated 1→done.", // no Progress footer
+    ),
+    "local:s1",
+  );
+  openRow();
+  expect(screen.getByRole("button", { name: "Open task list" })).toBeTruthy();
+  expect(screen.queryByTestId("task-card-progress")).toBeNull();
+});
+
 test("the footer's Open button never closes an already-open pane", () => {
   // The real pane modules register themselves only when the app shell
   // imports them; this suite never does, so the store's openPane needs a

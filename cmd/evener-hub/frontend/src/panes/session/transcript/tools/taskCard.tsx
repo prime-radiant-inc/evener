@@ -129,17 +129,19 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
     const note = lastNotes.get(id);
     // The ID's last note-bearing touch rides the row it annotates
     // whichever update carried it, and the merged row ends at the later of
-    // the two. Notes follow last-wins by batch position, agreeing with
-    // freshNotes' order-independent derivation on the raw path: when the
-    // status word itself carries a note and is the later touch, that note
-    // stays instead of being clobbered by an earlier touch's note.
+    // the two. Notes are simply that touch's note, last-wins by batch
+    // position - when the status word itself carries a note, lastNotes
+    // already holds it at the entry's own index, so the lookup can never
+    // return an earlier touch here. The value agrees with freshNotes'
+    // order-independent derivation on the raw path.
     if (!note) {
       marked.push(entry);
       continue;
     }
-    const ownNote = str(entry.update, "notes");
-    const notes = ownNote && note.index < entry.index ? ownNote : str(note.update, "notes");
-    marked.push({ index: Math.max(entry.index, note.index), update: { ...entry.update, notes } });
+    marked.push({
+      index: Math.max(entry.index, note.index),
+      update: { ...entry.update, notes: str(note.update, "notes") },
+    });
   }
   return [...marked, ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
 }
@@ -520,23 +522,31 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
           </div>
         )
       )}
-      {progress && (
+      {(progress || sessionRef !== undefined) && (
         <div className={CLASS.head}>
-          <span className={CLASS.progress} data-testid="task-card-progress">
-            {progressLabel}
-          </span>
-          <Meter
-            label={`Task progress: ${progressLabel}`}
-            value={progress.done + (progress.cancelled ?? 0)}
-            max={progress.total}
-            tone="neutral"
-          />
+          {progress && (
+            <>
+              <span className={CLASS.progress} data-testid="task-card-progress">
+                {progressLabel}
+              </span>
+              <Meter
+                label={`Task progress: ${progressLabel}`}
+                value={progress.done + (progress.cancelled ?? 0)}
+                max={progress.total}
+                tone="neutral"
+              />
+            </>
+          )}
           {/* The whole-list affordance: the card hands off to the pane that
               owns the full plan. An OPEN, not the /tasks palette's toggle -
               the label promises opening, so the click focuses the pane when
-              the reader already has it rather than closing it. Hidden on
-              surfaces with no owning session (a read-only transcript pane) -
-              a control that cannot open anything must not render. */}
+              the reader already has it rather than closing it. The daemon
+              appends a Progress footer to every successful mutation, so the
+              aggregate and meter normally render beside it; a historical
+              transcript without one still gets the button - the affordance
+              needs no parsed progress. Hidden on surfaces with no owning
+              session (a read-only transcript pane) - a control that cannot
+              open anything must not render. */}
           {sessionRef !== undefined && (
             <OpenButton
               label="Open task list"
