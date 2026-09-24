@@ -1,13 +1,15 @@
 diff --git a/llm/providers/anthropic/request.go b/llm/providers/anthropic/request.go
-index 3a6728ee..73111821 100644
+index bc8979ea90..f2b08d1ac9 100644
 --- a/llm/providers/anthropic/request.go
 +++ b/llm/providers/anthropic/request.go
-@@ -177,7 +177,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
- 	// the budget is added on top of it.
+@@ -109,9 +109,7 @@ func reconcileThinkingContract(body map[string]any, req llm.Request, res registr
+ 	requestutil.ReconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
  	if thinkingBudget > 0 {
- 		out, ok := body["max_tokens"].(int)
--		if !ok || out < 1 {
-+		if !ok {
- 			// No usable output budget (unset, non-int, or a provider option set it
- 			// to <= 0). Fall back to the default so the sum strictly exceeds the
- 			// thinking budget — budget + 0 == budget would itself 400.
+ 		mt := intFromAny(body["max_tokens"])
+-		if mt <= thinkingBudget {
+-			return anthropicThinkingBudgetError(req, res, thinkingBudget+1, mt)
+-		}
++		_ = mt
+ 	}
+ 	if invariant.Enabled {
+ 		// When the final body carries a positive thinking budget, Anthropic rejects

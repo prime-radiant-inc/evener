@@ -38,6 +38,7 @@ func FuzzAnthropicProtocolBuildBody(f *testing.F) {
 	f.Add("claude-opus-4-6", "", "", []byte(`{}`), []byte(`{"oneOf":[{"type":"string"}]}`), byte(3), byte(255))
 	f.Add("model[1m]", "sys", "u", []byte(`not json`), []byte(`null`), byte(11), byte(2))
 	f.Add("", "s", "u", []byte(``), []byte(`{"anyOf":[1,2]}`), byte(20), byte(64))
+	f.Add("claude-test", "sys", "u", []byte(`{}`), []byte(`{}`), byte(35), byte(1))
 
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel, capSel byte) {
 		req := buildFuzzRequest(model, system, user, toolArgs, toolParams, sel)
@@ -80,6 +81,17 @@ func FuzzAnthropicProtocolBuildBody(f *testing.F) {
 				mt, _ := body["max_tokens"].(int)
 				if mt <= budget {
 					t.Fatalf("max_tokens %d does not exceed thinking budget %d: body=%#v", mt, budget, body)
+				}
+			}
+			// Thinking must not coexist with a forced tool_choice ("any"/"tool"),
+			// which Anthropic rejects. normalizeThinkingToolChoice downgrades
+			// forcing to "auto"; a mutation that removes it is caught here.
+			typ, _ := thinking["type"].(string)
+			if typ != "" && typ != "disabled" {
+				if tc, ok := body["tool_choice"].(map[string]any); ok {
+					if tcType, _ := tc["type"].(string); tcType == "any" || tcType == "tool" {
+						t.Fatalf("forced tool_choice %q with thinking enabled: body=%#v", tcType, body)
+					}
 				}
 			}
 		}
