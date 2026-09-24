@@ -122,8 +122,11 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	// The scheme the listing derives the instance with — the same
 	// listingTransport computeInstances reads — decides the verdict, so a
 	// default row or glob that overrides the head's auth scheme moves the
-	// rename verdict with the instance the listing shows.
-	switch r.listingTransport(rec).Auth {
+	// rename verdict with the instance the listing shows. The header-key
+	// check below resolves it once here, with the switch, rather than
+	// re-deriving the default row and globs.
+	transport := r.listingTransport(rec)
+	switch transport.Auth {
 	case AuthNone, AuthOptionalBearer:
 		return true
 	case AuthOAuthOpenAICodex:
@@ -140,7 +143,7 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	// not fall through to the api_key_env candidates below. A present
 	// expression whose variables are unset means the row resolves nothing at
 	// all, which is also false.
-	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders, authHeaderName(r.listingTransport(rec))) != "" {
+	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders, authHeaderName(transport)) != "" {
 		return false
 	}
 	for _, name := range r.effectiveAPIKeyEnv(rec) {
