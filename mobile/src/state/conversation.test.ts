@@ -5169,6 +5169,83 @@ describe("ConversationStore", () => {
       ]);
     });
 
+    // RoboRev review round 1: the anchor a notice records when it arrives
+    // over an ALREADY-CLUSTERED row. The cluster's top-level identity
+    // belongs to its FIRST member, so a notice that arrived after the
+    // whole displayed run anchored there — and the R38 split then lifted
+    // it above the run's later members, the same reorder the split exists
+    // to prevent, one arrival earlier. The anchor is the cluster's LAST
+    // member: every member was on screen when the notice landed, so the
+    // whole run stays above it and only members that join LATER split
+    // below it.
+    it("seats a warning after the whole cluster that was displayed when it arrived", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                commandExecItem("a-tool", "shell", "completed"),
+                commandExecItem("b-tool", "shell", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const opened = rows(store);
+      expect(
+        opened[0]?.kind === "activity"
+          ? opened[0].members?.map((member) => member.id)
+          : undefined,
+      ).toEqual(["a-tool", "b-tool"]);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+      ]);
+      // A third same-family activity arrives AFTER the notice: the run
+      // grows past the members that were displayed at arrival.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: commandExecItem("c-tool", "shell", "completed"),
+        },
+      } as AnyNotification);
+      const after = rows(store);
+      expect(after.map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+        ["activity", "c-tool"],
+      ]);
+      expect(
+        after[0]?.kind === "activity"
+          ? after[0].members?.map((member) => member.id)
+          : undefined,
+      ).toEqual(["a-tool", "b-tool"]);
+    });
+
     // RoboRev panel round 2: an attachment row's own identity is GENERATED
     // from its source's wire id (`<id>:attachments`), so a notice that
     // arrives after one anchors to that generated id. The hub can reissue

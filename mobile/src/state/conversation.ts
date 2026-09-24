@@ -615,13 +615,30 @@ export function createConversationStore() {
   // seats the notice after the attachments that follow it (never between
   // the pair — see capAndTruncate), so the notice keeps the position it
   // arrived at, after the attachments row that was the nearest row then.
+  // RoboRev review round 1: a notice arriving over a CLUSTER anchors to
+  // the LAST member's identity, never the row's own top-level one — the
+  // top-level identity belongs to the FIRST member, and the R38 split
+  // resolves it there, lifting the notice above the run's later members
+  // the very moment it arrives. Every member of the displayed run was on
+  // screen when the notice landed, so the whole run stays above it; only
+  // members that join the run LATER split below it.
+  function arrivalAnchorIdentity(item: MobileTimelineItem): string {
+    const source = attachmentSourceIdentity(item);
+    if (source !== null) return source;
+    if (item.kind === "activity" && item.members) {
+      const last = item.members[item.members.length - 1];
+      if (last !== undefined) return activityIdentity(last);
+    }
+    return timelineIdentity(item);
+  }
+
   function arrivalAnchor(
     items: MobileTimelineItem[],
     noticeIdentities: ReadonlySet<string>,
   ): string | null {
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const item = items[index];
-      const identity = attachmentSourceIdentity(item) ?? timelineIdentity(item);
+      const identity = arrivalAnchorIdentity(item);
       if (!noticeIdentities.has(identity)) return identity;
     }
     return null;
