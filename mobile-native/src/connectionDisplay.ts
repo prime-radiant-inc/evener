@@ -41,6 +41,17 @@ export type LiveReadiness = () => boolean;
  * stale one (round 29). The r21 ban on settling the STATE snapshot during
  * render is untouched — a generation bump carries no authorization data at
  * all. */
+/** The hub each client object last proved ready under, kept above the keyed
+ * remount boundary that resets every hook instance's own state. A remount can
+ * land on the previous hub's still-ready client — the store's selection
+ * moves before the connection re-points — and a mount cannot tell from its
+ * props whether the pairing it lands on is coherent; this record is the
+ * memory that can. A client the record knows proved ready under another hub
+ * is refused until the connection re-points; a client the record has never
+ * seen adopts normally, because the genuinely new client the connection
+ * built for the new hub arrives exactly as unknown (round 56). */
+const clientReadyHub = new WeakMap<object, string | undefined>();
+
 /** Keeps a deferred request tied to the render that opened it: the current
  * state must still be ready for the same hub and client before it may run —
  * and in the re-key window, where the hub has moved while the connection
@@ -82,7 +93,14 @@ export function useLiveReadiness(
 	useEffect(() => {
 		lastObserved.current = { scope, client, state };
 		if (client !== null && bornScope.current.client !== client) {
-			bornScope.current = { client, scope };
+			// The persistent record refuses the re-birth of a client that
+			// proved ready under another hub — the remount residual round 56
+			// closes; unknown and native clients birth exactly as before,
+			// and the settle bookkeeping below still runs for every client.
+			if (!clientReadyHub.has(client) || clientReadyHub.get(client) === scope) {
+				bornScope.current = { client, scope };
+				clientReadyHub.set(client, scope);
+			}
 		}
 		current.current = { scope, client, state };
 	}, [scope, client, state]);
@@ -295,7 +313,11 @@ export function whenReady<A extends unknown[]>(
  * the first adoption exactly like every later one, and the empty scope seed
  * is what withholds the mount's first render; a ready render beyond it still
  * serves the live client prop, so a replacement that arrives ready is never
- * delayed a render behind the stores keyed on it (round 32).
+ * delayed a render behind the stores keyed on it (round 32). The adoption is
+ * refused for a client the persistent record knows proved ready under
+ * ANOTHER hub — the remount residual round 56 closes; a client no mount
+ * ever adopted still adopts, because the genuinely new client arrives
+ * exactly as unknown (round 56).
  *
  * The adoption is state, not a ref, because it gates what the ready renders
  * hand out: a connection can deliver a new hub's client and its readiness in
@@ -312,7 +334,14 @@ export function useRenderClient(
 	}));
 	useEffect(() => {
 		if (state === "ready" && client !== null && client !== adoption.client) {
-			setAdoption({ client, scope: hubId });
+			// The same persistent record as the birth: a client that proved
+			// ready under another hub is refused here too, so a remount that
+			// lands on the previous hub's still-ready pairing cannot
+			// re-authorize it under the new hub (round 56).
+			if (!clientReadyHub.has(client) || clientReadyHub.get(client) === hubId) {
+				setAdoption({ client, scope: hubId });
+				clientReadyHub.set(client, hubId);
+			}
 		}
 	}, [state, hubId, client, adoption.client]);
 	if (state === "ready") {

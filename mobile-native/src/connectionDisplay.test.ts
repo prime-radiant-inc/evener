@@ -509,13 +509,65 @@ it("a re-keyed remount refuses the previous hub's pairing on the render it lands
 	expect(landingClient).toBeNull();
 	expect(windowVerdict).toBe(false);
 
-	// After the settle the pairing is adopted — the bounded residual these
-	// hooks cannot close on their own: none of them can see which hub the
-	// connection's client actually belongs to, so the connection layer's
-	// re-point is what retires a stale pairing the mount landed on.
+	// After the settle the pairing is adopted — the residual the hooks cannot
+	// close on their own for a client NO mount ever adopted: none of them can
+	// see which hub a never-adopted client belongs to, so the connection
+	// layer's re-point is what retires it. A client some mount DID adopt is
+	// refused by the persistent record (round 56, the tests below).
 	expect(landedDisplay).toBe("none");
 	expect(landedClient).toBe(first);
 	expect(deferred()).toBe(true);
+});
+
+// Round 56's High: the hooks' own state seeds empty at a keyed remount, so
+// the settle adopted whatever ready pairing the remount landed on — the
+// previous hub's still-ready client when the store's re-key outran the
+// connection's re-point. The adoption record now persists above the remount
+// boundary: a client that proved ready under another hub is refused until
+// the connection re-points, while a client the record has never seen
+// adopts normally — the genuinely new client arrives exactly as unknown.
+it("useRenderClient refuses a previous hub's adopted client at a remount until the connection re-points", () => {
+	const first = {} as AppwireClient;
+	const replacement = {} as AppwireClient;
+	// hub-1's live screen adopts the client while ready.
+	const adopted = renderHook(() => useRenderClient(first, "ready", "hub-1"));
+	adopted.rerender();
+	expect(adopted.result.current).toBe(first);
+
+	// The store re-keys the screen to hub-2 while the connection still
+	// reports hub-1's ready client: the remount lands on the stale pairing.
+	let client = first;
+	const remounted = renderHook(() => useRenderClient(client, "ready", "hub-2"));
+	remounted.rerender();
+	// The known-foreign client must not be re-authorized under hub-2.
+	expect(remounted.result.current).toBeNull();
+
+	// The connection re-points and reports hub-2's own client: it adopts.
+	client = replacement;
+	remounted.rerender();
+	expect(remounted.result.current).toBe(replacement);
+});
+
+// The same remount residual at the readiness hook: the birth record re-birth
+// the previous hub's client under the new hub, authorizing requests against
+// it. The persistent record refuses the re-birth until the re-point.
+it("useLiveReadiness refuses a previous hub's adopted client at a remount until the connection re-points", () => {
+	const first = {} as AppwireClient;
+	const replacement = {} as AppwireClient;
+	// hub-1's live screen births the client while ready.
+	const adopted = renderHook(() => useLiveReadiness("hub-1", first, "ready"));
+	expect(adopted.result.current()).toBe(true);
+
+	// The remount lands on the stale pairing: the client may not re-birth
+	// under hub-2.
+	let client = first;
+	const remounted = renderHook(() => useLiveReadiness("hub-2", client, "ready"));
+	expect(remounted.result.current()).toBe(false);
+
+	// The connection re-points and reports hub-2's own client: it births.
+	client = replacement;
+	remounted.rerender();
+	expect(remounted.result.current()).toBe(true);
 });
 
 // Round 49's undefined-hub Medium: useRenderClient seeds adoption.scope as
