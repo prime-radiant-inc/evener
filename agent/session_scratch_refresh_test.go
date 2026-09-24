@@ -913,7 +913,12 @@ func TestScratchBorrowDeclinesATerminallyReleasedDirectory(t *testing.T) {
 // second Medium: the guarded borrow's sealed/detached skip returned true —
 // session's own retirement release reported success with the shared
 // allocation silently missing. The decline must report not-installed so the
-// caller's detached-pool report routes the restore to fresh scratch.
+// caller's detached-pool report routes the restore to fresh scratch. Round
+// 80 re-derived the fixture to the durable wrapper shape — a second binding
+// owns the lease and the borrower is the wrapper row the writer itself
+// demotes — so the pooled snapshot matches the live manifest and the
+// borrow's manifest revalidation passes, leaving the seal as the declining
+// verdict.
 func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
@@ -921,14 +926,25 @@ func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
 		t.Fatal("session has no scratch retention owner")
 	}
 	const consumerID = "01BORROWSEAL1"
+	const ownerBindingID = "b-borrow-seal-owner"
+	const ownerConsumerID = "01BORROWSEALOWN1"
 	const bindingID = "b-borrow-sealed"
-	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
-	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
-	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
-	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
-	wrapperRow := bindingRow
-	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
-		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	ownerSlots, _ := mintRefreshScratchBinding(t, s, ownerBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, ownerConsumerID, ownerBindingID)
+	retainedDir := ownerSlots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = ownerSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The borrower: a wrapper row over the owner's allocation — the shape the
+	// writer demotes a shared slot to — installed durably with its consumer
+	// role and snapshotted into the pool exactly as the manifest holds it.
+	wrapperRow := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+		},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, wrapperRow, sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: bindingID}); err != nil {
+		t.Fatalf("install the borrower's wrapper row: %v", err)
 	}
 	s.retainedScratch.Store(&retainedScratchPool{
 		owner:     owner,
@@ -968,7 +984,11 @@ func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
 // the window between them — the pool is sealed but still attached. The
 // declined borrow must report not-installed there too: an adoption that
 // proceeds on its pre-seal snapshot runs with the shared allocation silently
-// missing.
+// missing. Round 80 re-derived the fixture to the durable wrapper shape — a
+// second binding owns the lease and the borrower is the wrapper row the
+// writer itself demotes — so the pooled snapshot matches the live manifest
+// and the borrow's manifest revalidation passes, leaving the seal as the
+// declining verdict.
 func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing.T) {
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
@@ -976,14 +996,25 @@ func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing
 		t.Fatal("session has no scratch retention owner")
 	}
 	const consumerID = "01BORROWSEAL2"
+	const ownerBindingID = "b-borrow-pre-detach-owner"
+	const ownerConsumerID = "01BORROWSEAL2OWN"
 	const bindingID = "b-borrow-pre-detach"
-	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
-	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
-	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
-	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
-	wrapperRow := bindingRow
-	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
-		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	ownerSlots, _ := mintRefreshScratchBinding(t, s, ownerBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, ownerConsumerID, ownerBindingID)
+	retainedDir := ownerSlots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = ownerSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The borrower: a wrapper row over the owner's allocation — the shape the
+	// writer demotes a shared slot to — installed durably with its consumer
+	// role and snapshotted into the pool exactly as the manifest holds it.
+	wrapperRow := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+		},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, wrapperRow, sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: bindingID}); err != nil {
+		t.Fatalf("install the borrower's wrapper row: %v", err)
 	}
 	s.retainedScratch.Store(&retainedScratchPool{
 		owner:     owner,
@@ -1075,7 +1106,11 @@ func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing
 // sweeper's removal already serialize on (rounds 31 and 67) — so a
 // reclamation that wins it first leaves the in-lock check reading
 // collectible (declined) and a borrow that wins first completes before any
-// invalidation can land.
+// invalidation can land. Round 80 re-derived the fixture to the durable
+// wrapper shape — a second binding owns the lease and the borrower is the
+// wrapper row the writer itself demotes — so the pooled snapshot matches the
+// live manifest and the borrow's manifest revalidation passes, keeping the
+// reclamation serialization as the behavior under test.
 func TestScratchBorrowSerializesWithManifestReclamation(t *testing.T) {
 	confineSessionScratchSweep(t)
 	s := newQueuePersistTestSession(t, t.TempDir())
@@ -1084,6 +1119,8 @@ func TestScratchBorrowSerializesWithManifestReclamation(t *testing.T) {
 		t.Fatal("session has no scratch retention owner")
 	}
 	const consumerID = "01BORROWRECLAIM1"
+	const ownerBindingID = "b-borrow-reclaim-owner"
+	const ownerConsumerID = "01BORROWRECLOWN1"
 	const bindingID = "b-borrow-reclaim"
 	// Mint the retained directory under the confined temp base the sweep
 	// enumerates, so the reclamation leg drives the real collector rather
@@ -1095,22 +1132,29 @@ func TestScratchBorrowSerializesWithManifestReclamation(t *testing.T) {
 	}
 	retainedDir := handle.Dir
 	t.Cleanup(func() { _ = handle.Retain() })
-	bindingRow := sandbox.ScratchBinding{BindingID: bindingID, OwnerSessionID: bindingOwnerForTest, Slots: map[string]sandbox.ScratchSlot{
+	ownerRow := sandbox.ScratchBinding{BindingID: ownerBindingID, OwnerSessionID: bindingOwnerForTest, Slots: map[string]sandbox.ScratchSlot{
 		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: true},
 	}}
-	if err := sandbox.PinScratchBinding(owner, bindingRow, map[string]*sandbox.SessionScratch{sandbox.ScratchKindSandbox: handle}, nil); err != nil {
-		t.Fatalf("pin binding %q: %v", bindingID, err)
+	if err := sandbox.PinScratchBinding(owner, ownerRow, map[string]*sandbox.SessionScratch{sandbox.ScratchKindSandbox: handle}, nil); err != nil {
+		t.Fatalf("pin binding %q: %v", ownerBindingID, err)
 	}
-	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	mapRefreshScratchConsumer(t, s, ownerConsumerID, ownerBindingID)
 	if err := handle.Retain(); err != nil {
 		t.Fatalf("free the retained lease for the collector: %v", err)
 	}
-	// A wrapper-only slot: the binding borrows a directory whose lease the
-	// pinned row owns, so the adoption runs the borrow branch rather than a
-	// claim.
-	wrapperRow := bindingRow
-	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
-		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	// The borrower: a wrapper row over the owner's allocation — the shape the
+	// writer demotes a shared slot to — installed durably with its consumer
+	// role and snapshotted into the pool exactly as the manifest holds it,
+	// so the adoption runs the borrow branch rather than a claim.
+	wrapperRow := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+		},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, wrapperRow, sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: bindingID}); err != nil {
+		t.Fatalf("install the borrower's wrapper row: %v", err)
 	}
 	s.retainedScratch.Store(&retainedScratchPool{
 		owner:     owner,
@@ -1279,6 +1323,102 @@ func TestScratchAdoptionDeclinesATransferTheManifestDereferenced(t *testing.T) {
 	}
 }
 
+// TestScratchTransferDeclinesADemotedSlot pins round 80's first Medium: the
+// claim installs a lease-owning pooled handle, and the manifest can demote
+// the binding's slot to a wrapper borrow between the pool snapshot and the
+// install — the lease assignment moved to another owner.
+// scratchManifestTransfersSlot revalidated the binding, kind, directory, and
+// reference but not the slot's ownership, so pre-fix the install handed the
+// environment a lease-owning handle over a slot the live manifest no longer
+// attributed to the binding. The transfer now requires the live slot to
+// still own the lease, and a demoted slot declines through the dying-claim
+// treatment: the claim is released, the kind is marked pending so the
+// reprovision's mint pins bare, and the caller reprovisions fresh scratch.
+func TestScratchTransferDeclinesADemotedSlot(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const adopterID = "01DEMOTESLOT1"
+	const bindingID = "b-demoted-slot"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, adopterID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{adopterID: {SessionID: adopterID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The demotion lands between the claim and the install: the slot keeps
+	// naming the retained directory — the binding, kind, and reference all
+	// stay intact — but the lease assignment moves off the binding, the way a
+	// publication that re-points the lease leaves the row behind as a wrapper
+	// borrow.
+	s.cfg.testOnly.scratchAdoptionAfterClaim = func() {
+		fresh, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Fatalf("load the manifest inside the claim window: %v", err)
+		}
+		consumerRow, ok := findScratchConsumer(fresh, adopterID)
+		if !ok {
+			t.Fatal("fixture: the consumer row vanished before the demotion")
+		}
+		demoted := bindingRow
+		demoted.Slots = map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+		}
+		if err := sandbox.UpsertScratchBinding(owner, demoted, consumerRow); err != nil {
+			t.Fatalf("demote the binding's slot inside the claim window: %v", err)
+		}
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, adopterID)
+	if err != nil {
+		t.Fatalf("adopt over the demoted slot: %v", err)
+	}
+	if installed {
+		t.Fatal("the adoption reported an install over a slot the live manifest demoted to a wrapper borrow: the transfer must decline")
+	}
+	if got := envScratchRefDir(env, sandbox.ScratchKindSandbox); got != "" {
+		t.Fatalf("the transfer installed the lease-owning handle over the demoted slot: the environment exposes %q", got)
+	}
+	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the declined transfer left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
+	// The claim went back to the releasable map: the handle must be pooled
+	// for the next adoption to reacquire once the manifest re-owns the slot.
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("fixture: the pool detached during the adoption")
+	}
+	pool.mu.Lock()
+	_, releasable := pool.handles[key]
+	pool.mu.Unlock()
+	if !releasable {
+		t.Fatal("the declined transfer kept the claimed handle out of the releasable map")
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load the manifest after the declined transfer: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	if slot := row.Slots[sandbox.ScratchKindSandbox]; slot.OwnsLease {
+		t.Fatalf("fixture: the demotion did not hold — the live slot still owns the lease (%+v)", slot)
+	}
+}
+
 // TestScratchBorrowDeclineKeepsTheKindPending pins round 48's Medium, the
 // wrapper-only half: a borrow that declines because the disk revalidation
 // read the directory collectible — with the pool still attached and unsealed
@@ -1406,6 +1546,105 @@ func TestScratchSharedBorrowDeclineKeepsTheKindPending(t *testing.T) {
 	}
 	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
 		t.Fatalf("the declined shared borrow left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
+}
+
+// TestScratchBorrowDeclinesAMovedBinding pins round 80's second Medium: the
+// wrapper borrow installs from a pool-snapshot slot, and the binding's
+// allocation can move between the fold and the borrow — the slot repointed
+// at another directory while the retained directory stays pinned and
+// referenced under the owner binding that still names it. Pre-fix the borrow
+// installed the stale directory anyway: the environment ran on scratch its
+// own durable rows no longer named. The borrow now revalidates the live
+// manifest under the pin owner's lock — the binding, kind, directory, and
+// the ownership the snapshot read — and declines through the pending-marked
+// not-installed report so the caller reprovisions fresh scratch.
+func TestScratchBorrowDeclinesAMovedBinding(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01MOVEDBINDING1"
+	const ownerBindingID = "b-moved-owner"
+	const ownerConsumerID = "01MOVEDBINDOWN1"
+	const elsewhereBindingID = "b-moved-elsewhere"
+	const elsewhereConsumerID = "01MOVEDBINGEL1"
+	const bindingID = "b-moved-binding"
+	// The owner world: a binding that lease-owns the retained directory, its
+	// pin and reference keeping the directory retained whatever happens to the
+	// borrowing binding.
+	ownerSlots, _ := mintRefreshScratchBinding(t, s, ownerBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, ownerConsumerID, ownerBindingID)
+	retainedDir := ownerSlots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = ownerSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The move target: a second live allocation the borrowing binding's slot
+	// is repointed at inside the window.
+	elsewhereSlots, _ := mintRefreshScratchBinding(t, s, elsewhereBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, elsewhereConsumerID, elsewhereBindingID)
+	elsewhereDir := elsewhereSlots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = elsewhereSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The borrower: a wrapper row over the owner's allocation — the shape the
+	// writer demotes a shared slot to — installed durably with its consumer
+	// role, and snapshotted into the pool exactly as the manifest holds it.
+	wrapperRow := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+		},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, wrapperRow, sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: bindingID}); err != nil {
+		t.Fatalf("install the borrower's wrapper row: %v", err)
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The move lands between the pool snapshot and the borrow: the binding's
+	// slot is repointed at the other allocation while the retained directory
+	// stays pinned and referenced under its owner.
+	s.cfg.testOnly.scratchAdoptionBeforeBorrow = func() {
+		fresh, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Fatalf("load the manifest inside the borrow window: %v", err)
+		}
+		consumerRow, ok := findScratchConsumer(fresh, consumerID)
+		if !ok {
+			t.Fatal("fixture: the borrower's consumer row vanished before the move")
+		}
+		moved := wrapperRow
+		moved.Slots = map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: elsewhereDir, OwnsLease: false},
+		}
+		if err := sandbox.UpsertScratchBinding(owner, moved, consumerRow); err != nil {
+			t.Fatalf("move the binding's allocation inside the borrow window: %v", err)
+		}
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the moved binding: %v", err)
+	}
+	if installed {
+		t.Fatal("the adoption reported an install over a binding whose allocation moved off the directory: the borrow must decline")
+	}
+	if got := envScratchRefDir(env, sandbox.ScratchKindSandbox); got != "" {
+		t.Fatalf("the borrow installed the moved-away allocation: the environment exposes %q its durable rows no longer name", got)
+	}
+	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the declined borrow left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
+	// The owner's allocation is untouched by the declined borrow.
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the owner's retained directory did not survive the declined borrow: %v", err)
 	}
 }
 
@@ -2757,14 +2996,29 @@ func TestSwapKeepsBorrowedSlotsNonOwning(t *testing.T) {
 		t.Fatal("session has no scratch retention owner")
 	}
 	const consumerID = "01SWAPWRAP1"
+	const ownerBindingID = "b-swap-wrap-owner"
+	const ownerConsumerID = "01SWAPWRAPDOWN1"
 	const bindingID = "b-swap-wrapper"
-	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
-	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
-	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
-	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
-	wrapperRow := bindingRow
-	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
-		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	// The owner world: a second binding lease-owns the retained directory.
+	// Round 80 re-derived the fixture to the durable wrapper shape — the
+	// borrower is the wrapper row the writer itself demotes, matching the
+	// manifest the source's borrow revalidates against.
+	ownerSlots, _ := mintRefreshScratchBinding(t, s, ownerBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, ownerConsumerID, ownerBindingID)
+	retainedDir := ownerSlots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = ownerSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The borrower: a wrapper row over the owner's allocation, installed
+	// durably with its consumer role and snapshotted into the pool exactly as
+	// the manifest holds it.
+	wrapperRow := sandbox.ScratchBinding{
+		BindingID:      bindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+		},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, wrapperRow, sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: bindingID}); err != nil {
+		t.Fatalf("install the borrower's wrapper row: %v", err)
 	}
 	s.retainedScratch.Store(&retainedScratchPool{
 		owner:     owner,

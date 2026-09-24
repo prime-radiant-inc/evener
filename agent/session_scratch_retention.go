@@ -901,8 +901,12 @@ const scratchAdoptionLockRetryBudget = 2 * time.Second
 // verdict: a refresh fold can delete the claim — along with every row that
 // named the allocation — between the claim and the install when the manifest
 // no longer references the directory, so the install revalidates against the
-// manifest itself before transferring the lease. A Released manifest never
-// authorizes a transfer.
+// manifest itself before transferring the lease. The slot must also still
+// OWN the lease it was claimed under: a slot demoted to a wrapper borrow
+// between the snapshot and the install has had its lease assignment moved
+// to another owner, and installing the claimed handle over it would hand
+// the environment a lease the live manifest no longer attributes to the
+// binding (round 80). A Released manifest never authorizes a transfer.
 func scratchManifestTransfersSlot(manifest sandbox.ScratchManifest, bindingID, kind, dir string) bool {
 	if manifest.Released {
 		return false
@@ -912,7 +916,41 @@ func scratchManifestTransfersSlot(manifest sandbox.ScratchManifest, bindingID, k
 		return false
 	}
 	slot, ok := binding.Slots[kind]
-	if !ok || canonicalScratchDir(slot.Dir) != canonicalScratchDir(dir) {
+	if !ok || !slot.OwnsLease || canonicalScratchDir(slot.Dir) != canonicalScratchDir(dir) {
+		return false
+	}
+	for _, ref := range manifest.References {
+		if ref.Kind == kind && canonicalScratchDir(ref.Dir) == canonicalScratchDir(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// scratchManifestBorrowsSlot reports whether the live manifest still names
+// bindingID's kind slot for dir with exactly the ownership the adoption
+// snapshotted. The pooled slot is a fold-time verdict — pool rows derive from
+// manifest rows — and the binding's allocation can move between the fold and
+// the borrow: the slot repointed at another directory, dropped entirely, or
+// flipped between owning and wrapper, while the directory itself stays
+// retained under whatever else still pins it. A borrow installed from the
+// stale snapshot would hand the environment a directory its own durable rows
+// no longer name the way the snapshot read (round 80), so the borrow
+// revalidates the binding, kind, directory, and ownership against the
+// manifest. The ownership must match the snapshot exactly: a wrapper borrow
+// must still be a wrapper borrow, and the distinct consumer sharing an owned
+// allocation (round 22) must still find the owning row it borrows under. A
+// Released manifest never authorizes a borrow.
+func scratchManifestBorrowsSlot(manifest sandbox.ScratchManifest, bindingID, kind, dir string, ownsLease bool) bool {
+	if manifest.Released {
+		return false
+	}
+	binding, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		return false
+	}
+	slot, ok := binding.Slots[kind]
+	if !ok || canonicalScratchDir(slot.Dir) != canonicalScratchDir(dir) || slot.OwnsLease != ownsLease {
 		return false
 	}
 	for _, ref := range manifest.References {
@@ -1942,7 +1980,12 @@ func borrowRetainedScratch(env *execenv.LocalExecutionEnvironment, bindingID, ki
 // 31 and 67) — because the pool lock serializes only same-session sealing:
 // a durable reclamation committing between an unlocked check and the install
 // left the environment named after a collectible directory the next sweep
-// would delete from under it (round 69). A reclamation that wins the lock
+// would delete from under it (round 69). The borrow also revalidates the
+// binding's own slot against the manifest under the same lock: the pooled
+// slot is a fold-time snapshot, and the allocation it names can move while
+// the directory stays retained under another reference — a borrow installed
+// from the stale snapshot would run the environment on scratch its durable
+// rows no longer name (round 80). A reclamation that wins the lock
 // first leaves the in-lock check reading collectible (declined); a borrow
 // that wins first completes before any invalidation can land. The pool-lock
 // section nests inside the manifest lock exactly as the refresh fold's row
@@ -1968,6 +2011,29 @@ func (s *Session) borrowRetainedScratchIfLive(pool *retainedScratchPool, env *ex
 				return retainedErr
 			}
 			if !retained {
+				return nil
+			}
+			// The pooled slot is a fold-time snapshot, and the binding's
+			// allocation can move between the fold and the borrow — the slot
+			// repointed at another directory, dropped entirely, or flipped
+			// between owning and wrapper — while the directory itself stays
+			// retained under whatever else still pins it. A borrow installed
+			// from the stale snapshot would hand the environment a directory
+			// its own durable rows no longer name the way the snapshot read
+			// (round 80). Revalidate against the manifest this closure holds
+			// the lock with — the same hold the move's own writer serialized
+			// on — so a manifest that still borrows this slot cannot stop
+			// authorizing it mid-window, and one that stopped cannot
+			// authorize it back in.
+			current, currentErr := sandbox.LoadScratchRetention(owner)
+			if currentErr != nil {
+				// Unreadable retention state is the r23 abort class, not a
+				// decline: fail the adoption loudly and retryably rather
+				// than silently skipping an allocation that may still be
+				// borrowable.
+				return currentErr
+			}
+			if !scratchManifestBorrowsSlot(current, bindingID, kind, slot.Dir, slot.OwnsLease) {
 				return nil
 			}
 			if hook := s.cfg.testOnly.scratchBorrowAfterRetainedCheck; hook != nil {
