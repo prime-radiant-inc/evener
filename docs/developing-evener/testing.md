@@ -406,8 +406,9 @@ PRODUCTION hub web app (the hub's embedded `frontend/dist`) is driven in real
 Chrome with a real remote host selected, each host-scoped settings pane
 (`credentials`, `agents-md`, `launch-evener`, `inrepo`, `project`,
 `plugins-manager`, `plugins`, `skills`, `mcp`) must render THAT HOST's own data,
-and the UI's writes go through: the host's `AGENTS.md` via Save, and a credential
-push from the `credentials` pane's own button.
+and the UI's writes go through: the host's `AGENTS.md` via Save, the in-repo
+pane's own **Trust**, and a credential push from the `credentials` pane's own
+button.
 
 Eight of the nine are held to a value seeded only on the host: the pane must
 render the HOST's value and must not render this hub's. `credentials`,
