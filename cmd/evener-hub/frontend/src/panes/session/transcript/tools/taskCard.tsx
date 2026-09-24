@@ -96,10 +96,14 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 // it), while the ID's last note-bearing touch annotates that final word
 // instead of displacing it - whether the note arrived on its own update or
 // attached to an earlier status update, before or after the final word (the
-// daemon appends notes in call order either way, and freshNotes on the raw
-// path collects any update carrying notes, so the no-raw fallback agrees
-// with it). A completion followed by a note cannot be erased into
-// suppression. Whether a status is RENDERABLE stays updateRows' own filter.
+// daemon appends notes in call order either way). A completion followed by
+// a note cannot be erased into suppression. The fallback agrees with
+// freshNotes for every note riding an ID's status word - the raw path also
+// carries a notes-only touch for an ID whose batch has no status word at
+// all, hung on the window's state-derived slot; the argument-only fallback
+// has no such slot and no row to hang it on, so that one shape renders only
+// on the raw path, the same degradation as a fresh note on an appended
+// task. Whether a status is RENDERABLE stays updateRows' own filter.
 // Ordering by each ID's final occurrence keeps distinct IDs in the order the
 // batch ends.
 function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknown>[] {
