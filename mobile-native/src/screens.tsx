@@ -2603,6 +2603,11 @@ export function ConversationScreen({
 										actions={{
 											canRestore: () => document.canRestoreRecoveredDraft(),
 											onRestore: (row) => {
+												// Clear any prior action error first, like every other
+												// action handler here, so a successful restore never
+												// leaves a stale error banner (or hides the Recovery
+												// entry, which keys on deliveryConcern).
+												setActionError(null);
 												if (!document.restoreRecoveredDraft(row.text))
 													setActionError(
 														"This message could not be restored to the draft.",
