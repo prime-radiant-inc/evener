@@ -22,13 +22,13 @@
 // Imported test-file only: screens.tsx and every production file are untouched.
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import {
 	getNativeMutationRuntime,
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
-import { renderedText } from "./renderNative.testkit";
+import { render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 
 const harness = vi.hoisted(() => ({
@@ -174,7 +174,6 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 	);
 	if (!target) throw new Error(`no pressable labelled ${label}`);
 	act(() => target.props.onPress());
-	return target;
 }
 
 // The client keeps the conversation read pending: the screen stays connected
@@ -189,12 +188,8 @@ function pendingClient() {
 
 it("renders the Recovery entry and mounts the recovery panel end to end, row-conditional under the #2247 contract", async () => {
 	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: pendingClient(),
-		state: "ready",
+		...screenConnection(pendingClient(), "ready"),
 		error: null,
-		fatal: false,
-		retry: () => {},
 		disconnect: () => {},
 	};
 
@@ -204,15 +199,12 @@ it("renders the Recovery entry and mounts the recovery panel end to end, row-con
 	// reading it here is the same runtime the screen reads.
 	const runtime = getNativeMutationRuntime();
 
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(
-			<ConversationScreen
-				route={conversationRoute(ref)}
-				navigation={navigation}
-			/>,
-		);
-	});
+	const tree = render(
+		<ConversationScreen
+			route={conversationRoute(ref)}
+			navigation={navigation}
+		/>,
+	);
 	await flush();
 
 	// PHASE 1 - empty snapshot, connected: no dead entry ships and the recovery
