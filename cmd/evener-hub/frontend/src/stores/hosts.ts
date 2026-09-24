@@ -287,6 +287,44 @@ export function hostRegistrationChanged(recorded: HostRegistration, current: Hos
   return !sameHostRegistration(recorded, current);
 }
 
+// --- the identity a pane's body is keyed on ----------------------------------
+//
+// hostScopedSurface keys a pane's BODY on this, and the launcher hands it to
+// LaunchConfigForm as the owner of its draft. A body left mounted across a
+// re-registration keeps pane-local state that belongs to the registration the
+// user left - a launch draft, an MCP add-form's draft, a pending Remove
+// confirmation - and Save then writes it to the NEW registration. The host NAME
+// cannot express that: a host removed and re-added under the same name has the
+// same one. `revision` cannot either: it advances for the live session fields an
+// attach moves, which must not remount a body whose host never moved.
+//
+// So this is the identity of the per-host store INSTANCE that answer implies,
+// derived by the SAME rule the instances themselves are built on
+// (currentHostRegistration + hostRegistrationChanged) and therefore changing
+// exactly when one of them is rebuilt: a re-registration, an appearance after a
+// removal, a removal. An instance built before the registry had an answer ADOPTS
+// the first one rather than being replaced, and so does this - a body whose host
+// came from a deep link is not remounted when the picker's own list read lands.
+const hostInstanceIdentities = new Map<string, { token: number; registration: HostRegistration }>();
+let nextHostInstanceToken = 1;
+
+/** hostInstanceIdentity is the surface identity of `host`: a token that changes
+ * exactly when the registry says that host's registration changed - and for no
+ * other reason. It is what a React key or a draft owner is built on. */
+export function hostInstanceIdentity(host: string): number {
+  const current = currentHostRegistration(host);
+  const recorded = hostInstanceIdentities.get(host);
+  if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, current)) {
+    // The first answer after a token was minted before the registry had one
+    // identifies it from here on; every other unchanged answer is the same one.
+    if (current !== undefined) recorded.registration = current;
+    return recorded.token;
+  }
+  const token = nextHostInstanceToken++;
+  hostInstanceIdentities.set(host, { token, registration: current });
+  return token;
+}
+
 // quietReRead is the shared quiet list read: publishReady's generation-guarded
 // publish with neither fetch's loading skeleton nor its error state. refresh
 // runs it behind the in-flight gate for the background poll, and the mutation
@@ -425,6 +463,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   resetForTests: () => {
+    hostInstanceIdentities.clear();
+    nextHostInstanceToken = 1;
     refreshInflight = null;
     latestGeneration = 0;
     latestPublishedGeneration = 0;

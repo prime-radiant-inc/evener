@@ -9,7 +9,8 @@
 // until it says so the body renders and shows that host's own state or error -
 // the selected host's own refusal, never this hub's.
 //
-// The BODY is keyed on the host, so a switch REMOUNTS it. Every pane body here
+// The BODY is keyed on the host's identity - a switch, and a host removed and
+// re-added under the same name, both REMOUNT it. Every pane body here
 // holds state that belongs to the host it was loaded from - a launch form's
 // draft, an AGENTS.md draft and its baseline, a marketplace selection and its
 // editor draft, an MCP add-form's draft, a pending Remove confirmation - and
@@ -23,7 +24,7 @@
 // not remounted by its own change.
 import { Fragment, type ReactNode } from "react";
 import { isLocalHost } from "../../../stores/hostRouting";
-import { isConfiguredHost, useHostsStore } from "../../../stores/hosts";
+import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../stores/hosts";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostPicker } from "../HostPicker";
 import { useSettingsHost } from "../settingsHost";
@@ -47,6 +48,15 @@ export function HostScopedSurface({ children }: HostScopedSurfaceProps) {
   // being read, the body renders and shows that host's own state (or its typed
   // refusal) instead of a premature "no longer configured".
   const gone = !isLocalHost(host) && load.phase === "ready" && !isConfiguredHost(load, host);
+  // The body's key is the host's INSTANCE identity, not its name: a host removed
+  // and re-added under the same name is a different registration whose per-host
+  // stores are new instances, and the name alone would leave the previous
+  // registration's draft standing under it (see stores/hosts.ts's
+  // hostInstanceIdentity, which changes on exactly the transitions that rebuild
+  // one of those instances and on nothing else - not on a refetch, and not on
+  // the live session state the hub reports on the same row). The local hub has
+  // no registration to key on, so it keeps its own name, stable as ever.
+  const bodyKey = isLocalHost(host) ? host : `host:${hostInstanceIdentity(host)}`;
   return (
     <div className={CLASS.root}>
       <HostPicker />
@@ -55,7 +65,7 @@ export function HostScopedSurface({ children }: HostScopedSurfaceProps) {
           Host {host} is no longer configured, so it has no settings to show here.
         </p>
       ) : (
-        <Fragment key={host}>{children(host)}</Fragment>
+        <Fragment key={bodyKey}>{children(host)}</Fragment>
       )}
     </div>
   );
