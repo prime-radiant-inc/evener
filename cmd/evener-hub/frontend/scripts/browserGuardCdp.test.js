@@ -82,7 +82,7 @@ test("one startup deadline aborts the pending HTTP readiness phase", async () =>
 // cold, contended runner. These pin the load-aware default.
 test("a loaded machine widens the default startup deadline past the fixed floor", async () => {
   vi.spyOn(os, "loadavg").mockReturnValue([16, 16, 16]);
-  vi.spyOn(os, "cpus").mockReturnValue(new Array(16).fill({}));
+  vi.spyOn(os, "availableParallelism").mockReturnValue(16);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const deadline = createStartupDeadline();
   let aborted = false;
@@ -103,7 +103,7 @@ test("a loaded machine widens the default startup deadline past the fixed floor"
 // up still fails, and it fails with the budget it actually had.
 test("a loaded machine's widened deadline still fires at the ceiling", async () => {
   vi.spyOn(os, "loadavg").mockReturnValue([32, 32, 32]);
-  vi.spyOn(os, "cpus").mockReturnValue(new Array(16).fill({}));
+  vi.spyOn(os, "availableParallelism").mockReturnValue(16);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const deadline = createStartupDeadline();
   let reason = null;
@@ -310,9 +310,10 @@ test("a probe abandoned because the browser died does not leave its request runn
 // get a deadline whether they bring one or not.
 test("a poll with no caller deadline arms one of its own", async () => {
   // An idle machine so the load-aware default is deterministic: it stays at the
-  // floor. (loadavg/cpus are read at deadline-creation time, which is here.)
+  // floor. (loadavg/availableParallelism are read at deadline-creation time,
+  // which is here.)
   vi.spyOn(os, "loadavg").mockReturnValue([0, 0, 0]);
-  vi.spyOn(os, "cpus").mockReturnValue(new Array(16).fill({}));
+  vi.spyOn(os, "availableParallelism").mockReturnValue(16);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const before = liveTimers();
   const pending = waitForHttp("http://127.0.0.1:1/json/version", "vite dev server", () => null, {
