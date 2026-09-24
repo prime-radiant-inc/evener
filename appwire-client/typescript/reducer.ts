@@ -618,12 +618,8 @@ function recordItemContribution(
   older: ItemModel,
   newer: ItemModel,
 ): void {
-  const recordOf = (item: ItemModel): ItemContribution | undefined =>
-    context.contributions.get(item);
-  const suppliersOf = (
-    item: ItemModel,
-    field: string,
-  ): ReadonlySet<ItemModel> | undefined => {
+  const recordOf = (item: ItemModel): ItemContribution | undefined => context.contributions.get(item);
+  const suppliersOf = (item: ItemModel, field: string): ReadonlySet<ItemModel> | undefined => {
     const record = recordOf(item);
     if (record === undefined) return new Set<ItemModel>([item]);
     return toolResultFields.includes(field as ToolResultField)
@@ -644,10 +640,7 @@ function recordItemContribution(
   ): ReadonlySet<ItemModel> | undefined => {
     if (value === undefined) return undefined;
     if (fromOlder && fromNewer) {
-      return new Set<ItemModel>([
-        ...(suppliersOf(older, field) ?? []),
-        ...(suppliersOf(newer, field) ?? []),
-      ]);
+      return new Set<ItemModel>([...(suppliersOf(older, field) ?? []), ...(suppliersOf(newer, field) ?? [])]);
     }
     if (fromOlder) return suppliersOf(older, field);
     if (fromNewer) return suppliersOf(newer, field);
@@ -854,9 +847,7 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
               }
               tools[name] =
                 baseRecord?.tools[name] ??
-                (baseRecord === undefined && item[name] !== undefined
-                  ? new Set<ItemModel>([item])
-                  : undefined);
+                (baseRecord === undefined && item[name] !== undefined ? new Set<ItemModel>([item]) : undefined);
             }
             const nonTool = new Map<string, ReadonlySet<ItemModel>>();
             if (baseRecord !== undefined) {
