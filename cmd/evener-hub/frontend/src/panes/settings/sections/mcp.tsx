@@ -15,8 +15,8 @@
 import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { connectionStore } from "../../../stores/connection";
-import { directoryActions, extensionsStore, useExtensionsStore } from "../../../stores/extensions";
+import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
+import { isLocalHost, LOCAL_HOST } from "../../../stores/hostRouting";
 import {
   Button,
   Chip,
@@ -31,7 +31,9 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { PathListEditor } from "./dirListSetting";
+import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./mcp.module.css";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   page: requireClass(styles.page, "mcp.module.css", "page"),
@@ -66,6 +68,10 @@ export interface SettingsOverviewLike {
 
 export interface McpSectionProps {
   useOverviewStore: () => SettingsOverviewLike;
+  /** The host whose own global launch layer this section edits (component
+   * 07b). Defaults to the local hub, so a direct render is today's local
+   * section. */
+  host?: string;
 }
 
 function inlineServerLabel(server: MCPServerSpec): string {
@@ -73,11 +79,17 @@ function inlineServerLabel(server: MCPServerSpec): string {
   return `${server.name} → ${parts.join(" ")}`;
 }
 
-export function McpSection({ useOverviewStore }: McpSectionProps) {
+export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionProps) {
+  // The extensions instance for the selected host: the controller's own store
+  // for the local hub, a per-host instance (over evener/host/request) for a
+  // remote one, so the global launch layer this section edits - and the path
+  // helpers it validates an entry with - are that host's own. Same seam as
+  // dirListSetting.tsx, which edits two other fields of this same layer.
+  const store = extensionsStoreForHost(host);
   const overview = useOverviewStore();
-  const layer = useExtensionsStore((s) => s.launchLayer);
-  const launchLayerLoading = useExtensionsStore((s) => s.launchLayerLoading);
-  const launchLayerError = useExtensionsStore((s) => s.launchLayerError);
+  const layer = useExtensionsStoreForHost(host, (s) => s.launchLayer);
+  const launchLayerLoading = useExtensionsStoreForHost(host, (s) => s.launchLayerLoading);
+  const launchLayerError = useExtensionsStoreForHost(host, (s) => s.launchLayerError);
   const toasts = useToasts();
 
   const [serverName, setServerName] = useState("");
@@ -89,34 +101,32 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
   const [removeServerBusy, setRemoveServerBusy] = useState(false);
   const serverCommandId = useId();
 
-  // Runs once on mount - the injected hook's own fetch reference is expected
-  // to be a stable store action (mirrors every useXStore() in this app:
-  // threads.ts/tree.ts/extensions.ts all define their actions once in the
-  // store creator), so this never needs to re-fire.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once fetch against an injected store hook - see comment above.
+  // evener/settings/overview is this hub's own read (stores/settingsOverview.ts
+  // is built on the controller's client) and is NOT on the proxy allow-list, so
+  // there is nothing honest to fetch or show for a remote host: the discovered
+  // block below renders only for the local hub, and so does this fetch. The
+  // injected hook's own fetch is a stable store action (every useXStore() here
+  // defines its actions once in the store creator), so it fires on mount and
+  // re-fires only when the selected host changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: host-keyed fetch against an injected store hook - see comment above.
   useEffect(() => {
-    void overview.fetch();
-  }, []);
+    if (isLocalHost(host)) void overview.fetch();
+  }, [host]);
 
-  useEffect(() => {
-    let started = false;
-    function tryStart() {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      void extensionsStore.getState().fetchLaunchLayer();
-    }
-    tryStart();
-    return connectionStore.subscribe(tryStart);
-  }, []);
+  // useConnectedEffect, not a bare mount-once effect: a direct deep link to
+  // /settings/mcp can mount this section before AppShell's connect() handshake
+  // finishes, and it re-runs when the selected host changes so switching hosts
+  // loads THAT host's layer rather than leaving this one's on screen.
+  useConnectedEffect(() => store.getState().fetchLaunchLayer(), [store]);
 
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {
-    const validated = await extensionsStore.getState().validatePath(path, "file");
+    const validated = await store.getState().validatePath(path, "file");
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
-    const current = extensionsStore.getState().launchLayer ?? {};
+    const current = store.getState().launchLayer ?? {};
     const canonical = validated.path || path;
     const nextList = [...(current.mcpConfigs ?? []), canonical];
     try {
-      await extensionsStore.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
+      await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
       return { ok: true };
     } catch (err) {
       return { ok: false, error: friendlyErrorMessage(err) };
@@ -124,10 +134,10 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
   }
 
   async function handleRemoveConfig(path: string): Promise<void> {
-    const current = extensionsStore.getState().launchLayer ?? {};
+    const current = store.getState().launchLayer ?? {};
     const nextList = (current.mcpConfigs ?? []).filter((p) => p !== path);
     try {
-      await extensionsStore.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
+      await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     }
@@ -144,14 +154,14 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
       .filter((a) => a !== "");
     setServerAddBusy(true);
     try {
-      const validated = await extensionsStore.getState().validatePath(command, "command");
+      const validated = await store.getState().validatePath(command, "command");
       if (!validated.valid) {
         setServerAddError(validated.error || "command not found");
         return;
       }
-      const current = extensionsStore.getState().launchLayer ?? {};
+      const current = store.getState().launchLayer ?? {};
       const nextList = [...(current.mcps ?? []), { name, command, args }];
-      await extensionsStore.getState().setLaunchLayer({ ...current, mcps: nextList });
+      await store.getState().setLaunchLayer({ ...current, mcps: nextList });
       setServerAddError(null);
       setServerName("");
       setServerCommand("");
@@ -167,10 +177,10 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
     const index = pendingRemoveServerIndex;
     if (index === null) return;
     setRemoveServerBusy(true);
-    const current = extensionsStore.getState().launchLayer ?? {};
+    const current = store.getState().launchLayer ?? {};
     const nextList = (current.mcps ?? []).filter((_, i) => i !== index);
     try {
-      await extensionsStore.getState().setLaunchLayer({ ...current, mcps: nextList });
+      await store.getState().setLaunchLayer({ ...current, mcps: nextList });
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     } finally {
@@ -188,33 +198,39 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
       <h2 className={CLASS.title}>MCP servers</h2>
       <p className={CLASS.help}>MCP servers evener spawns alongside each session. Stored in the global launch layer.</p>
 
-      <section className={CLASS.section}>
-        <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
-        <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
-        {discovered?.error !== undefined ? (
-          <EmptyState title="Failed to load" hint={discovered.error} />
-        ) : overview.loading && overview.data === null ? (
-          <Skeleton />
-        ) : (
-          <ul aria-label="Discovered MCP servers" className={CLASS.list}>
-            {(discovered?.servers ?? []).length === 0 ? (
-              <li className={CLASS.empty}>No MCP servers configured.</li>
-            ) : (
-              (discovered?.servers ?? []).map((s) => (
-                <li key={s.name} className={CLASS.row}>
-                  <div>
-                    <div className={CLASS.rowText}>
-                      {s.name} — {s.transport}{" "}
-                      <Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>
+      {/* Reachability probed from THIS hub: settings/overview is not on the
+          proxy allow-list, so it can only ever describe the controller, never a
+          remote host. Under a remote selection the block is omitted rather than
+          presenting this hub's probe as the selected host's own. */}
+      {isLocalHost(host) && (
+        <section className={CLASS.section}>
+          <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
+          <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
+          {discovered?.error !== undefined ? (
+            <EmptyState title="Failed to load" hint={discovered.error} />
+          ) : overview.loading && overview.data === null ? (
+            <Skeleton />
+          ) : (
+            <ul aria-label="Discovered MCP servers" className={CLASS.list}>
+              {(discovered?.servers ?? []).length === 0 ? (
+                <li className={CLASS.empty}>No MCP servers configured.</li>
+              ) : (
+                (discovered?.servers ?? []).map((s) => (
+                  <li key={s.name} className={CLASS.row}>
+                    <div>
+                      <div className={CLASS.rowText}>
+                        {s.name} — {s.transport}{" "}
+                        <Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>
+                      </div>
+                      {s.error !== undefined && <div className={CLASS.rowMeta}>{s.error}</div>}
                     </div>
-                    {s.error !== undefined && <div className={CLASS.rowMeta}>{s.error}</div>}
-                  </div>
-                </li>
-              ))
-            )}
-          </ul>
-        )}
-      </section>
+                  </li>
+                ))
+              )}
+            </ul>
+          )}
+        </section>
+      )}
 
       {launchLayerError !== null ? (
         <EmptyState title="Failed to load" hint={launchLayerError} />
@@ -225,14 +241,17 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
           <section className={CLASS.section}>
             <h3 className={CLASS.sectionTitle}>MCP config files</h3>
             <PathListEditor
-              directory={directoryActions}
+              directory={{
+                validatePath: (path, kind) => store.getState().validatePath(path, kind),
+                createDirectory: (path) => store.getState().createDirectory(path),
+              }}
               label="MCP config files"
               addLabel="New config file"
               kind="file"
               items={layer?.mcpConfigs ?? []}
               onAdd={handleAddConfig}
               onRemove={handleRemoveConfig}
-              complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+              complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
               emptyMessage="No MCP config files. Add one below."
               removeConfirmTitle="Remove config file"
               removeConfirmBody={(path) => `Remove "${path}" from MCP config files?`}
@@ -323,5 +342,17 @@ function RemoveIcon() {
     <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
       <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
+  );
+}
+
+/** McpSectionHostScope is the MCP settings section scoped to the settings
+ * route's selected host (component 07b): the one shared HostPicker plus
+ * McpSection. Its two editable lists (mcpConfigs, mcps) are fields of the
+ * GLOBAL launch layer, which the launch-evener, plugins-dirs and skills-dirs
+ * sections already host-scope - so without this the same layer would be a
+ * different host's depending on which pane the user opened. */
+export function McpSectionHostScope({ useOverviewStore }: McpSectionProps) {
+  return (
+    <HostScopedSurface>{(host) => <McpSection useOverviewStore={useOverviewStore} host={host} />}</HostScopedSurface>
   );
 }

@@ -17,23 +17,23 @@ import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
-import { AgentsDocSection } from "./sections/agentsDoc";
+import { AgentsDocHostScope } from "./sections/agentsDoc";
 import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
 import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
-import { InRepoSection } from "./sections/inrepo";
+import { InRepoHostScope } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
-import { LaunchServerSection } from "./sections/launchServer";
-import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
-import { McpSection } from "./sections/mcp";
+import { LaunchServerHostScope } from "./sections/launchServer";
+import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
+import { McpSectionHostScope } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
-import { PluginsDirsSection } from "./sections/pluginsDirs";
-import { ProjectSection } from "./sections/project";
-import { SkillsDirsSection } from "./sections/skillsDirs";
+import { PluginsDirsHostScope } from "./sections/pluginsDirs";
+import { ProjectHostScope } from "./sections/project";
+import { SkillsDirsHostScope } from "./sections/skillsDirs";
 import { StorageSection } from "./sections/storage";
 import { ThemeSection } from "./sections/theme";
 import { TranscriptSection } from "./sections/transcript";
@@ -45,7 +45,7 @@ import { settingsURL, useSettingsHost, useSettingsHostURLSync } from "./settings
 // adapter binds it to the real store at the one place the dispatch map needs
 // a zero-prop component.
 function McpSectionWired() {
-  return <McpSection useOverviewStore={useSettingsOverviewStore} />;
+  return <McpSectionHostScope useOverviewStore={useSettingsOverviewStore} />;
 }
 
 export interface SettingsPaneParams {
@@ -74,13 +74,13 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   // renders that host's own read-only listing.
   credentials: CredentialsHostScope,
   agents: AgentsSection,
-  "agents-md": AgentsDocSection,
-  "launch-evener": LaunchServerSection,
-  inrepo: InRepoSection,
-  project: ProjectSection,
-  "plugins-manager": MarketplacesPluginsSection,
-  plugins: PluginsDirsSection,
-  skills: SkillsDirsSection,
+  "agents-md": AgentsDocHostScope,
+  "launch-evener": LaunchServerHostScope,
+  inrepo: InRepoHostScope,
+  project: ProjectHostScope,
+  "plugins-manager": MarketplacesPluginsHostScope,
+  plugins: PluginsDirsHostScope,
+  skills: SkillsDirsHostScope,
   mcp: McpSectionWired,
   general: GeneralSection,
   theme: ThemeSection,

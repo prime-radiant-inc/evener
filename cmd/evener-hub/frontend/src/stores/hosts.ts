@@ -209,6 +209,122 @@ export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
   return selectableHostRows(load).some((row) => row.name === host);
 }
 
+// --- registration identity ---------------------------------------------------
+//
+// The registry's own row is the identity every per-host store instance is built
+// against (stores/launchConfig.ts, stores/extensions.ts, stores/agentsDoc.ts):
+// a host removed and re-added under the same name is a DIFFERENT registration,
+// and that registration's schema, catalogs and document are its own, not the
+// previous one's. Keying an instance by the name alone serves the previous
+// registration's cache to the new one, and lets a response the old registration
+// had in flight land in it.
+//
+// The identity is the row's REGISTRATION fields, not the whole row: the hub
+// reports live session state on the same row (attach, versions, os/arch), and
+// rebuilding an instance for one of those would throw away that host's cache
+// and re-read everything on every attach. The registry's revision (above) is
+// not usable for this either - it advances for those same live changes.
+
+/** HostRegistration is what the registry says REGISTERS a host right now:
+ *
+ *   - a HostRow, when its current snapshot lists that host;
+ *   - null, when its snapshot lists no such host (removed, or never added);
+ *   - undefined, when it has no snapshot to answer from at all - still reading,
+ *     or its read failed. That is no evidence either way, so an instance built
+ *     before the answer is kept. */
+export type HostRegistration = HostRow | null | undefined;
+
+/** currentHostRegistration reads that answer for `host` from the registry's
+ * current snapshot. */
+export function currentHostRegistration(host: string): HostRegistration {
+  const load = hostsStore.getState().load;
+  if (load.phase !== "ready") return undefined;
+  return load.hosts.find((row) => row.name === host) ?? null;
+}
+
+/** sameHostRegistration compares two rows on the fields that REGISTER a host -
+ * the configuration a per-host store instance and its caches are built against
+ * - and deliberately not on the live session fields the hub reports about a
+ * connection (attached, serverName/serverVersion/hubVersion, os/arch,
+ * lastAttachError, midAttach): those move without the registration changing, so
+ * an instance rebuilt on one would lose that host's cache for no reason. Roots
+ * compare as lists, so an absent and an empty one describe the same host (the
+ * wire omits empty optional arrays - sameRoots). */
+export function sameHostRegistration(a: HostRow, b: HostRow): boolean {
+  return (
+    a.name === b.name &&
+    a.address === b.address &&
+    a.user === b.user &&
+    a.keyPath === b.keyPath &&
+    a.evenerPath === b.evenerPath &&
+    a.configPath === b.configPath &&
+    a.addr === b.addr &&
+    sameRoots(a.roots, b.roots) &&
+    a.origin === b.origin &&
+    a.removed === b.removed
+  );
+}
+
+/** hostRegistrationChanged answers whether an instance recorded against
+ * `recorded` is invalidated by the registry's current answer `current`:
+ *
+ *   - no answer (undefined) is no evidence, so nothing changes;
+ *   - an instance built before the registry ever answered (recorded undefined)
+ *     ADOPTS the first answer rather than being rebuilt: nothing has named that
+ *     host's registration differently yet, and a name-addressed instance is the
+ *     same host wherever the row points (the deep-link case - a pane can resolve
+ *     a remote host before the picker's own list read lands);
+ *   - otherwise any change invalidates it - a different registration, the row
+ *     appearing, or the host leaving the registry.
+ *
+ * An unchanged snapshot re-publishes nothing (see publishReady) and even a
+ * changed one leaves every host whose configuration did not move with the same
+ * registration, so nothing here is rebuilt on the poll cadence or on an attach.
+ */
+export function hostRegistrationChanged(recorded: HostRegistration, current: HostRegistration): boolean {
+  if (current === undefined || recorded === undefined) return false;
+  if (recorded === null || current === null) return recorded !== current;
+  return !sameHostRegistration(recorded, current);
+}
+
+// --- the identity a pane's body is keyed on ----------------------------------
+//
+// hostScopedSurface keys a pane's BODY on this, and the launcher hands it to
+// LaunchConfigForm as the owner of its draft. A body left mounted across a
+// re-registration keeps pane-local state that belongs to the registration the
+// user left - a launch draft, an MCP add-form's draft, a pending Remove
+// confirmation - and Save then writes it to the NEW registration. The host NAME
+// cannot express that: a host removed and re-added under the same name has the
+// same one. `revision` cannot either: it advances for the live session fields an
+// attach moves, which must not remount a body whose host never moved.
+//
+// So this is the identity of the per-host store INSTANCE that answer implies,
+// derived by the SAME rule the instances themselves are built on
+// (currentHostRegistration + hostRegistrationChanged) and therefore changing
+// exactly when one of them is rebuilt: a re-registration, an appearance after a
+// removal, a removal. An instance built before the registry had an answer ADOPTS
+// the first one rather than being replaced, and so does this - a body whose host
+// came from a deep link is not remounted when the picker's own list read lands.
+const hostInstanceIdentities = new Map<string, { token: number; registration: HostRegistration }>();
+let nextHostInstanceToken = 1;
+
+/** hostInstanceIdentity is the surface identity of `host`: a token that changes
+ * exactly when the registry says that host's registration changed - and for no
+ * other reason. It is what a React key or a draft owner is built on. */
+export function hostInstanceIdentity(host: string): number {
+  const current = currentHostRegistration(host);
+  const recorded = hostInstanceIdentities.get(host);
+  if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, current)) {
+    // The first answer after a token was minted before the registry had one
+    // identifies it from here on; every other unchanged answer is the same one.
+    if (current !== undefined) recorded.registration = current;
+    return recorded.token;
+  }
+  const token = nextHostInstanceToken++;
+  hostInstanceIdentities.set(host, { token, registration: current });
+  return token;
+}
+
 // quietReRead is the shared quiet list read: publishReady's generation-guarded
 // publish with neither fetch's loading skeleton nor its error state. refresh
 // runs it behind the in-flight gate for the background poll, and the mutation
@@ -347,6 +463,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   resetForTests: () => {
+    hostInstanceIdentities.clear();
+    nextHostInstanceToken = 1;
     refreshInflight = null;
     latestGeneration = 0;
     latestPublishedGeneration = 0;

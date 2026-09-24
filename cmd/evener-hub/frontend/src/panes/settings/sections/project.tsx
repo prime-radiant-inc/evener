@@ -25,8 +25,11 @@
 import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { launchConfigStore } from "../../../stores/launchConfig";
+import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { HostScopedSurface } from "./hostScopedSurface";
+import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -62,6 +65,9 @@ export interface ProjectSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The host whose own project layer this section edits (component 07b).
+   * Defaults to the local hub, so a direct render is today's local section. */
+  host?: string;
 }
 
 /**
@@ -70,8 +76,28 @@ export interface ProjectSectionProps {
  * is fetched read-only, purely to drive the "default: {value}" inline hints
  * - this page never writes it.
  */
-export function ProjectSection(_props: ProjectSectionProps) {
+export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   const cwd = useQueryCwd();
+  // The launch-config gateway for the selected host: the controller's own store
+  // for the local hub, a per-host instance (over evener/host/request) for a
+  // remote one. Resolved per render; the instance is stable per host. Every read
+  // and write below - schema/getLayer/resolve, the path validation the form
+  // runs, and setLayer - goes through it, so a remote selection edits THAT
+  // host's project layer rather than this hub's (component 07b). The cwd stays
+  // in the route's ?cwd= query; the host comes from the settings route.
+  const store = launchConfigStoreForHost(host);
+  // The browse-assisted path fields the shared form renders (path scalars, the
+  // prompt file sub-fields, and pathList add rows) list THIS host's filesystem,
+  // not the controller's: same store, same seam as the validate/save calls
+  // above (component 07b). evener/paths/complete and evener/path/validate are
+  // both on the proxy allow-list.
+  const paths: LaunchFormPaths = {
+    directory: {
+      validatePath: (path, kind) => store.getState().validatePath(path, kind),
+      createDirectory: (path) => store.getState().createDirectory(path),
+    },
+    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+  };
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   // The effective layer of a best-effort resolve(cwd): unset fields whose
   // empty marker is generic prepend their entry here ("high (use global
@@ -84,8 +110,9 @@ export function ProjectSection(_props: ProjectSectionProps) {
   // /settings/project?cwd= can mount this section before AppShell's own
   // connect() handshake finishes, and schema()/getLayer() both require a
   // connected client (throw otherwise) - see that hook's own doc comment.
-  // isCancelled guards the same "component unmounted (or cwd changed)
-  // mid-load" case the legacy local `cancelled` flag did.
+  // isCancelled guards the same "component unmounted (or cwd/host changed)
+  // mid-load" case the legacy local `cancelled` flag did. The deps include the
+  // store, so a host switch reloads: a []-deps effect could not.
   useConnectedEffect(
     async (isCancelled) => {
       if (!cwd) return;
@@ -93,10 +120,10 @@ export function ProjectSection(_props: ProjectSectionProps) {
       setResolvedDefaults(undefined);
       try {
         const [schema, current, globalDefaults, resolved] = await Promise.all([
-          launchConfigStore.getState().schema(),
-          launchConfigStore.getState().getLayer(cwd, "project"),
-          launchConfigStore.getState().getLayer(cwd, "global"),
-          launchConfigStore
+          store.getState().schema(),
+          store.getState().getLayer(cwd, "project"),
+          store.getState().getLayer(cwd, "global"),
+          store
             .getState()
             .resolve(cwd)
             .catch(() => null),
@@ -108,7 +135,7 @@ export function ProjectSection(_props: ProjectSectionProps) {
         if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
       }
     },
-    [cwd],
+    [cwd, store],
   );
 
   if (!cwd) {
@@ -140,11 +167,25 @@ export function ProjectSection(_props: ProjectSectionProps) {
           globalDefaults={load.globalDefaults}
           resolvedDefaults={resolvedDefaults}
           successToast="Project launch settings saved"
-          validatePath={(path, kind) => launchConfigStore.getState().validatePath(path, kind)}
-          onSave={(config) => launchConfigStore.getState().setLayer(cwd, "project", config)}
+          validatePath={(path, kind) => store.getState().validatePath(path, kind)}
+          paths={paths}
+          host={host}
+          draftOwner={store}
+          onSave={(config) => store.getState().setLayer(cwd, "project", config)}
           onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
         />
       )}
     </div>
   );
+}
+
+/** ProjectHostScope is the Per-project launch overrides section scoped to the
+ * settings route's selected host (component 07b): the one shared HostPicker
+ * plus ProjectSection, whose own project layer is that host's own. The cwd is
+ * still read from the route's ?cwd= query; the host comes from the shared
+ * frame, never a query parameter of this pane's own. Local renders today's
+ * section byte-for-byte; a remote host's reads and writes all go through
+ * evener/host/request. */
+export function ProjectHostScope({ sectionId }: ProjectSectionProps) {
+  return <HostScopedSurface>{(host) => <ProjectSection sectionId={sectionId} host={host} />}</HostScopedSurface>;
 }

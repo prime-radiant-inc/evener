@@ -394,6 +394,42 @@ test("Browse tree expansion survives a segment round trip (Installed → Browse 
   // The tree should still be expanded — formatter should be visible without re-expanding
   await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
 });
+
+test("clears an applied removal guard when the selected host changes (same connection)", async () => {
+  const fake = connectFakeClient();
+  let betaListCalls = 0;
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/marketplace/list") {
+      if (forwarded.host === "beta") {
+        betaListCalls += 1;
+        if (betaListCalls === 1) return { marketplaces: [ACME] } as never;
+        throw new Error("reconcile unavailable");
+      }
+      return { marketplaces: [ACME] } as never;
+    }
+    if (forwarded.method === "evener/plugin/list") return { plugins: [] } as never;
+    if (forwarded.method === "evener/marketplace/remove") throw cloneLitterError(null);
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  const view = render(<MarketplacesPluginsSection host="beta" />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+
+  // Same connection, different host: the guard belongs to beta's catalog and
+  // must not suppress the reminder for gamma's marketplace of the same name.
+  view.rerender(<MarketplacesPluginsSection host="gamma" />);
+  await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
 // --- Whole-page lifetime tests ---------------------------------------------
 // The page-level counterpart to the sheet tests above: the applied-removal
 // guard lives on the whole settings section, so its lifecycle boundary is the

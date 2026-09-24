@@ -11,6 +11,11 @@
 // launchServer.tsx/project.tsx), or the diagnostics panel (launchServer-only,
 // rendered from resolve()/setLayer()'s own returned diagnostics, which this
 // component exposes via onSaved rather than rendering itself).
+//
+// It DOES own the host boundary: `current` and `onSave` both describe the host
+// selected now, and this form is handed a new host - or a re-registered one -
+// without being unmounted, so the draft is reseeded whenever the per-host store
+// INSTANCE behind it changes (see `draftOwner` and the seeding below).
 
 import {
   asEnvObjects,
@@ -37,11 +42,11 @@ import {
   PROMPT_DEPENDENT_WIRE_FIELDS,
   schemaPathKind,
 } from "@evener/appwire-client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
-import { PromptCompositeField, ScalarField } from "./fields";
+import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
 import styles from "./LaunchConfigForm.module.css";
 
 const CLASS = {
@@ -69,6 +74,21 @@ export interface LaunchConfigFormProps {
   resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
+  /** The browse-assisted path fields' helpers for the host whose layer is being
+   * edited (component 07b). A host-scoped pane passes the store bound to its
+   * selected host; omitted = the controller's own helpers (today's behavior). */
+  paths?: LaunchFormPaths;
+  /** The host whose own model catalog the modelPicker/modelList fields offer
+   * (component 07b). Omitted = the local hub, so a direct render is today's. */
+  host?: string;
+  /** The per-host store instance the parent resolved for this host. The form's
+   * draft BELONGS to that instance, not to the host's name: a host removed and
+   * re-added under the same name is a different registration, whose instance
+   * (stores/launchConfig.ts's hostEntry) carries a different `current`,
+   * `onSave` and `paths`, so a draft typed for the old registration is reseeded
+   * rather than written to the new one. A caller with no instance to hand over
+   * (a direct render, a test) keeps the host name as the owner. */
+  draftOwner?: object;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   onSaved?: (resolved: LaunchConfigResolved) => void;
 }
@@ -92,18 +112,57 @@ export function LaunchConfigForm({
   resolvedDefaults,
   successToast,
   validatePath,
+  paths,
+  host,
+  draftOwner,
   onSave,
   onSaved,
 }: LaunchConfigFormProps) {
   const supportedOptions = useMemo(() => options.filter((opt) => optionSupportsLayer(opt, layer)), [options, layer]);
-  // Seeded once - this form is mounted fresh per page-load; the parent
-  // doesn't re-fetch `current` mid-session (see this file's own top comment).
   const [state, setState] = useState<LaunchFormState>(() => buildFormState(supportedOptions, current));
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // The draft belongs to ONE per-host store instance. A host-scoped parent
+  // hands this form a different instance - with it a different `current`, a
+  // different `onSave` and a different `paths` - while it stays mounted (the
+  // frame above a real pane remounts the body on a switch, and this form's own
+  // contract has to hold on its own too), and a re-registration under the same
+  // NAME does the same: stores/launchConfig.ts builds a new instance for the new
+  // registration. A draft seeded once would then be shown as the new
+  // registration's settings and submitted to it by Save.
+  //
+  // Reseeded DURING render rather than from an effect, which is what makes the
+  // commit that carries the new owner the first one that renders it: an effect
+  // lands after that commit is painted, leaving a frame in which the old
+  // registration's values stand under the new one. Reset on the OWNER and not on
+  // `current`: a same-host re-read (a refetch, a reconnect) brings a
+  // referentially new `current` from the SAME instance and must not throw away
+  // what is being typed. The host NAME alone is not the owner either - it is
+  // unchanged across a re-registration - so a caller that has the instance hands
+  // it over, and one that does not keeps today's name-keyed behavior.
+  const owner: object | string | undefined = draftOwner ?? host;
+  const [seededOwner, setSeededOwner] = useState<object | string | undefined>(owner);
   const [status, setStatusText] = useState("");
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
+  if (seededOwner !== owner) {
+    setSeededOwner(owner);
+    setState(buildFormState(supportedOptions, current));
+    setFieldErrors({});
+    setStatusText("");
+  }
+
+  // The draft swap above drops the status line, so the self-clear timer it armed
+  // has nothing left to clear - and this is where that teardown lives, not in
+  // the render-phase reseed. A render is not a place for a side effect: React
+  // double-invokes it under StrictMode and may discard a pass outright under
+  // concurrent rendering, so a render-phase clearTimeout can cancel a timer for
+  // a reseed no commit ever carried out. An effect's cleanup also runs on the
+  // edge a render can never reach - the form going away - which is what keeps a
+  // save's timer from outliving the form. It runs exactly once per owner change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: owner is the trigger, not a read - the cleanup it gates clears a timer armed by the owner before it
+  useEffect(() => () => clearTimeout(clearTimerRef.current), [owner]);
 
   function setStatus(text: string): void {
     clearTimeout(clearTimerRef.current);
@@ -194,6 +253,7 @@ export function LaunchConfigForm({
           fileGlobalDefaultHint={globalDefaultHint(spec.fileWire, layer, globalDefaults)}
           textGlobalDefaultHint={globalDefaultHint(spec.textWire, layer, globalDefaults)}
           fileError={fieldErrors[spec.fileWire]}
+          paths={paths}
         />
       );
     }
@@ -208,6 +268,7 @@ export function LaunchConfigForm({
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
+              paths={paths}
               inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
@@ -215,6 +276,7 @@ export function LaunchConfigForm({
           return (
             <ModelListField
               option={opt}
+              host={host}
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
@@ -256,6 +318,8 @@ export function LaunchConfigForm({
         globalDefaultHint={globalDefaultHint(opt.wireField, layer, globalDefaults)}
         error={fieldErrors[opt.wireField]}
         resolvedDefaults={resolvedDefaults}
+        paths={paths}
+        host={host}
       />
     );
   }

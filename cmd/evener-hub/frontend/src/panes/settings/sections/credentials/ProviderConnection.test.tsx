@@ -1117,11 +1117,19 @@ test("a superseded reload read does not baseline a same-named row the store stil
   await user.click(screen.getByRole("button", { name: "Create" }));
   // The create's own listing loses the race with the concurrent read, so the
   // flow reaches its not-ready reload recovery without a row of its own.
+  // A superseded create also schedules the store's debounced refetch. Run it
+  // here, before the scripted reads below: left on the real clock it lands
+  // whenever the test crosses the debounce, and if it lands inside the reload
+  // step it takes that step's scripted response and holds the store's loading
+  // flag, so the Reload click hits a disabled button and does nothing.
+  vi.useFakeTimers();
   await act(async () => {
     await credentialsStore.getState().fetch();
     pending.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
     await pending.promise;
+    await vi.runOnlyPendingTimersAsync();
   });
+  vi.useRealTimers();
   expect(await screen.findByRole("button", { name: "Reload connection" })).toBeTruthy();
   // The older connection's listing still carries a row under this name. It is
   // hidden, so the flow stays in its recovery state rather than presenting it.
@@ -1141,9 +1149,19 @@ test("a superseded reload read does not baseline a same-named row the store stil
 
   const reloadRead = deferred<InstanceListResponse>();
   const retryRead = deferred<InstanceListResponse>();
+  const retryIssued = deferred<void>();
   let reads = 0;
-  client.on("evener/instance/list", () => (reads++ === 0 ? reloadRead.promise : retryRead.promise));
-  await user.click(screen.getByRole("button", { name: "Reload connection" }));
+  client.on("evener/instance/list", () => {
+    if (reads++ === 0) return reloadRead.promise;
+    retryIssued.resolve();
+    return retryRead.promise;
+  });
+  // user.click on a disabled button does nothing, so pin that the click
+  // reaches the reload rather than letting it silently no-op.
+  const reload = screen.getByRole("button", { name: "Reload connection" });
+  expect(reload).toHaveProperty("disabled", false);
+  await user.click(reload);
+  expect(reads).toBe(1);
   // A concurrent write fails while the reload's read is in flight: the write
   // supersedes the read (the store drops the response) and its failure releases
   // loading without recording an error or moving the listing.
@@ -1155,10 +1173,9 @@ test("a superseded reload read does not baseline a same-named row the store stil
   });
   await act(async () => {
     reloadRead.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
-    await reloadRead.promise;
-    // Let the reload's own retry reach the wire before the second write
-    // supersedes it; a reload without one issues nothing more.
-    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    // The reload's own retry must reach the wire before the second write
+    // supersedes it.
+    await retryIssued.promise;
   });
   // The retry loses the same way: its response is dropped, so the flow's own
   // read never applies and the store is left holding the older row.
