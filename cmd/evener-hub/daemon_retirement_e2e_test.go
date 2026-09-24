@@ -491,6 +491,24 @@ func TestDaemonRetirementWatchdogCarriesReactionToReplacementStream(t *testing.T
 	})
 }
 
+// TestDaemonRetirementWatchdogIgnoresIdleGaps pins that only reactions the
+// fixture actually waits on size the tripwire: a gap that spans fixture-side
+// work with no waiter (a restart, a file read) is not the daemon reacting, and
+// must not inflate the budget toward the ceiling.
+func TestDaemonRetirementWatchdogIgnoresIdleGaps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const floor = 500 * time.Millisecond
+		events := newDaemonRetirementProcessEvents()
+		events.testOnlyBaseBudget = floor
+		events.add(daemonRetirementProcessEvent{Kind: "armed"})
+		time.Sleep(3 * time.Second) // fixture-side idle work; no waiter outstanding
+		events.add(daemonRetirementProcessEvent{Kind: "disarmed"})
+		if got := events.watchdogBudget(); got != floor {
+			t.Fatalf("an idle gap inflated the tripwire: budget = %v, want the floor %v", got, floor)
+		}
+	})
+}
+
 // daemonRetirementProcessFixture owns the private roots, the Hub spawner, the
 // daemon processes, the clock pipes and the rendezvous root for one lifecycle.
 type daemonRetirementProcessFixture struct {
