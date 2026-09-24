@@ -916,7 +916,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				record.TurnID = owner
 				if openTurnID == "" {
 					openTurnID, openCalls = openGroupState(*index)
-					openReg = &ToolCallRegistry{CommRawArgs: map[string]string{}}
+					openReg = &ToolCallRegistry{CommRawArgs: replayCommRawArgs(file, *index, project)}
 				}
 			}
 			prevKind := schema.TurnKind("")
@@ -932,9 +932,11 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: map[string]string{}}
 			} else if openCalls == nil || openTurnID == "" {
 				// Continues a group whose opener lives in the previously
-				// indexed prefix: reconstruct its id and accumulated calls.
+				// indexed prefix: reconstruct its id, accumulated calls,
+				// and deferred communicate bytes (CommRawArgs) by
+				// re-projecting the group's records from the transcript.
 				openTurnID, openCalls = openGroupState(*index)
-				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: map[string]string{}}
+				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: replayCommRawArgs(file, *index, project)}
 			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
@@ -1813,6 +1815,50 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 		turnID = persistedTurnID(recordAtKindTurn(index, n-1), index.recordAt(n-1).Index)
 	}
 	return turnID, calls
+}
+
+// replayCommRawArgs re-projects the open group's records from the indexed
+// prefix to reconstruct the deferred communicate raw bytes (CommRawArgs) the
+// assistant turn seeded. The incremental scan initializes openReg with empty
+// CommRawArgs when a group continues from the previously indexed prefix, so
+// a rejected/healed communicate's result turn appended later would miss the
+// deferred bytes and its ItemCount would diverge from the full read. This
+// helper reads the group's records from the transcript file and re-projects
+// them with a fresh registry, then returns only the CommRawArgs map — the
+// same state the full read's single registry would carry. It is called only
+// on the continuation path (not on StartsGroup, where openReg is fresh by
+// definition), and only when project != nil (the scan is counting items).
+func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryProjector) map[string]string {
+	if project == nil {
+		return map[string]string{}
+	}
+	n := index.recordCount()
+	if n == 0 {
+		return map[string]string{}
+	}
+	// Walk back to the group's start record.
+	startIdx := n - 1
+	for i := n - 1; i >= 0; i-- {
+		if i == 0 || index.recordAt(i).StartsGroup {
+			startIdx = i
+			break
+		}
+	}
+	reg := &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}}
+	for i := startIdx; i < n; i++ {
+		record := index.recordAt(i)
+		raw := make([]byte, record.Length)
+		if _, err := file.ReadAt(raw, record.Offset); err != nil {
+			return reg.CommRawArgs
+		}
+		entry, err := transcript.DecodeEntry(raw)
+		if err != nil {
+			return reg.CommRawArgs
+		}
+		reg.Names = cloneToolNames(record.ToolSeed)
+		project(entry.Turn, record.TurnID, record.Index, reg)
+	}
+	return reg.CommRawArgs
 }
 
 // recordAtKindTurn reconstructs a record's turn kind for the fallback id

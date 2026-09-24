@@ -202,3 +202,82 @@ func TestItemWindowResolvesDeferredCommunicateAcrossPageBoundary(t *testing.T) {
 		t.Error("page-boundary error item PrevalOnly = false, want true")
 	}
 }
+
+
+// TestIncrementalAppendResolvesDeferredCommunicateOnResume proves the
+// incremental index scan reconstructs CommRawArgs when a group's opener (the
+// assistant turn that seeds the deferred communicate bytes) lives in the
+// previously indexed prefix and the paired result turn is appended later.
+// Before the fix, the resumed scan initialized openReg with empty CommRawArgs,
+// so the result turn missed the deferred bytes and its ItemCount diverged
+// from the full read (no error item rendered).
+func TestIncrementalAppendResolvesDeferredCommunicateOnResume(t *testing.T) {
+	const rawArgs = `{message: "hello"}` // malformed JSON — bare key
+	// Group opener: user + assistant turn with the communicate call.
+	// These are indexed first (cold read).
+	opener := []transcript.Entry{
+		userEntry(1, "do the thing"),
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "thinking about it"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_rej",
+				Name:         "communicate",
+				Arguments:    json.RawMessage(`{}`),
+				RawArguments: rawArgs,
+			},
+			}}}}},
+	}
+	path := writeEntries(t, opener...)
+	cache := NewTurnCache()
+	// Cold read: builds the index over the opener records.
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
+
+	// Append the result turn (rejects the communicate) and a closing
+	// assistant text turn.
+	suffix := []transcript.Entry{
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_rej",
+				Name:       "communicate",
+				IsError:    true,
+				PrevalOnly: true,
+			}},
+		}}}},
+		assistantTextEntry(4, "all done"),
+	}
+	for _, e := range suffix {
+		appendFile(t, path, marshalEntryLine(t, e))
+	}
+
+	// Warm append: the scan resumes from the indexed prefix and must
+	// reconstruct CommRawArgs so the result turn renders the error item.
+	got, _ := requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
+	if len(got) != 1 {
+		t.Fatalf("warm append produced %d turns, want 1 logical turn", len(got))
+	}
+	item, ok := findCommunicateErrorItem(got[0].Items)
+	if !ok {
+		t.Fatalf("warm append must render the rejected communicate error item (CommRawArgs reconstructed on resume); items: %+v", got[0].Items)
+	}
+	if item.ArgumentsJSON != rawArgs {
+		t.Errorf("resume error item ArgumentsJSON = %q, want deferred raw bytes %q", item.ArgumentsJSON, rawArgs)
+	}
+	if item.Status != appwire.TurnStatusFailed {
+		t.Errorf("resume error item Status = %q, want %q", item.Status, appwire.TurnStatusFailed)
+	}
+	if !item.PrevalOnly {
+		t.Error("resume error item PrevalOnly = false, want true")
+	}
+
+	// Full read parity: the resumed/merged index must agree with a fresh
+	// full read of the same transcript.
+	fresh := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	if len(fresh) != 1 {
+		t.Fatalf("full read produced %d turns, want 1", len(fresh))
+	}
+	freshItem, ok := findCommunicateErrorItem(fresh[0].Items)
+	if !ok {
+		t.Fatalf("full read must render the rejected communicate error item; items: %+v", fresh[0].Items)
+	}
+	assertCommunicateErrorItemMatches(t, item, freshItem, "resume-vs-full")
+}
