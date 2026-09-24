@@ -139,7 +139,7 @@ session that trips the same check in one run collapses into **one** Finding
 — that check's `title`/`category`/`signature` — with every tripped session
 listed in `evidence.sessionRefs`. `evidence.doctorCommand` is the
 audit invocation (runbook + session refs) that
-reproduces it, scoped to exactly the affected sessions.
+reproduces it, scoped to the affected sessions — empty when every affected session is non-reproducible (bare id ambiguous across buckets), and capped at `evidenceSessionRefCap` (200) entries when there are more reproducible selectors than the command can carry; the Description prose discloses any omission or non-reproducibility.
 
 ### Metric namespace
 
