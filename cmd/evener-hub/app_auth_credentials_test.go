@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,79 @@ import (
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking pins what a
+// store that cannot be loaded must cost. hubCredentialStore dropped
+// LoadStore's error and handed back nil, and the controller dereferenced nil on
+// the next read or write (c.creds.Get, c.creds.Set): an unreadable
+// credentials.toml - a mode the store refuses, a file another process is
+// rewriting, a directory in its place - turned a credential read or write into
+// a nil-pointer panic inside the RPC handler, which is neither a refusal the
+// pane can show nor a state the operator can diagnose.
+//
+// Reads answer "no stored key" and writes refuse with a typed wire error naming
+// the file.
+func TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	// The default store a nil CredsStore resolves to: credentials.toml beside
+	// the state root (hubAuthCredentialsPath). The store refuses a file with
+	// group or other bits set ("has mode 644; require 0600"), which is how a
+	// real file becomes unreadable without being absent.
+	credsPath := filepath.Join(root, "credentials.toml")
+	if err := os.WriteFile(credsPath, []byte("[providers]\n"), 0o600); err != nil {
+		t.Fatalf("write credentials.toml: %v", err)
+	}
+	if err := os.Chmod(credsPath, 0o644); err != nil {
+		t.Fatalf("chmod credentials.toml: %v", err)
+	}
+	if _, err := credentials.LoadStore(credsPath); err == nil {
+		t.Fatal("LoadStore accepted the fixture, so this test is not exercising an unreadable store")
+	}
+
+	providersToml := writeProvidersToml(t, root, bearerInstanceToml)
+	healthy, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	ctrl := newHubAuthControllerWithStore(stateDir, nil)
+	ctrl.stateDir = stateDir
+	ctrl.providersConfigPath = providersToml
+	ctrl.reg = newTestRegistry(t, stateDir, providersToml, healthy, nil)
+
+	// A read answers from no store rather than dereferencing one.
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work-ant"})
+	if err != nil {
+		t.Fatalf("Status(work-ant): %v", err)
+	}
+	if status.ActiveSource != "none" || status.HasStoredFile {
+		t.Fatalf("status = %+v, want a keyless answer while the store cannot be read", status)
+	}
+
+	// A write refuses with the reason, in the hub's own error class: the caller
+	// cannot fix a file on the hub's disk by changing the request.
+	_, err = ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "sk-not-written"})
+	if err == nil {
+		t.Fatal("ApiKeySet landed a key with no readable credentials store")
+	}
+	assertWireCode(t, err, appwire.CodeInternalError)
+	if !strings.Contains(err.Error(), credsPath) {
+		t.Fatalf("refusal = %v, want it to name %s", err, credsPath)
+	}
+
+	// Clearing refuses the same way, and the OAuth-record path does not panic
+	// either.
+	if _, err := ctrl.ApiKeyClear(appwire.AuthApiKeyClearParams{Provider: "work-ant"}); err == nil {
+		t.Fatal("ApiKeyClear reported success with no readable credentials store")
+	} else {
+		assertWireCode(t, err, appwire.CodeInternalError)
+	}
+	if _, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work-ant"}); err == nil {
+		t.Fatal("Logout reported success with no readable credentials store")
+	} else {
+		assertWireCode(t, err, appwire.CodeInternalError)
+	}
+}
 
 type credentialProbeFakeClient struct {
 	mu      sync.Mutex

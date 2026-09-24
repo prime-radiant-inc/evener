@@ -1751,7 +1751,7 @@ describe("late content growth with no scroll event", () => {
   }
 
   interface FakeObserver {
-    target: Element | null;
+    targets: Element[];
     disconnected: boolean;
     callback: ResizeObserverCallback;
   }
@@ -1759,7 +1759,7 @@ describe("late content growth with no scroll event", () => {
   function installResizeObserver() {
     const observers: FakeObserver[] = [];
     class FakeResizeObserver {
-      target: Element | null = null;
+      targets: Element[] = [];
       disconnected = false;
       readonly callback: ResizeObserverCallback;
       constructor(callback: ResizeObserverCallback) {
@@ -1767,7 +1767,7 @@ describe("late content growth with no scroll event", () => {
         observers.push(this);
       }
       observe(target: Element) {
-        this.target = target;
+        this.targets.push(target);
       }
       unobserve() {}
       disconnect() {
@@ -1830,7 +1830,7 @@ describe("late content growth with no scroll event", () => {
     const resizeObserver = installResizeObserver();
     try {
       const { el, content, set } = mountWithContent();
-      expect(resizeObserver.observers[0]?.target).toBe(content);
+      expect(resizeObserver.observers[0]?.targets).toContain(content);
 
       definePort(el, GREW_AT_BOTTOM);
       set(GREW_AT_BOTTOM);
@@ -1839,6 +1839,78 @@ describe("late content growth with no scroll event", () => {
       act(() => resizeObserver.trigger());
 
       expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // The port itself can shrink under a reader at the bottom: something above
+  // or below the transcript grows (the pane header's cadence trace appearing
+  // grew the header 6px -> 10px, measured in the transcript scroll guard as
+  // clientHeight 671 -> 667; a composer growing a line as the reader types).
+  // scrollTop stays put, so no scroll event fires and the content never
+  // resized - the reader is left short of the latest lines by exactly the
+  // shrink, with wasAtBottomRef still true and no pill. A 4px shrink even
+  // still reads as "at the bottom" to isAtBottom's rounding tolerance, so
+  // nothing but a re-anchor on the port's own resize can recover it.
+  test.each([
+    ["the cadence trace's 4px header growth", 4],
+    ["a composer line's 20px", 20],
+  ])("re-anchors when the scroll port shrinks under a reader at the bottom (%s)", (_label, shrink) => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+      expect(resizeObserver.observers.flatMap((observer) => observer.targets)).toContain(el);
+
+      const shrunk: ScrollMetrics = { ...MOUNTED_AT_BOTTOM, clientHeight: MOUNTED_AT_BOTTOM.clientHeight - shrink };
+      definePort(el, shrunk);
+      set(shrunk);
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(shrunk.scrollHeight - shrunk.clientHeight);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // A browser dispatches scroll events before it delivers ResizeObserver
+  // callbacks in the same frame, so a shrink that lands alongside a scroll
+  // event (the pill's own landing, say) is first seen by the scroll listener.
+  // A 4px shortfall reads as at-bottom there and becomes the baseline; the
+  // observer that follows must still see a reader short of the true end.
+  test("re-anchors a port shrink the scroll listener saw first", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+
+      const shrunk: ScrollMetrics = { ...MOUNTED_AT_BOTTOM, clientHeight: MOUNTED_AT_BOTTOM.clientHeight - 4 };
+      definePort(el, shrunk);
+      set(shrunk);
+      act(() => {
+        el.dispatchEvent(new Event("scroll"));
+      });
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(shrunk.scrollHeight - shrunk.clientHeight);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("a reader scrolled away keeps their position when the scroll port shrinks", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const away: ScrollMetrics = { scrollTop: 1000, scrollHeight: 5000, clientHeight: 500 };
+      const { el, set } = mountWithContent(away);
+
+      const shrunk: ScrollMetrics = { ...away, clientHeight: 480 };
+      definePort(el, shrunk);
+      set(shrunk);
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(away.scrollTop);
     } finally {
       resizeObserver.restore();
     }

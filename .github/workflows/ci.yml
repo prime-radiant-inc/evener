@@ -14,7 +14,12 @@ permissions:
   contents: read
 
 jobs:
-  web:
+  # The frontend gate runs as two lanes on separate runners, because its two
+  # halves share nothing: the unit/type/lint checks, and the production build
+  # plus the real-browser guards. Each takes about three minutes; run one
+  # after the other on one runner they took over six. `web`, the required
+  # check, passes only when both lanes do.
+  web-unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,8 +30,35 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
-      - name: Test, build, and browser guards
-        run: make test-web && make build-web && make test-web-browser
+      - name: Typecheck, unit tests, and lint
+        run: make test-web
+
+  web-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
+
+      # The retirement and skill browser guards run go test against
+      # cmd/evener-hub, with and without the browserguard tag.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - uses: ./.github/actions/go-cache-restore
+        with:
+          kind: web
+
+      - name: Build and browser guards
+        run: make build-web && make test-web-browser
+
+      - uses: ./.github/actions/go-cache-save
 
       # The skill guard keeps its driver log, screenshots and helper logs under
       # a temporary directory when it fails, deliberately, so a failing run can
@@ -41,10 +73,22 @@ jobs:
           name: skillguard-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/skillguard-browser-*/artifacts/**
           retention-days: 7
-          # The step also fires when make test-web or make build-web is what
-          # failed, and then there is nothing to collect: say so quietly
-          # instead of adding a warning that reads like a second failure.
+          # The step also fires when make build-web is what failed, and then
+          # there is nothing to collect: say so quietly instead of adding a
+          # warning that reads like a second failure.
           if-no-files-found: ignore
+
+  web:
+    if: always()
+    needs: [web-unit, web-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both frontend lanes
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   native:
     runs-on: ubuntu-latest
@@ -87,6 +131,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: static-build
 
       - name: Build runtime pair and all Go workspace packages
         run: make build && make build-go
@@ -101,6 +147,8 @@ jobs:
       - name: Vet (GOOS=windows — Unix-only sources must carry a build tag)
         run: GOOS=windows make vet
 
+      - uses: ./.github/actions/go-cache-save
+
   lint-golangci:
     runs-on: ubuntu-latest
     steps:
@@ -109,11 +157,32 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
-          cache: true
-          cache-dependency-path: |
-            go.work
-            go.work.sum
-            **/go.sum
+          cache: false
+
+      - uses: ./.github/actions/go-cache-restore
+        with:
+          kind: lint-golangci
+
+      # The analysis cache lives where the Makefile's GOLANGCI_LINT_CACHE
+      # points. That path hashes the checkout path, which is the same on every
+      # hosted runner, so a restored cache lands where make lint looks. The
+      # key carries the linter version, its config, and the Go version; like
+      # the Go build cache it restores the newest entry by prefix and saves
+      # only on main.
+      - name: Resolve golangci-lint cache
+        id: golangci-cache
+        env:
+          CONFIG_HASH: ${{ hashFiles('.tool-versions', '.golangci.yml', '.golangci-appwire.yml') }}
+        run: |
+          echo "dir=$(scripts/lib/golangci-lint-cache.sh)" >> "$GITHUB_OUTPUT"
+          echo "prefix=golangci-lint-${ImageOS}-$(go env GOVERSION)-${CONFIG_HASH}-" >> "$GITHUB_OUTPUT"
+
+      - id: golangci-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.golangci-cache.outputs.dir }}
+          key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.golangci-cache.outputs.prefix }}
 
       - name: Install golangci-lint
         run: |
@@ -129,6 +198,14 @@ jobs:
       - name: Lint tagged compile floors (evenerfuzz and eval)
         run: make lint-evenerfuzz lint-eval
 
+      - uses: actions/cache/save@v6
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
+        with:
+          path: ${{ steps.golangci-cache.outputs.dir }}
+          key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
+
+      - uses: ./.github/actions/go-cache-save
+
   lint-repository:
     runs-on: ubuntu-latest
     steps:
@@ -137,11 +214,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
-          cache: true
-          cache-dependency-path: |
-            go.work
-            go.work.sum
-            **/go.sum
+          cache: false
+
+      - uses: ./.github/actions/go-cache-restore
+        with:
+          kind: lint-repository
 
       - name: Install gitleaks
         run: |
@@ -152,6 +229,8 @@ jobs:
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
         run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports secret-scan
+
+      - uses: ./.github/actions/go-cache-save
 
   # Both fuzz consistency checks are fast, static AST analyses over the same
   # target manifest and registry inputs; running them in one lane pays a
@@ -166,17 +245,19 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
-          cache: true
-          cache-dependency-path: |
-            go.work
-            go.work.sum
-            **/go.sum
+          cache: false
+
+      - uses: ./.github/actions/go-cache-restore
+        with:
+          kind: fuzz-checks
 
       - name: Fuzz gap check (every decode/parse package has a target — static, fast)
         run: make fuzz-gap-check
 
       - name: Fuzz registry check (manifest matches AST-discovered targets)
         run: make fuzz-registry-check
+
+      - uses: ./.github/actions/go-cache-save
 
   static:
     if: always()
@@ -207,9 +288,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: race-root
 
       - name: Test (race detector — root module)
         run: make test-race RACE_SCOPE=root
+
+      - uses: ./.github/actions/go-cache-save
 
   race-module-shards:
     name: race-modules / ${{ matrix.scope }}
@@ -223,9 +308,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: race-${{ matrix.scope }}
 
       - name: Test (race detector — ${{ matrix.scope }})
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
+
+      - uses: ./.github/actions/go-cache-save
 
   race-modules:
     if: always()
@@ -245,9 +334,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: tests
 
       - name: Deterministic tests (full root suite; frontend covered by web job)
         run: ROOT_FULL=1 WEB=0 make test
+
+      - uses: ./.github/actions/go-cache-save
 
   fuzz:
     runs-on: ubuntu-latest
@@ -255,6 +348,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go-cache-kind: fuzz
 
       - name: Fuzz seed-corpus replay (committed crashers — no search, deterministic)
         run: make fuzz
+
+      - uses: ./.github/actions/go-cache-save

@@ -181,6 +181,15 @@ type CostTier struct {
 type Credential struct {
 	Value  string `json:"-"`
 	Source string `json:"source,omitempty"` // api_key | credential_headers | store | env:<VAR> | oauth | adc | none
+	// AuthoredLayer names the layer providers.toml authors whose variables are
+	// unset - "api_key" or "credential_headers" - and is empty otherwise. Such a
+	// layer is terminal (spec §10): resolution returns "none" at it without
+	// consulting the file store or the environment at all, so a stored key under
+	// that name is one nothing reads. It carries no secret (the layer's name, not
+	// the variable or its value) and never serializes; the hub's credential
+	// writers are its callers, and they skip the name rather than describing a
+	// stored key that is dead.
+	AuthoredLayer string `json:"-"`
 }
 
 // Resolved is the fully materialized record adapters consume (spec §4.4).

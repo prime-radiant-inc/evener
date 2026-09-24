@@ -63,6 +63,11 @@ import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
+import {
+	MutationRecoveryPanel,
+	shouldOfferRecoveryEntry,
+	useRecoveryPanel,
+} from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
@@ -943,6 +948,20 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	// The recovery surface: this exact hub/conversation target's durable
+	// recovery rows, mounted in the recovery modal below. useRecoveryPanel
+	// acquires the runtime only once the conversation is connected (the
+	// singleton opens the mutations database), so a screen that never reaches a
+	// live conversation never constructs one - what the landed render fence
+	// (useNativeMutationRecovery.render.test.tsx) requires of this screen.
+	const recovery = useRecoveryPanel({
+		connected,
+		hubId: route.params.hubId,
+		targetRef: route.params.ref,
+	});
+	const deliveryConcern = Boolean(
+		snapshot.error || actionError || unconfirmedSend !== null,
+	);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
@@ -2499,10 +2518,7 @@ export function ConversationScreen({
 										{draft.loaded ? "Retry saving" : "Retry loading draft"}
 									</Action>
 								) : null}
-								{!connected ||
-								snapshot.error ||
-								actionError ||
-								unconfirmedSend !== null ? (
+								{!connected || deliveryConcern ? (
 									<Action
 										tone="quiet"
 										onPress={() => {
@@ -2519,6 +2535,22 @@ export function ConversationScreen({
 											: !connected
 												? "Reconnect"
 												: "Review error"}
+									</Action>
+								) : null}
+								{shouldOfferRecoveryEntry({
+									connected,
+									deliveryConcern,
+									count: recovery.count,
+									failed: recovery.failed,
+								}) ? (
+									<Action
+										tone="quiet"
+										onPress={() => {
+											Keyboard.dismiss();
+											setRecoveryOpen(true);
+										}}
+									>
+										Recovery
 									</Action>
 								) : null}
 								{permitted?.stop ? (
@@ -2562,6 +2594,29 @@ export function ConversationScreen({
 								</View>
 								<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 									<ConnectionStatus inset={0} />
+									<MutationRecoveryPanel
+										targetKey={recovery.targetKey}
+										snapshot={recovery.snapshot}
+										error={recovery.error}
+										onRetry={recovery.retry}
+										loading={recovery.loading}
+										actions={{
+											canRestore: () => document.canRestoreRecoveredDraft(),
+											restoreHint: () => document.recoveredRestoreHint(),
+											onRestore: (row) => {
+												// Clear any prior action error first, like every other
+												// action handler here, so a successful restore never
+												// leaves a stale error banner (or hides the Recovery
+												// entry, which keys on deliveryConcern).
+												setActionError(null);
+												if (!document.restoreRecoveredDraft(row.text))
+													setActionError(
+														"This message could not be restored to the draft.",
+													);
+											},
+											onDiscard: recovery.discard,
+										}}
+									/>
 									<ErrorMessage
 										message={snapshot.error || actionError || draft.error}
 									/>

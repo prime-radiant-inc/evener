@@ -124,7 +124,14 @@ func authControllerOver(toml string, env map[string]string) func(t *testing.T) *
 		if toml != "" {
 			path = writeProvidersToml(t, dir, toml)
 		}
-		return newTestAuthController(t, dir, t.TempDir(), path, env)
+		stateDir := t.TempDir()
+		// The status answer this corpus records carries a ConfigRevision keyed
+		// with the hub's endpoint-fingerprint key (hubcore.CredentialConfigRevision),
+		// and the corpus is compared byte for byte: a random key per run would
+		// give every recorded revision a different value. A pinned key keeps
+		// them stable, as the instance-list scenario below pins its own.
+		pinEndpointFingerprintKey(t, stateDir)
+		return newTestAuthController(t, dir, stateDir, path, env)
 	}
 }
 

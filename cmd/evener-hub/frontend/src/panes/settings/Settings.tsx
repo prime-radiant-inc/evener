@@ -18,7 +18,7 @@ import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { AgentsDocSection } from "./sections/agentsDoc";
-import { CredentialsSection } from "./sections/credentials/CredentialsSection";
+import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
 import { HostsSection } from "./sections/hosts";
@@ -38,6 +38,7 @@ import { StorageSection } from "./sections/storage";
 import { ThemeSection } from "./sections/theme";
 import { TranscriptSection } from "./sections/transcript";
 import styles from "./settings.module.css";
+import { settingsURL, useSettingsHost, useSettingsHostURLSync } from "./settingsHost";
 
 // McpSection's overview dependency is injected (its own McpSectionProps seam,
 // built against the pinned interface before the real store existed) - this
@@ -68,7 +69,10 @@ const CLASS = {
 // SETTINGS_SECTIONS (sections.ts's own comment - no nav entry) but IS a
 // valid dispatch target here, reached via /settings/project?cwd=.
 const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> = {
-  credentials: CredentialsSection,
+  // CredentialsHostScope wraps CredentialsSection with the host picker: local
+  // (the default) renders CredentialsSection unchanged, a remote selection
+  // renders that host's own read-only listing.
+  credentials: CredentialsHostScope,
   agents: AgentsSection,
   "agents-md": AgentsDocSection,
   "launch-evener": LaunchServerSection,
@@ -137,6 +141,11 @@ function showSettingsList(): void {
  */
 export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
   const rememberedSection = usePrefsStore((s) => s.lastSettingsSection);
+  // The route's selected host (component 07b's host-context): this pane is the
+  // settings route's shell, so it is where a URL that names a host is adopted
+  // and kept in step with back/forward.
+  const { host } = useSettingsHost();
+  useSettingsHostURLSync();
   const activeId =
     params.section ??
     (rememberedSection !== null && isKnownSettingsSection(rememberedSection) ? rememberedSection : DEFAULT_SECTION_ID);
@@ -148,8 +157,9 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   const showContent = !isMobile || params.section !== undefined;
 
   function handleNavigate(sectionId: string) {
-    const url = paneToURL("settings", { section: sectionId });
-    if (url !== null) navigate(url);
+    // Through settingsURL, not paneToURL: a remote selection stays part of the
+    // route across a section switch. Local yields exactly paneToURL's URL.
+    navigate(settingsURL(sectionId, host));
   }
 
   // Record the visited section so the next bare /settings reopens here.
