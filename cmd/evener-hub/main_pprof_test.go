@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-var hubPprofLogLine = regexp.MustCompile(`pprof listening on http://(\S+)/debug/pprof/`)
+var hubPprofLogLine = regexp.MustCompile(`pprof listening on (http://\S+/debug/pprof/)`)
 
 // TestRunMainServesLivePprofWhileRunning pins the hub's wiring of
 // EVENER_PPROF_ADDR: it logs the address it actually bound, the endpoint
@@ -21,15 +21,15 @@ func TestRunMainServesLivePprofWhileRunning(t *testing.T) {
 	t.Setenv(envvars.EVENERPprofAddr.Name, "127.0.0.1:0")
 
 	var stderr bytes.Buffer
-	var pprofAddr string
+	var pprofURL string
 	var statusWhileServing int
 	deps.serve = func(context.Context, hubHTTPServer) error {
 		m := hubPprofLogLine.FindStringSubmatch(stderr.String())
 		if m == nil {
 			return nil
 		}
-		pprofAddr = m[1]
-		resp, err := http.Get("http://" + pprofAddr + "/debug/pprof/")
+		pprofURL = m[1]
+		resp, err := http.Get(pprofURL)
 		if err != nil {
 			t.Errorf("GET pprof while serving: %v", err)
 			return nil
@@ -42,16 +42,16 @@ func TestRunMainServesLivePprofWhileRunning(t *testing.T) {
 	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
 		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
 	}
-	if pprofAddr == "" {
+	if pprofURL == "" {
 		t.Fatalf("hub never logged a live pprof address:\n%s", stderr.String())
 	}
-	if strings.HasSuffix(pprofAddr, ":0") {
-		t.Fatalf("hub logged %q; want the kernel-assigned port", pprofAddr)
+	if strings.Contains(pprofURL, ":0/") {
+		t.Fatalf("hub logged %q; want the kernel-assigned port", pprofURL)
 	}
 	if statusWhileServing != http.StatusOK {
 		t.Fatalf("pprof index while serving = %d, want 200", statusWhileServing)
 	}
-	if resp, err := http.Get("http://" + pprofAddr + "/debug/pprof/"); err == nil {
+	if resp, err := http.Get(pprofURL); err == nil {
 		_ = resp.Body.Close()
 		t.Fatalf("pprof endpoint still answering after the hub returned (status %d)", resp.StatusCode)
 	}
