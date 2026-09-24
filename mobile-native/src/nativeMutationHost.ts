@@ -46,11 +46,12 @@ export function createNativeMutationHost(
 			if (startPromise !== undefined) return startPromise;
 			unregister = runtime.registerTarget(hubId, targetRef, client);
 			startPromise = runtime.start().catch((error) => {
-				// A failed startup leaves nothing registered: the next start
-				// attempt re-registers and tries again instead of returning a
-				// latched rejection over a stale binding.
-				unregister?.();
-				unregister = undefined;
+				// Keep the registration: the runtime retries its own start on
+				// the next submission, and a mutation admitted after that
+				// retry succeeds must still have this screen's client bound or
+				// it would be durably enqueued and never dispatched. The
+				// registration is retired by dispose() with the mount, so a
+				// replaced client never inherits it.
 				startPromise = undefined;
 				throw error;
 			});

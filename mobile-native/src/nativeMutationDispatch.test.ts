@@ -229,3 +229,70 @@ test("a durable send clears the composer's durable unconfirmed draft at enqueue,
 	});
 	await host.stop();
 });
+
+test("a failed host startup keeps the registration so a later admission still dispatches", async () => {
+	// The runtime's first start attempt fails (an unavailable timer port); the
+	// host registration must survive it, or the next admission would be
+	// durably enqueued with no client bound and never dispatched.
+	let attempts = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: (() => {
+			let next = 0;
+			return () => `mutation-${++next}`;
+		})(),
+		now: () => 1,
+		getOwnClientId: () => "origin-a",
+		setInterval: (callback) => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("timer setup unavailable");
+			return globalThis.setInterval(callback, 2000) as unknown as number;
+		},
+		clearInterval: (intervalId) => globalThis.clearInterval(intervalId),
+	});
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => ({ thread: makeThread() }) as ThreadReadResponse);
+	client.on("turn/start", (params) => {
+		const { clientMutationId } = params as { clientMutationId: string };
+		return {
+			receipt: {
+				clientMutationId,
+				disposition: "applied",
+				threadId: "thread-1",
+				turnId: "turn-1",
+				projectionState: "pending",
+			},
+			turn: { id: "turn-1" },
+		} as never;
+	});
+	const host = createNativeMutationHost(runtime, "hub-1", "ref-1", client);
+	const service = createConversationService(client, {
+		onReadStart: (ref, expectedThreadId) =>
+			host.beginRead(ref, expectedThreadId),
+		onReadComplete: (lease, response) =>
+			host.reconcileRead(lease, response),
+	});
+	const store = createConversationStore({
+		mutationHubId: "hub-1",
+		mutationSubmitter: runtime,
+	});
+
+	await expect(host.start()).rejects.toThrow("timer setup unavailable");
+	// The registration survived: the read fence still hands out a lease, so the
+	// retried start has a bound client to dispatch for.
+	expect(host.beginRead("ref-1")).toBeDefined();
+
+	await store
+		.getState()
+		.openProjected(service, createActivityStore().getState(), "ref-1");
+	store.getState().setDraft("retry after failure");
+	await store
+		.getState()
+		.send(service, [{ type: "text", text: "retry after failure" }]);
+
+	await vi.waitFor(() => {
+		expect(
+			client.calls.filter((call) => call.method === "turn/start"),
+		).toHaveLength(1);
+	});
+	await host.stop();
+});

@@ -996,8 +996,9 @@ export function ConversationScreen({
 	// Bind this screen's client and target to the runtime for the connected
 	// lifetime: the service's read fence calls through mutationHostRef, and the
 	// runtime's dispatch gate opens on this screen's own authoritative read and
-	// retires with the mount. A failed startup has already dropped the
-	// registration, so the screen stays usable on the direct service path.
+	// retires with the mount. A failed startup keeps the registration: the
+	// runtime retries its own start on the next submission, and a durable
+	// admission must always have this screen's client bound.
 	useEffect(() => {
 		if (!client || !connected) return;
 		const host = createNativeMutationHost(
