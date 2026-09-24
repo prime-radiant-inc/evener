@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1988,10 +1987,15 @@ func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) 
 	if !strings.Contains(desc, "omitted from command") {
 		t.Errorf("Description %q must disclose command-side omission (round 11 finding 3): %d reproducible selectors exceed the %d-entry command cap", desc, totalSessions, evidenceSessionRefCap)
 	}
-	// The omission count must be exactly 2 (202 - 200).
+	// The omission count must be exactly 2 (202 - 200). Assert the
+	// exact phrase so the test fails for any wrong count — the weak
+	// substring check (strconv.Itoa(2)) passed regardless because "2"
+	// appears in "202", "200", etc. (round 12 finding 4).
 	wantOmitted := totalSessions - evidenceSessionRefCap
-	if !strings.Contains(desc, strconv.Itoa(wantOmitted)) {
-		t.Errorf("Description %q must disclose the correct command-side omission count %d (round 11 finding 3)", desc, wantOmitted)
+	wantPhrase := fmt.Sprintf("%d sessions omitted from command (cap %d)", wantOmitted, evidenceSessionRefCap)
+	wantPhraseMore := fmt.Sprintf("%d more sessions omitted from command (cap %d)", wantOmitted, evidenceSessionRefCap)
+	if !strings.Contains(desc, wantPhrase) && !strings.Contains(desc, wantPhraseMore) {
+		t.Errorf("Description %q must contain exact phrase %q or %q (round 12 finding 4)", desc, wantPhrase, wantPhraseMore)
 	}
 	// The command itself must carry at most 200 selectors.
 	dc := runTimeout.Evidence.DoctorCommand
@@ -2002,6 +2006,131 @@ func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) 
 			if cmdSelectors > evidenceSessionRefCap {
 				t.Errorf("DoctorCommand has %d selectors, want <= %d (round 11 finding 3)", cmdSelectors, evidenceSessionRefCap)
 			}
+		}
+	}
+}
+
+// TestRunAudit_R12F1_NoCollidingBareSidInSessionRefs is the round 12
+// finding-1 RED case: when a session in a non-canonical (hex) bucket trips
+// a finding, agentSel is the bare sid (refFor returns "" for non-canonical
+// names). If that sid also exists in a canonical bucket, the agent-side
+// bare-id resolver (enumerateBuckets filters by ValidateProjectID, skipping
+// hex buckets) resolves current-bucket-first to the WRONG session silently
+// — no ambiguity error. The audit presents the bare sid in SessionRefs as
+// if it uniquely re-addresses the session, but it does not. After the fix,
+// the colliding bare sid must not appear in SessionRefs, and the
+// Description must disclose the session with bucket context instead.
+func TestRunAudit_R12F1_NoCollidingBareSidInSessionRefs(t *testing.T) {
+	base := t.TempDir()
+	// Hex bucket: non-canonical name that fails ValidateProjectID
+	// (no "-" separator with 10-char suffix) but passes safeTokenForRepro
+	// (no shell metacharacters) and projectTokenOK (no path separators).
+	hexBucket := stateHomeBucket(base, "0123456789abcdef")
+	// Canonical bucket: the consuming agent's current bucket.
+	canonicalBucket := stateHomeBucket(base, hash1)
+
+	sid := newSessionsTestSID(t)
+	// Hex session trips the run_timeout finding.
+	writeAuditSession(t, hexBucket, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+	// Canonical session is healthy — does NOT trip the finding.
+	// Same sid creates the collision: agent bare-id resolution finds
+	// only the canonical session (enumerateBuckets skips hex buckets).
+	writeAuditSession(t, canonicalBucket, sid, oneCleanReadFileTurns(), nil)
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+
+	// The colliding bare sid must NOT appear in SessionRefs. The
+	// agent-side resolver would silently resolve it to the wrong
+	// (canonical) session. The Description must disclose the session
+	// with bucket context instead.
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		if ref == sid {
+			t.Errorf("SessionRefs contains bare sid %q that collides with a canonical bucket session — agent-side bare-id resolution would silently resolve to the wrong session (round 12 finding 1)", ref)
+		}
+	}
+
+	// The Description must disclose the hex-bucket session with bucket
+	// context so the finding is traceable without the colliding bare sid.
+	if !strings.Contains(runTimeout.Description, sid) {
+		t.Errorf("Description %q must name the session sid %q (round 12 finding 1)", runTimeout.Description, sid)
+	}
+	if !strings.Contains(runTimeout.Description, "0123456789abcdef") {
+		t.Errorf("Description %q must name the hex bucket \"0123456789abcdef\" for the colliding session (round 12 finding 1)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget is the round 12
+// finding-2 RED case: when reproducible refs fill the shared cap
+// (reproCount >= 200) and non-reproducible sessions exist,
+// formatNonReproSessions gets budget==0, slices to zero entries, but still
+// returns the trailing parenthetical " (bucket name shell-unsafe, bare id
+// ambiguous across buckets)" with no session listed — producing
+// "… not reproducible:  (bucket name…)": a clause naming no session and a
+// double space. After the fix, when the capped list is empty,
+// formatNonReproSessions returns "" so the caller's omission count carries
+// the disclosure alone.
+func TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget(t *testing.T) {
+	base := t.TempDir()
+	// 200 reproducible sessions in a canonical bucket (fill the cap).
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 200
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+	// 2 non-reproducible sessions in unsafe buckets sharing one sid
+	// (bare sid ambiguous across the two unsafe buckets).
+	nonReproBucketA := stateHomeBucket(base, "has space-a")
+	nonReproBucketB := stateHomeBucket(base, "has space-b")
+	nonReproSid := newSessionsTestSID(t)
+	writeAuditSession(t, nonReproBucketA, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The non-reproducible portion must not contain a malformed clause
+	// with no session listed (empty list + trailing parenthetical).
+	// Look for the "not reproducible:" marker and check the text after it.
+	if idx := strings.Index(desc, "not reproducible:"); idx >= 0 {
+		afterMarker := desc[idx+len("not reproducible: "):]
+		// The first character after the marker should not be a space
+		// (double space from empty list join) or the parenthetical.
+		if strings.HasPrefix(afterMarker, " (bucket name") {
+			t.Errorf("Description %q has malformed non-reproducible clause: empty session list with trailing parenthetical (round 12 finding 2)", desc)
+		}
+		// No clause naming zero sessions should appear — the omission
+		// count should carry the disclosure alone.
+		if strings.Contains(afterMarker, "  ") {
+			t.Errorf("Description %q has double space in non-reproducible clause (round 12 finding 2)", desc)
 		}
 	}
 }
