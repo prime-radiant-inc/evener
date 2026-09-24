@@ -2603,7 +2603,10 @@ export function ConversationScreen({
 										actions={{
 											canRestore: () => document.canRestoreRecoveredDraft(),
 											onRestore: (row) => {
-												document.restoreRecoveredDraft(row.text);
+												if (!document.restoreRecoveredDraft(row.text))
+													setActionError(
+														"This message could not be restored to the draft.",
+													);
 											},
 											onDiscard: recovery.discard,
 										}}

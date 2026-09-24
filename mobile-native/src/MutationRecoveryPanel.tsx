@@ -65,14 +65,14 @@ function isTextInputItem(
 	);
 }
 
-function isImageInputItem(
-	item: unknown,
-): item is { type: "image"; data: string } {
+// Any image input counts, whatever fields carry its bytes: a `{type:"image"}`
+// item whose data lives under `path` or metadata only must still withhold
+// restore, or a text-only restore would silently drop the image.
+function isImageInputItem(item: unknown): item is { type: "image" } {
 	return (
 		typeof item === "object" &&
 		item !== null &&
-		(item as { type?: unknown }).type === "image" &&
-		typeof (item as { data?: unknown }).data === "string"
+		(item as { type?: unknown }).type === "image"
 	);
 }
 
@@ -252,7 +252,11 @@ export function useRecoveryPanel({
 		if (!connected || runtime !== null) return;
 		try {
 			setRuntime(acquire());
-			setFailure((current) => (current?.scope === scope ? null : current));
+			// A successful acquisition supersedes any earlier failure, whatever
+			// scope it was recorded under: leaving a target-scoped failure in place
+			// would resurface it if the screen later returned to that target, over
+			// an otherwise-healthy read.
+			setFailure(null);
 		} catch (error) {
 			setFailure({ scope, error });
 		}

@@ -748,3 +748,50 @@ it("scopes a discard failure to its target, so switching targets shows the new t
 	expect(result.current.error).toBeNull();
 	expect(result.current.count).toBe(1);
 });
+
+it("withholds restore for an image input carried by path or metadata without inline data", () => {
+	const record = recovery(TARGET_A, "path-image", 1, "rejected", {
+		composerText: "look [image 1]",
+		attachments: [],
+		payload: {
+			input: [
+				{ type: "text", text: "look [image 1]" },
+				{ type: "image", path: "file:///proof.png", mediaType: "image/png" },
+			],
+		},
+	});
+	expect(recordCarriesAttachments(record)).toBe(true);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
+	expect(rows[0].carriesAttachments).toBe(true);
+	expect(rows[0].actions).toEqual(["discard"]);
+});
+
+it("does not resurface a stale acquisition failure after a target round-trip", async () => {
+	const runtime = fakeRuntime();
+	let targetRef = "ref-a";
+	const acquire = () => {
+		if (targetRef === "ref-a") throw new Error("mutations db unavailable");
+		return runtime;
+	};
+	const { result, rerender } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef,
+			acquire,
+		}),
+	);
+	await flush();
+	expect(result.current.error).toBeInstanceOf(Error);
+
+	targetRef = "ref-b";
+	rerender();
+	await flush();
+	expect(result.current.error).toBeNull();
+
+	targetRef = "ref-a";
+	rerender();
+	await flush();
+	expect(result.current.error).toBeNull();
+	expect(result.current.failed).toBe(false);
+});
