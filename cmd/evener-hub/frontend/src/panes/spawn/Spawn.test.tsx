@@ -28,9 +28,10 @@ import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
-import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
+import { hostsStore } from "../../stores/hosts";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
@@ -1314,6 +1315,10 @@ beforeEach(() => {
   localStorage.clear();
   resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
+  // The registry and the remote-host partitions are module singletons: a
+  // leftover ready snapshot from another test would gate a remote read.
+  resetHostInstancesForTests();
+  hostsStore.getState().resetForTests();
   resetNavigationStoreForTests();
   modelListOverride = null;
 });

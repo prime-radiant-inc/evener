@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>formrow-flex-row-item layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* This case guards FormRow's WIDGET CONTRACT, not a real screen: "a FormRow
+     is safe as a flex-row item". No layout the app renders today puts a
+     FormRow in a flex row (every parent is a column or a block), so the row
+     below and its sibling chip are invented scaffolding kept HERE - the same
+     move button-label-nowrap makes with its invented paragraph. Everything
+     inside .row is FormRow's and PathField's current real markup (widgets/
+     formrow/index.tsx, widgets/pathfield/index.tsx's file-kind trigger, the
+     Chevron widget's svg). The declaration under test is formrow.module.css's
+     .root { min-width: 0 }. */
+  .page {
+    width: 300px;
+    box-sizing: border-box;
+    padding: var(--space-4);
+  }
+  .row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+  }
+  .sideChip {
+    flex: none;
+    color: var(--ink-mid);
+    font-size: var(--font-size-caption);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<div class="page">
+  <div class="row" id="row">
+    <div class="root" id="formrow">
+      <label for="prompt-file" class="label">System prompt file</label>
+      <div class="control">
+        <button id="prompt-file" type="button" class="trigger " aria-label="System prompt file: /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/some-long-name/prompt.md — browse">
+          <span class="triggerValue  " id="value">/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/some-long-name/prompt.md</span>
+          <span class="chevron" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block"><path d="M3.5 6 L8 10.5 L12.5 6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span>
+          <span class="srOnly">— browse</span>
+        </button>
+      </div>
+    </div>
+    <span class="sideChip" id="chip">main</span>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, width: r.width };
+  };
+  const row = box(document.querySelector("#row"));
+  const formRow = box(document.querySelector("#formrow"));
+  const trigger = box(document.querySelector("#prompt-file"));
+  const chip = box(document.querySelector("#chip"));
+  const value = document.querySelector("#value");
+  const valueStyle = getComputedStyle(value);
+  const gap = Number.parseFloat(getComputedStyle(document.querySelector("#row")).columnGap) || 0;
+  return {
+    row,
+    formRow,
+    // Positive = spilled past the row's right edge.
+    formRowOverflowsRow: formRow.right - row.right,
+    triggerOverflowsRow: trigger.right - row.right,
+    chipOverflowsRow: chip.right - row.right,
+    // The room the FormRow actually has: up to the chip, less the row's gap.
+    // Positive = headroom left over; negative = the FormRow runs into the chip.
+    formRowSlack: chip.left - gap - formRow.right,
+    valueScrollWidth: value.scrollWidth,
+    valueClientWidth: value.clientWidth,
+    valueOverflowX: valueStyle.overflowX,
+    // All three are needed for a visible ellipsis: text wider than its box,
+    // a box that clips (hidden or clip - visible would paint the overflow),
+    // and text-overflow: ellipsis to mark the cut.
+    valueEllipsizes:
+      value.scrollWidth > value.clientWidth &&
+      /^(hidden|clip)$/.test(valueStyle.overflowX) &&
+      valueStyle.textOverflow === "ellipsis",
+  };
+};
+</script>
+</body>
+</html>

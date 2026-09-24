@@ -999,20 +999,24 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
 // text rules set it as `color` (docs/web-ui/typography-spacing-critique-
 // 2026-09-06.md finding 7). It therefore has to clear AA on the two grounds
 // text actually sits on in each theme, the same bar the -ink companions meet.
-test("--ink-low clears 4.5:1 on the page and pane surfaces in both themes", () => {
+// --ink-mid carries demoted body text (the tool row's .demoted summary, kata
+// rdry), so it is held to the same bar.
+test("--ink-low and --ink-mid clear 4.5:1 on the page and pane surfaces in both themes", () => {
   const themes = [
     { name: "dark", block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/) },
     { name: "light", block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/) },
   ];
   for (const theme of themes) {
-    const inkLow = declaredToken(theme.block, "--ink-low");
-    expect(inkLow, `${theme.name} declares --ink-low`).toBeDefined();
-    for (const groundName of ["--surface-0", "--surface-1"]) {
-      const ground = declaredToken(theme.block, groundName);
-      expect(ground, `${theme.name} declares ${groundName}`).toBeDefined();
-      if (!inkLow || !ground) continue;
-      const ratio = contrastRatio(parseHexColor(inkLow), parseHexColor(ground));
-      expect(ratio, `${theme.name} --ink-low on ${groundName}`).toBeGreaterThanOrEqual(4.5);
+    for (const inkName of ["--ink-low", "--ink-mid"]) {
+      const ink = declaredToken(theme.block, inkName);
+      expect(ink, `${theme.name} declares ${inkName}`).toBeDefined();
+      for (const groundName of ["--surface-0", "--surface-1"]) {
+        const ground = declaredToken(theme.block, groundName);
+        expect(ground, `${theme.name} declares ${groundName}`).toBeDefined();
+        if (!ink || !ground) continue;
+        const ratio = contrastRatio(parseHexColor(ink), parseHexColor(ground));
+        expect(ratio, `${theme.name} ${inkName} on ${groundName}`).toBeGreaterThanOrEqual(4.5);
+      }
     }
   }
 });

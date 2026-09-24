@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -41,6 +42,59 @@ func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 	}
 	if !strings.Contains(desc, "Reading config to identify the active profile") {
 		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
+	}
+}
+
+func TestWithIntentParameter_LeavesRequiredUntouched(t *testing.T) {
+	// WithIntentParameter adds the intent PROPERTY only. The registry
+	// compiles its dispatch-validation schema from this form (Register calls
+	// it before compileSchema), so a required intent here would fail every
+	// model call that omits the rationale at dispatch — and the retry
+	// breaker would then park repeated legacy-shaped calls. Requiredness is
+	// the advertise edge's job (WithIntentParameterRequired below).
+	td := WithIntentParameter(llm.ToolDefinition{
+		Name:       "demo",
+		Parameters: map[string]any{"type": "object", "required": []string{"file_path"}},
+	})
+	if got := td.Parameters["required"]; !reflect.DeepEqual(got, []string{"file_path"}) {
+		t.Fatalf("required = %#v, want the list unchanged: [file_path]", got)
+	}
+}
+
+func TestWithIntentParameterRequired_MarksIntentRequired(t *testing.T) {
+	// The wire schema carries the mandate, not just prose: an optional-looking
+	// rationale gets dropped by models exactly where the hub's row grammar
+	// wants it most (plain file reads). WithIntentParameterRequired lists
+	// intent in required on the ADVERTISE edge only — the registry's
+	// validation schema keeps the property-optional form — and the required
+	// list's element type is preserved so callers handing back []any keep
+	// receiving []any.
+	cases := []struct {
+		name string
+		def  llm.ToolDefinition
+		want any
+	}{
+		{"string slice", llm.ToolDefinition{Name: "demo", Parameters: map[string]any{"type": "object", "required": []string{"file_path"}}}, []string{"file_path", "intent"}},
+		{"any slice", llm.ToolDefinition{Name: "demo", Parameters: map[string]any{"type": "object", "required": []any{"pattern"}}}, []any{"pattern", "intent"}},
+		{"absent", llm.ToolDefinition{Name: "demo"}, []string{"intent"}},
+		{"already listed", llm.ToolDefinition{Name: "demo", Parameters: map[string]any{"type": "object", "required": []string{"intent", "file_path"}}}, []string{"intent", "file_path"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := WithIntentParameterRequired(tc.def).Parameters["required"]
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("required = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+	// Self-contained: applied to a bare definition it also injects the
+	// intent PROPERTY, because the advertise edges call it without the
+	// property-only pass (rebuildToolDefsCache's final loop is the only
+	// place profile tools gain the property at all).
+	wire := WithIntentParameterRequired(llm.ToolDefinition{Name: "demo"})
+	props, _ := wire.Parameters["properties"].(map[string]any)
+	if _, ok := props["intent"]; !ok {
+		t.Fatalf("bare definition did not gain the intent property: %#v", wire.Parameters)
 	}
 }
 

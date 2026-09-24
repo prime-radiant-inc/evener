@@ -175,6 +175,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerAuthList, EmptyParams{}, AuthListResponse{}, ScopeHub, "Lists auth status for all providers."},
 	{MethodEvenerAuthApiKeySet, AuthApiKeySetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a provider API key; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthApiKeyClear, AuthApiKeyClearParams{}, AuthStatusResponse{}, ScopeHub, "Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated."},
+	{MethodEvenerAuthApiKeyConditionalSet, ApiKeyConditionalSetParams{}, ApiKeyConditionalSetResponse{}, ScopeHub, "Conditionally stores a provider API key: re-resolves the instance's credential source and configuration revision under the credential write lock and refuses a stale revision or a non-writable scheme; broadcasts evener/auth/updated when it writes."},
 	{MethodEvenerAuthCredentialJsonSet, AuthCredentialJsonSetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthDeviceStart, AuthDeviceStartParams{}, AuthDeviceStartResponse{}, ScopeHub, "Begins a device-code auth flow (or signals fallback)."},
 	{MethodEvenerAuthDevicePoll, AuthDevicePollParams{}, AuthDevicePollResponse{}, ScopeHub, "Polls a device-code flow; broadcasts evener/auth/updated when authorized."},
@@ -223,6 +224,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerHostStatus, HostStatusParams{}, HostStatusResponse{}, ScopeHub, "Returns one host's list row for a single named host; never dials."},
 	{MethodEvenerHostRemove, HostRemoveParams{}, HostRemoveResponse{}, ScopeHub, "Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here."},
 	{MethodEvenerHostUpdate, HostUpdateParams{}, HostUpdateResponse{}, ScopeHub, "Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused."},
+	{MethodEvenerHostPushCredentials, HostPushCredentialsParams{}, HostPushCredentialsResponse{}, ScopeHub, "Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition

@@ -97,6 +97,7 @@ const (
 	MethodEvenerAuthList                 = "evener/auth/list"
 	MethodEvenerAuthApiKeySet            = "evener/auth/apiKey/set"
 	MethodEvenerAuthApiKeyClear          = "evener/auth/apiKey/clear"
+	MethodEvenerAuthApiKeyConditionalSet = "evener/auth/apiKey/conditionalSet"
 	MethodEvenerAuthCredentialJsonSet    = "evener/auth/credentialJson/set"
 	MethodEvenerAuthDeviceStart          = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll           = "evener/auth/device/poll"
@@ -174,6 +175,13 @@ const (
 	// channel. hub.toml-declared names are refused (edit the file). See
 	// HostUpdateParams.
 	MethodEvenerHostUpdate = "evener/host/update"
+	// MethodEvenerHostPushCredentials copies the controller's local
+	// provider-instance keys to one named remote host (component 07c). The unit
+	// of the push is the local credentials-store entry; each key is sent
+	// verbatim as the Provider value only to the two provider-keyed auth
+	// methods, and the host's own conditional set does the write. See
+	// HostPushCredentialsParams.
+	MethodEvenerHostPushCredentials = "evener/host/pushCredentials"
 )
 
 const (
@@ -2433,6 +2441,22 @@ type AuthStatusResponse struct {
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// ConfigRevision is this instance's effective credential-configuration
+	// revision: a stable, keyed MAC the host re-resolves from the same state a
+	// credential write lands in (cmd/evener-hub/app_auth.go +
+	// hubcore.CredentialConfigRevision). It is keyed with the hub-held secret
+	// the endpoint fingerprints use, so a reader who can see it cannot recover a
+	// secret the covered destination carries - a base URL can hold one in its
+	// userinfo or query string, which this field must not expose. The remote
+	// credential push captures it from this read and echoes it as
+	// ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
+	// write prepared against a configuration that has since changed. It is
+	// deliberately empty (JSON-omitted) when the host cannot resolve the
+	// instance or cannot key a revision: the zero value asserts no revision
+	// fence to a client, but a host that cannot key one refuses the conditional
+	// set rather than reading that zero as permission, and the source fence
+	// still applies.
+	ConfigRevision string `json:"configRevision,omitempty"`
 }
 
 type AuthLoginStartParams struct {
@@ -3054,6 +3078,60 @@ type AuthApiKeyClearParams struct {
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
+// ApiKeyConditionalSetParams is the params for
+// evener/auth/apiKey/conditionalSet: the host-side conditional (compare-and-set)
+// credential write (design §07 "credential push"). It replaces the racy
+// read-evener/auth/status, classify, then evener/auth/apiKey/set pair: the host
+// re-resolves the instance's credential source and effective-configuration
+// revision inside one credentialWrite critical section and applies the write
+// only when they still match what the client observed. Provider is the
+// instance name, and the write lands in the host's own store under it.
+type ApiKeyConditionalSetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
+	// ExpectedSource is the ActiveSource the client observed for Provider when
+	// it prepared this write (AuthStatusResponse.ActiveSource /
+	// InstanceEntry.ActiveSource). The host re-resolves the source under its
+	// credential write lock and refuses a non-empty value that no longer
+	// matches; empty asserts no source fence. The resolved source also decides
+	// the classification (see ApiKeyConditionalSetResponse.Action).
+	ExpectedSource string `json:"expectedSource,omitempty"`
+	// ExpectedRevision is the ConfigRevision the client observed for Provider.
+	// The host re-resolves it under the same lock and refuses a non-empty value
+	// that no longer matches, so a write prepared against a configuration that
+	// changed underneath it is never applied. Empty asserts no revision fence;
+	// the source fence still applies.
+	ExpectedRevision string `json:"expectedRevision,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast a landed write triggers, so the originator
+	// can recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without an
+	// id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
+}
+
+// The Action values of ApiKeyConditionalSetResponse: what the host did with a
+// conditional set. A "skipped" is a successful typed response, not a wire
+// error — the host refused to write because the instance's live credential is
+// one a pushed file-layer key must not shadow, and Reason says why.
+const (
+	ApiKeyConditionalSetActionAdded   = "added"
+	ApiKeyConditionalSetActionUpdated = "updated"
+	ApiKeyConditionalSetActionSkipped = "skipped"
+)
+
+// ApiKeyConditionalSetResponse is the result of
+// evener/auth/apiKey/conditionalSet. Action is one of the
+// ApiKeyConditionalSetAction* values, Reason is a human-readable explanation
+// (chiefly for a skip), and Status is the instance's post-write
+// AuthStatusResponse — the state the host resolved under the same lock, which a
+// skip leaves unchanged.
+type ApiKeyConditionalSetResponse struct {
+	Action string             `json:"action"`
+	Reason string             `json:"reason,omitempty"`
+	Status AuthStatusResponse `json:"status"`
+}
+
 // AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
 // a Google credential JSON (service-account key or application-default
 // authorized_user file) for a gcp-adc instance.
@@ -3171,6 +3249,13 @@ type InstanceEntry struct {
 	// it.
 	RenameLeavesRow bool   `json:"renameLeavesRow,omitempty"`
 	StoredEmail     string `json:"storedEmail,omitempty"`
+	// ConfigRevision is the same effective credential-configuration revision
+	// AuthStatusResponse.ConfigRevision carries for this instance (see its doc).
+	// The remote credential push can capture it from an evener/instance/list
+	// entry instead of a separate evener/auth/status read (the
+	// implicit-provider fallback) and echo it as
+	// ApiKeyConditionalSetParams.ExpectedRevision.
+	ConfigRevision string `json:"configRevision,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the
@@ -3945,6 +4030,50 @@ type HostRequestParams struct {
 // not landed here. Read this marker as "an opaque JSON object the proxy passes
 // through", never as an empty result.
 type HostForwardedResult struct{}
+
+// HostPushCredentialsParams is the evener/host/pushCredentials payload
+// (component 07c): the component-03 source ID of one configured remote host to
+// copy the controller's local provider-instance keys to. The push reads the
+// controller's local store and writes only the host's; the unit of the push is
+// the local credentials-store entry, whose key is the instance name.
+type HostPushCredentialsParams struct {
+	Host string `json:"host"`
+}
+
+// HostPushCredentialsResponse is the per-instance report of one push: exactly
+// one HostCredentialPushResult for every entry the local credentials store
+// listed, in the store's sorted name order, plus the host the push targeted. An
+// entry whose value was cleared before it could be read is still reported (a
+// skip), so the row count always matches the store's entry count — a report
+// that silently omitted an entry would read as "nothing was there to push".
+type HostPushCredentialsResponse struct {
+	Host    string                     `json:"host"`
+	Results []HostCredentialPushResult `json:"results"`
+}
+
+// HostCredentialPushResult is one local entry's outcome. Action is one of the
+// HostCredentialPush* values; Reason explains a skip or names the failure and
+// is empty for a write that landed.
+type HostCredentialPushResult struct {
+	Instance string `json:"instance"`
+	// Action is "added" | "updated" | "skipped" | "failed". "added" and
+	// "updated" are the host's own conditional-set actions; "skipped" is the
+	// host's classification (a source a pushed key must not shadow, or a scheme
+	// that reads no key), or a controller-side skip whose Reason names why (no
+	// matching instance on the host, or a local value that is not an API key);
+	// "failed" is a per-instance failure (chiefly a refused or stale-revision
+	// conditional set) that does not abort the remaining entries.
+	Action string `json:"action"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// The Action values of HostCredentialPushResult.
+const (
+	HostCredentialPushAdded   = "added"
+	HostCredentialPushUpdated = "updated"
+	HostCredentialPushSkipped = "skipped"
+	HostCredentialPushFailed  = "failed"
+)
 
 // HostAttachParams is the evener/host/attach payload (component 06's Connect
 // action): the component-03 source ID of one configured remote host to attach.

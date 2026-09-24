@@ -253,3 +253,30 @@ func TestBuildIncludesInstanceModelEntry(t *testing.T) {
 	}
 	t.Fatal("build() missing InstanceModelEntry")
 }
+
+// TestBuildIncludesHostCredentialPushResult guards the same gap in the push
+// report: HostCredentialPushResult is only ever the element type of
+// HostPushCredentialsResponse.Results — never a method's own Params/Result — so
+// without an explicit registration the protocol reference has no field table
+// for the instance/action/reason a push reports, while
+// appwire-client/typescript/types.gen.ts still emits the interface from the same
+// catalog (roborev review of the 07c push).
+func TestBuildIncludesHostCredentialPushResult(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "HostCredentialPushResult" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"instance", "action", "reason"} {
+			if !fields[name] {
+				t.Fatalf("HostCredentialPushResult missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing HostCredentialPushResult")
+}

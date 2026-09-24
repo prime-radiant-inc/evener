@@ -406,3 +406,36 @@ describe("mutations", () => {
     expect(load.hosts).toEqual([row("alpha")]);
   });
 });
+
+describe("reading", () => {
+  // The flag answers "is a registry read in flight" for consumers that must not
+  // read a remote listing under a snapshot about to be replaced. Two callers can
+  // overlap (a foreground fetch and the poll), so one of them settling must not
+  // clear it while the other request is still out.
+  test("stays set while any list request is still in flight", async () => {
+    const fake = connectFakeClient();
+    const gates: Array<(value: HostListResponse) => void> = [];
+    fake.on(
+      "evener/host/list",
+      () =>
+        new Promise<HostListResponse>((resolve) => {
+          gates.push(resolve);
+        }),
+    );
+
+    const first = hostsStore.getState().fetch();
+    await Promise.resolve();
+    const second = hostsStore.getState().fetch();
+    await Promise.resolve();
+    expect(gates).toHaveLength(2);
+    expect(hostsStore.getState().reading).toBe(2);
+
+    gates[0]?.({ hosts: [] });
+    await first;
+    expect(hostsStore.getState().reading).toBe(1);
+
+    gates[1]?.({ hosts: [] });
+    await second;
+    expect(hostsStore.getState().reading).toBe(0);
+  });
+});

@@ -515,14 +515,22 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 	if h.APIKey != "" {
 		v, missing := expandEnv(h.APIKey, r.env)
 		if len(missing) > 0 {
-			return none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			// The authored layer is present and terminal, and its variable is
+			// unset: say so, because "none" alone reads as "nothing is
+			// configured here" to every caller that decides whether a stored key
+			// would ever be sent.
+			cred, warns := none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			cred.AuthoredLayer = "api_key"
+			return cred, warns
 		}
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
 	if auth, ok := h.CredentialHeaders["Authorization"]; ok && auth != "" {
 		v, missing := expandEnv(auth, r.env)
 		if len(missing) > 0 {
-			return none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			cred, warns := none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			cred.AuthoredLayer = "credential_headers"
+			return cred, warns
 		}
 		return Credential{Value: v, Source: "credential_headers"}, nil
 	}
