@@ -170,9 +170,16 @@ function RemoteHostInstances({
   // which is pointed at the same host for polling. Its failures are named, never
   // a silent dead end: an unattached host, a refused call, or a host whose
   // client offers no device flow each become a real message on screen.
+  //
+  // The editor on screen is the START's to replace, so this clears it before the
+  // call goes out and sets the new one only from a response that came back: a
+  // restart that fails - or falls back - leaves the failure and no editor, never
+  // the expired code and flow it was replacing, standing under the message about
+  // the attempt that replaced it.
   const beginHostSignIn = useCallback(
     async (name: string): Promise<void> => {
       setSignInError(null);
+      setSignIn(null);
       try {
         const resp = await deviceStartOnHost(host, name);
         if (!active.current) return;
