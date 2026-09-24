@@ -85,11 +85,10 @@ func TestClientRequestDecodesWireResultWithoutRounding(t *testing.T) {
 	}
 }
 
-// BenchmarkWSTransportRecvLargeResponse measures what reading one large
-// response costs the receive loop: the hub's roster probe reads thread/list and
-// thread/read answers whose diagnostics carry every retained delegate's task
-// text, megabytes per daemon every few seconds.
-func BenchmarkWSTransportRecvLargeResponse(b *testing.B) {
+// BenchmarkMessageDecodeLargeResponse measures decoding one large response
+// frame and its typed result, shaped like a probe's thread/read answer whose
+// diagnostics carry every retained delegate's task text.
+func BenchmarkMessageDecodeLargeResponse(b *testing.B) {
 	delegates := make([]EvenerDelegateInfo, 200)
 	for i := range delegates {
 		task := strings.Repeat("Jesse asks: \"study the \\\"hub\\\" <daemon> lifecycle\"\n", 60)
@@ -104,7 +103,7 @@ func BenchmarkWSTransportRecvLargeResponse(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var msg Message
-		if err := unmarshalWSMessage(&msg, frame); err != nil {
+		if err := decodeFrame(&msg, frame); err != nil {
 			b.Fatal(err)
 		}
 		var out ThreadReadResponse

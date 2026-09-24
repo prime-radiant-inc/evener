@@ -164,6 +164,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	if probe.JSONRPC != nil {
 		return errors.New("jsonrpc field is not part of AppWire")
 	}
+	hasID := len(probe.ID) > 0 && string(probe.ID) != "null"
 	// A frame decoded into a reused Message must replace whatever it held, or a
 	// stale pointer survives alongside the new one and Kind() picks the wrong one.
 	*m = Message{}
@@ -181,12 +182,12 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		// passes over the payload and round integers past 2^53.
 		resp := Response{Result: probe.Result}
 		if len(probe.ID) > 0 {
-			if err := unmarshalMessageFrame(probe.ID, &resp.ID); err != nil {
+			if err := resp.ID.UnmarshalJSON(probe.ID); err != nil {
 				return err
 			}
 		}
 		m.Response = &resp
-	case probe.Method != "" && len(probe.ID) > 0 && string(probe.ID) != "null":
+	case probe.Method != "" && hasID:
 		var req Request
 		if err := unmarshalMessageFrame(data, &req); err != nil {
 			return err

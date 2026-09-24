@@ -12,10 +12,10 @@ var (
 	marshalWSMessage = json.Marshal
 	// Frames decode through Message.UnmarshalJSON directly: json.Unmarshal would
 	// first scan the whole frame only to hand the same bytes to that method,
-	// which validates them itself.
-	unmarshalWSMessage = (*Message).UnmarshalJSON
-	pingWebSocket      = (*websocket.Conn).Ping
-	readWebSocket      = (*websocket.Conn).Read
+	// which validates them itself. Both transports decode through it.
+	decodeFrame   = (*Message).UnmarshalJSON
+	pingWebSocket = (*websocket.Conn).Ping
+	readWebSocket = (*websocket.Conn).Read
 )
 
 // FrameObserver receives the exact JSON bytes sent and received by one
@@ -86,7 +86,7 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 		t.observer.RecordRecv(data)
 	}
 	var msg Message
-	if err := unmarshalWSMessage(&msg, data); err != nil {
+	if err := decodeFrame(&msg, data); err != nil {
 		return Message{}, err
 	}
 	return msg, nil
