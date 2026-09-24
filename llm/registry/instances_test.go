@@ -696,6 +696,40 @@ base_url = "https://rename-inline.example.test/v1"
 			t.Fatal("rename-inline: want false, the present api_key is terminal and its variable is unset, so the row resolves nothing")
 		}
 	})
+	t.Run("row-overridden auth re-derives", func(t *testing.T) {
+		// The default row's auth is the scheme the listing derives the
+		// instance with — the same listingTransport computeInstances
+		// reads — so a row that overrides the head's bearer scheme to
+		// none re-derives the old id after a rename with no credential
+		// at all, and the rename verdict must agree with the listing.
+		r := fixtureLoad(t, baseEnv(t), "", WithOverlay(overlayWith(`
+[providers."rename-none-row"]
+implicit = true
+protocol = "openai-chat"
+auth = "bearer"
+api_key_env = ["RENAME_NONE_ROW_ENV"]
+default_model = "house-model"
+base_url = "https://rename-none-row.example.test/v1"
+[providers."rename-none-row".models."house-model"]
+auth = "none"
+`)))
+		instances := r.Instances()
+		var listed *Instance
+		for i := range instances {
+			if instances[i].Name == "rename-none-row" {
+				listed = &instances[i]
+			}
+		}
+		if listed == nil {
+			t.Fatal("rename-none-row: the instance is not listed, so the premise of the rename verdict fails")
+		}
+		if listed.Auth != "none" {
+			t.Fatalf("rename-none-row: listed auth = %q, want the row's none scheme", listed.Auth)
+		}
+		if !r.ProviderRenameLeavesInstance("rename-none-row") {
+			t.Fatal("rename-none-row: want true, the row's none scheme re-derives the old id the same way the listing shows it")
+		}
+	})
 	t.Run("oauth record is the credential the rename moves", func(t *testing.T) {
 		r := fixtureLoad(t, baseEnv(t), "")
 		if r.ProviderRenameLeavesInstance("openai-codex") {

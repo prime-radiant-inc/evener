@@ -2956,7 +2956,20 @@ test.each([
     await written;
     cleanup();
     render(<Composer ref="ref_a" focused={false} />);
-    await waitFor(() => expect(textarea().textContent).toBe(submittedText));
+    // The remount restores the recovery draft through an IDB read plus a
+    // render the scheduler commits on a macrotask, while this test
+    // deliberately holds the recovery WRITE - so the projection flush
+    // cannot be the awaitable here (it would wait on the very transaction
+    // this test holds). Pump the event loop instead, bounded by turns,
+    // not wall clock: a turn completes whenever the scheduler gets CPU, so
+    // machine load cannot trip it the way waitFor's 1s ceiling did (sighted
+    // at load 900 on 16 CPUs).
+    for (let turn = 0; turn < 20 && textarea().textContent !== submittedText; turn += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(textarea().textContent).toBe(submittedText);
     if (edit !== "unchanged") {
       replaceEditorText(textarea(), "new draft");
       if (edit === "same text") replaceEditorText(textarea(), submittedText);

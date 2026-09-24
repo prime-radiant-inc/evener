@@ -1373,14 +1373,17 @@ func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T
 	result := make(chan error, 1)
 	go func() { _, err := service.Refresh(ctx, navigationChangeHint{Projects: []string{"p1"}}); result <- err }()
 	<-source.entered
+	// Capture the flight while its build is still blocked: once released, the
+	// build commits and clears service.flight, possibly before this goroutine
+	// runs again.
+	service.mu.Lock()
+	flight := service.flight
+	service.mu.Unlock()
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled owner = %v", err)
 	}
 	close(source.release)
-	service.mu.Lock()
-	flight := service.flight
-	service.mu.Unlock()
 	<-flight.done
 	if capability := service.Capability(); capability.Sequence != 1 {
 		t.Fatalf("sequence = %d, want committed change", capability.Sequence)

@@ -1074,7 +1074,7 @@ type EvenerDiagnostics struct {
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
-	Plugins    []EvenerPluginInfo      `json:"plugins,omitempty"`
+	Plugins    []EvenerPluginInfo      `json:"plugins,omitzero"` // nil (a source that cannot report plugins) is absent; empty is sent as []
 	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
@@ -1096,31 +1096,6 @@ type EvenerDiagnostics struct {
 	// SkillDiagnostics is the explicit source-detail view, so the two never
 	// borrow each other's identity.
 	SkillDiagnostics []EvenerSkillDiagnostic `json:"skillDiagnostics,omitempty"`
-}
-
-// MarshalJSON preserves an explicit empty plugin inventory while keeping a
-// nil inventory absent for old or unwired sources that cannot report it.
-func (d EvenerDiagnostics) MarshalJSON() ([]byte, error) {
-	type alias EvenerDiagnostics
-	a := alias(d)
-	a.Plugins = nil
-	raw, err := json.Marshal(a)
-	if err != nil {
-		return nil, err
-	}
-	if d.Plugins == nil {
-		return raw, nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
-	}
-	plugins, err := json.Marshal(d.Plugins)
-	if err != nil {
-		return nil, err
-	}
-	fields["plugins"] = plugins
-	return json.Marshal(fields)
 }
 
 type EvenerToolInfo struct {
