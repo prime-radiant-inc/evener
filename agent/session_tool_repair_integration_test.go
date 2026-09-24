@@ -509,6 +509,14 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	if rejItem.ToolName != "communicate" {
 		t.Errorf("rejected communicate ToolName = %q, want communicate", rejItem.ToolName)
 	}
+	// F5 (Low): rejected communicate items must carry a rejection diagnostic
+	// in Error and a CompletedAt stamp, matching ordinary tool-result items.
+	if rejItem.Error == "" {
+		t.Error("rejected communicate Error = empty, want a non-empty rejection diagnostic")
+	}
+	if rejItem.CompletedAt == nil {
+		t.Error("rejected communicate CompletedAt = nil, want a non-nil timestamp stamp")
+	}
 
 	// The recovered (healed) communicate must render as an agentMessage — the
 	// same message live delivered — proving the gate distinguishes rejected

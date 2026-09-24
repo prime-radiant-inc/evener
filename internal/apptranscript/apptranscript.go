@@ -669,7 +669,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				// surface them.
 				if part.ToolResult.IsError && part.ToolResult.PrevalOnly {
 					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
-						items = append(items, appwire.ThreadItem{
+						item := appwire.ThreadItem{
 							Type:          "commandExecution",
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
 							TurnID:        turnID,
@@ -678,7 +678,13 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							ArgumentsJSON: rawArgs,
 							Status:        appwire.TurnStatusFailed,
 							PrevalOnly:    true,
-						})
+							Error:         StringifyToolContent(part.ToolResult.Content),
+						}
+						if !turn.Timestamp.IsZero() {
+							ms := turn.Timestamp.UnixMilli()
+							item.CompletedAt = &ms
+						}
+						items = append(items, item)
 					}
 				}
 				// A healed communicate (IsError=false) delivered its message
