@@ -317,7 +317,7 @@ func (e *daemonRetirementProcessEvents) budgetLocked() time.Duration {
 	if e.testOnlyBaseBudget > 0 {
 		base = e.testOnlyBaseBudget
 	}
-	return daemonRetirementScaleBudget(base, e.slowestReaction)
+	return daemonRetirementScaleBudget(base, max(e.slowestReaction, e.carriedReaction))
 }
 
 func (e *daemonRetirementProcessEvents) history() []daemonRetirementProcessEvent {
