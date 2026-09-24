@@ -338,7 +338,12 @@ function projectsTierFor(
     case "project-host":
       return { title: "Projects", nodes: projectNodesWithHostBranches(projects, sources, isExpanded) };
     default:
-      return { title: "Projects", nodes: projectNodes(projects, isExpanded) };
+      // Flat rows name their launch host too: the display sources resolve
+      // it (a local project to this hub, a remote-owned one to its host),
+      // so a stale spawn draft cannot redirect the click and a host the
+      // manifest has not named cannot fall back to this hub with the
+      // remote working_dir.
+      return { title: "Projects", nodes: projectNodes(projects, isExpanded, sources) };
   }
 }
 

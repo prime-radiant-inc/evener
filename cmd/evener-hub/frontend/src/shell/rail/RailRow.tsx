@@ -831,13 +831,14 @@ function ProjectRow({
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
   // The project-wide rollup is an aggregate fact, so it reads ONCE: on the
-  // project rows that claim no launch host (flat, archived, test runs),
-  // or on the one aggregate row the grouped modes mark (the project-first
-  // project row, or the canonical host-first copy - the first host in
-  // rail order with loaded rows, the same copy that renders the project's
-  // overflow). Every other copy claims nothing - an honest per-host count
-  // would need wire support the manifest does not carry, the same line the
-  // host group row itself draws.
+  // rows that own the project's aggregate facts - every single-copy tier's
+  // canonical row (flat, test runs, archived) or a hostless row (the
+  // no-sources builder contract) - or on the one aggregate row the grouped
+  // modes mark (the project-first project row, or the canonical host-first
+  // copy - the first host in rail order with loaded rows, the same copy
+  // that renders the project's overflow). Every other copy claims nothing
+  // - an honest per-host count would need wire support the manifest does
+  // not carry, the same line the host group row itself draws.
   const showsRollup = node.spawnHost === undefined || node.canonicalCopy === true;
   // The Spawn picker refuses an offline or unknown-to-the-manifest host; a
   // copy nested under one must not offer a launch that would silently fall

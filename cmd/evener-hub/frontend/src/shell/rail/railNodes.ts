@@ -734,10 +734,13 @@ export function topLevelAncestorRef(projects: readonly RailProject[], ref: strin
  * partition (Array.prototype.sort is stable in the target engines), so
  * sessions that don't need you keep their incoming relative order.
  *
- * With sources the rows name their launch host - the test-runs tier does
- * this, so a remote-owned project's "+" cannot fall back to this hub
- * whatever the grouping. Without them the row stays hostless, the flat
- * Projects tier's shape, where no remote source exists. */
+ * With sources the rows name their launch host, so a remote-owned
+ * project's "+" cannot fall back to this hub
+ * whatever the grouping, and a local project's launch always names this
+ * hub (a spawn draft left on a remote host cannot survive the click) -
+ * every tier in the rail passes its display sources. Without them the row
+ * stays hostless - the builder's contract for callers with no manifest
+ * to read. */
 export function projectNodes(
   projects: readonly RailProject[],
   isExpanded: IsExpanded,

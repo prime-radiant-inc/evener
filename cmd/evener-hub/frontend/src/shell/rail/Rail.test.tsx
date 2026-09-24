@@ -2341,6 +2341,35 @@ describe("host grouping (organize by)", () => {
     expect(screen.getByText("Local live run")).toBeTruthy();
   });
 
+  // A flat row's launch must name this hub in the URL: the /new prefill
+  // overwrites the spawn draft's source, so a draft left on a remote host
+  // cannot survive the click and silently launch there.
+  test("a flat project row names this hub on launch, not the draft's last choice", () => {
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 1, working_dir: "/repo/next" }]),
+      projectResource("p", [summary({ ref: "local:p1", title: "Project run" })]),
+    ]);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: "New session in Project" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=local");
+    window.history.replaceState({}, "", "/");
+  });
+
+  // Flat mode renders while the manifest has named no remote source, which
+  // includes the first-load window where remote-owned projects are already
+  // listed in the catalog: their launch must not fall back to this hub with
+  // the remote working_dir.
+  test("a flat row whose project lives on a host the manifest has not named offers no launch", () => {
+    installState([
+      catalogResource([
+        { key: "r", name: "Remote-owned", session_count: 1, sources: ["devbox"], working_dir: "/repo/remote" },
+      ]),
+      projectResource("r", [summary({ ref: "devbox:r1", title: "Devbox run", host_id: "devbox" })]),
+    ]);
+    render(<Rail />);
+    expect(screen.queryByRole("button", { name: "New session in Remote-owned" })).toBeNull();
+  });
+
   test("offers the organize control once a remote source is listed; project-first keeps the Projects title and branches rows by host", () => {
     installState(hostGroupedResources(), remoteManifest());
     render(<Rail />);

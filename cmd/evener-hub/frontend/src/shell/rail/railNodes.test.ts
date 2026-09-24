@@ -893,8 +893,10 @@ describe("host grouping (organize by)", () => {
     // A remote-owned project names its host: the spawn draft prefills it
     // instead of silently launching a remote working_dir on this hub.
     expect(rows.find((node) => node.id === "projectnode:remote")).toMatchObject({ spawnHost: "devbox" });
-    // The flat builder still claims no host: flat mode means no remote
-    // source exists, so every project is this hub's own.
+    // The no-sources call stays hostless - the builder's contract for
+    // callers with no manifest to read; the rail's flat tier passes its
+    // display sources, so its rows do name a host (Rail.test.tsx pins
+    // the launch URL).
     const [flat] = projectNodes([remote], closed);
     expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
   });
@@ -923,8 +925,8 @@ describe("host grouping (organize by)", () => {
       spawnHost: "devbox",
       canonicalCopy: true,
     });
-    // The flat Projects tier keeps today's hostless rows: flat means no
-    // remote source exists.
+    // The no-sources call keeps the hostless contract even though no rail
+    // tier uses it anymore: every tier passes its display sources.
     expect(projectNodes([run], closed)[0]).not.toHaveProperty("spawnHost");
   });
 
