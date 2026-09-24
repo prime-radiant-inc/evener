@@ -934,6 +934,78 @@ func TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard(t *testing.T) {
 	}
 }
 
+// TestMakeTestWebBrowserSecondInterruptStopsWaiting pins the escape hatch
+// from that wait: a second signal while the gate is waiting for a still-running
+// skill guard exits at once rather than waiting out its go test.
+func TestMakeTestWebBrowserSecondInterruptStopsWaiting(t *testing.T) {
+	const tripwire = 30 * time.Second
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
+	goRelease := filepath.Join(fixture.root, "held-go.release")
+	// Run the gate script directly: a signal to make would be relayed to its
+	// child with make's own timing, and this test needs the script itself to
+	// see both signals.
+	command := exec.Command("bash", filepath.Join(fixture.root, "scripts", "web", "test-web-browser.sh"))
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"BROWSER_GUARD_CONCURRENCY=7",
+		"EVENER_TEST_GO_TEST_READY="+filepath.Join(fixture.root, "held-go.ready"),
+		"EVENER_TEST_GO_TEST_TERM="+filepath.Join(fixture.root, "held-go.term"),
+		"EVENER_TEST_GO_TEST_RELEASE="+goRelease,
+	)
+	var output syncBuffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start test-web-browser.sh: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		_ = os.WriteFile(goRelease, nil, 0o644)
+		if finished {
+			return
+		}
+		select {
+		case <-waitDone:
+		case <-time.After(tripwire): // TRIPWIRE: a released stub exits at once; this only bounds a hang.
+			_ = command.Process.Kill()
+		}
+	})
+	// TRIPWIRE: the stub starts in milliseconds.
+	if !waitForPath(filepath.Join(fixture.root, "held-go.ready"), tripwire) {
+		t.Fatalf("the held skill guard never became ready; output = %s", output.String())
+	}
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("first signal: %v", err)
+	}
+	// The first signal leaves the gate waiting on the held skill guard; keep
+	// signalling until it gives up. Each signal after the first must end it,
+	// so this loop exits on its first repeat.
+	deadline := time.After(tripwire) // TRIPWIRE: see above.
+	for {
+		select {
+		case err := <-waitDone:
+			finished = true
+			if err == nil {
+				t.Fatalf("interrupted test-web-browser.sh exited zero; output = %s", output.String())
+			}
+			if _, statErr := os.Stat(goRelease); statErr == nil {
+				t.Fatal("the gate only exited once the skill guard was released")
+			}
+			return
+		case <-time.After(200 * time.Millisecond): // Paces the repeat signal only; the exit is the observation.
+			_ = command.Process.Signal(syscall.SIGTERM)
+		case <-deadline:
+			t.Fatalf("a second signal did not end the gate while the skill guard was held; output = %s", output.String())
+		}
+	}
+}
+
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")

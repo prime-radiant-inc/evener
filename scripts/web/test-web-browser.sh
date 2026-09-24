@@ -64,8 +64,13 @@ finish_browser() {
 	trap - 0; exit "$finish_status"
 }
 
+# A second signal while the gate is already stopping exits at once, without
+# waiting any further for the skill guard, whose go test can run for minutes.
+stopping=0
 interrupted_browser() {
 	if [ "$defer_signals" -eq 1 ]; then pending_signal=$1; return; fi
+	if [ "$stopping" -eq 1 ]; then trap - 0; exit "$1"; fi
+	stopping=1
 	stop_guards; exit "$1"
 }
 
