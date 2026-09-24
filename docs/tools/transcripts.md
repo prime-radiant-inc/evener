@@ -110,7 +110,7 @@ children-of-a-parent are just which filters you set, and all return the same rec
 
 ```
 { "matches": [ {
-    "transcript_ref", "kind", "title", "updated_at", "approx_turns",
+    "transcript_ref"?, "kind", "title", "updated_at", "approx_turns",
     "parent_ref"?, "project"?, "is_current"?, "snippets"? } ... ],
   "scope_applied": "current_project" | "all_projects",
   "scanned"?: int, "scan_truncated"?: bool }
@@ -123,11 +123,17 @@ children-of-a-parent are just which filters you set, and all return the same rec
   raw-text scan (200 newest). When the scan stops early, `scan_truncated:true` reports the
   partial coverage; `snippets` carries the matching excerpts (search results only).
 - With **`children_of`**, results are restricted to sessions whose parent is that ref's
-  session. The parent's bucket and ID come from the ref alone — **no transcript is opened,
-  not even the parent's** — and children are looked up in the parent's own bucket, so a
-  `proj:` parent finds its children in that sibling project.
-- Only sessions that are actually readable (have a transcript on disk) are returned, so a
-  match is always a `read`-able ref.
+  session. A `local:` or `proj:` ref resolves the parent's bucket and ID from the ref
+  alone — **no transcript is opened, not even the parent's** — and children are looked up
+  in the parent's own bucket, so a `proj:` parent finds its children in that sibling
+  project. A bare session ID is resolved cross-bucket via the same shared search
+  `find` uses (`findBareIDBuckets`), so a parent whose transcript lives in a sibling
+  or legacy-named bucket is found without a ref.
+- Only sessions that are actually readable (have a transcript on disk) are returned.
+  `transcript_ref` is present for matches in a grammar-valid bucket, but omitted
+  (omitempty) for a match in a legacy-named bucket whose name fails
+  `ValidateProjectID` — no `proj:` ref can address it, though a bare ID or
+  `local:` ref (when it is the current bucket) still resolves.
 - `kind` is one of `root` / `subagent` / `fork`. `parent_ref` (a `transcript_ref`, present
   only for non-root sessions) is the lineage handle — pass it back to `read` or as a
   `children_of` filter. `approx_turns` is the metadata turn count and is deliberately

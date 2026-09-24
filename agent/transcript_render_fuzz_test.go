@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/oracle"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -31,10 +32,16 @@ const (
 	trenderRemoteSession  = "02wMz5Txv5aIxgf9yVdd0N"
 	trenderMissingSession = "02wMz5TxvBRJC3228LTWod"
 	trenderParentSession  = "02wMz5TxvCu3kdckfnw0Gh"
-	// trenderLegacySession lives only in the legacy-named bucket; a bare-id
-	// lookup for it resolves to the legacy bucket with an empty ref.
-	trenderLegacySession = "02wMz5Txv3kdjf9yVdd0P"
 )
+
+// trenderLegacySession lives only in the legacy-named bucket; a bare-id
+// lookup for it resolves to the legacy bucket with an empty ref. It is a
+// package var (not const) because MustNewSessionID panics at init if the
+// identifier domain is misconfigured — the const literal it replaced was
+// 21 chars, one short of the 22-char base62 width ValidateSessionID
+// requires, so the seed was rejected before bucket resolution and the
+// empty-ref/legacy-bucket oracle branch was dead.
+var trenderLegacySession = identifier.MustNewSessionID()
 
 // This file fuzzes four transcript-rendering/lookup seams that unit tests
 // exercise but no fuzz target reaches:
