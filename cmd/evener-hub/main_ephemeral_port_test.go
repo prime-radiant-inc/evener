@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
@@ -130,7 +129,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 
 	// The log line must carry a real, non-zero port - not the literal ":0"
 	// the caller asked for.
-	m := regexp.MustCompile(`listening on (\S+)`).FindStringSubmatch(captured)
+	m := hubListeningLine.FindStringSubmatch(captured)
 	if m == nil {
 		t.Fatalf("no 'listening on <addr>' line in stderr:\n%s", captured)
 	}
