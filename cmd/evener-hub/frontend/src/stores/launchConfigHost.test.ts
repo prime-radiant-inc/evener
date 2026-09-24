@@ -1,9 +1,10 @@
 // @vitest-environment node
 
-import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "./connection";
+import { hostsStore } from "./hosts";
 import {
   launchConfigStore,
   launchConfigStoreForHost,
@@ -19,6 +20,10 @@ function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
+  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 function schema(agent: string): LaunchOptionSchemaResponse {
@@ -42,6 +47,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetLaunchConfigStoreForTests();
   resetLaunchConfigHostStoresForTests();
+  hostsStore.getState().resetForTests();
 });
 
 afterEach(() => {
@@ -123,4 +129,78 @@ test("resetLaunchConfigHostStoresForTests drops the per-host schema cache", asyn
   await launchConfigStoreForHost("beta").getState().schema();
 
   expect(calls).toBe(2);
+});
+
+// A host removed and re-added under the same name is a DIFFERENT registration,
+// and its launch settings are not the old one's. Keyed by name alone, the
+// per-host instance (and its schema cache) would be handed to the new
+// registration, and a response the old registration had in flight could land in
+// it. The instance is keyed on the registry's own row instead.
+test("a host re-registered under the same name does not serve the previous registration's cached schema", async () => {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("evener/host/request", () => {
+    reads += 1;
+    return schema(`read-${reads}`) as never;
+  });
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
+  const first = launchConfigStoreForHost("beta");
+  expect((await first.getState().schema()).options[0]?.description).toBe("schema for read-1");
+
+  // Removed, then added again under the same name at a different address.
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "new.example:22" })] } });
+
+  const second = launchConfigStoreForHost("beta");
+  expect(second).not.toBe(first);
+  expect((await second.getState().schema()).options[0]?.description).toBe("schema for read-2");
+  expect(reads).toBe(2);
+});
+
+// The other half of that rule: the registry re-publishes on every materially
+// different snapshot - an attach, a version report - and none of those is a
+// re-registration. Rebuilding on one would throw away the schema cache and
+// re-read it for a host whose settings never moved.
+test("a live-state change on an unchanged registration keeps the instance and its cache", async () => {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("evener/host/request", () => {
+    reads += 1;
+    return schema(`read-${reads}`) as never;
+  });
+  const registered = hostRow({ name: "beta", address: "beta.example:22" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registered] } });
+  const store = launchConfigStoreForHost("beta");
+  expect((await store.getState().schema()).options[0]?.description).toBe("schema for read-1");
+
+  hostsStore.setState({
+    load: { phase: "ready", hosts: [{ ...registered, attached: true, serverVersion: "1.2.3", midAttach: true }] },
+  });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registered] } });
+
+  expect(launchConfigStoreForHost("beta")).toBe(store);
+  expect((await launchConfigStoreForHost("beta").getState().schema()).options[0]?.description).toBe(
+    "schema for read-1",
+  );
+  expect(reads).toBe(1);
+});
+
+// A pane can resolve a remote host before the registry has answered (a deep
+// link mounts before the picker's own list read lands). That first answer
+// identifies the instance; it does not invalidate it and force a second read.
+test("a host resolved before the registry answered is kept when the registry identifies it", async () => {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("evener/host/request", () => {
+    reads += 1;
+    return schema(`read-${reads}`) as never;
+  });
+  const store = launchConfigStoreForHost("beta");
+  await store.getState().schema();
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
+
+  expect(launchConfigStoreForHost("beta")).toBe(store);
+  await launchConfigStoreForHost("beta").getState().schema();
+  expect(reads).toBe(1);
 });

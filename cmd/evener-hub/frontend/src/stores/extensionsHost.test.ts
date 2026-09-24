@@ -1,8 +1,9 @@
-import type { MarketplaceEntry } from "@evener/appwire-client";
+import type { HostRow, MarketplaceEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "./connection";
 import { extensionsInstanceForHost, extensionsStore, resetExtensionsStoreForTests } from "./extensions";
+import { hostsStore } from "./hosts";
 
 // Host-scoped extensions instances (component 07b): the marketplaces, plugins
 // and global launch-layer cores for the selected host. Local is the app's one
@@ -21,9 +22,14 @@ const MARKETPLACE: MarketplaceEntry = {
   lastUpdated: 1000,
 };
 
+function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
+  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  hostsStore.getState().resetForTests();
 });
 
 afterEach(() => {
@@ -128,4 +134,58 @@ test("resetExtensionsStoreForTests drops a per-host instance so it is rebuilt fr
   resetExtensionsStoreForTests();
   const second = extensionsInstanceForHost("beta").store;
   expect(second).not.toBe(first);
+});
+
+// A host removed and re-added under the same name is a different registration:
+// its marketplaces, plugins and launch layer are its own, and the previous
+// registration's cached catalog must not be served for it (nor a response the
+// old registration had in flight land in it). The instance is keyed on the
+// registry's own row, so the re-registration builds a fresh one.
+test("a host re-registered under the same name is rebuilt, never served the previous registration's data", async () => {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("evener/host/request", () => {
+    reads += 1;
+    return { marketplaces: [{ ...MARKETPLACE, lastUpdated: reads }] } as never;
+  });
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
+  const first = extensionsInstanceForHost("beta");
+  await first.store.getState().fetchMarketplaces();
+  expect(first.store.getState().marketplaces).toEqual([{ ...MARKETPLACE, lastUpdated: 1 }]);
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "new.example:22" })] } });
+
+  const second = extensionsInstanceForHost("beta");
+  expect(second.store).not.toBe(first.store);
+  // The new registration starts with nothing: the old one's catalog is not
+  // carried over, it is re-read.
+  expect(second.store.getState().marketplaces).toBeNull();
+  await second.store.getState().fetchMarketplaces();
+  expect(second.store.getState().marketplaces).toEqual([{ ...MARKETPLACE, lastUpdated: 2 }]);
+  expect(reads).toBe(2);
+});
+
+// A pane can resolve a remote host before the registry has answered (a deep
+// link mounts before the picker's own list read lands). The first answer
+// identifies the instance; it does not replace it and re-read every catalog.
+test("a host resolved before the registry answered is kept when the registry identifies it", () => {
+  const instance = extensionsInstanceForHost("beta");
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
+
+  expect(extensionsInstanceForHost("beta").store).toBe(instance.store);
+});
+
+// The registry re-publishes when an attach or a version report moves, and
+// rebuilds an instance for neither: those fields are not the registration.
+test("an attach report on an unchanged registration keeps the instance", () => {
+  const registered = hostRow({ name: "beta", address: "beta.example:22" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registered] } });
+  const instance = extensionsInstanceForHost("beta");
+
+  hostsStore.setState({
+    load: { phase: "ready", hosts: [{ ...registered, attached: true, serverVersion: "1.2.3" }] },
+  });
+
+  expect(extensionsInstanceForHost("beta").store).toBe(instance.store);
 });

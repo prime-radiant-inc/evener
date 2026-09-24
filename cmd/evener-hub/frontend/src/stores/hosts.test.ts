@@ -10,7 +10,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
-import { hostsStore } from "./hosts";
+import { currentHostRegistration, hostRegistrationChanged, hostsStore, sameHostRegistration } from "./hosts";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -437,5 +437,83 @@ describe("reading", () => {
     gates[1]?.({ hosts: [] });
     await second;
     expect(hostsStore.getState().reading).toBe(0);
+  });
+});
+
+// --- host registration identity (component 07b, round 8) ---------------------
+//
+// A per-host store instance caches that host's own data (schema, catalogs,
+// document). Keying the cache by NAME alone means a host removed and re-added
+// under the same name with a different registration is served the previous
+// registration's cache, and an in-flight response from the old registration
+// can land in the new one. The registry's own row is the identity those caches
+// are built against: `currentHostRegistration` reads it, and
+// `hostRegistrationChanged` answers whether it still describes the instance.
+//
+// The live session fields (attached, the reported versions, os/arch, the
+// attach error, midAttach) move without the registration changing, so they are
+// deliberately NOT part of the identity: a store rebuilt on one of those would
+// re-read everything on every attach, which is the churn the registry's own
+// unchanged-snapshot rule exists to avoid.
+
+describe("host registration identity", () => {
+  test("currentHostRegistration reads the registry's own row for the host", () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [row("beta")] } });
+    expect(currentHostRegistration("beta")).toEqual(row("beta"));
+    expect(currentHostRegistration("gamma")).toBeNull();
+  });
+
+  test("currentHostRegistration is undefined while the registry has no answer", () => {
+    // Never fetched, still reading, or failed: no evidence either way, so
+    // nothing may be invalidated from it.
+    expect(currentHostRegistration("beta")).toBeUndefined();
+    hostsStore.setState({ load: { phase: "error", message: "nope" } });
+    expect(currentHostRegistration("beta")).toBeUndefined();
+  });
+
+  test("sameHostRegistration compares the registration, not the attach lifecycle", () => {
+    const base = row("beta");
+    const registered = { ...base, address: "beta.example:22", user: "u", roots: ["/a", "/b"] };
+    expect(sameHostRegistration(registered, { ...registered })).toBe(true);
+    // Fields the hub reports about a LIVE connection, which move without any
+    // re-registration.
+    expect(
+      sameHostRegistration(registered, {
+        ...registered,
+        attached: true,
+        serverName: "hub",
+        serverVersion: "1.2.3",
+        hubVersion: "9",
+        os: "linux",
+        arch: "arm64",
+        lastAttachError: "handshake failed",
+        midAttach: true,
+      }),
+    ).toBe(true);
+    // A different registration.
+    expect(sameHostRegistration(registered, { ...registered, address: "elsewhere:22" })).toBe(false);
+    expect(sameHostRegistration(registered, { ...registered, removed: true })).toBe(false);
+    // An absent and an empty root list describe the same host (the wire omits
+    // empty optional arrays).
+    expect(sameHostRegistration({ ...registered, roots: ["/a", "/b"] }, { ...registered, roots: undefined })).toBe(
+      false,
+    );
+    expect(sameHostRegistration({ ...registered, roots: [] }, { ...registered, roots: undefined })).toBe(true);
+  });
+
+  test("hostRegistrationChanged treats an unread registry as no evidence", () => {
+    const registered = row("beta");
+    // Built before the registry ever answered: the first answer identifies the
+    // instance rather than invalidating it.
+    expect(hostRegistrationChanged(undefined, registered)).toBe(false);
+    // No answer now.
+    expect(hostRegistrationChanged(registered, undefined)).toBe(false);
+    // The same registration, and the same absence of one.
+    expect(hostRegistrationChanged(registered, registered)).toBe(false);
+    expect(hostRegistrationChanged(null, null)).toBe(false);
+    // A registration appearing, changing, or leaving.
+    expect(hostRegistrationChanged(null, registered)).toBe(true);
+    expect(hostRegistrationChanged(registered, { ...registered, address: "elsewhere:22" })).toBe(true);
+    expect(hostRegistrationChanged(registered, null)).toBe(true);
   });
 });

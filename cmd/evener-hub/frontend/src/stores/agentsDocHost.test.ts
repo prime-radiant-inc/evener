@@ -1,4 +1,4 @@
-import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
+import type { AgentsDocResponse, AnyNotification, HostRow } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import {
@@ -8,6 +8,7 @@ import {
   resetAgentsDocStoreForTests,
 } from "./agentsDoc";
 import { connectionStore } from "./connection";
+import { hostsStore } from "./hosts";
 
 // The AGENTS.md store's host scope (component 07b): the controller's own
 // document is the singleton over the plain connection; a remote host's own file
@@ -23,10 +24,15 @@ function connectFakeClient(): FakeClient {
 
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
 
+function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
+  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetAgentsDocStoreForTests();
   resetAgentsDocHostInstancesForTests();
+  hostsStore.getState().resetForTests();
 });
 
 afterEach(() => {
@@ -104,4 +110,44 @@ test("resetAgentsDocHostInstancesForTests drops a per-host instance so it is reb
   resetAgentsDocHostInstancesForTests();
   const second = agentsDocStoreForHost("beta");
   expect(second).not.toBe(first);
+});
+
+// One `doc` cannot be two hosts' files at once, so the instance IS the host's
+// file: a host re-registered under the same name must not be handed the
+// previous registration's document (whose file is a different machine's), and a
+// read still in flight from that registration must have nowhere to land.
+test("a host re-registered under the same name gets a fresh document store", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => DOC as never);
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
+  const first = agentsDocStoreForHost("beta");
+  await first.getState().fetch();
+  expect(first.getState().doc).toEqual(DOC);
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "new.example:22" })] } });
+
+  const second = agentsDocStoreForHost("beta");
+  expect(second).not.toBe(first);
+  expect(second.getState().doc).toBeNull();
+});
+
+// The deep-link case: the registry's first answer identifies the store it was
+// already resolved into rather than replacing it (which would drop a read that
+// is already on its way).
+test("a host resolved before the registry answered is kept when the registry identifies it", () => {
+  const store = agentsDocStoreForHost("beta");
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
+
+  expect(agentsDocStoreForHost("beta")).toBe(store);
+});
+
+test("an attach report on an unchanged registration keeps the document store", () => {
+  const registered = hostRow({ name: "beta", address: "beta.example:22" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registered] } });
+  const store = agentsDocStoreForHost("beta");
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [{ ...registered, attached: true, hubVersion: "9" }] } });
+
+  expect(agentsDocStoreForHost("beta")).toBe(store);
 });

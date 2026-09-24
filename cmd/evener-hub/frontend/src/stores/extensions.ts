@@ -43,6 +43,7 @@ import {
 } from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
+import { currentHostRegistration, type HostRegistration, hostRegistrationChanged } from "./hosts";
 import { launchConfigStore, launchConfigStoreForHost } from "./launchConfig";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
@@ -180,16 +181,37 @@ connectionStore.subscribe(syncConnection);
 // (stores/hostStoreClient.ts). The controller's own singleton above is
 // untouched: the local hub stays byte-for-byte today's store.
 
-const hostInstances = new Map<string, ExtensionsInstance>();
+interface ExtensionsHostEntry {
+  instance: ExtensionsInstance;
+  /** What the registry said REGISTERED this host when the instance was built
+   * (stores/hosts.ts's HostRegistration). The instance is current only while
+   * the registry still gives the same answer, so a host removed and re-added
+   * under the same name gets a fresh instance rather than the previous
+   * registration's cached catalogs and revisions - and a response the old
+   * registration had in flight lands in the instance it was issued for. */
+  registration: HostRegistration;
+}
+
+const hostInstances = new Map<string, ExtensionsHostEntry>();
 
 function syncHostInstances(state: Pick<ConnectionStoreState, "client" | "state">): void {
-  for (const instance of hostInstances.values()) {
-    instance.marketplaces.connectionChanged(state.client, state.state);
-    instance.plugins.connectionChanged(state.client, state.state);
-    instance.launchLayer.connectionChanged(state.client, state.state);
+  for (const entry of hostInstances.values()) {
+    entry.instance.marketplaces.connectionChanged(state.client, state.state);
+    entry.instance.plugins.connectionChanged(state.client, state.state);
+    entry.instance.launchLayer.connectionChanged(state.client, state.state);
   }
 }
 connectionStore.subscribe(syncHostInstances);
+
+/** disposeHostInstance ends a per-host instance's three cores. Their
+ * `start()` wired live notification subscriptions, so an instance no consumer
+ * can reach any more - a re-registration replaced it, or a test ended - must be
+ * disposed rather than dropped. `dispose()` is terminal. */
+function disposeHostInstance(instance: ExtensionsInstance): void {
+  instance.marketplaces.dispose();
+  instance.plugins.dispose();
+  instance.launchLayer.dispose();
+}
 
 /** extensionsInstanceForHost returns the extensions instance for `host`: the
  * controller's own instance for the local hub (and for an absent host), and a
@@ -198,15 +220,27 @@ connectionStore.subscribe(syncHostInstances);
 export function extensionsInstanceForHost(host: string | null | undefined): ExtensionsInstance {
   if (isLocalHost(host)) return localInstance;
   const name = host as string;
-  let instance = hostInstances.get(name);
-  if (instance === undefined) {
-    instance = buildExtensionsInstance(remoteHostStoreClient(name), launchConfigStoreForHost(name).getState());
-    hostInstances.set(name, instance);
-    // The connection that already exists: this module is loaded after the
-    // client may be ready, so a fresh instance reads it rather than waiting for
-    // the NEXT transition (mirrors syncConnection's own initial pass).
-    syncHostInstances(connectionStore.getState());
+  const registration = currentHostRegistration(name);
+  const recorded = hostInstances.get(name);
+  if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
+    // The first answer after an instance was built before the registry had one
+    // identifies it from here on; every other unchanged answer is the same one.
+    if (registration !== undefined) recorded.registration = registration;
+    return recorded.instance;
   }
+  // A re-registration: the instance this replaces belongs to a registration the
+  // registry no longer names, so its cores are unwired before it is dropped -
+  // otherwise its subscriptions would keep refetching for a host no section can
+  // reach.
+  if (recorded !== undefined) disposeHostInstance(recorded.instance);
+  const instance = buildExtensionsInstance(remoteHostStoreClient(name), launchConfigStoreForHost(name).getState());
+  hostInstances.set(name, { instance, registration });
+  // The connection that already exists: this module is loaded after the client
+  // may be ready, so a fresh instance reads it rather than waiting for the NEXT
+  // transition (mirrors syncConnection's own initial pass). A no-op for the
+  // instances already there - connectionChanged ignores a repeat of the
+  // connection it already has.
+  syncHostInstances(connectionStore.getState());
   return instance;
 }
 
@@ -287,11 +321,7 @@ export function resetExtensionsStoreForTests(): void {
   // them: a leaked subscription would refetch for a host no section can reach.
   // dispose() is terminal, so the instance is dropped rather than reused and
   // extensionsInstanceForHost builds a fresh one.
-  for (const instance of hostInstances.values()) {
-    instance.marketplaces.dispose();
-    instance.plugins.dispose();
-    instance.launchLayer.dispose();
-  }
+  for (const entry of hostInstances.values()) disposeHostInstance(entry.instance);
   hostInstances.clear();
 
   localInstance.marketplaces.reset();

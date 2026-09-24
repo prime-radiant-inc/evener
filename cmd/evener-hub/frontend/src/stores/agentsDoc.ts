@@ -29,6 +29,7 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import { connectedClientPort, connectionStore, onConnectionNotification } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
+import { currentHostRegistration, type HostRegistration, hostRegistrationChanged } from "./hosts";
 
 export interface AgentsDocStoreState {
   /** The last document the hub confirmed - null until the first fetch lands. */
@@ -212,7 +213,17 @@ export function useAgentsDocStore<T>(selector?: (state: AgentsDocStoreState) => 
 
 // --- Host-scoped instances (component 07b) ----------------------------------
 
-const hostInstances = new Map<string, AgentsDocInstance>();
+interface AgentsDocHostEntry {
+  instance: AgentsDocInstance;
+  /** What the registry said REGISTERED this host when the instance was built
+   * (stores/hosts.ts's HostRegistration). The instance's `doc` IS one host's
+   * file, so a host removed and re-added under the same name must not be handed
+   * the previous registration's document - and an in-flight read the old
+   * registration owed must have nowhere left to land. */
+  registration: HostRegistration;
+}
+
+const hostInstances = new Map<string, AgentsDocHostEntry>();
 
 /** agentsDocStoreForHost returns the AGENTS.md document store for `host`: the
  * controller's own singleton for the local hub (and for an absent host), and a
@@ -223,11 +234,20 @@ const hostInstances = new Map<string, AgentsDocInstance>();
 export function agentsDocStoreForHost(host: string | null | undefined): StoreApi<AgentsDocStoreState> {
   if (isLocalHost(host)) return agentsDocStore;
   const name = host as string;
-  let instance = hostInstances.get(name);
-  if (instance === undefined) {
-    instance = createAgentsDocInstance(remotePort(name));
-    hostInstances.set(name, instance);
+  const registration = currentHostRegistration(name);
+  const recorded = hostInstances.get(name);
+  if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
+    // The first answer after an instance was built before the registry had one
+    // identifies it from here on; every other unchanged answer is the same one.
+    if (registration !== undefined) recorded.registration = registration;
+    return recorded.instance.store;
   }
+  // A re-registration: the replaced instance's notification and connection
+  // subscriptions are unwired (dispose() is terminal) so it cannot keep
+  // fetching, or land a document, for a registration the registry has left.
+  if (recorded !== undefined) recorded.instance.dispose();
+  const instance = createAgentsDocInstance(remotePort(name));
+  hostInstances.set(name, { instance, registration });
   return instance.store;
 }
 
@@ -263,7 +283,7 @@ function remotePort(host: string): AgentsDocPort {
  * instance, so a test's remote hosts do not leak subscriptions into the next
  * test. No production code should call this. */
 export function resetAgentsDocHostInstancesForTests(): void {
-  for (const instance of hostInstances.values()) instance.dispose();
+  for (const entry of hostInstances.values()) entry.instance.dispose();
   hostInstances.clear();
 }
 
