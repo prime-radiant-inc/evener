@@ -933,6 +933,27 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 	return delegateUpdatePlan{rows: rows}
 }
 
+// snapshotsForChildSession captures, in id order, only the delegates whose
+// descriptor names childSessionID. The per-child drive gates ask for one
+// child's row every round, so capturing the whole tree here would make a
+// round cost O(children^2) deep copies.
+func (c *delegateTreeController) snapshotsForChildSession(childSessionID string) []delegateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []string
+	for id, aggregate := range c.durable {
+		if aggregate != nil && aggregate.Descriptor.ChildSessionID == childSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	rows := make([]delegateSnapshot, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, c.captureDelegateSnapshotLocked(id))
+	}
+	return rows
+}
+
 // blockingDelegateIDs returns this session's direct child delegates whose
 // current run has a live inline waiter. The controller owns both pieces of
 // state, so this is the authoritative dependency check: a running delegate

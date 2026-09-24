@@ -5744,9 +5744,9 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 	if s == nil || s.delegateController == nil || childSessionID == "" {
 		return delegateSnapshot{}, false
 	}
-	for _, visible := range stableDelegateRowsForSession(s, false) {
-		if visible.snapshot.descriptor.ChildSessionID == childSessionID {
-			return visible.snapshot, true
+	for _, row := range s.delegateController.snapshotsForChildSession(childSessionID) {
+		if delegateRowVisibleTo(s, row.parentID, row.descriptor.OwnerSessionID) {
+			return row, true
 		}
 	}
 	return delegateSnapshot{}, false
