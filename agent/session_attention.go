@@ -1252,8 +1252,8 @@ const delegateAttentionFoldTailBytes = 4096
 // offset, so the verify after an append sees the appended record on disk
 // exactly as a full read would. What a resumed read trusts is the prefix, and
 // it trusts it only while the file is provably the one that was folded, grown
-// by appends: the same path and session, the same file (device and inode, so
-// a replacement renamed over the path refolds), at least as long as the offset
+// by appends: the same session, the same file (device and inode, so a
+// replacement renamed over the path refolds), at least as long as the offset
 // (a truncation refolds), and the recorded trailing bytes still at the offset
 // (a truncation that regrew past it refolds). Any other outcome, and any
 // error, folds from byte zero.
@@ -1266,8 +1266,13 @@ const delegateAttentionFoldTailBytes = 4096
 // an in-place rewrite before the tail window that keeps the file's identity,
 // its length, and its last delegateAttentionFoldTailBytes; nothing writes a
 // transcript that way.
+//
+// This is not delegateAttentionFoldCache (foldcache) for three reasons. It
+// resumes only when a grown file's mtime moved, and a delivery's appends can
+// land within one coarse mtime tick of the previous write, so the verify
+// after an append would refold from zero; it has no file-identity check; and
+// its shared LRU can evict the root's entry during a hub-wide sweep.
 type delegateAttentionFoldCursor struct {
-	path      string
 	sessionID string
 	file      os.FileInfo
 	offset    int64
@@ -1277,20 +1282,13 @@ type delegateAttentionFoldCursor struct {
 
 // read returns the fold of the transcript at path, with readDelegateAttentionFold's
 // decisions: the same fold, the same errors, and the empty fold for a missing
-// file.
+// file. The cursor is left empty unless this read succeeds on a regular file.
 func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAttentionFold, error) {
-	fold, err := c.advance(path, sessionID)
-	if err != nil {
-		*c = delegateAttentionFoldCursor{}
-	}
-	return fold, err
-}
-
-func (c *delegateAttentionFoldCursor) advance(path, sessionID string) (delegateAttentionFold, error) {
+	previous := *c
+	*c = delegateAttentionFoldCursor{}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			*c = delegateAttentionFoldCursor{}
 			return newDelegateAttentionFold(), nil
 		}
 		return delegateAttentionFold{}, fmt.Errorf("open delegate attention transcript: %w", err)
@@ -1303,13 +1301,12 @@ func (c *delegateAttentionFoldCursor) advance(path, sessionID string) (delegateA
 	if !info.Mode().IsRegular() {
 		// Only a regular file has offsets to resume from; anything else is
 		// folded as a stream, from its start, every time.
-		*c = delegateAttentionFoldCursor{}
 		fold, _, err := extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), sessionID)
 		return fold, err
 	}
 	from, prior := int64(0), newDelegateAttentionFold()
-	if c.resumes(f, info, path, sessionID) {
-		from, prior = c.offset, c.fold
+	if previous.resumes(f, info, sessionID) {
+		from, prior = previous.offset, previous.fold
 		if _, err := f.Seek(from, io.SeekStart); err != nil {
 			return delegateAttentionFold{}, fmt.Errorf("seek delegate attention transcript: %w", err)
 		}
@@ -1322,14 +1319,13 @@ func (c *delegateAttentionFoldCursor) advance(path, sessionID string) (delegateA
 	if _, err := f.ReadAt(tail, consumed-int64(len(tail))); err != nil {
 		return delegateAttentionFold{}, fmt.Errorf("read delegate attention transcript tail: %w", err)
 	}
-	*c = delegateAttentionFoldCursor{path: path, sessionID: sessionID, file: info, offset: consumed, tail: tail, fold: fold}
+	*c = delegateAttentionFoldCursor{sessionID: sessionID, file: info, offset: consumed, tail: tail, fold: fold}
 	return fold, nil
 }
 
-// resumes reports whether f, open at path, is the file c folded, grown only by
-// appends since.
-func (c *delegateAttentionFoldCursor) resumes(f *os.File, info os.FileInfo, path, sessionID string) bool {
-	if c.file == nil || c.path != path || c.sessionID != sessionID || !os.SameFile(c.file, info) || info.Size() < c.offset {
+// resumes reports whether f is the file c folded, grown only by appends since.
+func (c delegateAttentionFoldCursor) resumes(f *os.File, info os.FileInfo, sessionID string) bool {
+	if c.file == nil || c.sessionID != sessionID || !os.SameFile(c.file, info) || info.Size() < c.offset {
 		return false
 	}
 	tail := make([]byte, len(c.tail))
@@ -1494,7 +1490,7 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	} else if err := reopened.EstablishDurability(); err != nil {
 		return err
 	}
-	verified, err := readDelegateAttentionFold(path, sessionID)
+	verified, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}

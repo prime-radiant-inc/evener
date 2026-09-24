@@ -38,6 +38,22 @@ func appendBulkHistory(tb testing.TB, w *transcript.Writer, minBytes int) {
 	}
 }
 
+// deliverAndConsumeRootAttention runs one delegate report's whole attention
+// lifecycle on root: the durable append, the wake arm, and the consumed
+// resolution.
+func deliverAndConsumeRootAttention(tb testing.TB, root *Session, attentionID string) {
+	tb.Helper()
+	if _, err := root.appendDelegateNotificationDurably(attentionID, "<delegate-notification>done</delegate-notification>"); err != nil {
+		tb.Fatalf("append %s: %v", attentionID, err)
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		tb.Fatalf("arm %s: %v", attentionID, err)
+	}
+	if err := root.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+		tb.Fatalf("resolve %s: %v", attentionID, err)
+	}
+}
+
 // BenchmarkRootDelegateAttentionDelivery measures one delegate report's whole
 // attention lifecycle on a root whose transcript already holds ~95 MB of
 // history: the durable append (check and verify), the wake arm, and the
@@ -58,16 +74,7 @@ func BenchmarkRootDelegateAttentionDelivery(b *testing.B) {
 	delivery := 0
 	deliver := func() {
 		delivery++
-		attentionID := fmt.Sprintf("delegate:dlg_bench/delivery/%d", delivery)
-		if _, err := root.appendDelegateNotificationDurably(attentionID, "<delegate-notification>done</delegate-notification>"); err != nil {
-			b.Fatalf("append attention: %v", err)
-		}
-		if err := root.armDelegateAttention(attentionID); err != nil {
-			b.Fatalf("arm attention: %v", err)
-		}
-		if err := root.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
-			b.Fatalf("resolve attention: %v", err)
-		}
+		deliverAndConsumeRootAttention(b, root, fmt.Sprintf("delegate:dlg_bench/delivery/%d", delivery))
 	}
 	deliver()
 	for b.Loop() {
@@ -87,19 +94,7 @@ func TestRootDelegateAttentionDeliveryDoesNotRedecodeTranscriptPrefix(t *testing
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
 	)
 	appendBulkHistory(t, root.attachedTranscript(), 256<<10)
-	deliver := func(attentionID string) {
-		t.Helper()
-		if appended, err := root.appendDelegateNotificationDurably(attentionID, "<delegate-notification>done</delegate-notification>"); err != nil || !appended {
-			t.Fatalf("append %s = appended:%t err:%v", attentionID, appended, err)
-		}
-		if err := root.armDelegateAttention(attentionID); err != nil {
-			t.Fatalf("arm %s: %v", attentionID, err)
-		}
-		if err := root.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
-			t.Fatalf("resolve %s: %v", attentionID, err)
-		}
-	}
-	deliver("delegate:dlg_prefix/delivery/1")
+	deliverAndConsumeRootAttention(t, root, "delegate:dlg_prefix/delivery/1")
 
 	path := transcriptPath(stateDir, root.ID())
 	raw, err := os.ReadFile(path)
@@ -121,7 +116,7 @@ func TestRootDelegateAttentionDeliveryDoesNotRedecodeTranscriptPrefix(t *testing
 		t.Fatal("a full fold decoded the rewritten first entry; the probe proves nothing")
 	}
 
-	deliver("delegate:dlg_prefix/delivery/2")
+	deliverAndConsumeRootAttention(t, root, "delegate:dlg_prefix/delivery/2")
 }
 
 func newAttentionFoldTranscript(t *testing.T) (string, string, *transcript.Writer) {
