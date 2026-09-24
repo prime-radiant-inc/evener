@@ -41,6 +41,7 @@ import { createConversationService } from "../../mobile/src/services/conversatio
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -71,7 +72,10 @@ import {
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
-import { createNativeMutationHost } from "./nativeMutationHost";
+import {
+	createNativeMutationHost,
+	type NativeMutationHost,
+} from "./nativeMutationHost";
 import { getNativeMutationRuntime } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
@@ -816,31 +820,27 @@ export function ConversationScreen({
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	const headerHeight = useHeaderHeight();
-	// The durable-mutation wiring: one process-lifetime runtime, one host bound
-	// to this screen's client and target, and a store whose mutations are
-	// admitted through it. The host owns the registration and the read fence;
-	// the runtime owns dispatch and the recovery row a rejection produces.
-	const mutationRuntime = useMemo(() => getNativeMutationRuntime(), []);
-	const mutationHost = useMemo(
-		() =>
-			client
-				? createNativeMutationHost(
-						mutationRuntime,
-						route.params.hubId,
-						route.params.ref,
-						client,
-					)
-				: null,
-		[client, mutationRuntime, route.params.hubId, route.params.ref],
+	// The durable-mutation wiring: the store admits every mutation through a
+	// lazily-acquired process runtime (a screen that never sends never opens the
+	// mutations database), and a connected host effect binds this screen's
+	// client and target to that same runtime. The host owns the registration and
+	// the read fence; the runtime owns dispatch and the recovery row a
+	// rejection produces.
+	const mutationSubmitter = useMemo<ConversationMutationSubmitter>(
+		() => ({
+			submit: (request) => getNativeMutationRuntime().submit(request),
+		}),
+		[],
 	);
+	const mutationHostRef = useRef<NativeMutationHost | null>(null);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
 		() =>
 			createConversationStore({
 				mutationHubId: route.params.hubId,
-				mutationSubmitter: mutationRuntime,
+				mutationSubmitter,
 			}),
-		[mutationRuntime, route.params.hubId, route.params.ref],
+		[mutationSubmitter, route.params.hubId, route.params.ref],
 	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
@@ -851,12 +851,12 @@ export function ConversationScreen({
 			client
 				? createConversationService(client, {
 						onReadStart: (ref, expectedThreadId) =>
-							mutationHost?.beginRead(ref, expectedThreadId),
+							mutationHostRef.current?.beginRead(ref, expectedThreadId),
 						onReadComplete: (lease, response) =>
-							mutationHost?.reconcileRead(lease, response),
+							mutationHostRef.current?.reconcileRead(lease, response),
 					})
 				: null,
-		[client, mutationHost],
+		[client],
 	);
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
@@ -993,15 +993,26 @@ export function ConversationScreen({
 	const deliveryConcern = Boolean(
 		snapshot.error || actionError || unconfirmedSend !== null,
 	);
-	// Register this screen's client and start the runtime for as long as the
-	// host is current. A failed startup has already dropped the registration,
-	// so the screen stays usable on the direct service path and the next host
-	// retries; the cleanup retires the registration with the mount.
+	// Bind this screen's client and target to the runtime for the connected
+	// lifetime: the service's read fence calls through mutationHostRef, and the
+	// runtime's dispatch gate opens on this screen's own authoritative read and
+	// retires with the mount. A failed startup has already dropped the
+	// registration, so the screen stays usable on the direct service path.
 	useEffect(() => {
-		if (!mutationHost) return;
-		void mutationHost.start().catch(() => undefined);
-		return () => mutationHost.dispose();
-	}, [mutationHost]);
+		if (!client || !connected) return;
+		const host = createNativeMutationHost(
+			getNativeMutationRuntime(),
+			route.params.hubId,
+			route.params.ref,
+			client,
+		);
+		mutationHostRef.current = host;
+		void host.start().catch(() => undefined);
+		return () => {
+			if (mutationHostRef.current === host) mutationHostRef.current = null;
+			host.dispose();
+		};
+	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
