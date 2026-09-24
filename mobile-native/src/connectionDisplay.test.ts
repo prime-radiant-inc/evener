@@ -617,6 +617,68 @@ it("useConnectionDisplay refuses the previous hub's recorded client for the new 
 	expect(display.result.current).toBe("none");
 });
 
+// Round 67's same-state replacement Medium: a ready connection served the
+// live client prop whenever the adopted scope matched, without comparing the
+// client identity — so a replacement that swapped the client under an
+// unchanged hubId and state was handed out before any adoption validated it,
+// including a client the record knows under ANOTHER hub. The ready path now
+// keys on the record's verdict over the live client; the dial-recorded
+// replacement keeps round 32's no-delay contract.
+it("useRenderClient withholds a same-state replacement the record refuses until the re-point", () => {
+	const first = {} as AppwireClient;
+	const foreign = {} as AppwireClient;
+	const rePointed = {} as AppwireClient;
+	recordClientReadyHub(first, "hub-1");
+	recordClientReadyHub(foreign, "hub-2");
+	recordClientReadyHub(rePointed, "hub-1");
+	let client: AppwireClient | null = first;
+	const rendered = renderHook(() => useRenderClient(client, "ready", "hub-1"));
+	// The settle adopts the recorded pairing.
+	rendered.rerender();
+	expect(rendered.result.current).toBe(first);
+	// The same-state replacement: hubId has not moved and the state has not
+	// dropped, but the connection now reports a client the record knows under
+	// another hub — the ready path must not serve it on the adopted scope
+	// alone.
+	client = foreign;
+	rendered.rerender();
+	expect(rendered.result.current).toBeNull();
+	// The re-point's own replacement — recorded for hub-1 at its dial — serves
+	// on the very render it arrives, never delayed behind the stores keyed
+	// on it (round 32's contract, now keyed on identity).
+	client = rePointed;
+	rendered.rerender();
+	expect(rendered.result.current).toBe(rePointed);
+});
+
+// The display half of round 67's Medium: trust is EARNED state, and a
+// same-state replacement triggers no transition that would re-earn it — so
+// the render gate itself must re-check the pairing verdict while stale trust
+// stands, or the screen keeps showing content behind a client the record
+// refuses.
+it("useConnectionDisplay walls a same-state replacement the record refuses", () => {
+	const first = {} as AppwireClient;
+	const foreign = {} as AppwireClient;
+	recordClientReadyHub(first, "hub-1");
+	recordClientReadyHub(foreign, "hub-2");
+	let client: AppwireClient | null = first;
+	const display = renderHook(() => useConnectionDisplay("hub-1", "ready", false, client));
+	display.rerender();
+	expect(display.result.current).toBe("none");
+	// No transition fires for a same-state swap, so the trust earned under
+	// the first client is stale the moment the connection reports the
+	// replacement; the verdict on the live client is what the gate reads.
+	client = foreign;
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+	// A replacement recorded for hub-1 at its dial keeps the screen.
+	const rePointed = {} as AppwireClient;
+	recordClientReadyHub(rePointed, "hub-1");
+	client = rePointed;
+	display.rerender();
+	expect(display.result.current).toBe("none");
+});
+
 // Round 49's undefined-hub Medium: useRenderClient seeds adoption.scope as
 // undefined, so a mount whose hubId is also undefined passed the ready-path
 // scope check on its very first render and served the live client prop with

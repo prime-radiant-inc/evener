@@ -267,9 +267,10 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 }
 
 // scratchSweepBeforeRemove is a nil-in-production test seam fired while the
-// sweep holds the candidate's lease and the reclamation mutex, after the
-// retention check read the directory collectible and just before the removal.
-// Tests use it to run a concurrent manifest reset inside that window.
+// sweep holds the candidate's lease, the reclamation mutex, and — when the
+// candidate carries a pin — the pin owner's manifest lock, after the retention
+// check read the directory collectible and just before the removal. Tests use
+// it to run a concurrent manifest reset inside that window.
 var scratchSweepBeforeRemove func()
 
 // scratchResetBeforeReclaimLock fires just before the manifest reset attempts
@@ -279,17 +280,22 @@ var scratchSweepBeforeRemove func()
 // reached the window in time.
 var scratchResetBeforeReclaimLock func()
 
-// scratchReclamationMu serializes scratch reclamation with the manifest reset.
-// The sweep's retention check reads the Released tombstone without any lock the
-// reset's resurrection takes, and the reset's carry pass reclaims rows without
-// taking the directory lease (round 25's contract leaves contended pins
-// untouched), so without serialization a reset could carry a directory's rows
-// into an unreleased manifest between the sweep's check and its removal — the
-// sweep would then delete the scratch the resurrected manifest names. Both
-// orders are safe under the mutex: a reset that runs first leaves !Released
-// for the sweep's check to read, and one that comes second finds the directory
-// gone and its pair dies with the tombstone. Every lock each side takes besides
-// this one is fail-fast, so neither holder blocks on anything while holding it.
+// scratchReclamationMu serializes this process's scratch reclamation with its
+// manifest reset. The sweep's retention check reads the Released tombstone
+// without any lock the reset's resurrection takes, and the reset's carry pass
+// reclaims rows without taking the directory lease (round 25's contract
+// leaves contended pins untouched), so without serialization a reset could
+// carry a directory's rows into an unreleased manifest between the sweep's
+// check and its removal — the sweep would then delete the scratch the
+// resurrected manifest names. Both orders are safe under the mutex: a reset
+// that runs first leaves !Released for the sweep's check to read, and one
+// that comes second finds the directory gone and its pair dies with the
+// tombstone. Every lock each side takes besides this one is fail-fast, so
+// neither holder blocks on anything while holding it. Resets in OTHER
+// processes sharing the state directory serialize through the pin owner's
+// manifest lock instead, which the sweep holds across the same window
+// (round 67): the mutex covers this process, the durable lock covers the
+// rest, and both use the same both-orders-safe argument.
 var scratchReclamationMu sync.Mutex
 
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
@@ -344,16 +350,49 @@ func sweepCrashedSessionScratch(base string) error {
 			_ = lease.Release()
 			continue
 		}
+		// Cross-process serialization (round 67): the reclamation mutex below
+		// is process-local, but resets run in every process sharing this state
+		// directory, and ScratchDirectoryRetained reads a RELEASED manifest's
+		// pinned directory collectible — so another process's reset could carry
+		// the reference on its contended branch and commit an unreleased
+		// manifest naming this very directory while the sweep holds its lease
+		// mid-removal. The pin owner's manifest lock is the mutex's durable
+		// equivalent: the reset already runs under it, so a sweep holding it
+		// across the check and the removal excludes every process's reset, and
+		// a reset that went first leaves !Released for the check to read. The
+		// acquisition is fail-fast — the sweep never blocks holding the
+		// directory lease; contention skips the candidate for a later sweep to
+		// retry. A candidate with no pin needs no lock: every carry branch dies
+		// on the absent pin, and writers refuse a released manifest, so
+		// nothing can begin carrying for it while the removal runs.
+		var manifestLock scratchLease
+		if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil {
+			lock, lockErr := acquireScratchRetentionLock(pin.Owner)
+			if lockErr != nil {
+				if !errors.Is(lockErr, ErrScratchRetentionLockHeld) {
+					failures = append(failures, lockErr)
+				}
+				_ = lease.Release()
+				continue
+			}
+			manifestLock = lock
+		}
 		scratchReclamationMu.Lock()
 		retain, retentionErr := ScratchDirectoryRetained(dir)
 		if retentionErr != nil {
 			scratchReclamationMu.Unlock()
+			if manifestLock != nil {
+				_ = manifestLock.Release()
+			}
 			failures = append(failures, retentionErr)
 			_ = lease.Release()
 			continue
 		}
 		if retain {
 			scratchReclamationMu.Unlock()
+			if manifestLock != nil {
+				_ = manifestLock.Release()
+			}
 			_ = lease.Release()
 			continue
 		}
@@ -366,6 +405,9 @@ func sweepCrashedSessionScratch(base string) error {
 			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
 		}
 		scratchReclamationMu.Unlock()
+		if manifestLock != nil {
+			_ = manifestLock.Release()
+		}
 		_ = lease.Release()
 	}
 	return errors.Join(failures...)

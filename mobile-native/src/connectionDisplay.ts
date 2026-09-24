@@ -281,8 +281,12 @@ export function useConnectionDisplay(
 	// the whole window that is the previous hub, so the ready renders under
 	// the new one wall until the connection transitions into ready for it.
 	// The unborn trust walls an undefined hub's mount the same way — the
-	// boolean cannot collide with any hubId (round 50).
-	if (state === "ready" && !(trust.trusted && trust.scope === hubId)) {
+	// boolean cannot collide with any hubId (round 50). The verdict joins the
+	// gate because trust is EARNED state, not live state: a same-state client
+	// replacement triggers no transition, so nothing re-earns trust for the
+	// new client — a replacement the record refuses walls here even while
+	// the trust earned under the old client stands (round 67).
+	if (state === "ready" && !(trust.trusted && trust.scope === hubId && pairingServesHub)) {
 		return "wall";
 	}
 	return connectionDisplay(state, everReady.current, fatal || fatalRecovery.current);
@@ -373,8 +377,21 @@ export function useRenderClient(
 		// scopes to undefined, so a mount whose hubId is also undefined would
 		// pass the bare scope comparison on its very first render and serve
 		// the live client prop no settling effect has vouched for — the exact
-		// mount-borne pairing the seed exists to withhold (round 49).
-		return adoption.client !== null && adoption.scope === hubId ? client : null;
+		// mount-borne pairing the seed exists to withhold (round 49). The
+		// verdict on the LIVE client is required too (round 67): a same-state
+		// replacement swaps the client under an unchanged hubId with no
+		// transition the settle could key on, so the render itself asks the
+		// identity record — written at dial success — whether the client it
+		// hands out serves this hub. A replacement the record vouches for
+		// serves on the very render it arrives, never delayed behind the
+		// stores keyed on it (round 32's contract, now keyed on identity); a
+		// client the record knows under another hub is withheld until the
+		// connection re-points, exactly as the settle's own adoption gate
+		// refuses it (round 56).
+		if (client !== null && adoption.client !== null && adoption.scope === hubId && clientServesHub(client, hubId)) {
+			return client;
+		}
+		return null;
 	}
 	return adoption.scope === hubId ? adoption.client : null;
 }

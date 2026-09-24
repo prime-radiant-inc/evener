@@ -851,13 +851,13 @@ func consumersNamingScratchBinding(consumers []ScratchConsumerBinding, bindingID
 }
 
 func validateScratchBindingUpdate(manifest ScratchManifest, mergedBindings []ScratchBinding, suppliedBindings []ScratchBinding, suppliedConsumers []ScratchConsumerBinding) error {
-	refs := make(map[string]struct{}, len(manifest.References))
+	refs := make(map[string]string, len(manifest.References))
 	for _, ref := range manifest.References {
 		dir, err := canonicalScratchPath(ref.Dir)
 		if err != nil {
 			return err
 		}
-		refs[dir] = struct{}{}
+		refs[dir] = ref.Kind
 	}
 	seenBinding := make(map[string]struct{}, len(suppliedBindings))
 	for _, binding := range suppliedBindings {
@@ -875,8 +875,16 @@ func validateScratchBindingUpdate(manifest ScratchManifest, mergedBindings []Scr
 			if err != nil {
 				return err
 			}
-			if _, ok := refs[dir]; !ok {
+			pinnedKind, ok := refs[dir]
+			if !ok {
 				return fmt.Errorf("sandbox: scratch binding %q slot %q references unpinned directory %q", binding.BindingID, kind, dir)
+			}
+			if pinnedKind != kind {
+				// A slot claiming a pinned directory under another kind has
+				// no reference to pair with — the same mismatch the graph
+				// reader fails closed on, caught here before it can be
+				// written (round 67).
+				return fmt.Errorf("sandbox: scratch binding %q slot %q kind does not match pinned kind %q", binding.BindingID, kind, pinnedKind)
 			}
 		}
 	}
@@ -1299,6 +1307,17 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 			for _, binding := range manifest.Bindings {
 				for slotKind, slot := range binding.Slots {
 					if slotDir, err := canonicalScratchPath(slot.Dir); err == nil && slotDir == dir {
+						// Only the reference's own kind carries (round 67): a
+						// slot claiming the directory under another kind has
+						// no reference to pair with in the fresh manifest, and
+						// the graph reader fails closed on the mismatch —
+						// wedging every later restore of the root. The binding
+						// simply does not travel for this reference; if none
+						// of its slots match, the narrowing passes below drop
+						// its roles with it.
+						if slotKind != kind {
+							continue
+						}
 						narrowed, ok := carriedBindings[binding.BindingID]
 						if !ok {
 							narrowed = binding

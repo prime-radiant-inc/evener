@@ -6,10 +6,10 @@ import (
 	"maps"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -170,8 +170,6 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 
 	atWindow := make(chan struct{})
 	proceed := make(chan struct{})
-	resetAtLock := make(chan struct{})
-	resetDone := make(chan error, 1)
 	sweepDone := make(chan error, 1)
 	scratchSweepBeforeRemove = func() {
 		atWindow <- struct{}{}
@@ -182,52 +180,20 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 	go func() { sweepDone <- SweepCrashedSessionScratch(workspace) }()
 	<-atWindow
 
-	// The reset announces its arrival at the reclamation lock through the
-	// test seam: the sweep holds the mutex from its retention read until the
-	// removal completes, so a signal here proves the reset attempted the
-	// lock inside that window — the serialization's whole subject — rather
-	// than a sleep hoping the goroutine got there in time (and sometimes
-	// passing with the window never entered).
-	var resetArrived sync.Once
-	scratchResetBeforeReclaimLock = func() {
-		resetArrived.Do(func() { close(resetAtLock) })
+	// The serialized window now holds the pin owner's MANIFEST lock too
+	// (round 67): the reset runs under that same lock, so nothing — in this
+	// process or any other sharing the state directory — can commit a carried
+	// manifest while the sweep is inside the window. A lock the test can take
+	// here means the sweep never held it, which is the deserialized tree.
+	err := WithScratchRetentionLock(owner, func() error { return nil })
+	if err == nil {
+		t.Fatal("the sweep entered its removal window without the manifest lock: a concurrent reset carries and commits inside it")
 	}
-	t.Cleanup(func() { scratchResetBeforeReclaimLock = nil })
-
-	go func() {
-		_, _, err := ResetScratchRetentionIfReleased(owner)
-		resetDone <- err
-	}()
-	<-resetAtLock
-	// Distinguish the two trees without a blind sleep: while the sweep parks
-	// in its hook the reclamation lock is held, so on the serialized tree the
-	// reset parks at the lock and resetDone cannot arrive yet; a reset that
-	// lost the serialization runs straight through and lands resetDone within
-	// the carry's few milliseconds. The wait-for-absence costs the green path
-	// nothing it depends on, and on a deserialized tree it orders the carry
-	// before the sweep's removal, so the harm the mutex exists to prevent is
-	// what the assertions see.
-	resetCompletedEarly := false
-	select {
-	case err := <-resetDone:
-		if err != nil {
-			t.Fatalf("reset: %v", err)
-		}
-		resetCompletedEarly = true
-	case <-time.After(50 * time.Millisecond):
+	if !errors.Is(err, ErrScratchRetentionLockHeld) {
+		t.Fatalf("probe lock error = %v, want the lock-held sentinel", err)
 	}
 	close(proceed)
 
-	if !resetCompletedEarly {
-		select {
-		case err := <-resetDone:
-			if err != nil {
-				t.Fatalf("reset: %v", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("reset did not finish")
-		}
-	}
 	select {
 	case err := <-sweepDone:
 		if err != nil {
@@ -237,6 +203,11 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 		t.Fatal("sweep did not finish")
 	}
 
+	// The reset that comes second finds the directory gone and its pair dies
+	// with the tombstone: nothing the committed manifest names was removed.
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err != nil {
+		t.Fatalf("reset after the sweep: %v", err)
+	}
 	manifest, err := LoadScratchRetention(owner)
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +221,160 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 	_, statErr := os.Stat(scratch.Dir)
 	if !manifest.Released && namesDir && os.IsNotExist(statErr) {
 		t.Fatalf("the sweep removed a directory the concurrent reset had carried: the resurrected manifest names deleted scratch %s", scratch.Dir)
+	}
+}
+
+// TestSweepRemovalSerializesWithAnotherProcessReset pins the cross-process
+// half of the round-67 serialization: the reclamation mutex is process-local,
+// so a reset in ANOTHER process sharing the state directory used to carry the
+// reference and commit an unreleased manifest while this process's sweep held
+// the directory lease mid-removal — the sweep then deleted the scratch the
+// resurrected manifest named. The pin owner's manifest lock is the durable
+// mutex: the child process's sweep holds it across its window, and the reset
+// below runs in THIS process, so nothing about its serialization rides the
+// in-process mutex. On the serialized tree the in-window reset exhausts its
+// lock retries and reports the retryable lock-held verdict; on the
+// deserialized tree it commits, and the assertions see the removed directory
+// the committed manifest still names.
+func TestSweepRemovalSerializesWithAnotherProcessReset(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	artifact := filepath.Join(scratch.Dir, "retained.bin")
+	if err := os.WriteFile(artifact, []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	consumer := ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(scratch.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+
+	signals := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSweepReclaimChildProcess$", "-test.timeout=120s")
+	cmd.Env = append(os.Environ(),
+		"EVENER_TEST_SWEEP_CHILD=1",
+		"EVENER_TEST_SWEEP_BASE="+base,
+		"EVENER_TEST_SWEEP_WORKSPACE="+workspace,
+		"EVENER_TEST_SWEEP_SIGNALS="+signals,
+	)
+	var childLog bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &childLog, &childLog
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the sweep child: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	// Wait for the child to park inside its removal window. The poll is a
+	// POSITIVE wait on a file the child writes under every lock the window
+	// holds, so the instant it appears the window is entered.
+	waitForFile(t, filepath.Join(signals, "at-window"), 30*time.Second)
+
+	// The reset from THIS process, inside the window.
+	_, _, resetErr := ResetScratchRetentionIfReleased(owner)
+	committedEarly := resetErr == nil
+	if resetErr != nil && !errors.Is(resetErr, ErrScratchRetentionLockHeld) {
+		t.Fatalf("reset in the sweep's window: %v", resetErr)
+	}
+
+	if err := os.WriteFile(filepath.Join(signals, "proceed"), []byte("1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		t.Fatalf("sweep child: %v\n%s", waitErr, childLog.String())
+	}
+
+	// The reset that came second finds the directory gone and its pair dies
+	// with the tombstone.
+	if !committedEarly {
+		if _, _, err := ResetScratchRetentionIfReleased(owner); err != nil {
+			t.Fatalf("reset after the sweep: %v", err)
+		}
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namesDir := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			namesDir = true
+		}
+	}
+	_, statErr := os.Stat(scratch.Dir)
+	if !manifest.Released && namesDir && os.IsNotExist(statErr) {
+		t.Fatalf("the sweep removed a directory the concurrent reset had carried: the resurrected manifest names deleted scratch %s", scratch.Dir)
+	}
+}
+
+// TestSweepReclaimChildProcess is the child half of
+// TestSweepRemovalSerializesWithAnotherProcessReset: it re-execs the test
+// binary to run the sweep in a separate process, confined to the parent
+// fixture's base, parked inside its removal window until the parent proceeds.
+func TestSweepReclaimChildProcess(t *testing.T) {
+	base := os.Getenv("EVENER_TEST_SWEEP_BASE")
+	workspace := os.Getenv("EVENER_TEST_SWEEP_WORKSPACE")
+	signals := os.Getenv("EVENER_TEST_SWEEP_SIGNALS")
+	if os.Getenv("EVENER_TEST_SWEEP_CHILD") == "" || base == "" || workspace == "" || signals == "" {
+		t.Skip("the reclamation child runs only under the cross-process test")
+	}
+	// Confine this process's discovery exactly the way the parent's fixture
+	// did: one base, no world walk.
+	sessionScratchTempDir = func() string { return base }
+	sessionScratchUserCacheDir = func() (string, error) { return base, nil }
+	defer SetWorldTempBasesForTesting(nil)()
+	scratchSweepBeforeRemove = func() {
+		if err := os.WriteFile(filepath.Join(signals, "at-window"), []byte("1"), 0600); err != nil {
+			t.Errorf("signal the window: %v", err)
+			return
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, err := os.Stat(filepath.Join(signals, "proceed")); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("the parent never proceeded")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatalf("child sweep: %v", err)
+	}
+}
+
+// waitForFile polls a positive file condition with a bounded deadline, failing
+// the test with desc on timeout. Starvation only delays the appearance, never
+// misses it, so the poll never flakes.
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for %s", timeout, path)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1612,6 +1737,111 @@ func TestResetReleasedCarriesWrapperBindingsAndTheirConsumers(t *testing.T) {
 	}
 	if !named {
 		t.Fatalf("the reset dropped the owning consumer %q", ownerConsumer.SessionID)
+	}
+}
+
+// TestResetReleasedDropsSlotsOfAMismatchedKind pins the round-67 kind rule on
+// the carry: the slot loop matched bindings by directory alone, so a slot
+// claiming the retained directory under the WRONG KIND traveled into the
+// reinitialized manifest beside a reference of a different kind — a graph the
+// reader fails closed on, wedging every later restore of the root. The slot
+// must carry only under the reference's own kind.
+func TestResetReleasedDropsSlotsOfAMismatchedKind(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	// The pin matches the manifest's sandbox reference exactly — the contended
+	// carry branch's own checks all pass — while the second binding's slot
+	// names the same directory under the wrong kind. The live writer refuses
+	// that row once kinds are checked, so the released manifest is seeded the
+	// way a pre-fix or foreign-written one reads.
+	ownerBinding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	mismatched := retentionBinding("E1", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: false}})
+	manifest := ScratchManifest{
+		Owner:      owner,
+		References: []ScratchReference{{Dir: scratch.Dir, Kind: ScratchKindSandbox}},
+		Bindings:   []ScratchBinding{ownerBinding, mismatched},
+		Consumers: []ScratchConsumerBinding{
+			{SessionID: "consumer-kind-owner", CurrentBindingID: ownerBinding.BindingID},
+			{SessionID: "consumer-kind-mismatch", CurrentBindingID: mismatched.BindingID},
+		},
+		Released: true,
+	}
+	if err := writeScratchRetention(owner, manifest); err != nil {
+		t.Fatalf("seed the released manifest: %v", err)
+	}
+	if err := writeScratchDirectoryPin(scratch.Dir, owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox}); err != nil {
+		t.Fatalf("seed the retained pin: %v", err)
+	}
+	// The scratch's own lease stays held, so the reset reaches the reference
+	// through the contended-carry branch.
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over the held pin: %v", err)
+	}
+	for _, binding := range fresh.Bindings {
+		for kind, slot := range binding.Slots {
+			if filepath.Clean(slot.Dir) != filepath.Clean(scratch.Dir) {
+				continue
+			}
+			if kind != ScratchKindSandbox {
+				t.Fatalf("the reset carried binding %q slot %q over the %q reference: a kind-mismatched slot wedges every later restore on the graph reader", binding.BindingID, kind, ScratchKindSandbox)
+			}
+		}
+	}
+	// The legitimate pair carries exactly as before.
+	ownerCarried, ownerRoleCarried := false, false
+	for _, binding := range fresh.Bindings {
+		ownerCarried = ownerCarried || binding.BindingID == ownerBinding.BindingID
+	}
+	for _, consumer := range fresh.Consumers {
+		ownerRoleCarried = ownerRoleCarried || consumer.SessionID == "consumer-kind-owner" && consumer.CurrentBindingID == ownerBinding.BindingID
+	}
+	if !ownerCarried || !ownerRoleCarried {
+		t.Fatalf("the kind gate dropped the legitimate pair: bindings %v, consumers %v", fresh.Bindings, fresh.Consumers)
+	}
+}
+
+// TestScratchUpsertRejectsASlotOfAMismatchedKind pins the writer's half of the
+// round-67 kind rule: validation accepted any slot whose directory was
+// pinned, without comparing the slot's kind to the reference's, so a binding
+// claiming a retained directory under the wrong kind could be published live —
+// a manifest every subsequent graph read fails closed on.
+func TestScratchUpsertRejectsASlotOfAMismatchedKind(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	ownerBinding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, ownerBinding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the owning binding: %v", err)
+	}
+	// The pinned reference for this directory is a sandbox allocation; a slot
+	// claiming it as unsandboxed passes the pinned-directory check and poisons
+	// the manifest for every reader.
+	mismatched := retentionBinding("E1", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: false}})
+	if err := UpsertScratchBindingOnly(owner, mismatched); err == nil {
+		t.Fatalf("the writer accepted a %q slot over the %q reference: the manifest now fails every graph read", ScratchKindUnsandboxed, ScratchKindSandbox)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == mismatched.BindingID {
+			t.Fatalf("the mismatched row landed in the manifest: %+v", binding)
+		}
 	}
 }
 
