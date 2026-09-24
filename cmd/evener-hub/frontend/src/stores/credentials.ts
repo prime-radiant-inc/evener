@@ -6,7 +6,7 @@
 // core which client the rows belong to, and the core listens for
 // evener/auth/updated on that client itself.
 
-import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type { HostPushCredentialsResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
@@ -14,9 +14,15 @@ import {
 } from "@evener/appwire-client/state/credentials";
 import { useEffect, useRef } from "react";
 import { createStore, useStore } from "zustand";
-import { type ConnectionStoreState, connectionStore, onConnectionNotification, useConnectionStore } from "./connection";
+import {
+  type ConnectionStoreState,
+  connectedClientPort,
+  connectionStore,
+  onConnectionNotification,
+  useConnectionStore,
+} from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
-import { type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
+import { HOST_GATE_TIMEOUT_MS, type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 
 export {
@@ -31,6 +37,11 @@ export type CredentialsStoreState = CredentialInstancesState;
 // The hub echoes ownClientId into the evener/auth/updated broadcast, so this
 // page attributes its own echo by identity rather than provider plus timing.
 export const credentialsStore = createCredentialInstancesStore({ ownClientId });
+
+// The shared client port (stores/connection.ts), labelled by this store: the
+// push resolves connectionStore's CURRENT client at call time, so a call before
+// AppShell's connect() fails loudly and a reconnect needs no rewiring.
+const { requireClient } = connectedClientPort("credentials");
 
 export function useCredentialsStore(): CredentialsStoreState;
 export function useCredentialsStore<T>(selector: (state: CredentialsStoreState) => T): T;
@@ -166,6 +177,30 @@ connectionStore.subscribe((state) => {
     ) as Record<string, HostInstanceState>,
   }));
 });
+
+/** connectionGeneration is hostInstancesStore's own count of connection
+ * transitions (the subscription above), read as the LIVE value. It is the
+ * generation a host partition is current under, and it is also what a MUTATION
+ * issued on one connection is scoped to: a caller captures it when its call
+ * goes out and compares it when the answer lands, because an answer that
+ * arrives after that connection was replaced describes a hub this page is no
+ * longer wired to (the package's own credential writes refuse a replaced
+ * connection for the same reason - connectionStillCurrent, state/credentials/
+ * instances.ts). A transition on the SAME client counts: a reconnect ends the
+ * connection the request went out on just as a new client does, and a request
+ * still in flight across it is failed rather than answered. */
+export function connectionGeneration(): number {
+  return hostInstancesStore.getState().generation;
+}
+
+/** useConnectionGeneration subscribes a consumer to that same generation, for
+ * the one thing a raw read cannot give it: the replacement is a RENDER, and an
+ * action that is still in flight can say so - and say its outcome is no longer
+ * knowable - in the render that follows, instead of sitting on a pending state
+ * whose answer will never be accepted. */
+export function useConnectionGeneration(): number {
+  return useStore(hostInstancesStore, (state) => state.generation);
+}
 
 /** hostPartition reads one host's own partition exactly as stored, INCLUDING a
  * partition whose registryRevision is no longer current. Consumers read through
@@ -359,6 +394,24 @@ function startHostRead(
     return { ...previous, loading: true, error: null, readGeneration: generation, readPublished };
   }
   return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision, readGeneration: generation, readPublished };
+}
+
+/** pushHostCredentials copies THIS hub's local provider-instance keys to `host`
+ * through evener/host/pushCredentials (component 07c) and returns that host's
+ * own per-entry report verbatim. The local store is the push's SOURCE, so the
+ * controller's own hub is never a meaningful target and a caller names a remote
+ * host; the selected host comes from the settings route (stores/settingsHost.ts).
+ * The response carries no key value - only instance/action/reason - so nothing
+ * here can read, render, or log one. A refusal (an unknown or unattached host, a
+ * refused dispatch) rejects to the caller rather than returning an empty report.
+ *
+ * The client's ordinary 30s deadline is too short here: a push copies this hub's
+ * keys one instance at a time over the host link, so the default can expire while
+ * the host is still writing - and a user who then retries is retrying a mutation
+ * whose outcome they never learned. It takes the same bound the other host
+ * mutations take (HOST_GATE_TIMEOUT_MS, stores/hosts.ts) for the same reason. */
+export async function pushHostCredentials(host: string): Promise<HostPushCredentialsResponse> {
+  return requireClient().request("evener/host/pushCredentials", { host }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in

@@ -14,6 +14,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
+  connectionGeneration,
   credentialsStore,
   fetchHost,
   hostInstancesStore,
@@ -2897,6 +2898,35 @@ test("a same-client reconnect re-reads a remote host", async () => {
   await waitFor(() => expect(remoteReads(fake)).toBe(2));
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
   hostsStore.getState().resetForTests();
+});
+
+// connectionGeneration is what the push action scopes its own state to
+// (CredentialsHostScope's PushCredentials): it is captured when a push goes out
+// and compared when the answer lands, so an in-flight mutation is dropped
+// exactly when the connection it was issued on is gone. That makes both halves
+// load-bearing - a transition must move it, and a write that is not one must
+// not, or an in-flight push would be orphaned by a handshake's own metadata.
+test("connectionGeneration moves on a connection transition and on nothing else", () => {
+  const fake = connectFakeClient();
+  const connected = connectionGeneration();
+
+  // A handshake's own fields: the same client and wire state, so not a
+  // transition.
+  connectionStore.setState({ serverInfo: { name: "fake-evener-hub", version: "0.0.0" } });
+  expect(connectionStore.getState().client).toBe(fake);
+  expect(connectionGeneration()).toBe(connected);
+
+  // A reconnect on the SAME client: the connection the request went out on
+  // ended, so it is one.
+  connectionStore.setState({ state: "reconnecting" });
+  connectionStore.setState({ state: "ready" });
+  expect(connectionGeneration()).toBe(connected + 2);
+
+  // A replacement client: the other shape of the same event.
+  const replacement = new FakeClient("ready");
+  connectionStore.getState().connect(replacement);
+  expect(connectionStore.getState().client).toBe(replacement);
+  expect(connectionGeneration()).toBe(connected + 3);
 });
 
 // The registry's FIRST answer is an answer even when it names no host: a read

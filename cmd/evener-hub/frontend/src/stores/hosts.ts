@@ -78,7 +78,7 @@ const { requireClient } = connectedClientPort("hosts");
 // HOST_GATE_TIMEOUT_MS is the client-side bound for a host RPC whose server
 // side queues on or holds the per-host gate. A supervisor may hold that gate
 // for a whole reconnect/ensure cycle, beyond the client's ordinary deadline.
-const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
+export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
 
 // At most one background refresh runs at a time; concurrent callers join the
 // same promise (mirrors stores/daemonResidents.ts).
