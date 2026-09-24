@@ -72,15 +72,18 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if err != nil {
 		return ProbeResult{}
 	}
-	root, ok := probeRootIdentity(ctx, appClient, entry, listResponse.Data)
+	// The read, when there is one, follows the list: a retained delegate can be
+	// resumed between them, and taking the child projection first means a later
+	// running lifecycle cannot be mistaken for stale active work.
+	rootID, ok := probeRootSessionID(ctx, appClient, entry)
 	if !ok {
 		return ProbeResult{}
 	}
-	rootID := statusThreadID(root)
 
 	// ThreadList carries the root and descendants from one projection cut, so
 	// the probe uses the listed root: its diagnostics and the child projections
-	// cannot then come from different snapshots.
+	// cannot then come from different snapshots. A list with no row for the
+	// root's session is another daemon's answer.
 	var listedRoot *appwire.Thread
 	seen := make(map[string]bool)
 	var runningSubagentIDs []string
@@ -88,7 +91,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	var childWatches map[string][]appwire.EvenerWatchInfo
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
-		if isRootThread(thread, root) {
+		if statusThreadID(thread) == rootID && strings.TrimSpace(thread.ID) != "" {
 			if listedRoot == nil {
 				listedRoot = &listResponse.Data[i]
 			}
@@ -123,7 +126,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if listedRoot == nil {
 		return ProbeResult{}
 	}
-	root = *listedRoot
+	root := *listedRoot
 
 	idleStableDelegateChildren := idleStableDelegateChildIDs(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
@@ -162,38 +165,32 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 }
 
-// probeRootIdentity names the root thread a probe's list answer must carry.
+// probeRootSessionID names the session whose row in the probe's list is the
+// root.
 //
 // The answer names the answering daemon's session, and a daemon keeps its
 // entry's session id current (rvreg.UpdateSessionID). So when the entry names
-// its session, the listed row for that session is the root, and a list with no
-// such row is another daemon that re-bound the port; no second snapshot is
-// needed to tell them apart.
+// its session, that session is the root, and a list with no row for it is
+// another daemon that re-bound the port; no second snapshot is needed to tell
+// them apart.
 //
-// An entry that names no session yet has only the answer to go on. The probe
-// then reads the root separately and requires the list to carry the same
-// thread, which rejects a daemon swap between the two calls. The read follows
-// the list: a retained delegate can be resumed between them, and taking the
-// child projection first means a later running lifecycle cannot be mistaken
-// for stale active work.
-func probeRootIdentity(ctx context.Context, client *appwire.Client, entry rendezvous.Entry, listed []appwire.Thread) (appwire.Thread, bool) {
+// An entry that names no session yet has only the answer to go on, so the
+// root's session comes from a separate read, and the caller's requirement that
+// the list carry a row for it rejects a daemon swap between the two calls.
+func probeRootSessionID(ctx context.Context, client *appwire.Client, entry rendezvous.Entry) (string, bool) {
 	if named := strings.TrimSpace(entry.SessionID); named != "" {
-		for _, thread := range listed {
-			if statusThreadID(thread) == named && strings.TrimSpace(thread.ID) != "" {
-				return thread, true
-			}
-		}
-		return appwire.Thread{}, false
+		return named, true
 	}
 	response, err := client.ThreadRead(ctx, appwire.ThreadReadParams{})
 	if err != nil {
-		return appwire.Thread{}, false
+		return "", false
 	}
 	root := response.Thread
-	if strings.TrimSpace(root.ID) == "" || statusThreadID(root) == "" {
-		return appwire.Thread{}, false
+	if strings.TrimSpace(root.ID) == "" {
+		return "", false
 	}
-	return root, true
+	rootID := statusThreadID(root)
+	return rootID, rootID != ""
 }
 
 // probeDaemonLifecycle reads the daemon's retirement lifecycle through the
@@ -213,10 +210,6 @@ func statusThreadID(thread appwire.Thread) string {
 		return sessionID
 	}
 	return strings.TrimSpace(thread.ID)
-}
-
-func isRootThread(thread, root appwire.Thread) bool {
-	return thread.ID == root.ID && statusThreadID(thread) == statusThreadID(root)
 }
 
 // idleStableDelegateChildIDs identifies retained stable delegates with no
