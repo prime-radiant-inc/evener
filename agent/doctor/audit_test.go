@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -868,7 +869,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 	// word-break), and a '$' (shell expansion).
 	// --sessions reproduction line: a comma (CLI splits it), a space (shell
 	// word-break), a '$' (shell expansion), and a '*' (shell glob expansion).
-	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b"} {
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b", "a\x0bb", "a\x0cb"} {
 		t.Run(bucketName, func(t *testing.T) {
 			base := t.TempDir()
 			bucket := stateHomeBucket(base, bucketName)
@@ -906,7 +907,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			// The ref must not contain a comma (which would split into an
 			// invalid selector) or a space/shell metacharacter (injection).
 			for _, ref := range splitRefs {
-				if strings.ContainsAny(ref, ", \t$\x00*?[]%^") {
+				if strings.ContainsAny(ref, ", \t\x0b\x0c$\x00*?[]%^") {
 					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
 				}
 			}
@@ -2132,5 +2133,115 @@ func TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget(t *testing.T) {
 		if strings.Contains(afterMarker, "  ") {
 			t.Errorf("Description %q has double space in non-reproducible clause (round 12 finding 2)", desc)
 		}
+	}
+}
+
+// TestRunAudit_R13F2_ResolveBucketsErrorFailsClosed is the round 13 finding-2
+// RED case: the colliding-bare-sid check at audit.go:841 ignores
+// resolveBuckets' error (`buckets, _, _`). On glob failure, buckets is nil,
+// the loop doesn't execute, and collidingBareSid stays false — the bare sid
+// stays in SessionRefs as if it were a safe handle, but we could not verify
+// it. Fix: fail closed — treat the sid as colliding and omit it from
+// SessionRefs when the bucket enumeration errors.
+func TestRunAudit_R13F2_ResolveBucketsErrorFailsClosed(t *testing.T) {
+	base := t.TempDir()
+	hexBucket := stateHomeBucket(base, "0123456789abcdef")
+	canonicalBucket := stateHomeBucket(base, hash1)
+
+	sid := newSessionsTestSID(t)
+	// Hex session trips the run_timeout finding.
+	writeAuditSession(t, hexBucket, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+	// Canonical session is healthy — does NOT trip the finding.
+	writeAuditSession(t, canonicalBucket, sid, oneCleanReadFileTurns(), nil)
+
+	// Mock globProjectBuckets to fail on the 3rd call:
+	//   call 1: Locate(base, "proj:0123456789abcdef:sid") at line 762
+	//   call 2: Locate(base, bareSid) at line 837 → ambiguity error
+	//   call 3: resolveBuckets(base) at line 841 ← FAIL
+	//   call 4: TranscriptHealth → Locate → resolveBuckets
+	originalGlob := globProjectBuckets
+	callCount := 0
+	globProjectBuckets = func(pattern string) ([]string, error) {
+		callCount++
+		if callCount == 3 {
+			return nil, errors.New("scripted glob failure")
+		}
+		return originalGlob(pattern)
+	}
+	t.Cleanup(func() { globProjectBuckets = originalGlob })
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{"proj:0123456789abcdef:" + sid}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	// On resolveBuckets error, the bare sid must NOT appear in SessionRefs —
+	// fail closed. The error means we could not verify the sid is safe.
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		if ref == sid {
+			t.Errorf("SessionRefs contains bare sid %q despite resolveBuckets error in colliding-bare-sid check — fail closed: omit the sid when bucket enumeration errors (round 13 finding 2)", ref)
+		}
+	}
+}
+
+// TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc is the round 13
+// finding-4 RED case: the "; N more non-reproducible sessions omitted (cap X)"
+// disclosure fires whenever totalOmitted > 0, but in the zero-budget case
+// the non-repro list above is empty — "more" implies a preceding list the
+// reader never saw. Fix: choose wording by nonReproDesc's presence —
+// "N non-reproducible sessions omitted (cap X)" when nothing was listed,
+// "N more …" only when some entries were shown.
+func TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc(t *testing.T) {
+	base := t.TempDir()
+	// 200 reproducible sessions in a canonical bucket (fill the cap).
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 200
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+	// 2 non-reproducible sessions in unsafe buckets sharing one sid
+	// (bare sid ambiguous across the two unsafe buckets).
+	nonReproBucketA := stateHomeBucket(base, "has space-a")
+	nonReproBucketB := stateHomeBucket(base, "has space-b")
+	nonReproSid := newSessionsTestSID(t)
+	writeAuditSession(t, nonReproBucketA, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// When no non-reproducible sessions were listed (zero budget), the
+	// omission wording must NOT say "more" — there is no preceding list.
+	if strings.Contains(desc, "more non-reproducible sessions omitted") {
+		t.Errorf("Description %q says 'more non-reproducible sessions omitted' but no non-reproducible sessions were listed (zero budget) — the wording implies a preceding list the reader never saw (round 13 finding 4)", desc)
+	}
+	// The omission must still be disclosed.
+	if !strings.Contains(desc, "non-reproducible sessions omitted") {
+		t.Errorf("Description %q must disclose the non-reproducible session omission (round 13 finding 4)", desc)
 	}
 }
