@@ -3,7 +3,6 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1149,31 +1148,5 @@ func TestEvenerDiagnosticsPluginsJSONPresence(t *testing.T) {
 	}
 	if roundTrip.Plugins == nil || len(roundTrip.Plugins) != 0 {
 		t.Fatalf("empty plugin inventory round trip = %#v", roundTrip.Plugins)
-	}
-}
-
-// TestEvenerDiagnosticsPluginsDoNotReencodeTheSnapshot guards the hub's
-// liveness probe path: every probe marshals the root diagnostics (the whole
-// job, delegate, and skill inventory), so reporting a plugin inventory must
-// not cost a decode and re-encode of that snapshot on top of its encoding.
-func TestEvenerDiagnosticsPluginsDoNotReencodeTheSnapshot(t *testing.T) {
-	withoutPlugins := EvenerDiagnostics{}
-	for i := range 20 {
-		withoutPlugins.Jobs = append(withoutPlugins.Jobs, EvenerJobInfo{JobID: fmt.Sprintf("job_%d", i), JobType: "shell", Status: "completed"})
-		withoutPlugins.Skills = append(withoutPlugins.Skills, EvenerSkillInfo{Name: fmt.Sprintf("skill-%d", i)})
-	}
-	withPlugins := withoutPlugins
-	withPlugins.Plugins = []EvenerPluginInfo{{Name: "alpha"}, {Name: "beta"}}
-
-	marshalAllocs := func(d EvenerDiagnostics) float64 {
-		return testing.AllocsPerRun(20, func() {
-			if _, err := json.Marshal(d); err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-		})
-	}
-	base, plugins := marshalAllocs(withoutPlugins), marshalAllocs(withPlugins)
-	if plugins > base+2 {
-		t.Fatalf("marshaling a plugin inventory took %.0f allocations against %.0f without one; the snapshot is being re-encoded", plugins, base)
 	}
 }

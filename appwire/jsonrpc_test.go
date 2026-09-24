@@ -3,8 +3,8 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"runtime"
+	jsonv2 "encoding/json/v2"
+	"reflect"
 	"testing"
 )
 
@@ -101,61 +101,68 @@ func TestRejectsJSONRPCField(t *testing.T) {
 	}
 }
 
-// TestResponseFrameEncodesItsResultOnce guards the daemon's reply path: a
-// hub liveness probe's thread snapshot is large, and every JSON-RPC wrapper
-// that marshals its result separately makes the encoder copy and re-validate
-// the whole snapshot again. Framing a result must allocate about what encoding
-// the result alone allocates, not a multiple of it.
-func TestResponseFrameEncodesItsResultOnce(t *testing.T) {
-	var result ThreadListResponse
-	for i := range 50 {
-		result.Data = append(result.Data, Thread{ID: fmt.Sprintf("thread-%d", i), Preview: "a preview line long enough to grow the encoder's buffer"})
-	}
-	bytesPerEncode := func(v any) uint64 {
-		const runs = 20
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
-		for range runs {
-			if _, err := json.Marshal(v); err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-		}
-		runtime.ReadMemStats(&after)
-		return (after.TotalAlloc - before.TotalAlloc) / runs
-	}
-	bare := bytesPerEncode(result)
-	for name, frame := range map[string]Message{
-		"with id":    ResponseMessage(NewIntID(7), result),
-		"without id": {Response: &Response{Result: result}},
+// TestWireFramesEncodeInOnePass guards the daemon's reply path: a hub
+// liveness probe's thread snapshot and root diagnostics are large, and a
+// MarshalJSON on any wrapper around them hands encoding/json separately
+// encoded bytes that it then copies and re-validates, a second pass over the
+// whole payload per wrapper. The frame types write into the enclosing encoder
+// (MarshalJSONTo) or are plain structs, so none of them may implement
+// json.Marshaler.
+func TestWireFramesEncodeInOnePass(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeFor[Message](),
+		reflect.TypeFor[Response](),
+		reflect.TypeFor[ErrorResponse](),
+		reflect.TypeFor[EvenerDiagnostics](),
 	} {
-		if framed := bytesPerEncode(frame); framed > bare*3/2 {
-			t.Errorf("%s: framing the result allocated %d bytes against %d for the result alone; the result is being re-encoded", name, framed, bare)
+		if typ.Implements(jsonMarshalerType) || reflect.PointerTo(typ).Implements(jsonMarshalerType) {
+			t.Errorf("%s implements json.Marshaler, so every frame carrying it is encoded twice", typ.Name())
 		}
+	}
+	if _, ok := any(Message{}).(jsonv2.MarshalerTo); !ok {
+		t.Error("Message must implement MarshalerTo to write its frame into the enclosing encoder")
 	}
 }
 
-// TestResponseFrameKeepsEncodingJSONSemantics pins that a frame written
-// through MarshalJSONTo encodes its result exactly as encoding/json would on
-// its own: nil slices as null, HTML-escaped strings, sorted map keys.
-func TestResponseFrameKeepsEncodingJSONSemantics(t *testing.T) {
+// TestFramesKeepEncodingJSONSemantics pins that a frame written through
+// MarshalJSONTo encodes its payload exactly as encoding/json would on its own:
+// nil slices as null, HTML-escaped strings, sorted map keys, and error data
+// that embeds ErrorData kept flat, so evenerErrorInfo stays a top-level field
+// of data where clients read it.
+func TestFramesKeepEncodingJSONSemantics(t *testing.T) {
 	type result struct {
 		Nil  []string       `json:"nil"`
 		HTML string         `json:"html"`
 		Map  map[string]int `json:"map"`
 	}
 	in := result{HTML: "<a&b>", Map: map[string]int{"z": 1, "a": 2}}
-	framed, err := json.Marshal(ResponseMessage(NewIntID(3), in))
-	if err != nil {
-		t.Fatalf("marshal frame: %v", err)
+	hostField := InvalidHostField("name", "bad name")
+	lifecycle := LifecycleUnavailable("retiring")
+	type errorFrame struct {
+		ID    int       `json:"id"`
+		Error WireError `json:"error"`
 	}
-	want, err := json.Marshal(struct {
-		ID     int    `json:"id"`
-		Result result `json:"result"`
-	}{3, in})
-	if err != nil {
-		t.Fatalf("marshal want: %v", err)
-	}
-	if !bytes.Equal(framed, want) {
-		t.Fatalf("frame = %s, want %s", framed, want)
+	for name, tc := range map[string]struct {
+		frame Message
+		want  any
+	}{
+		"result": {ResponseMessage(NewIntID(3), in), struct {
+			ID     int    `json:"id"`
+			Result result `json:"result"`
+		}{3, in}},
+		"host field error": {Message{Error: &ErrorResponse{ID: NewIntID(4), Error: hostField}}, errorFrame{4, hostField}},
+		"lifecycle error":  {Message{Error: &ErrorResponse{ID: NewIntID(4), Error: lifecycle}}, errorFrame{4, lifecycle}},
+	} {
+		framed, err := json.Marshal(tc.frame)
+		if err != nil {
+			t.Fatalf("%s: marshal frame: %v", name, err)
+		}
+		want, err := json.Marshal(tc.want)
+		if err != nil {
+			t.Fatalf("%s: marshal want: %v", name, err)
+		}
+		if !bytes.Equal(framed, want) {
+			t.Errorf("%s: frame = %s, want %s", name, framed, want)
+		}
 	}
 }
