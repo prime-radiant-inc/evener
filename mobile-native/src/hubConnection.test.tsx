@@ -271,3 +271,34 @@ it("does not record a client that never proved ready", async () => {
 	// A failed dial establishes nothing either — the client stays unknown.
 	expect(clientServesHub(fake, "hub-b")).toBe(true);
 });
+
+// Round 85's follow-up: a token fetch that fails outright is this attempt's
+// terminal verdict — the catch writes "closed" to the core with no client
+// ever created, and the hook must expose it rather than derive "connecting"
+// from the client's absence: a failed reconnect is not a still-connecting
+// one, and reading it as connecting keeps the retry affordance hidden behind
+// a spinner forever. The initial pre-connection phase keeps its "connecting"
+// report, and the verdict never outlives its attempt: a fresh attempt that
+// fetches and dials fine leaves "closed" behind.
+it("reports closed, not connecting, when token acquisition fails", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook, input, setError } = mount({
+		repository: { token: () => Promise.reject(new Error("no token")) },
+	});
+	// Before the rejection settles: the initial pre-connection "connecting".
+	expect(hook.result.current).toEqual({ client: null, state: "connecting", fatal: false });
+	await act(async () => {});
+	// The token-fetch failure is terminal: closed, not still-connecting.
+	expect(hook.result.current).toEqual({ client: null, state: "closed", fatal: false });
+	// Structural: the branch connectionFailure(null) selects, not its prose.
+	expect(setError).toHaveBeenLastCalledWith(connectionFailure(null).message);
+	// The verdict belongs to this attempt only.
+	input.repository = { token: async () => "tok-ok" };
+	input.attempt = 1;
+	hook.rerender();
+	expect(hook.result.current.state).toBe("connecting");
+	await act(async () => {});
+	act(() => fake.succeed());
+	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
+});

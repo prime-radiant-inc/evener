@@ -151,13 +151,26 @@ export function useHubConnection(
 		};
 	}, [activeId, activeOrigin, foreground, attempt, store, repository, targetKey]);
 	const client = connectedFor.current?.key === targetKey ? connectedFor.current.client : null;
+	// Round 85's follow-up: a failed token fetch leaves no client and a
+	// terminal "closed" verdict in the core (the catch above), so the
+	// foregrounded no-client branch must expose that verdict instead of
+	// flattening back to "connecting" — a failed reconnect is not a
+	// still-connecting one, and reading it as connecting keeps the retry
+	// affordance hidden behind a spinner forever. Scoped to the foregrounded
+	// case so backgrounded and profile-less mounts keep their exact "idle"
+	// report, and a fresh attempt's own effect body re-arms "connecting"
+	// synchronously, so the verdict never outlives its generation.
+	const closedWithoutClient =
+		!client && activeId && foreground && coreState.state === "closed";
 	return {
 		client,
 		state: client
 			? coreState.state
-			: activeId && foreground
-				? "connecting"
-				: "idle",
+			: closedWithoutClient
+				? "closed"
+				: activeId && foreground
+					? "connecting"
+					: "idle",
 		fatal,
 	};
 }
