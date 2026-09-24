@@ -818,7 +818,7 @@ func (f *daemonRetirementProcessFixture) waitDaemonExit() error {
 	if err != nil {
 		return err
 	}
-	timer := time.NewTimer(handle.events.watchdogBudget())
+	timer := time.NewTimer(f.watchdogBudget())
 	defer timer.Stop()
 	select {
 	case <-handle.events.closed():
@@ -1320,7 +1320,7 @@ func (f *daemonRetirementProcessFixture) directExitCode(handle *daemonRetirement
 	if handle.waitErr == nil {
 		return -1, errors.New("handle was not started by the fixture")
 	}
-	exitTimer := time.NewTimer(handle.events.watchdogBudget())
+	exitTimer := time.NewTimer(f.watchdogBudget())
 	defer exitTimer.Stop()
 	select {
 	case err := <-handle.waitErr:
@@ -2047,8 +2047,10 @@ func TestDaemonRetirementHubLaunchHelper(t *testing.T) {
 		ProvidersConfigPath: req.Providers,
 	}
 	// This re-executed helper has no fixture and so no observed reaction to
-	// scale by; its one spawn handshake keeps the floor, which is its only
-	// available tripwire.
+	// scale by, and its caller (TestDaemonRetirementProcessHubExitStillRetires)
+	// has launched nothing yet, so a passed-in budget would be the same floor:
+	// its one spawn handshake keeps the floor, which is its only available
+	// tripwire.
 	ctx, cancel := context.WithTimeout(context.Background(), daemonRetirementWatchdog)
 	defer cancel()
 	entry, spawnErr := spawner.Spawn(ctx, hubcore.SpawnRequest{
