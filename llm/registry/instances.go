@@ -700,7 +700,9 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 // request, on the agent path), so a command-bearing credential slot
 // counts as present and its outcome belongs to the child's first request.
 // A provider-qualified model is accepted and stripped of this instance's
-// own prefix. The credential value is never materialized.
+// own prefix. A named model the child would refuse — one the config
+// disabled, or one that does not resolve — is the gate's own refusal,
+// before the spawn. The credential value is never materialized.
 func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, error) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
@@ -712,9 +714,22 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	}
 	t := r.listingTransport(rec)
 	if model != "" {
-		if res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveTransport); err == nil {
-			t = res.Transport
+		// The named model's transport decides the judgment, and the
+		// launch it describes is the one the child makes: a model that
+		// does not resolve, or one the config disabled, is a launch the
+		// child refuses (resolveOn), so the gate refuses it here,
+		// before the spawn. Falling back to the listing transport
+		// would pass a launch that always fails after spawning — and,
+		// judged at this shallower depth, the disabled verdict is the
+		// gate's own to read off the resolved row.
+		res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveTransport)
+		if err != nil {
+			return Resolved{}, err
 		}
+		if BoolValue(res.Model.Disabled) {
+			return Resolved{}, fmt.Errorf("%s/%s: %w", rec.name, model, ErrModelDisabled)
+		}
+		t = res.Transport
 	}
 	cred, warnings := r.credential(rec, t)
 	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil

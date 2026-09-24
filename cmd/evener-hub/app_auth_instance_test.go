@@ -663,10 +663,31 @@ func TestAuth_ImplicitProviderModelRowSchemeNeedsNoCredential(t *testing.T) {
 	}
 }
 
-// When the gate cannot resolve the named row at all — a disabled model,
-// say — the default row's presence still names the scheme the bare
-// launch uses, and the remediation follows it.
-func TestAuth_ImplicitProviderGateErrorFallsBackToDefaultRowScheme(t *testing.T) {
+// A configured instance is refused the same way before the spawn: a
+// persisted session whose model row the config disabled must fail the
+// gate with the model's own verdict, not pass on the default transport's
+// credential.
+func TestAuth_InstanceGateRefusesADisabledNamedModel(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[providers.gw]\nbase = \"openai-compatible\"\n"+
+		"base_url = \"https://gw.example/v1\"\napi_key = \"sk\"\n"+
+		"[providers.gw.models.\"house-model\"]\ndisabled = true\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{})
+	err := validateProviderCredentials("gw", "house-model", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted a launch the child always refuses")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "disabled") {
+		t.Fatalf("err = %q, want the model's disabled verdict", msg)
+	}
+}
+
+// A named model the child refuses — here an alias following its disabled
+// target — is refused before the spawn: the gate propagates the model's
+// own verdict, instead of silently judging the default row's scheme and
+// offering a credential remedy for a launch that never happens.
+func TestAuth_ImplicitProviderGateRefusesADisabledNamedModel(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"gcp-adc\"\n"+
 		"[models.\"*claude-haiku*\"]\ndisabled = true\n")
@@ -674,14 +695,14 @@ func TestAuth_ImplicitProviderGateErrorFallsBackToDefaultRowScheme(t *testing.T)
 	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
 	err := validateProviderCredentials("amazon-bedrock", "anthropic.claude-haiku-4-5", ctrl.reg)
 	if err == nil {
-		t.Fatal("the spawn gate accepted a launch it cannot resolve")
+		t.Fatal("the spawn gate accepted a launch the child always refuses")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "application-default credentials") {
-		t.Fatalf("err = %q, want the default row's ADC remedy when the named row cannot resolve", msg)
+	if !strings.Contains(msg, "disabled") {
+		t.Fatalf("err = %q, want the model's own disabled verdict", msg)
 	}
-	if strings.Contains(msg, "apiKey/set") {
-		t.Fatalf("err = %q, must not offer the api-key flow the default row's scheme cannot read", msg)
+	if strings.Contains(msg, "application-default credentials") || strings.Contains(msg, "apiKey/set") {
+		t.Fatalf("err = %q, must refuse the launch, not offer a credential remedy it will never read", msg)
 	}
 }
 

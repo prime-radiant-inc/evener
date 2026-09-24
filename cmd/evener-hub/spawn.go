@@ -879,22 +879,26 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// The listing says the instance exists; the judgment is the gate's
 		// own view of the launch — ResolveGateCredential handles the
 		// provider-qualified model form, judges the model's transport, and
-		// executes no command expression.
-		if res, err := r.ResolveGateCredential(name, model); err == nil {
-			switch res.Transport.Auth {
-			case registry.AuthNone, registry.AuthOptionalBearer:
-				return nil
-			}
-			if res.Credential.Source != "none" {
-				return nil
-			}
-			target := name
-			if model != "" {
-				target = name + "/" + model
-			}
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", target, strings.Join(res.Warnings, "; ")))
+		// executes no command expression. A named model the child refuses
+		// — disabled, or one that does not resolve — is refused here too,
+		// before the spawn, with the model's own verdict rather than a
+		// credential message for a launch that never happens.
+		res, err := r.ResolveGateCredential(name, model)
+		if err != nil {
+			return appwire.HubLaunchError(err.Error())
 		}
-		return nil
+		switch res.Transport.Auth {
+		case registry.AuthNone, registry.AuthOptionalBearer:
+			return nil
+		}
+		if res.Credential.Source != "none" {
+			return nil
+		}
+		target := name
+		if model != "" {
+			target = name + "/" + model
+		}
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", target, strings.Join(res.Warnings, "; ")))
 	}
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
@@ -904,27 +908,27 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// the instance branch's gate resolves it, never executing a
 		// command. Not the provider's model-less shape: a row override
 		// that flips the scheme flips the remedy with it, or the gate
-		// points at a credential the launch never reads.
-		scheme := p.Transport.Auth
-		if res, err := r.ResolveGateCredential(name, model); err == nil {
-			// The named launch's own judgment: its row's scheme and
-			// credential. A row pinned to none or optional-bearer
-			// launches with nothing to configure; a resolved credential
-			// is satisfied; anything else takes the remediation for the
-			// row's own scheme below.
-			switch res.Transport.Auth {
-			case registry.AuthNone, registry.AuthOptionalBearer:
-				return nil
-			}
-			if res.Credential.Source != "none" {
-				return nil
-			}
-			scheme = res.Transport.Auth
-		} else if pres, perr := r.ResolveInstancePresence(name); perr == nil {
-			// The gate could not resolve the named row; the default
-			// row's presence names the scheme the bare launch uses.
-			scheme = pres.Transport.Auth
+		// points at a credential the launch never reads. A named model
+		// the child refuses is the preflight's own refusal, before the
+		// spawn — not a bare-launch scheme to offer a credential remedy
+		// against.
+		res, err := r.ResolveGateCredential(name, model)
+		if err != nil {
+			return appwire.HubLaunchError(err.Error())
 		}
+		// The named launch's own judgment: its row's scheme and
+		// credential. A row pinned to none or optional-bearer
+		// launches with nothing to configure; a resolved credential
+		// is satisfied; anything else takes the remediation for the
+		// row's own scheme below.
+		switch res.Transport.Auth {
+		case registry.AuthNone, registry.AuthOptionalBearer:
+			return nil
+		}
+		if res.Credential.Source != "none" {
+			return nil
+		}
+		scheme := res.Transport.Auth
 		// The Codex transport reads no key at all (spec §5.1), so its
 		// api_key_env list is empty and the key advice below would name
 		// nothing. Point at the flow that does configure it.

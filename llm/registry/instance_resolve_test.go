@@ -596,6 +596,32 @@ func TestDisabledDefaultRowFallsBackToTheProviderShape(t *testing.T) {
 	}
 }
 
+// The spawn gate judges the very launch the child makes: a named model the
+// child refuses — one the config disabled, or an alias following its
+// disabled target — is a launch that always fails after spawning, so the
+// gate refuses it before the spawn instead of silently judging the
+// listing transport.
+func TestResolveGateCredentialRefusesAModelTheLaunchRefuses(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"disabled = true\n" +
+		"[providers.gw.models.\"alias-model\"]\n" +
+		"alias_of = \"house-model\"\n"
+	r := fixtureLoad(t, nil, config)
+
+	if _, err := r.ResolveGateCredential("gw", "house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("gate(gw/house-model) = %v; want ErrModelDisabled: the child refuses this launch", err)
+	}
+	if _, err := r.ResolveGateCredential("gw", "alias-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("gate(gw/alias-model) = %v; want ErrModelDisabled: the alias follows its target's verdict", err)
+	}
+}
+
 // An empty instance names the default instance, the rule Resolve applies:
 // a legacy session recorded without a profile still resolves through the
 // default at facts depth, or it loses every hub-side read.
