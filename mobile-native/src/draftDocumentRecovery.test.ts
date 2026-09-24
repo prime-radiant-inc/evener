@@ -5,6 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DraftDocument } from "./draftDocument";
+import type { DraftImage } from "./draftImages";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
@@ -91,7 +92,7 @@ describe("atomic recovery restore", () => {
 			write: () => {
 				throw new Error("save failed");
 			},
-			imageInputs: (to: typeof destination, images: never[]) =>
+			imageInputs: (to: typeof destination, images: DraftImage[]) =>
 				repository.imageInputs(to, images),
 		};
 		const document = new DraftDocument(() => failing, destination);
@@ -107,7 +108,7 @@ describe("atomic recovery restore", () => {
 			write: () => {
 				throw new Error("save failed");
 			},
-			imageInputs: (to: typeof destination, images: never[]) =>
+			imageInputs: (to: typeof destination, images: DraftImage[]) =>
 				repository.imageInputs(to, images),
 		};
 		const document = new DraftDocument(() => failing, destination);
