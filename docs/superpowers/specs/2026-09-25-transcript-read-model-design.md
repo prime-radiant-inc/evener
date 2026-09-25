@@ -80,9 +80,9 @@ later file projection"). Restarting a daemon already changes what clients see.
 
 ## End state
 
-1. **History is the projection of recorded entries, and nothing else.** One
-   projector, shared by daemon and hub, turns transcript entries into turns and
-   items. Live history notifications come from projecting each entry after it is
+1. **History is the projection of recorded entries and the transcript header,
+   and nothing else.** One projector, shared by daemon and hub, turns them into
+   turns and items. Prelude items come from the header. Live history notifications come from projecting each entry after it is
    recorded, so a live history item and its reloaded form are the same by
    construction.
 2. **Everything not yet recorded is a live overlay.** Streaming text and
@@ -155,10 +155,10 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
 - **Reads from another process.** A reader with no writer for the file in its
   process reads to end of file and drops an incomplete last line, as today. The
   hub reading a daemonless session is the main case. Such reads are
-  **authoritative replacements**: there is no live stream to merge with, so each
-  read replaces the thread's history on the client instead of merging into it. A
-  record that another process later rolls back is therefore gone on the next
-  read.
+  authoritative for what they return. There is no live stream to merge with. The
+  exact scope of replacement is defined under Reads: a returned range, a snapshot
+  identity, and incarnation handling. A record that another process later rolls
+  back is gone on the next read.
 - **Crash or power loss** can lose buffered entries whose notifications clients
   already have. The restarted daemon has a new incarnation, and clients replace
   their history state when they reconnect to a new incarnation.
@@ -358,7 +358,12 @@ including writes that emit nothing today:
 Notifications are derived from recorded entries, so they never run ahead of the
 file.
 
-Projection is serialized per thread, in append order.
+Projection is serialized per thread, in append order. The writer hands each
+recorded entry to that thread's projection queue while it still holds the append
+lock, so entries enter the queue in ordinal order no matter which goroutine
+appended them. That includes async attention writes. One goroutine per thread
+drains the queue. A boundary test appends from two goroutines at once and checks
+that projection sees every ordinal in order.
 
 **When projecting or publishing fails** after an append has recorded:
 1. The server bumps the thread's resync epoch.
@@ -498,9 +503,16 @@ The writer API returns either `recorded (ordinal, Seq)` or `not recorded`. Today
 and `AppendDurable` return nil with Seq 0 for both a missing and a closed writer
 (`agent/transcript/transcript.go:606-627`).
 
-`evener serve` always has a state directory (`cmd/evener/serve.go:527`). A served
-session fails closed when its transcript cannot be created or its writer is
-poisoned (`transcript.go:724-728`). Failing closed means:
+`evener serve` always has a state directory (`cmd/evener/serve.go:527`). There is
+one rule for when a served session fails closed. It fails closed when:
+- its transcript cannot be created, or its writer is poisoned
+  (`transcript.go:724-728`)
+- an append of a history entry that has already been announced to the user
+  outside history, namely COMMUNICATE, is not recorded
+
+Any other append that is not recorded, for example a cleanly rolled-back durable
+append, leaves the writer usable. The caller's existing error handling applies,
+and nothing was announced, so no history is missing. Failing closed means:
 - a running execution is interrupted
 - `overlay/end` turns its streams and tool state into notices
 - projection state is dropped
@@ -553,8 +565,12 @@ response is authoritative for the position range it returned:
 longer an extension of what the index covers: shorter than its indexed length,
 or with different trailing bytes (see Validation). Within one incarnation the
 recorded length only grows, so snapshots of one incarnation order by length.
-Incarnations themselves are not ordered: only the current one is valid. Each
-rule applies on one side:
+Incarnations themselves are not ordered, so every read request carries a
+**request generation** that the client increments for each read it issues. A
+response echoes its request's generation. The client applies a response only if
+no response to a later generation has been applied, so a slow response from an
+old sidecar can never overwrite history from a newer one. Only the current
+incarnation is valid. Each rule applies on one side:
 - **The server rejects.** A backfill request whose cursor names an incarnation
   other than the current one gets `TranscriptItemCursorStale`, and the client
   re-reads the latest window.
