@@ -16,6 +16,7 @@ import {
 import type {
 	TranscriptDisplayAdvancedV1,
 	TranscriptDisplayConfigV1,
+	ThreadModel,
 	TurnModel,
 } from "@evener/appwire-client";
 import { projectNativeTranscript, usageRows } from "./transcriptPresentation";
@@ -774,6 +775,25 @@ const EVENT_KIND_CASES: { eventKind?: string; exitCode?: number }[] = [
 	{ eventKind: "hook_completed", exitCode: 3 },
 ];
 
+// One projector-parity check, shared by the derived-row sweep below and the
+// direct notice-row guard after it: did the presentation layer keep or drop an
+// event exactly as projectThread does? The probe thread ids every entry
+// "system-event-probe"; the native input names its own row.
+function expectVisibleLikeProjector(
+	model: ThreadModel,
+	native: MobileConversation,
+	nativeId: string,
+	config: TranscriptDisplayConfigV1,
+): void {
+	const nativeVisible = projectNativeTranscript(native, config).items.some(
+		(item) => item.id === nativeId,
+	);
+	const sharedVisible = sharedProjectThread(model, config).turns.some((turn) =>
+		turn.entries.some((entry) => entry.id === "system-event-probe"),
+	);
+	expect(nativeVisible).toBe(sharedVisible);
+}
+
 it.each(
 	EVENT_KIND_CASES.flatMap((kind) =>
 		GATE_CONFIGS.map((gate) => ({
@@ -784,12 +804,48 @@ it.each(
 	),
 )("gates $title the same as the shared projector", ({ eventKind, exitCode, config }) => {
 	const model = systemEventProbe(eventKind, exitCode);
-	const nativeVisible = projectNativeTranscript(
-		projectConversation(model),
-		config,
-	).items.some((item) => item.id === "system-event-probe");
-	const sharedVisible = sharedProjectThread(model, config).turns.some((turn) =>
-		turn.entries.some((entry) => entry.id === "system-event-probe"),
-	);
-	expect(nativeVisible).toBe(sharedVisible);
+	expectVisibleLikeProjector(model, projectConversation(model), "system-event-probe", config);
 });
+
+// --- D24-4: the presentation layer owns no event-kind vocabulary or gate row --
+//
+// The sweep above drives a systemMessage-DERIVED row; the guard below drives a
+// notice ROW directly, at the one gate that decides each gated kind (every gate
+// off). A native table that disagreed - missing notes-context, or force-showing
+// a kind its own gate should hide - turns this red while the shared verdict
+// stays right. The whole gate matrix stays the sweep's job.
+const NEVER_EVENTS_CONFIG = makeTranscriptDisplayConfig(
+	{ kind: "preset", level: "full" },
+	{ systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" },
+);
+
+it.each([
+	{ eventKind: "notes-context" },
+	{ eventKind: "environment" },
+	{ eventKind: "round_timings" },
+	{ eventKind: "hook_completed", exitCode: 0 },
+	{ eventKind: "hook_completed", exitCode: 3 },
+	{ eventKind: "error" },
+	{ eventKind: "future-event" },
+	{},
+] satisfies { eventKind?: string; exitCode?: number }[])(
+	"shows a notice row for $eventKind exit=$exitCode by the shared projector's verdict",
+	({ eventKind, exitCode }) => {
+		const notice: MobileTimelineItem = {
+			kind: "notice",
+			id: "notice",
+			origin: "system",
+			family: "unknown-system",
+			tone: "system",
+			text: "",
+			...(eventKind ? { eventKind } : {}),
+			...(exitCode !== undefined ? { exitCode } : {}),
+		};
+		expectVisibleLikeProjector(
+			systemEventProbe(eventKind, exitCode),
+			conversation([notice]),
+			"notice",
+			NEVER_EVENTS_CONFIG,
+		);
+	},
+);

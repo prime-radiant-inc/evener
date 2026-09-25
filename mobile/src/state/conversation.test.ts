@@ -43,7 +43,15 @@ import type { ActivityIdentity } from "./activity";
 import type {
   ConversationMutationRequest,
   ConversationMutationSubmitter,
+  ConversationMutationPendingPort,
 } from "./conversationMutation";
+import type {
+  MutationOptimisticRecord,
+  MutationOutboxRecord,
+  MutationPersistenceSnapshot,
+  MutationRecoveryRecord,
+  PendingTurnEntry,
+} from "@evener/appwire-client/state/mutation";
 import { createActivityStore } from "./activity";
 import {
   createConversationStore,
@@ -1389,6 +1397,693 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await store.getState().send(service, textInput("x"));
       expect(store.getState().error).toBeNull();
+    });
+  });
+
+  // Slice 7a: the durable pending-row foundation. An in-flight mutation must
+  // not be a per-process memory fact: a host-bound seam reads the target's
+  // durable outbox/optimistic records and projects them through the shared
+  // reconciliation (#2140's shape), so a cold reopen shows the mutation, a
+  // rejected or reflected one drops out, and a settled one clears.
+  describe("durable pending rows — the host-bound durable projection", () => {
+    const TARGET = "hub-1::ref-1";
+
+    function outbox(
+      over: Partial<MutationOutboxRecord> = {},
+    ): MutationOutboxRecord {
+      return {
+        version: 1,
+        clientMutationId: "cmid-1",
+        targetRef: TARGET,
+        method: "turn/start",
+        payload: {},
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input: textInput("hello") },
+        intentSequence: 0,
+        createdAt: 7,
+        state: "submitting",
+        ...over,
+      };
+    }
+
+    function recovery(
+      over: Partial<MutationRecoveryRecord> = {},
+    ): MutationRecoveryRecord {
+      return { ...outbox(), recoveryKind: "rejected", ...over };
+    }
+
+    function optimistic(
+      over: Partial<MutationOptimisticRecord> = {},
+    ): MutationOptimisticRecord {
+      return { ...outbox(), state: "accepted", ...over };
+    }
+
+    function fakePort(initial: Partial<MutationPersistenceSnapshot> = {}) {
+      let snapshot: MutationPersistenceSnapshot = {
+        outbox: [],
+        optimistic: [],
+        recovery: [],
+        ...initial,
+      };
+      const listeners = new Set<() => void>();
+      const port = {
+        targetRef: TARGET,
+        read: async (): Promise<MutationPersistenceSnapshot> => snapshot,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        isOwnMutationRecord: () => true,
+        publish(next: Partial<MutationPersistenceSnapshot>) {
+          snapshot = { outbox: [], optimistic: [], recovery: [], ...next };
+          for (const listener of [...listeners]) listener();
+        },
+        listenerCount: () => listeners.size,
+      };
+      return port satisfies ConversationMutationPendingPort & {
+        publish(next: Partial<MutationPersistenceSnapshot>): void;
+        listenerCount(): number;
+      };
+    }
+
+    async function openStore(
+      conversation: MobileConversation = makeConversation(),
+    ) {
+      const service = new FakeConversationService();
+      service.openConv = conversation;
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      return store;
+    }
+
+    // A model whose daemon projection still reports the mutation as pending —
+    // the source that carries a settled-out id, and so the one that needs the
+    // carried submitted-here provenance for `fromThisClient`/`createdAt`.
+    function authoritativeModel(id: string): MobileConversation {
+      return makeConversation({
+        pendingMutations: [
+          {
+            clientMutationId: id,
+            method: "turn/start",
+            input: textInput("carried"),
+            executionState: "accepted",
+            projectionState: "pending",
+          },
+        ],
+      });
+    }
+
+    it("shows a durable in-flight row after a cold reopen", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      // First app run: the store follows the mutation's durable row.
+      const first = await openStore();
+      first.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(first.getState().pendingMutations?.map((row) => row.id)).toEqual([
+        "cmid-1",
+      ]);
+
+      // Restart: a fresh store with no memory of the submission, over the same
+      // durable storage. Nothing shows until the durable seam is bound...
+      const restarted = await openStore();
+      expect(restarted.getState().pendingMutations ?? null).toBeNull();
+      restarted.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const rows = restarted.getState().pendingMutations;
+      expect(rows).toHaveLength(1);
+      expect(rows?.[0]).toMatchObject({
+        id: "cmid-1",
+        method: "send",
+        text: "hello",
+        state: "submitting",
+        source: "outbox",
+      } satisfies Partial<PendingTurnEntry>);
+    });
+
+    it("a rejected mutation supersedes its pending row — no double row, no zombie", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Rejection: the outbox row leaves storage and a recovery row takes over.
+      port.publish({
+        recovery: [recovery({ recoveryReason: "no such thread" })],
+      });
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("clears exactly at settlement and never early", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      // Still submitting: a storage notification that re-serves the same row
+      // keeps it — settlement is the row leaving storage, not a timer.
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+      // The dispatcher deletes the settled row.
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a mutation the model already reflects never projects as a pending row", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore(
+        makeConversation({
+          queue: { revision: 1, clientMutationIds: ["cmid-1"] },
+        }),
+      );
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("ignores a record another target owns", async () => {
+      const port = fakePort({
+        outbox: [outbox({ targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("unbind stops following and clears; a later change cannot resurrect it", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      const unbind = store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      unbind();
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations).toBeNull();
+
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a failed durable read leaves the last projection standing", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const originalRead = port.read;
+      let fail = false;
+      port.read = () => {
+        if (fail) return Promise.reject(new Error("storage unavailable"));
+        return originalRead();
+      };
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      fail = true;
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+    });
+
+    it("a slower older read cannot resurrect a row a newer read removed", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Hold the next read open; a later read (the settlement) resolves first.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let held = false;
+      port.read = async () => {
+        if (!held) {
+          held = true;
+          await heldRead;
+          return { outbox: [outbox()], optimistic: [], recovery: [] };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      port.publish({}); // the held, older read
+      port.publish({}); // the newer read: the row is gone
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("rebinding clears the prior target's rows even when the new read fails", async () => {
+      const first = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(first);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A replacement seam whose first read rejects must not leave the retired
+      // target's rows on screen.
+      const replacement = fakePort();
+      replacement.read = () => Promise.reject(new Error("storage unavailable"));
+      store.getState().bindPendingMutations(replacement);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a model write drops a now-reflected row without a storage notification", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // The model now reflects the id through a live frame — no durable read.
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          queue: { revision: 2, clientMutationIds: ["cmid-1"] },
+        },
+      } as AnyNotification);
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("opening a different thread retires the prior target's seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ ref: "ref-2", threadId: "thread-2" });
+      await store.getState().open(other, "ref-2");
+
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("reopening the same ref through a different target retires the prior seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+
+      // The same wire ref through a different hub/service: the durable target
+      // key differs, and the store cannot see the hub, so the seam retires.
+      const otherHub = new FakeConversationService();
+      otherHub.openConv = makeConversation({
+        ref: "ref-1",
+        threadId: "thread-1",
+      });
+      await store.getState().open(otherHub, "ref-1");
+
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a read a newer read superseded still records submitted-here provenance", async () => {
+      const port = fakePort({});
+      const store = await openStore(authoritativeModel("cmid-9"));
+      // The first read is held and observes the durable record; a newer read
+      // resolves first against storage where the record is already settled out.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let held = false;
+      port.read = async () => {
+        if (!held) {
+          held = true;
+          await heldRead;
+          return {
+            outbox: [outbox({ clientMutationId: "cmid-9" })],
+            optimistic: [],
+            recovery: [],
+          };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      store.getState().bindPendingMutations(port);
+      port.publish({}); // the newer read: the record is gone
+      await yieldMicrotask();
+      await yieldMicrotask();
+      releaseRead?.(); // the held, older read resolves late
+      await yieldMicrotask();
+      await yieldMicrotask();
+
+      // The superseded read's provenance must reach the already-published row
+      // with no further storage notification.
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-9",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a same-target rebind keeps the client's submitted-here provenance", async () => {
+      const store = await openStore(authoritativeModel("cmid-7"));
+      const first = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-7" })],
+      });
+      store.getState().bindPendingMutations(first);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        // The daemon's own projection describes the same id, so the entry is
+        // authoritative from the start; the durable record supplies provenance.
+        source: "authoritative",
+        fromThisClient: true,
+      });
+
+      // A same-target rebind whose read shows the record settled out: the
+      // daemon still reports the id, and the carried provenance must survive
+      // the rebind to keep `fromThisClient`/`createdAt` honest.
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        source: "authoritative",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a failed open does not leave the retired target's rows visible", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      const failing = new FakeConversationService();
+      failing.open = async () => {
+        throw new Error("open failed");
+      };
+      await store.getState().open(failing, "ref-1");
+      expect(store.getState().status).toBe("error");
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a same-target reopen keeps the client's submitted-here provenance", async () => {
+      const store = await openStore(authoritativeModel("cmid-7"));
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-7" })],
+      });
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+
+      // Reopen the same target, then rebind with the durable record gone: the
+      // daemon still reports the id, and the carried provenance must survive.
+      const reopen = new FakeConversationService();
+      reopen.openConv = authoritativeModel("cmid-7");
+      await store.getState().open(reopen, "ref-1");
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a synchronous read throw on a notification keeps the last projection", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      port.read = () => {
+        throw new Error("storage unavailable");
+      };
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+    });
+
+    it("a synchronous read throw on the first read leaves the projection null", async () => {
+      const port = fakePort();
+      port.read = () => {
+        throw new Error("storage unavailable");
+      };
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a foreign-target record never pollutes submitted-here provenance", async () => {
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-9", targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore(authoritativeModel("cmid-9"));
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+
+      // The foreign row is not projected (target-scoped) — and it must not have
+      // recorded the id as this client's own submission either.
+      const rows = store.getState().pendingMutations;
+      expect(rows?.map((row) => row.id)).toEqual(["cmid-9"]);
+      expect(rows?.[0]?.fromThisClient).toBe(false);
+      expect(rows?.[0]?.createdAt).toBeUndefined();
+    });
+
+    it("a failed read does not suppress an earlier successful read", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Read #1 is held; read #2 fails before #1 resolves. #1's newer state
+      // must still publish — a failed read advances nothing.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let invocation = 0;
+      port.read = () => {
+        invocation += 1;
+        if (invocation === 1) {
+          return heldRead.then(() => ({
+            outbox: [],
+            optimistic: [],
+            recovery: [],
+          }));
+        }
+        return Promise.reject(new Error("storage unavailable"));
+      };
+      port.publish({});
+      port.publish({});
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a conversation write that does not change the rows keeps the projection reference", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const before = store.getState().pendingMutations;
+      expect(before).toHaveLength(1);
+
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thread-1", ref: "ref-1", queue: { revision: 9 } },
+      } as AnyNotification);
+      expect(store.getState().pendingMutations).toBe(before);
+    });
+
+    it("openProjected retires the prior target's seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ ref: "ref-2", threadId: "thread-2" });
+      await store
+        .getState()
+        .openProjected(other, createFakeSink(), "ref-2");
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("projects an optimistic record", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ clientMutationId: "cmid-3" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-3",
+        source: "optimistic",
+        state: "accepted",
+      });
+    });
+
+    it("an optimistic record the model reflects never projects", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ clientMutationId: "cmid-3" })],
+      });
+      const store = await openStore(
+        makeConversation({
+          queue: { revision: 1, clientMutationIds: ["cmid-3"] },
+        }),
+      );
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("ignores an optimistic record another target owns", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a durable read that re-serves identical rows keeps the projection reference", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const before = store.getState().pendingMutations;
+      expect(before).toHaveLength(1);
+
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toBe(before);
+    });
+
+    it("a record the ownership predicate rejects never claims this client's provenance", async () => {
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-4" })],
+      });
+      port.isOwnMutationRecord = () => false;
+      const store = await openStore(authoritativeModel("cmid-4"));
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-4",
+        fromThisClient: false,
+      });
+
+      // After the record settles out, the daemon still reports the id: the
+      // rejected predicate must have left nothing in the carried provenance.
+      const rebound = fakePort({});
+      rebound.isOwnMutationRecord = () => false;
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      const rows = store.getState().pendingMutations;
+      expect(rows?.[0]).toMatchObject({ id: "cmid-4", fromThisClient: false });
+      expect(rows?.[0]?.createdAt).toBeUndefined();
+    });
+
+    it("a conversation write never exposes a stale pending row to a subscriber", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A subscriber must never observe the model reflecting the mutation while
+      // pendingMutations still holds its row: the reconcile rides the same write
+      // as the model commit.
+      let sawStale = false;
+      const unsubscribe = store.subscribe((state) => {
+        const reflected = state.conversation?.queue?.clientMutationIds ?? [];
+        if (
+          reflected.includes("cmid-1") &&
+          (state.pendingMutations ?? []).some((row) => row.id === "cmid-1")
+        ) {
+          sawStale = true;
+        }
+      });
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          queue: { revision: 2, clientMutationIds: ["cmid-1"] },
+        },
+      } as AnyNotification);
+      unsubscribe();
+
+      expect(sawStale).toBe(false);
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a read in flight across a same-target rebind still records provenance", async () => {
+      const first = fakePort({});
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let reads = 0;
+      first.read = async () => {
+        reads += 1;
+        if (reads === 1) {
+          await heldRead;
+          return {
+            outbox: [outbox({ clientMutationId: "cmid-11" })],
+            optimistic: [],
+            recovery: [],
+          };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      const store = await openStore(authoritativeModel("cmid-11"));
+      store.getState().bindPendingMutations(first); // read #1 held in flight
+
+      // A same-target rebind: its read resolves against storage where the
+      // record has already settled out, while the daemon still reports the id.
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-11",
+        fromThisClient: false,
+      });
+
+      // The in-flight read lands after the rebind; its provenance must stick.
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-11",
+        fromThisClient: true,
+        createdAt: 7,
+      });
     });
   });
 

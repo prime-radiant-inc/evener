@@ -724,10 +724,31 @@ restart:
 
 **Latency.** `thread/read` of the latest window at the default page size, on the
 95 MB root transcript, on the dev machine's local SSD, 200 samples:
-- idle writer: p99 under 50 ms, and no worse than 2× today's in-memory read
+- idle writer: p99 under 50 ms, and no worse than 2× today's full-page read
+  after a notification (the read an active client gets)
 - appending one entry per 100 ms: p99 under 100 ms
 
 This is prototyped and measured in phase 1, before any irreversible step.
+
+*Amended after the phase 1 measurement (PR #2303).* The original relative
+criterion compared against today's cached read. That read reuses a paging index
+the server rebuilds after every applied notification, so an active session
+rarely hits the cache.
+
+Phase 1 measured p99 on real 101–134 MB transcripts, 40 items per page:
+
+| Read | Index | Today, cached | Today, after a notification |
+|---|---|---|---|
+| Full page | 5.6–8.7 ms | 2.1–5.9 ms | 8.3–26.3 ms |
+| Page while appending | 1.4–12.3 ms | n/a | n/a |
+
+Both absolute limits are met with a wide margin. Against the cached read the
+index is 1.2–3× slower. Against the read an active client actually gets, it is
+equal or faster.
+
+The remaining cost is decoding large tool state in the returned entries. Five
+`task_list` results of about 500 KB each dominate one window. That is a data-size
+problem to fix at its source, not by caching decoded entries.
 
 **Parity.** The parity harness reports zero divergences for new-format sessions:
 - live against reload, including across a daemon restart and a reclaimed turn

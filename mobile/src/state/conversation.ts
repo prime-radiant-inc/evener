@@ -20,6 +20,12 @@
 // refresh path (triggered by the store-owned drain scheduler, not timers).
 
 import { create } from "zustand";
+import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
+import type {
+  MutationAttachmentRef,
+  MutationPersistenceSnapshot,
+  PendingTurnEntry,
+} from "@evener/appwire-client/state/mutation";
 import {
   applyNotification,
   copyItemTextPresence,
@@ -87,7 +93,10 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-import type { ConversationMutationSubmitter } from "./conversationMutation";
+import type {
+  ConversationMutationPendingPort,
+  ConversationMutationSubmitter,
+} from "./conversationMutation";
 
 export type ConversationStatus =
   | "idle"
@@ -318,6 +327,10 @@ export interface ConversationState {
   readonly draft: string;
   readonly pendingSend: string | null;
   readonly pendingMutation?: ConversationMutationState | null;
+  // Slice 7a: the durable pending rows a host's bound seam projects. Null until
+  // a seam is bound (LiveConversationState.bindPendingMutations); never a
+  // per-process memory fact, so it survives a cold reopen.
+  readonly pendingMutations?: readonly PendingTurnEntry[] | null;
   readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
 
   // The non-projected compatibility surface, kept for screen test mocks; no
@@ -347,6 +360,12 @@ export interface ConversationState {
 // F2: setCoalescer is removed from the public interface — openProjected
 // creates and binds the coalescer internally.
 export interface LiveConversationState extends ConversationState {
+  // Slice 7a: binds this conversation's durable pending-row seam (the host's
+  // scoped read + storage subscription + client-ownership rule) and follows it
+  // for the binding's lifetime, projecting the durable outbox/optimistic
+  // records as `pendingMutations`. Returns the unbind that stops following and
+  // clears the projection; a later storage change cannot resurrect it.
+  bindPendingMutations(port: ConversationMutationPendingPort): () => void;
   openProjected(
     service: LiveConversationService,
     activitySink: LiveActivitySink,
@@ -2028,6 +2047,109 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     }
   }
 
+  // Slice 7a: the durable pending-row seam. While a host binds one, the store
+  // follows this conversation target's durable outbox/optimistic records and
+  // projects them as pending rows through the shared reconciliation (#2140's
+  // shape) — so an in-flight mutation survives a cold reopen (its record is the
+  // runtime's, not the store's memory), a rejected or reflected one drops out
+  // (no zombie pendings, no double rows), and a settled one clears exactly when
+  // its record leaves storage. The reconciliation always reads the live model:
+  // every durable read re-runs it, and so does every conversation write.
+  let pendingPort: ConversationMutationPendingPort | null = null;
+  let pendingUnsubscribe: (() => void) | null = null;
+  let pendingGeneration = 0;
+  // Advanced only by forgetPendingProvenance (close/reset). A read's provenance
+  // write is fenced on THIS, not on pendingGeneration: a read in flight across a
+  // same-target rebind or a thread open still observed a durable record of this
+  // client's own, and ids are unique per submission so it cannot contaminate
+  // another target. Only a teardown fences it out.
+  let pendingProvenanceGeneration = 0;
+  let pendingSnapshot: {
+    outbox: MutationPersistenceSnapshot<MutationAttachmentRef>["outbox"];
+    optimistic: MutationPersistenceSnapshot<MutationAttachmentRef>["optimistic"];
+  } | null = null;
+  // Every durable record this client submitted, id -> createdAt, carried past
+  // the record's own settle so the reconciliation's provenance rule can still
+  // answer after the durable read reports the id out of storage.
+  // Growth is bounded by the store's own lifetime: a store is per conversation,
+  // client mutation ids are unique per submission, and close/reset forget the
+  // map. The package store this mirrors deliberately never prunes it, because
+  // pruning an id the daemon still reports would flip an own in-flight send to
+  // `fromThisClient: false` and misroute tier-6 send/queue availability.
+  const pendingSubmittedHere = new Map<string, number>();
+
+  function reconcilePendingMutations(
+    model: MobileConversation | null | undefined = storeGet?.().conversation,
+  ): readonly PendingTurnEntry[] {
+    const port = pendingPort;
+    const snapshot = pendingSnapshot;
+    if (port === null || snapshot === null || !model) return [];
+    return reconcilePendingEntries(
+      port.targetRef,
+      [...snapshot.outbox, ...snapshot.optimistic],
+      model,
+      pendingSubmittedHere,
+      (record) => port.isOwnMutationRecord(record),
+    );
+  }
+
+  // Whether two reconciliations describe the same rows. The reconciliation
+  // always allocates a fresh array, so publishing it on every conversation
+  // write would re-render every subscriber on each streaming delta even when
+  // nothing about the rows changed; comparing the fields keeps the reference
+  // stable until a row actually appears, changes state, or drops out.
+  function samePendingRows(
+    left: readonly PendingTurnEntry[] | null | undefined,
+    right: readonly PendingTurnEntry[],
+  ): boolean {
+    if (left === undefined || left === null || left.length !== right.length) {
+      return false;
+    }
+    for (let index = 0; index < right.length; index += 1) {
+      const a = left[index];
+      const b = right[index];
+      if (
+        a.id !== b.id ||
+        a.method !== b.method ||
+        a.state !== b.state ||
+        a.source !== b.source ||
+        a.text !== b.text ||
+        a.imageCount !== b.imageCount ||
+        a.createdAt !== b.createdAt ||
+        a.fromThisClient !== b.fromThisClient ||
+        a.skillNames.length !== b.skillNames.length ||
+        a.skillNames.some((name, skillIndex) => name !== b.skillNames[skillIndex])
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Stops following the bound seam and forgets its snapshot. Never sets state:
+  // the callers that clear the published projection do so through their own
+  // set (close/reset null it, the returned unbind publishes the clear).
+  // Provenance is deliberately NOT forgotten here: the id -> createdAt map is
+  // monotonic knowledge the package store treats as never pruned, so a
+  // same-target rebind keeps it and a still-authoritative entry stays honest.
+  function detachPendingRows(): void {
+    ++pendingGeneration;
+    pendingUnsubscribe?.();
+    pendingUnsubscribe = null;
+    pendingPort = null;
+    pendingSnapshot = null;
+  }
+
+  // Forgets the carried provenance. Only a true teardown (close/reset) calls
+  // this: a rebind keeps it (same target), and a thread open keeps it too - the
+  // map is keyed by client mutation id, unique per submission, and it is the
+  // only carrier once a record settles out of storage while the daemon still
+  // reports the id.
+  function forgetPendingProvenance(): void {
+    ++pendingProvenanceGeneration;
+    pendingSubmittedHere.clear();
+  }
+
   return create<LiveConversationState>((rawSet, get) => {
     // R1: Wrap set so any write to pendingMutation or error increments the
     // corresponding monotonic revision counter — even ABA (same value). This
@@ -2036,6 +2158,26 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     const set = (partial: Partial<ConversationState>) => {
       if ("pendingMutation" in partial) mutationOwnerRev += 1;
       if ("error" in partial) errorOwnerRev += 1;
+      // A conversation write is the one model change the reconciliation has to
+      // see: re-project the durable rows against the model being committed, so a
+      // mutation the model now reflects drops out with no storage round-trip.
+      // The reconcile runs BEFORE the write and rides it in ONE rawSet, so no
+      // subscriber ever observes the intermediate state (model reflects the
+      // mutation, pendingMutations still holds its stale row). A partial that
+      // publishes its own pendingMutations (open/close/reset/unbind) owns that
+      // field and is written as-is.
+      if (
+        "conversation" in partial &&
+        !("pendingMutations" in partial) &&
+        pendingPort !== null &&
+        pendingSnapshot !== null
+      ) {
+        const next = reconcilePendingMutations(partial.conversation);
+        if (!samePendingRows(get().pendingMutations, next)) {
+          rawSet({ ...partial, pendingMutations: next });
+          return;
+        }
+      }
       rawSet(partial);
     };
     storeGet = get;
@@ -2056,10 +2198,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       draft: "",
       pendingSend: null,
       pendingMutation: null,
+      pendingMutations: null,
       lastAcceptedMutation: null,
 
       async open(service, ref) {
         suspendedService = null;
+        // Any thread open retires the bound seam: the port is scoped by the
+        // durable target key (hub + ref) and the store cannot see the hub, so a
+        // same-ref open through a different hub must not inherit the prior
+        // target's rows. The host rebinds for the conversation it opens. The
+        // carried provenance is NOT forgotten: it is keyed by client mutation id
+        // (unique per submission), it is the only carrier once a record settles
+        // out of storage, and the package store it mirrors never prunes it.
+        detachPendingRows();
         // Increment conversation generation so late frames from a previous
         // conversation are rejected.
         const gen = ++conversationGen;
@@ -2091,6 +2242,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          pendingMutations: null,
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
@@ -2123,6 +2275,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
       async openProjected(service, sink, ref, replacement) {
         suspendedService = null;
+        // Same rule as open(): any thread open retires the prior seam and its
+        // rows (the durable target key is hub + ref, and the store cannot see
+        // the hub), and the host rebinds for the conversation it opens. The
+        // carried provenance survives, keyed by client mutation id.
+        detachPendingRows();
         const gen = ++conversationGen;
         // I1: increment the binding epoch and bind service+sink so queued
         // requests from an older binding are suppressed at the boundary.
@@ -2154,6 +2311,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          pendingMutations: null,
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
@@ -3646,6 +3804,109 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         set({ draft: text });
       },
 
+      bindPendingMutations(port) {
+        // One conversation follows one target: release any prior binding first.
+        detachPendingRows();
+        // Replacing the binding retires the prior target's published rows at
+        // once: they belong to the seam being replaced, and a replacement whose
+        // own first read never lands must not leave them standing.
+        set({ pendingMutations: null });
+        const generation = pendingGeneration;
+        pendingPort = port;
+        // Within one binding, only a read newer than the last PUBLISHED one may
+        // publish: a slow earlier read cannot resurrect a row a newer successful
+        // read already dropped, and a FAILED read (sync throw or rejection)
+        // never advances the fence, so an earlier in-flight read still publishes
+        // its newer state rather than being suppressed by a read that produced
+        // nothing.
+        let readRequest = 0;
+        let lastPublishedRequest = 0;
+
+        const read = () => {
+          const request = ++readRequest;
+          const provenanceGeneration = pendingProvenanceGeneration;
+          let pending: ReturnType<ConversationMutationPendingPort["read"]>;
+          try {
+            pending = port.read();
+          } catch {
+            // A synchronous refusal is the read's failure: keep the last
+            // durable projection, exactly as an async rejection does.
+            return;
+          }
+          void pending.then(
+            (snapshot) => {
+              let recordedProvenance = false;
+              // The provenance scan is fenced only on a forget (close/reset):
+              // a read in flight across a same-target rebind or a thread open,
+              // or one a newer read superseded, still observed durable records
+              // of this client's own, and the package store it mirrors records
+              // submitted-here before applying its own fences. Ids are unique
+              // per submission, so this cannot contaminate another target.
+              if (provenanceGeneration === pendingProvenanceGeneration) {
+                for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
+                  // Target-scoped exactly as the reconciliation is: a foreign
+                  // target's row must not claim this client's provenance.
+                  if (
+                    record.targetRef === port.targetRef &&
+                    port.isOwnMutationRecord(record)
+                  ) {
+                    if (!pendingSubmittedHere.has(record.clientMutationId)) {
+                      recordedProvenance = true;
+                    }
+                    pendingSubmittedHere.set(
+                      record.clientMutationId,
+                      record.createdAt,
+                    );
+                  }
+                }
+              }
+              // Newly recorded provenance reaches the already-published
+              // projection at once, through whatever binding is CURRENT (which
+              // may differ from this read's: a same-target rebind). The
+              // reconciliation reads the current snapshot, never this fenced
+              // read's, so a newer read's removals cannot be resurrected.
+              if (
+                recordedProvenance &&
+                pendingPort !== null &&
+                pendingSnapshot !== null &&
+                pendingPort.targetRef === port.targetRef
+              ) {
+                const next = reconcilePendingMutations();
+                if (!samePendingRows(get().pendingMutations, next)) {
+                  set({ pendingMutations: next });
+                }
+              }
+              // A retired binding publishes nothing of its own snapshot.
+              if (generation !== pendingGeneration) return;
+              // Only a read newer than the last published one publishes.
+              if (request <= lastPublishedRequest) return;
+              lastPublishedRequest = request;
+              pendingSnapshot = snapshot;
+              // The same stability check the conversation-write path uses: a
+              // storage read that re-serves identical rows must not churn
+              // subscribers with a fresh array.
+              const next = reconcilePendingMutations();
+              if (!samePendingRows(get().pendingMutations, next)) {
+                set({ pendingMutations: next });
+              }
+            },
+            () => {
+              // A failed read leaves the last durable projection standing: the
+              // shared projection fence's own rule, so a storage hiccup never
+              // blanks rows the user is watching. A later read retries.
+            },
+          );
+        };
+
+        pendingUnsubscribe = port.subscribe(read);
+        read();
+        return () => {
+          if (generation !== pendingGeneration) return;
+          detachPendingRows();
+          set({ pendingMutations: null });
+        };
+      },
+
       async send(service, input) {
         const state = get();
         if (state.conversation === null) return;
@@ -4010,6 +4271,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         compactedTurnItems.clear();
         transientWarnings.length = 0;
         releaseBoundedTextCache();
+        detachPendingRows();
+        forgetPendingProvenance();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -4024,6 +4287,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          pendingMutations: null,
           lastAcceptedMutation: null,
           olderCursor: null,
           loadingOlder: false,
@@ -4190,6 +4454,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         compactedTurnItems.clear();
         transientWarnings.length = 0;
         releaseBoundedTextCache();
+        detachPendingRows();
+        forgetPendingProvenance();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
@@ -4208,6 +4474,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          pendingMutations: null,
           lastAcceptedMutation: null,
           conversationGeneration: conversationGen,
         });
