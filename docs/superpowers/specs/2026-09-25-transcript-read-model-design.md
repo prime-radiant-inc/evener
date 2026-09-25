@@ -1,6 +1,6 @@
 # Transcript as the Only History Read Model
 
-Status: accepted for implementation, revision 6 (2026-09-25). Supersedes the eviction approach in
+Status: accepted for implementation, revision 7 (2026-09-25). Supersedes the eviction approach in
 the closed PR #2251.
 
 Revision history:
@@ -31,6 +31,25 @@ Revision history:
     rules
   - resync delivery failure ends the subscription
   - boundary tests gate activation
+- **Revision 7** closed consistency gaps from review of revision 6:
+  - ordinals are assigned only to recorded lines
+  - the index catches up to the recorded length before a read uses it
+  - a file that stops extending rotates the index incarnation
+  - a latest-window read is authoritative to the end
+  - the turn summary tracks reopen markers
+  - async writes pick their turn inside the append lock
+  - round coverage stops only the covered streams
+  - communicate records before it emits
+  - the index has one extender at a time and publishes its covered length last
+  - projection and its rebuild are serialized per thread; stale epochs are
+    discarded
+  - tool items and their execution overlay have a display rule
+  - the running turn ID lives in the registry entry
+  - notices before any entry have an anchor
+  - the registry entry holds the running and open gap turn IDs from admission
+  - COMMUNICATE records its call ID, and the index can find a round's calls
+  - removal happens only by replacement; the registry is a prerequisite, not
+    part of phase 2
 
 ## Problem
 
@@ -68,7 +87,8 @@ later file projection"). Restarting a daemon already changes what clients see.
    higher version wins.
    - Applying a fact twice changes nothing.
    - A file read that is ahead of the live stream changes nothing.
-   - History items are never removed.
+   - A merge never removes a history item. Only a replacement does: a new
+     incarnation, a resync epoch, or an authoritative daemonless read.
 4. **Memory holds only the overlay and bounded per-thread state.** Memory per
    thread no longer depends on the size of its history.
 
@@ -120,6 +140,11 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   duplicate `Seq`s. The registry knows it for every append in-process. A reader
   counts lines. `Seq` keeps its existing uses and nothing new depends on it being
   unique.
+  - Only a recorded line gets an ordinal. A rolled-back append consumes its
+    `Seq` but not an ordinal. Its entry was never announced in-process, so the
+    next record to take that ordinal aliases nothing a client got from this
+    process. A reader in another process that saw the rolled-back line sees the
+    file stop extending, which rotates the index incarnation (see Reads).
 - **Reads from another process.** A reader with no writer for the file in its
   process reads to end of file and drops an incomplete last line, as today. The
   hub reading a daemonless session is the main case. Such reads are
@@ -185,6 +210,15 @@ delivery and stop goroutines at any time: model-bound attention STEERING
 - Otherwise they take a `delivery` turn of their own.
 - They never take the ID of a turn that has already completed.
 - A turn's completion entry is written as the last entry of its execution span.
+- The choice is made inside the registry's append lock. The running execution's
+  `TurnID` for the file is held in the registry entry and changes only under
+  that lock: the session sets it when it admits the execution, before it
+  publishes through `SetProcessingTurn`, and the completion append clears it.
+  The open gap turn ID is held the same way: a standalone entry takes it, or
+  mints one when none is open, and any execution, delivery or prelude entry
+  closes it. An async write that loses the race to the completion therefore
+  takes a delivery turn. The append lock is a leaf: no other lock is taken while
+  it is held.
 
 **Turn membership** comes from `TurnID`, not from entry-kind adjacency.
 
@@ -262,18 +296,21 @@ The projector is one pure function over (entries, header). It has one
 - It projects one agentMessage per assistant text run and one reasoning item per
   entry, matching how live displays them today.
 - **Communicate.** A new presentational COMMUNICATE entry is recorded when
-  `communicate` delivers its message. Every failure path in `communicate`
-  (missing `end_turn`, empty message, abort) happens before delivery, so a
-  recorded COMMUNICATE entry means the message was delivered
-  (`agent/session_tools_communicate.go:73-77`).
+  `communicate` delivers its message, which today is the `EventCommunicate`
+  emit (`agent/session_tools_communicate.go:73-77`). The entry is appended
+  first, and the event is emitted only once the entry is recorded. Every
+  failure path in `communicate` (missing `end_turn`, empty message, abort)
+  happens before that point, so a recorded COMMUNICATE entry means the message
+  was delivered.
   - The communicate item is projected from the COMMUNICATE entry, so it is in
     history at delivery, whether or not the round's TOOL_RESULTS is ever written
     (`agent/session_tools.go:1021-1090`).
   - The ASSISTANT entry's communicate call part is hidden, but it still occupies
     its part index.
-  - If the COMMUNICATE append is not recorded, the session treats it as writer
-    failure and fails closed (see Writer failure). A delivered message is never
-    silently missing from history.
+  - If the COMMUNICATE append is not recorded, nothing is emitted, and the
+    session treats it as writer failure and fails closed (see Writer failure).
+    A delivered message is never missing from history, apart from the crash
+    loss every buffered entry shares (see Recorded length).
   - No history item is ever removed.
 - **Fold copies.** A fold re-appends entries after its markers
   (`agent/session_compaction.go:146-154`). The copies carry the original's entry
@@ -308,15 +345,20 @@ including writes that emit nothing today:
 Notifications are derived from recorded entries, so they never run ahead of the
 file.
 
+Projection is serialized per thread, in append order.
+
 **When projecting or publishing fails** after an append has recorded:
 1. The server bumps the thread's resync epoch.
 2. It pushes `evener/thread/resync`, which already exists
    (`appwire/types.go:213, 2697-2700`), with the new epoch.
-3. It rebuilds the projection state from the file.
+3. It rebuilds the projection state from the file, up to the recorded length,
+   inside the thread's projection serialization. Entries recorded meanwhile
+   are projected after the rebuild, in order.
 
-A client that receives the resync, or that later reads and sees a newer epoch
-than it holds, replaces that thread's history instead of merging. The epoch never
-needs clearing.
+Every read response and `history/updated` carries the epoch. A client that
+receives the resync, or that later reads and sees a newer epoch than it holds,
+replaces that thread's history instead of merging. A response or update with an
+older epoch than the client holds is discarded. The epoch never needs clearing.
 
 If a resync push cannot be delivered to a subscriber, the server ends that
 subscription. The client's reconnect then starts from a fresh read with the
@@ -337,8 +379,9 @@ The overlay is per thread and in memory. It holds four kinds of state.
     entry and then call the model again (`agent/session_lifecycle.go:2338-2345,
     2384-2392`).
   - Projected ASSISTANT and salvage items carry their `roundID` on the wire.
-  - Once a round's entry is recorded, the server emits no further overlay events
-    for that round.
+  - Once a round's entry is recorded, the server emits no further text or
+    reasoning deltas for that round. Tool execution state, communicate previews
+    and the round's `overlay/end` are still delivered after that point.
 - `overlay/reset(streamID)` discards one attempt when it is retried
   (`appwire_projection.go:549-575`). The next attempt has a new `streamID`, so
   its output is never mistaken for the discarded one.
@@ -355,8 +398,10 @@ The overlay is per thread and in memory. It holds four kinds of state.
 - **Communicate previews are exempt from round coverage.** A preview stays on
   screen after the ASSISTANT entry is recorded, through hooks and slow sibling
   tools, as it does today (`appwire_projection.go:644-656, 685-690`). It is
-  covered only by its COMMUNICATE entry. If the call failed, the round's
-  `overlay/end` drops it.
+  covered only by its COMMUNICATE entry. The preview is keyed by its call ID,
+  and the COMMUNICATE entry records that call ID
+  (`agent/session_tools_communicate.go:73-77` already emits it). If the call
+  failed, the round's `overlay/end` drops it.
 - Stream content is bounded by the provider's maximum output for one response.
 
 **Tool execution state.** Tools run after the ASSISTANT entry holding their
@@ -364,7 +409,11 @@ calls is recorded (`agent/session_model_call.go:994-996`).
 - Running output, per-call completion (TOOL_CALL_END,
   `agent/session_tools.go:876`) and held images (`appwire_projection.go:847-868`)
   attach to the call's history key.
-- The history item wins once its version includes the TOOL_RESULTS entry.
+- Until then, the client shows the history item with the overlay's execution
+  fields (running output, per-call status, held images) laid over it. The
+  overlay never changes the item's identity or version.
+- The history item wins once its version includes the TOOL_RESULTS entry, and
+  the overlay's state for that key is dropped.
 - Running output keeps the last 256 KB per call. Held images keep the existing
   per-result image limits.
 - If TOOL_RESULTS is never recorded, `overlay/end` turns the execution state into
@@ -380,7 +429,9 @@ calls is recorded (`agent/session_model_call.go:994-996`).
   64 KB in total. A daemon-wide cap of 16 MB evicts the oldest first.
 - Each notice is anchored at `{entry: ordinal + 1 of the preceding entry, item:
   1<<30, sub: n}`. The item value sits past every real part index, and `sub` is a
-  new position component that orders notices among themselves.
+  new position component that orders notices among themselves. A notice with no
+  preceding entry is anchored at `{entry: 0, item: 1<<30, sub: n}`, after the
+  header-derived prelude items.
 - Notices survive a browser refresh while the daemon lives and vanish on
   restart, as they do today.
 - A released delegate's ring is dropped with its runtime.
@@ -446,7 +497,8 @@ announced when they are recorded at attach.
 1. Inside `CaptureSubscription`, capture the thread's overlay, its resync epoch
    and the subscription cut.
 2. After releasing the cut, project history up to the recorded length and merge
-   it: history by version, and overlay items minus covered streams.
+   it: history by version, and overlay items minus the streams and previews
+   that this projected history covers.
 
 Notifications delivered after the response merge by the same rules. A later
 `history/updated` at a lower or equal version is ignored, and so are overlay
@@ -465,13 +517,27 @@ the file. Every read response, live or daemonless, carries its **snapshot
 identity**: the index incarnation plus the recorded length it read. A daemonless
 response is authoritative for the position range it returned:
 - The client replaces its items in that range and keeps pages outside it.
-- A page from an older snapshot than the one the client already holds is
-  rejected with `TranscriptItemCursorStale`, and the client re-reads the latest
-  window.
+- A page from another incarnation, or from an older snapshot than the one the
+  client already holds, is rejected with `TranscriptItemCursorStale`, and the
+  client re-reads the latest window.
 - Pages from the same snapshot accumulate.
+- A daemonless latest-window response is authoritative from its first position
+  to the end of history. The client drops any item it holds past the returned
+  window. Live responses merge by version and never drop items.
+
+**Index incarnation.** The index gets a new incarnation whenever the file is no
+longer an extension of what the index covers: shorter than its indexed length,
+or with different trailing bytes (see Validation). Within one incarnation the
+recorded length only grows, so snapshots of one incarnation order by length. A
+response from a different incarnation than the client holds replaces the
+thread's whole history, as a new daemon incarnation does. The hub already
+rotates its cursor incarnation when a snapshot does not extend the previous one
+(`cmd/evener-hub/internal/appsource/source.go:120, 604`), and this keeps that
+rule for the seekable index.
 
 So backfill never discards newer pages. A record that another process rolled back
-disappears the next time its range is read.
+disappears on the next read: the rollback rotates the incarnation, and the
+client replaces the thread's history.
 
 ### Index
 
@@ -487,12 +553,26 @@ it holds two tables of fixed-size records.
   - its version
 - **Turn summary records.** Each one holds:
   - the first entry's offset
-  - the latest completion entry's offset and status
+  - the latest lifecycle entry's offset and the status it sets: the recorded
+    status for a completion entry, open for a reopen marker
   - usage totals and timestamps
+  - the offset of the latest ASSISTANT entry whose tool calls still await their
+    TOOL_RESULTS. Extending over a TOOL_RESULTS entry decodes that one entry to
+    map each result's call ID to its part index, and so to its item record.
   - the turn's version
 
-An append updates records in place: it fills in a completer or rewrites a turn
-summary, both at fixed offsets, and appends new item and turn records.
+**Extension.** Index updates are not part of the append. The index header
+records the length it covers. A read captures the recorded length once, extends
+the index from the covered length to it, and projects to that same length.
+Extending over an entry fills in a completer or rewrites a turn summary, both
+at fixed offsets, and appends new item and turn records.
+- One extender at a time holds an exclusive lock on the sidecar; readers hold a
+  shared lock while they read records. The lock is a file lock, because the hub
+  and a daemon can open the same sidecar.
+- The extender writes records first and the header's covered length last, so a
+  reader never trusts a record past the covered length.
+- A rebuild writes a new sidecar and renames it into place. A reader holding
+  the old file sees the incarnation change on its next validation and reopens.
 
 A window read binary-searches item records with `ReadAt`. It projects each item
 from its contributor entries and stamps each turn from its summary record. It
@@ -618,8 +698,8 @@ Each phase ships on its own and keeps main green.
    - Writers write every new field and entry kind. The consumers listed above
      skip the new kinds, and the new kinds stay out of in-memory history. Every
      projection rule and client-visible behavior stays as it is today.
-   - The registry, `Seq` on rollback, the explicit write result and fork
-     sequence seeding also land here.
+   - `Seq` on rollback, the explicit write result and fork sequence seeding
+     also land here. The registry has already shipped ahead of phase 1.
    - The one intended behavior change in this phase: a served session fails
      closed on writer failure.
    - Each consumer is its own small task, with a test showing that a transcript
