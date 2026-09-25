@@ -1400,7 +1400,7 @@ func TestRestoreFinalizesARecordedSteerCompactedOutOfHistory(t *testing.T) {
 	recordSteerWithFailedIncorporation(t, crashed, "steer-compacted")
 	summary := schema.NewTurn(schema.TurnSummary, llm.Assistant("compacted context"))
 	crashed.recordTurn(summary, summary)
-	_, entries, _, err := readTranscript(crashed.TranscriptPath())
+	_, entries, _, err := readTranscript(crashed.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

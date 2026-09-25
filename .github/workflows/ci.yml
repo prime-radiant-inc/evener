@@ -30,8 +30,20 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
+      # The gate itself is Go: make test-web builds and runs evener-dev.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - uses: ./.github/actions/go-cache-restore
+        with:
+          kind: web-unit
+
       - name: Typecheck, unit tests, and lint
         run: make test-web
+
+      - uses: ./.github/actions/go-cache-save
 
   web-browser:
     runs-on: ubuntu-latest

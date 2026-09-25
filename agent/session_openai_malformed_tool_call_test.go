@@ -162,7 +162,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		t.Fatalf("tool result content = %q, want failing-input excerpt", got)
 	}
 
-	_, entries, skipped, err := readTranscript(transcriptPath)
+	_, entries, skipped, err := readTranscript(transcriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

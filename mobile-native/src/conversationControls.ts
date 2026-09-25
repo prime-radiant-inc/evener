@@ -1,6 +1,6 @@
 import { sessionControls } from "@evener/appwire-client";
 import type { QueueState } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 
 /** The slice of a conversation every control decision reads. Capabilities may
  * be partial: sessionControls reads only the four it gates on, and the

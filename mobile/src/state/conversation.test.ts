@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hydrateThread,
+  makeTranscriptDisplayConfig,
   markItemTextOmitted,
   liveAskQuestions,
   QUEUE_UNAVAILABLE,
@@ -30,9 +31,9 @@ import type {
   ActivityMember,
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/project";
-import { projectConversation } from "../conversation/project";
-import * as project from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
+import { projectConversation } from "../../../mobile-native/src/projectedRows";
+import * as project from "../../../mobile-native/src/projectedRows";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -3833,7 +3834,7 @@ describe("ConversationStore", () => {
     // initial wire text (item/started here), and mergeReasoning keeps that
     // seeded summary across later merges once it's set — but mergeCompletedText
     // still treats the completion's own explicit text as authoritative
-    // (project.ts's reasoningText: a settled item's non-blank text wins over a
+    // (the row module's reasoningText: a settled item's non-blank text wins over a
     // stale seeded summary; see project.test.ts's "shows the completion's
     // authoritative text over a stale seeded reasoningSummaries entry" for the
     // same invariant through the canonical projector directly). Main's landed
@@ -5007,7 +5008,7 @@ describe("ConversationStore", () => {
     });
 
     // capAndTruncate bounds every published row's text for display
-    // (truncateItem's "question" case, project.ts's boundQuestion) — the
+    // (truncateItem's "question" case, the row module's boundQuestion) — the
     // existing "bounds a question row's prose" test above pins that for the
     // hydrate/openProjected path. The answer path is unaffected because it
     // reads liveAskQuestions' canonical, uncut model — not the bounded row —
@@ -5460,7 +5461,7 @@ describe("ConversationStore", () => {
     // exactly here, while idle). The wire drops it and never persists it,
     // so no read can recover it either — the store displays it itself, as
     // the attention row the canonical projection builds for a model
-    // warning item (project.ts's warningItem), held in transient display
+    // warning item (the row module's warningItem), held in transient display
     // state that every timeline rebuild re-appends and every conversation
     // transition clears, the lifetime main's live-owned rows gave it.
     it("shows a warning that arrives with no active turn, and keeps it through rebuilds and transitions", async () => {
@@ -5917,6 +5918,103 @@ describe("ConversationStore", () => {
         ["activity", "b-tool"],
       ]);
     });
+
+    // The summary-only ruling meets the R38 split: a cluster of summarized
+    // rows re-projects its sub-runs through activityRunRow when a notice
+    // splits it, and the rebuilt top-level rows must stay summary-only —
+      // a run of one loses the marker exactly when the split reduced it to
+      // its first member's fields.
+      it("keeps a split cluster's sub-run rows summary-only at the user's level", async () => {
+        const thread = makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "a-tool",
+                  toolName: "shell",
+                  status: "completed",
+                  description: "first audit",
+                } as ThreadItem,
+                {
+                  type: "commandExecution",
+                  id: "b-tool",
+                  toolName: "shell",
+                  status: "completed",
+                  description: "second audit",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        });
+        const store = await openProjectedThread(thread);
+        store.getState().setDisplayConfig(
+          makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
+        );
+        // The two completed calls cluster into one summary-only row at
+        // intent (the operator's summary-only ruling).
+        const clustered = rows(store).find((row) => row.id === "a-tool");
+        expect(clustered).toMatchObject({
+          kind: "activity",
+          summaryOnly: true,
+          detail: { description: "first audit" },
+        });
+        store.getState().applyNotification({
+          method: "warning",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            title: "Provider",
+            message: "careful",
+          },
+        } as AnyNotification);
+        // A newer same-family activity arrives AFTER the notice: the run
+        // splits at the anchored member, and BOTH sub-runs re-project.
+        store.getState().applyNotification({
+          method: "turn/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turn: { id: "t2", itemsView: "default", status: "running" },
+          },
+        } as AnyNotification);
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: {
+              type: "commandExecution",
+              id: "c-tool",
+              toolName: "shell",
+              status: "completed",
+              description: "third audit",
+            } as ThreadItem,
+          },
+        } as AnyNotification);
+        // The split keeps the members displayed at arrival above the notice
+        // (the [a, b] run) and seats the member that arrived later below it.
+        const split = rows(store).filter((row) => row.kind === "activity");
+        expect(split.map((row) => row.id)).toEqual(["a-tool", "c-tool"]);
+        for (const row of split) {
+          if (row.kind !== "activity") continue;
+          expect(row.summaryOnly, `row ${row.id}`).toBe(true);
+          expect(row.detail.output, `row ${row.id} output`).toBeUndefined();
+        }
+        const above = split[0];
+        expect(above?.detail.description).toBe("first audit");
+        expect(
+          above?.members?.map(
+            (member) => `${member.id}:${member.summaryOnly === true}`,
+          ),
+        ).toEqual(["a-tool:true", "b-tool:true"]);
+        const below = split[1];
+        expect(below?.detail.description).toBe("third audit");
+        expect(below?.members).toBeUndefined();
+      });
 
     // RoboRev review round 1: the anchor a notice records when it arrives
     // over an ALREADY-CLUSTERED row. The cluster's top-level identity
@@ -27354,7 +27452,7 @@ describe("ConversationStore", () => {
       const { store } = await openProjectedWithItems([
         reasoningItem("wire-a", "key-a", "first"),
         // inProgress: a summaryTextDelta only ever streams into a still-running
-        // item, and project.ts's reasoningText prefers the settled item.text
+        // item, and the row module's reasoningText prefers the settled item.text
         // over reasoningSummaries once an item is completed (see the reducer's
         // own mergeReasoning/mergeCompletedText contract) — a completed item
         // would show its frozen "second" instead of the delta.
@@ -27755,6 +27853,363 @@ describe("ConversationStore", () => {
       expect(after).not.toBe(before);
       // The rows did not: same array, same row objects.
       expect(after?.items).toBe(before?.items);
+    });
+  });
+
+  // D24 slices 5+6: the conversation's projection follows the user's display
+  // config. The level is store state (setDisplayConfig), so the projection
+  // runs ONCE, at the user's level, through the same display boundary
+  // (capAndTruncate: seating, cap, truncation) every other rebuild passes
+  // through — no screen-level re-projection (the rejected D24-5 route
+  // re-projected per render, thrashing the per-turn row cache and bypassing
+  // the boundary).
+  describe("the conversation's projection follows the user's display config", () => {
+    const intentConfig = makeTranscriptDisplayConfig({
+      kind: "preset",
+      level: "intent",
+    });
+    const fullConfig = makeTranscriptDisplayConfig({
+      kind: "preset",
+      level: "full",
+    });
+
+    // One settled turn holding the level's three subjects: a summarized
+    // tool action (a completed shell call whose description the projector
+    // trims into its rationale, plus full arguments/output), a settled
+    // thought, and a user message.
+    function configLevelsThread(): Thread {
+      return makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [
+              userMessageItem("u1", "please audit the config"),
+              {
+                type: "commandExecution",
+                id: "c1",
+                toolName: "shell",
+                status: "completed",
+                description: "  run the audit  ",
+                argumentsJson: JSON.stringify({ cmd: "ls" }),
+                output: "tool output text",
+              } as ThreadItem,
+              reasoningItem("r1", "auditing quietly"),
+            ],
+          }),
+        ],
+      });
+    }
+
+    it("re-projects the live conversation when the level changes", async () => {
+      const store = await openProjectedThread(configLevelsThread());
+      // No config: the show-everything default the seam has always
+      // projected, still on screen.
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "c1")).toMatchObject({
+        detail: { output: "tool output text" },
+      });
+
+      store.getState().setDisplayConfig(intentConfig);
+      expect(store.getState().displayConfig).toEqual(intentConfig);
+      // The settled thought is gone at intent; the summarized tool row
+      // carries only its trimmed summary line (the summary-only ruling).
+      expect(rowById(store, "r1")).toBeUndefined();
+      const c1 = rowById(store, "c1");
+      expect(c1).toMatchObject({
+        kind: "activity",
+        detail: { description: "run the audit" },
+      });
+      expect(JSON.stringify(rows(store))).not.toContain("tool output text");
+
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "c1")).toMatchObject({
+        detail: { output: "tool output text" },
+      });
+    });
+
+    it("treats a value-equal config as no change — the boundary does not re-run", async () => {
+      const store = await openProjectedThread(configLevelsThread());
+      store.getState().setDisplayConfig(intentConfig);
+      const before = store.getState().conversation;
+      expect(before).not.toBeNull();
+      // The provider hands the store a fresh object per publish; the
+      // level is keyed by the config's VALUE (configFingerprint), so an
+      // equal value republishes nothing.
+      store.getState().setDisplayConfig(
+        makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
+      );
+      expect(store.getState().conversation).toBe(before);
+    });
+
+    it("runs the level re-projection through the same display boundary", async () => {
+      // An oversized summary line is bounded in the published rows exactly
+      // as any other row text: capAndTruncate seats, caps and truncates
+      // once, on the config-projected rows.
+      const hugeSummary = "s".repeat(MAX_ITEM_BYTES + 100);
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [
+              {
+                type: "commandExecution",
+                id: "c1",
+                toolName: "shell",
+                status: "completed",
+                description: hugeSummary,
+              } as ThreadItem,
+            ],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().setDisplayConfig(intentConfig);
+      const c1 = rowById(store, "c1");
+      expect(c1).toMatchObject({ kind: "activity" });
+      const summary =
+        c1?.kind === "activity" ? c1.detail.description : undefined;
+      if (summary === undefined) throw new Error("no summarized row");
+      expect(summary.endsWith(TRUNCATION_MARKER)).toBe(true);
+    });
+
+    // Review round 2 (Medium): a level change hides rows without
+    // withdrawing them from the model, and a transient warning must not
+    // retire just because the row it anchored to became hidden — the
+    // store re-anchors it to the nearest preceding row the new level
+    // still shows, so it stays on screen at the compact level and comes
+    // back when the level does.
+    it("keeps a transient warning whose anchor the level hides", async () => {
+      // The warning lands over an idle thread — no active turn to fold
+      // into — so the store holds it on its transient surface, anchored
+      // to the last model row, the thought.
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [
+              userMessageItem("u1", "please audit"),
+              reasoningItem("r1", "the settled thought that anchors"),
+            ],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      // A later reply arrives on a new turn, so the anchored thought
+      // sits mid-timeline.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: agentMessageItem("a2", "working on it", "completed"),
+        },
+      } as AnyNotification);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+
+      // At intent the thought is hidden; the warning re-anchors to the
+      // user message above it and stays on screen.
+      store.getState().setDisplayConfig(intentConfig);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+
+      // And it survives the round trip back to full.
+      store.getState().setDisplayConfig(fullConfig);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+    });
+
+    // Review round 3 (Medium), superseding round 2's Low: the bound RUNS
+    // at every publish (round 2), but its keep-window is LEVEL-INDEPENDENT
+    // — the display level decides what renders, never what payload leaves
+    // the model. A window taken from the level's own rows would shed every
+    // turn the level hides, and the switch back to the richer level could
+    // not rebuild what the re-projection reads: the payloads would be gone
+    // from the model. The show-everything cap is the retention truth; only
+    // the cap window decides what leaves.
+    it("keeps a level-hidden turn's payload for the switch back", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [reasoningItem("r1", "the thought")],
+          }),
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [userMessageItem("u1", "hi")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      // Show-everything keeps both turns' payloads.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(intentConfig);
+      // t0's every row is hidden at intent — hidden, not withdrawn: the
+      // payload stays in the model.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      expect(rowById(store, "r1")).toBeUndefined();
+      // Switch back: the hidden row reappears from the kept payload.
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // Review round 3 (Medium, the frame publish): a row-changing frame
+    // while at a coarse level bounds against the same level-independent
+    // window — the frame must not shed the payload of a turn the level
+    // hides either, or the switch back would lose it the same way.
+    it("a row-changing frame at a coarse level keeps the hidden turn's payload", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [reasoningItem("r1", "the thought")],
+          }),
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [userMessageItem("u1", "hi")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().setDisplayConfig(intentConfig);
+      // A row-changing frame lands at intent: a new turn starts.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // RoboRev panel: the rehydrate bound against its level-projected window
+    // too — a rehydrate at a coarse level skeletonized the turns it hid, so
+    // the switch back to full rendered them empty. The keep-window is the
+    // level-independent union at this site as well.
+    it("a rehydrate at a coarse level keeps the hidden turn's payload", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("u1", "hi")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The older page lands at the show-everything default: its payload
+      // is retained, and the turn is PAGE HISTORY now — the rehydrate's
+      // merge path runs over it.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "r1",
+                turnId: "t0",
+                type: "reasoning",
+                text: "the thought",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(intentConfig);
+      // The rehydrate re-reads at the coarse level; the level-hidden turn's
+      // payload must survive the merge's bound.
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // RoboRev panel: the loadOlder bound against its level-projected window
+    // as well. The page's own accounting (the admitted item keys, F8/F10's
+    // inputs) is level-independent; only the payload bound was not.
+    it("an older page loaded at a coarse level keeps the hidden turn's payload", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("u1", "hi")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.getState().setDisplayConfig(intentConfig);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "r1",
+                turnId: "t0",
+                type: "reasoning",
+                text: "the thought",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      // The level-hidden turn's payload survives the merge.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
     });
   });
 

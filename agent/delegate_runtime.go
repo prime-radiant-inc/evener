@@ -2696,7 +2696,7 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	if err := child.appendTurnWithSyncedTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
 		return err
 	}
-	data, err := readStrictChildTranscript(transcriptPath, child.ID(), child.strictTranscriptMaxLineBytes)
+	data, err := readStrictChildTranscript(transcriptPath, child.stateDir, child.ID(), child.strictTranscriptMaxLineBytes)
 	if err != nil {
 		return fmt.Errorf("read back child input transcript: %w", err)
 	}
@@ -3103,7 +3103,7 @@ func missingDelegateRestoreInputReason(
 		}
 		return "", fmt.Errorf("stat child transcript %s: %w", childID, err)
 	}
-	if _, err := validateStrictChildTranscript(path, childID, 0); err != nil {
+	if _, err := validateStrictChildTranscript(path, stateDir, childID, 0); err != nil {
 		if delegateRestoreOperationalIOError(err) {
 			return "", fmt.Errorf("validate child transcript %s: %w", childID, err)
 		}

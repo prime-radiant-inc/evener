@@ -36,6 +36,7 @@ import {
 	humanizeState,
 	parseSlashToken,
 	spliceSlashCommand,
+	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
@@ -835,15 +836,38 @@ export function ConversationScreen({
 		() => createDurableSubmitter(() => mutationHostRef.current),
 		[],
 	);
+	// The transcript display config the conversation projects at (the hub's
+	// evener/settings/transcriptDisplay settings; the shipped mobile default
+	// — intent — when the hub stores none). The store owns the level it
+	// projects at and re-projects through its display boundary when it
+	// changes; the service reads the CURRENT value at each read it projects,
+	// so the ref (not the render value) is what it closes over — the store is
+	// not recreated per config change.
+	const preferences = useNativePreferences();
+	const displayConfig =
+		preferences.hubId === route.params.hubId ? preferences.config : null;
+	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
+	displayConfigRef.current = displayConfig;
+	const resolveDisplayConfig = useCallback(
+		() => displayConfigRef.current,
+		[],
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
 		() =>
 			createConversationStore({
 				mutationHubId: route.params.hubId,
 				mutationSubmitter,
+				displayConfig,
 			}),
 		[mutationSubmitter, route.params.hubId, route.params.ref],
 	);
+	// A config change reaches the live store as a level change, not a
+	// rebinding: setDisplayConfig re-projects the conversation at the new
+	// level through the same display boundary (an equal value is a no-op).
+	useEffect(() => {
+		store.getState().setDisplayConfig(displayConfig);
+	}, [store, displayConfig]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
 	// The conversation store validates the exact bound sink object on refresh.
@@ -852,13 +876,14 @@ export function ConversationScreen({
 		() =>
 			client
 				? createConversationService(client, {
+						resolveDisplayConfig,
 						onReadStart: (ref, expectedThreadId) =>
 							mutationHostRef.current?.beginRead(ref, expectedThreadId),
 						onReadComplete: (lease, response) =>
 							mutationHostRef.current?.reconcileRead(lease, response),
 					})
 				: null,
-		[client],
+		[client, resolveDisplayConfig],
 	);
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
@@ -1317,14 +1342,13 @@ export function ConversationScreen({
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
 	const conversation = snapshot.conversation;
-	const preferences = useNativePreferences();
+	// The conversation's rows are already level-correct: the store projected
+	// them at displayConfig (D24-6's seam routing), so the presentation layer
+	// only reshapes (member unrolling, attachment adjacency) and computes the
+	// footer's accounting — no second, screen-level projection.
 	const presentation = useMemo(
-		() =>
-			projectNativeTranscript(
-				conversation,
-				preferences.hubId === route.params.hubId ? preferences.config : null,
-			),
-		[conversation, preferences.hubId, preferences.config, route.params.hubId],
+		() => projectNativeTranscript(conversation, displayConfig),
+		[conversation, displayConfig],
 	);
 	const timelineRows = useMemo(
 		() => groupTimeline(presentation.items),

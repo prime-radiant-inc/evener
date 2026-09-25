@@ -9,7 +9,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
-EVENER_INSTALL_BINS := evener evener-dev
+EVENER_INSTALL_BINS := evener
 BUILD_CHANNEL ?=
 
 ## Build the evener binary with a fresh embedded SPA. The default goal.
@@ -118,13 +118,13 @@ dist:
 
 # An installed evener must embed a fresh SPA, not the tracked PLACEHOLDER
 # (install-home/install-system inherit via install).
-## Install the evener and evener-dev binaries into PREFIX (default ~/.local),
-## building a fresh SPA first so the installed evener never embeds the
-## tracked placeholder.
+## Install the evener binary into PREFIX (default ~/.local), building a fresh
+## SPA first so the installed evener never embeds the tracked placeholder.
+##   evener-dev, the dev tooling binary, is not installed: build it with
+##   `make build-dev`.
 install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
-	go build -o "$(INSTALL_BUILD_DIR)/evener-dev" ./cmd/evener-dev/bin/
 	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
 	@for bin in $(EVENER_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
