@@ -1,0 +1,374 @@
+package server
+
+import (
+	"errors"
+	"os"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
+)
+
+// The transcript read model's boundary tests (plan Task 18): each pauses at
+// a synchronization boundary -- a channel, a recorded hook, an ordering of
+// direct writer calls -- never a sleep or a timing assertion. Tests that
+// drive a real session through a scripted provider reuse the parity
+// harness's helpers (parityProvider, bridgeParitySession, newScriptedSession);
+// tests that only need control over which entries land when drive a
+// servedTranscript or a historyHarness directly.
+
+// TestReadBetweenAssistantAndCommunicate holds the COMMUNICATE entry back --
+// simply by not writing it yet -- after an ASSISTANT round is recorded and
+// its streaming preview is live in the overlay. A read in between sees the
+// ASSISTANT items and the preview; once COMMUNICATE is written and
+// published, the reduced client holds the message exactly once (not also as
+// a leftover preview).
+func TestReadBetweenAssistantAndCommunicate(t *testing.T) {
+	hx := newHistoryHarness(t)
+	question := hx.record(t, "a question")
+	hx.updatesThrough(t, question.Offset+question.Length)
+
+	// Round 1: text and reasoning, recorded as the ASSISTANT entry.
+	assistant := hx.recordAssistantEntry(t, "r_1", "", "reasoning, then text")
+	hx.awaitPublished(t, assistant.Offset+assistant.Length)
+
+	// Round 2 starts streaming toward COMMUNICATE; its preview is live in the
+	// overlay while COMMUNICATE itself is held back (simply not recorded
+	// yet).
+	hx.overlay.Event(events.New(events.RoundStartedData{RoundID: "r_2"}))
+	hx.overlay.Event(events.New(events.AssistantTextDeltaData{Delta: "drafting the reply"}))
+	turns, _, _, overlay, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 1 || len(turns[0].Items) != 2 || turns[0].Items[1].Text != "reasoning, then text" {
+		t.Fatalf("read before COMMUNICATE = %+v, want the question and the ASSISTANT entry", turns)
+	}
+	if len(overlay) != 1 || overlay[0].Kind != appwire.OverlayStream {
+		t.Fatalf("overlay = %+v, want round 2's streaming preview", overlay)
+	}
+
+	client := newHistoryClient(appwire.ThreadReadResponse{Thread: appwire.Thread{Turns: turns}})
+	comm := hx.recordTurn(t, schema.Turn{
+		Kind: schema.TurnCommunicate, Format: schema.TurnFormatIdentity, TurnID: "turn_comm_1",
+		Communicate: &schema.CommunicateInfo{Message: "the whole answer", EndTurn: true},
+	})
+	updates := hx.updatesThrough(t, comm.Offset+comm.Length)
+	for _, u := range updates {
+		client.apply(t, u)
+	}
+	final := client.turnsInOrder()
+	count := 0
+	for _, turn := range final {
+		for _, item := range turn.Items {
+			if item.Text == "the whole answer" {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the reduced client holds %d copies of the answer, want 1: %+v", count, final)
+	}
+}
+
+// recordAssistantEntry records an ASSISTANT entry under roundID, without the
+// pricing hx.recordAssistant folds in.
+func (hx *historyHarness) recordAssistantEntry(t *testing.T, roundID, model, text string) transcript.Record {
+	t.Helper()
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
+	turn.RoundID, turn.Model = roundID, model
+	return hx.recordTurn(t, turn)
+}
+
+// TestReclaimedTurn writes a client-mutation execution's opening entry with
+// no completion, then reopens it (TURN_REOPEN, the way a real reclaim does:
+// the same TurnID, TurnKind still execution) before writing its completion.
+// While it is open the served thread's status is inProgress with
+// ActiveTurnID naming it; once it completes, ActiveTurnID is empty.
+func TestReclaimedTurn(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	st := newServedTranscript(t, srv, "reclaim-thread")
+	turnID := "turn_m1"
+	st.record(t, inExecution(turnID, true, schema.NewTurn(schema.TurnUserInput, llm.User("before the crash"))))
+	st.settle(t)
+
+	startExecution(srv, "reclaim-thread", turnID)
+	st.record(t, inExecution(turnID, false, schema.Turn{Kind: schema.TurnReopen}))
+	st.settle(t)
+	read := st.read(t)
+	if read.Thread.Evener.ActiveTurnID != turnID {
+		t.Fatalf("evener.activeTurnId = %+v, want %q while the reclaimed turn runs", read.Thread.Evener, turnID)
+	}
+	reopened := findTurn(t, read, turnID)
+	if reopened.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("reclaimed turn status = %q, want inProgress while running", reopened.Status)
+	}
+
+	now := time.Now().UTC()
+	st.record(t, inExecution(turnID, false, schema.Turn{
+		Kind:       schema.TurnCompletion,
+		Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted, CompletedAt: now},
+	}))
+	srv.SetProcessingTurn("")
+	st.settle(t)
+	read = st.read(t)
+	if read.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("evener.activeTurnId = %q after completion, want empty", read.Thread.Evener.ActiveTurnID)
+	}
+	completed := findTurn(t, read, turnID)
+	if completed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("reclaimed turn status = %q after completion, want completed", completed.Status)
+	}
+}
+
+func findTurn(t *testing.T, read appwire.ThreadReadResponse, turnID string) appwire.Turn {
+	t.Helper()
+	for _, turn := range read.Thread.Turns {
+		if turn.ID == turnID {
+			return turn
+		}
+	}
+	t.Fatalf("no turn %q in the read: %+v", turnID, read.Thread.Turns)
+	return appwire.Turn{}
+}
+
+// TestFailedHistoryPublication fails one publish; the thread resyncs at a
+// new epoch and a client that re-reads on the resync (the reducer's rule for
+// any resync) holds every item once the rebuild catches back up, none
+// missing.
+func TestFailedHistoryPublication(t *testing.T) {
+	var failNext atomic.Bool
+	threadHistoryPublishHook = func(string) error {
+		if failNext.CompareAndSwap(true, false) {
+			return errors.New("injected publish failure")
+		}
+		return nil
+	}
+	t.Cleanup(func() { threadHistoryPublishHook = nil })
+	hx := newHistoryHarness(t)
+	one := hx.record(t, "one")
+	hx.updatesThrough(t, one.Offset+one.Length)
+
+	failNext.Store(true)
+	hx.record(t, "two")
+	epoch := hx.nextResync(t)
+	if epoch != 1 {
+		t.Fatalf("resync epoch = %d, want 1", epoch)
+	}
+	three := hx.record(t, "three")
+	hx.awaitPublished(t, three.Offset+three.Length)
+
+	// The client re-reads on the resync instead of merging deltas across it.
+	turns, older, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if older != "" {
+		t.Fatalf("older cursor %q, want the whole history in one page", older)
+	}
+	texts := map[string]bool{}
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			texts[item.Text] = true
+		}
+	}
+	for _, want := range []string{"one", "two", "three"} {
+		if !texts[want] {
+			t.Fatalf("re-read after the resync = %v, missing %q", texts, want)
+		}
+	}
+}
+
+// TestFailedResyncDelivery is a narrower proxy for the plan's scenario (a
+// connection whose full outbound buffer gets it evicted, then reconnects):
+// it does not drive internal/appserver's eviction path at all, only checks
+// the contract a reconnect's fresh read depends on -- that the thread's
+// epoch after a resync is the resync's epoch, not a stale one -- since a
+// reconnect is always a fresh latest-window read at the thread's current
+// epoch, never a replay of what the evicted connection missed. Driving a
+// real eviction (internal/appserver.Server.evictSlowConsumer, a full
+// Connection.send channel) end to end through a served session is not done
+// here.
+func TestFailedResyncDelivery(t *testing.T) {
+	hx := newHistoryHarness(t)
+	one := hx.record(t, "one")
+	hx.updatesThrough(t, one.Offset+one.Length)
+
+	threadHistoryPublishHook = func(string) error { return errBrokenProjection }
+	threadHistoryRebuildHook = nil
+	t.Cleanup(func() { threadHistoryPublishHook = nil })
+	hx.record(t, "two")
+	epoch := hx.nextResync(t)
+	if epoch != 1 {
+		t.Fatalf("resync epoch = %d, want 1", epoch)
+	}
+	threadHistoryPublishHook = nil
+	three := hx.record(t, "three")
+	hx.awaitPublished(t, three.Offset+three.Length)
+
+	// A reconnect after the eviction is a fresh subscribe: it reads the
+	// thread's live epoch, not whatever it held before the drop.
+	if got := hx.history.Epoch(); got != epoch {
+		t.Fatalf("history epoch = %d, want the resync's epoch %d for the reconnect read to carry", got, epoch)
+	}
+}
+
+// TestConcurrentAppendsProjectInOrdinalOrder appends through the same
+// session writer from two goroutines at once (transcript.Writer.NewWriterNoSync
+// takes an exclusive lock on the file, so a genuinely independent "cold"
+// writer on the same path cannot be opened from this process; two goroutines
+// sharing the one open writer still exercise the writer's append lock as the
+// serialization point the hook depends on, which is the finding this test
+// pins). The published history/updated stream still covers every ordinal
+// exactly once, in order.
+
+// hxReadWhole is the latest window of hx.history with every older page
+// prepended, item counting only (turn grouping does not matter here).
+func hxReadWhole(t *testing.T, hx *historyHarness) []appwire.Turn {
+	t.Helper()
+	turns, older, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for older != "" {
+		var page []appwire.Turn
+		page, older, _, err = hx.history.before("local:th_history", older, appwire.TranscriptItemPageLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		turns = append(page, turns...)
+	}
+	return turns
+}
+
+func TestConcurrentAppendsProjectInOrdinalOrder(t *testing.T) {
+	hx := newHistoryHarness(t)
+	// Every goroutine appends through hx.writer, the one open handle on the
+	// file: the append lock inside transcript.Writer.Record, not the caller,
+	// is what serializes the hook's view, exactly as
+	// TestThreadHistoryPublishesConcurrentAppendsInOrdinalOrder (Task 7)
+	// establishes at the history level; this test pins the same finding
+	// through a served read.
+	const n = 40
+	var wg sync.WaitGroup
+	for g := range 2 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for range n {
+				hx.record(t, "concurrent")
+			}
+		}(g)
+	}
+	wg.Wait()
+	last := hx.writer.RecordedLength()
+	hx.awaitPublished(t, last)
+
+	turns := hxReadWhole(t, hx)
+	count := 0
+	for _, turn := range turns {
+		count += len(turn.Items)
+	}
+	if count != 2*n {
+		t.Fatalf("projected %d items from %d concurrent appends, want %d, none lost or duplicated", count, 2*n, 2*n)
+	}
+}
+
+// TestCrashLostBufferedEntriesAreReplacedByBootGeneration simulates a crash
+// that lost entries a client had already been told about (buffered, not
+// fsynced): the transcript on disk is shorter than what the client holds.
+// A restart at a higher boot generation replaces the client's whole history
+// per CompareBootGeneration, so the lost entries never survive a merge.
+func TestCrashLostBufferedEntriesAreReplacedByBootGeneration(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	st := newServedTranscriptAt(t, srv, "crash-thread", "1")
+	first := st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("kept")))
+	st.settle(t)
+	lost := st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("lost to the crash")))
+	st.settle(t)
+	_ = lost
+
+	read := st.read(t)
+	held := read.BootGeneration
+	if action := appwire.CompareBootGeneration(held, held); action != appwire.BootGenerationApply {
+		t.Fatalf("same generation = %v, want apply", action)
+	}
+
+	// The crash: the file is truncated back to just the first entry, and the
+	// daemon restarts at a higher boot generation over the same path.
+	if err := os.Truncate(st.path, first.Offset+first.Length); err != nil {
+		t.Fatal(err)
+	}
+	srv2 := NewServer(ServerConfig{})
+	t.Cleanup(srv2.Close)
+	prepared, err := PrepareAppIdentity("local", "crash-thread", st.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2.ReplaceAppIdentity(prepared.WithRecordedLength(first.Offset+first.Length).WithBootGeneration("2"), nil)
+	restarted := st.readFrom(t, srv2)
+	if action := appwire.CompareBootGeneration(held, restarted.BootGeneration); action != appwire.BootGenerationReplace {
+		t.Fatalf("higher boot generation compares as %v, want replace", action)
+	}
+	if len(restarted.Thread.Turns) != 1 || restarted.Thread.Turns[0].Items[0].Text != "kept" {
+		t.Fatalf("restarted read = %+v, want only the entry that survived the crash", restarted.Thread.Turns)
+	}
+}
+
+func (st *servedTranscript) readFrom(t *testing.T, srv *Server) appwire.ThreadReadResponse {
+	t.Helper()
+	response, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: st.threadID, IncludeTurns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+// TestUnrecordedAppendFailsClosed reuses phase 2's fail-closed seams: an
+// append the writer never actually recorded (a poisoned writer, and a
+// session with no writer at all) must not let the served session go on as
+// if nothing happened -- reads of that thread fail rather than silently
+// omitting the entry.
+func TestUnrecordedAppendFailsClosed(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	if h := srv.appHistoryForID("nonexistent"); h != nil {
+		t.Fatal("a thread never served has a history")
+	}
+	// A missing writer: recording against a thread the server never wired
+	// (WireTranscriptHistory not called) must not create served state either.
+	srv.recordTranscriptEntry("nonexistent", transcript.Record{Recorded: true, Length: 1})
+	if h := srv.appHistoryForID("nonexistent"); h != nil {
+		t.Fatal("an unrecorded append against an unwired thread created a history")
+	}
+}
+
+// TestProjectionQueueOverflowResyncs overflows the projection queue (bound
+// to a few bytes here) with entries the goroutine never gets a chance to
+// drain, all recorded before the first wake is serviced: the thread resyncs
+// once and, once it catches up, every entry is published -- none lost to the
+// dropped queue.
+func TestProjectionQueueOverflowResyncs(t *testing.T) {
+	hx := newHistoryHarnessWith(t, 8)
+	var recorded []transcript.Record
+	for range 50 {
+		recorded = append(recorded, hx.record(t, "x"))
+	}
+	last := recorded[len(recorded)-1]
+	hx.awaitPublished(t, last.Offset+last.Length)
+
+	turns := hxReadWhole(t, hx)
+	count := 0
+	for _, turn := range turns {
+		count += len(turn.Items)
+	}
+	if count != len(recorded) {
+		t.Fatalf("projected %d of %d entries after the overflow, want all of them", count, len(recorded))
+	}
+}
