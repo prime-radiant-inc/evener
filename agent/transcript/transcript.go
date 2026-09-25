@@ -65,6 +65,10 @@ var ErrRollbackFailed = errors.New("rollback failed")
 // instead of being discovered by whoever next reads the transcript. Recovery is
 // to reopen the transcript, which rebuilds the writer from the complete records
 // the file still holds.
+//
+// The broken bytes poison every writer in this process on the same file, not
+// only the one that left them. A reopen cuts them off, which clears the other
+// writers; the writer that left them stays poisoned.
 var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
 
 // ErrWriterClosed marks a synced write to a closed writer. The ordinary doors
@@ -426,7 +430,9 @@ func NewWriter(path string, header Header) (*Writer, error) {
 
 // NewWriterWithFS creates a transcript writer over fs. It has the same behavior
 // as NewWriter, but allows callers that already own a filesystem boundary to
-// keep transcript persistence on that filesystem.
+// keep transcript persistence on that filesystem. As with
+// OpenWriterForSessionWithFS, writers share a file's append tail only through
+// a filesystem that names files as they are on the real disk.
 func NewWriterWithFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 	return newWriterFS(fs, path, header, true)
 }
@@ -453,41 +459,40 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		return nil, fmt.Errorf("create transcript dir: %w", err)
 	}
 
-	// Create truncates. Truncating a transcript another writer in this process
-	// has open would cut its records out from under it. No caller does; this
-	// catches that mistake, and does not hold off a writer opening the file
-	// concurrently with the create.
-	if openInProcess(path) {
-		return nil, fmt.Errorf("create transcript file: %s is open in this process", path)
-	}
-	f, err := fs.Create(path)
+	f, tail, err := createAppendTail(path, func() (afero.File, error) { return fs.Create(path) })
 	if err != nil {
-		return nil, fmt.Errorf("create transcript file: %w", err)
+		return nil, err
 	}
+	w, err := writeTranscriptHeader(fs, f, tail, header, sync)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the header error is what matters
+		tail.release()
+		return nil, err
+	}
+	return w, nil
+}
 
+// writeTranscriptHeader writes a created transcript's header. Its tail is
+// registered first, so a writer that opens the file once the header lands
+// joins that tail and may append before this writer does. This writer starts
+// at move 0, the new tail's count before any writer positioned on it, so its
+// first append re-seeks to the end if one has since.
+func writeTranscriptHeader(fs afero.Fs, f afero.File, tail *appendTail, header Header, sync bool) (*Writer, error) {
 	data, err := json.Marshal(header)
 	if err != nil {
-		_ = f.Close() // cleanup on error path; the marshal error is what matters
 		return nil, fmt.Errorf("marshal transcript header: %w", err)
 	}
 
 	if _, err := f.Write(append(data, '\n')); err != nil {
-		_ = f.Close() // cleanup on error path; the write error is what matters
 		return nil, fmt.Errorf("write transcript header: %w", err)
 	}
 
 	if sync {
 		if err := f.Sync(); err != nil {
-			_ = f.Close() // cleanup on error path; the sync error is what matters
 			return nil, fmt.Errorf("sync transcript header: %w", err)
 		}
 	}
 
-	tail, err := acquireAppendTail(f)
-	if err != nil {
-		_ = f.Close() // cleanup on error path; the stat error is what matters
-		return nil, err
-	}
 	tail.mu.Lock()
 	defer tail.mu.Unlock()
 	if tail.recordedLength == 0 {
@@ -495,15 +500,16 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		// form the prelude until the first execution begins.
 		tail.turns.prelude = openTurn{id: appwire.SystemPreludeTurnID, fresh: true}
 	}
-	// Never below what a shared tail already holds; see resumeWriter.
+	// Never below what a shared tail already holds: a writer that opened the
+	// file once the header landed has already scanned it.
 	tail.recordedLength = max(tail.recordedLength, int64(len(data)+1))
-	return newWriterOnTail(fs, f, tail, header), nil
+	return newWriterOnTail(fs, f, tail, header, 0), nil
 }
 
-// newWriterOnTail builds a writer positioned at the file's end on its shared
-// tail. The caller holds tail.mu.
-func newWriterOnTail(fs afero.Fs, f afero.File, tail *appendTail, header Header) *Writer {
-	w := &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}
+// newWriterOnTail builds a writer on its shared tail whose handle position
+// reflects the tail's move tailMove. The caller holds tail.mu.
+func newWriterOnTail(fs afero.Fs, f afero.File, tail *appendTail, header Header, tailMove uint64) *Writer {
+	w := &Writer{fs: fs, file: f, tail: tail, tailMove: tailMove, lastSync: time.Now(), header: header}
 	w.releaseTail = runtime.AddCleanup(w, (*appendTail).release, tail)
 	return w
 }
@@ -650,13 +656,13 @@ func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (r
 // nothing. records holds one Record per turn when the batch was recorded, and
 // is nil when it was not.
 func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSync, queueRetained bool) (records []Record, retained, err error) {
-	if w.poisoned {
-		return nil, nil, ErrWriterPoisoned
-	}
 	// The tail is held to the end of the append, rollback included; see
 	// appendTail.
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
+	if w.poisoned || w.tail.poisoned.Load() {
+		return nil, nil, ErrWriterPoisoned
+	}
 	if len(turns) == 0 {
 		return nil, nil, nil
 	}
@@ -781,8 +787,10 @@ func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOff
 	w.dirty = true // Close flushes only what it is told is dirty.
 	if written != bufLen {
 		// A partial line is the remains of a record, not a record. No fsync
-		// makes it whole, and an append onto it would be unreadable.
+		// makes it whole, and an append onto it — by this writer or any other
+		// on the file — would be unreadable.
 		w.poisoned = true
+		w.tail.poisoned.Store(true)
 		return nil, fmt.Errorf("%s: %w", operation, cause)
 	}
 	// The whole buffer is a record every reader will find: count it, keep it as
@@ -845,7 +853,13 @@ func (w *Writer) Poisoned() bool {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.poisoned
+	return w.poisonedLocked()
+}
+
+// poisonedLocked reports whether this writer, or any writer on its file, left
+// a partial line that no resume has yet cut off. Callers hold w.mu.
+func (w *Writer) poisonedLocked() bool {
+	return w.poisoned || w.tail.poisoned.Load()
 }
 
 // Closed reports whether this writer has been closed and its ordinary appends
@@ -863,7 +877,9 @@ func (w *Writer) Closed() bool {
 // not a sample of one: an append holds this same door across its write, and a
 // write it cannot resolve records the poison under the door, so an append that
 // poisons is either already visible here -- f does not run -- or it has not
-// started, which orders the poison after f. A caller that checks Poisoned()
+// started, which orders the poison after f. A poison another writer on the same
+// file leaves is not taken under this door: one that lands while f runs refuses
+// this writer's next append instead. A caller that checks Poisoned()
 // outside the door can promise neither, and publishing work between such a check
 // and its commit leaves a window for a poisoning to land in.
 //
@@ -882,7 +898,7 @@ func (w *Writer) WhileHealthy(f func()) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.poisoned {
+	if w.poisonedLocked() {
 		return ErrWriterPoisoned
 	}
 	if w.closed.Load() {
@@ -1020,38 +1036,32 @@ func OpenWriterForSession(path, expectedSessionID string) (*Writer, []Entry, err
 // OpenWriterForSession. It preserves the same identity validation and semantic
 // entry return while allowing a caller that already owns a filesystem boundary
 // to resume through it.
+//
+// Writers on one file share its append tail (see appendTail) only when fs
+// names files as they are on the real disk, as afero.NewOsFs does: the tail
+// pins the file by that name. Through any other filesystem each writer gets a
+// tail of its own, so two writers on one file through it are not coordinated.
 func OpenWriterForSessionWithFS(fs afero.Fs, path, expectedSessionID string) (*Writer, []Entry, error) {
-	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
-	}
-	return resumeWriter(fs, f, expectedSessionID)
+	return resumeWriter(fs, func() (afero.File, error) { return fs.OpenFile(path, os.O_RDWR, 0o644) }, expectedSessionID)
 }
 
 func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {
-	f, err := openTranscriptAppendFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
-	}
-	return resumeWriter(afero.NewOsFs(), f, expectedSessionID)
+	return resumeWriter(afero.NewOsFs(), func() (afero.File, error) { return openTranscriptAppendFile(path) }, expectedSessionID)
 }
 
 // openWriterFS is the filesystem-injecting seam used by tests and the
 // persistence fuzzer. Production uses openWriter so it can refuse symlinks at
 // the operating-system open boundary.
 func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
-	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open transcript for resume: %w", err)
-	}
-	w, _, err := resumeWriter(fs, f, "")
+	w, _, err := OpenWriterForSessionWithFS(fs, path, "")
 	return w, err
 }
 
-func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer, []Entry, error) {
-	tail, err := acquireAppendTail(f)
+// resumeWriter opens an existing transcript through open and rebuilds a writer
+// from its complete records.
+func resumeWriter(fs afero.Fs, open func() (afero.File, error), expectedSessionID string) (*Writer, []Entry, error) {
+	f, tail, err := openAppendTail(open)
 	if err != nil {
-		_ = f.Close() // cleanup on error path; the stat error is what matters
 		return nil, nil, err
 	}
 	// Scan under the tail so another writer's append is either wholly before
@@ -1069,7 +1079,10 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	tail.nextSeq = max(tail.nextSeq, nextSeq)
 	tail.nextOrdinal = max(tail.nextOrdinal, uint64(len(entries)))
 	tail.recordedLength = max(tail.recordedLength, recordedLength)
-	return newWriterOnTail(fs, f, tail, header), entries, nil
+	// The scan cut any partial line off the end, so the file ends in whole
+	// records again; only the writer that left the line stays poisoned.
+	tail.poisoned.Store(false)
+	return newWriterOnTail(fs, f, tail, header, tail.moved()), entries, nil
 }
 
 // scanForResume validates the transcript, truncates any crash tail, positions
