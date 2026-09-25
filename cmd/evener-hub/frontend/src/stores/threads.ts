@@ -12,6 +12,7 @@ import type {
   AppwireClientLike,
   GoalSetResponse,
   ModelListResponse,
+  SnapshotIdentity,
   ThreadClearResponse,
   ThreadForkResponse,
   ThreadModel,
@@ -20,15 +21,21 @@ import type {
   UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
+  applyHistoryReadFailure,
   applyNotification,
+  applyReadResponse,
   buildComposerInput,
   buildInput,
   ClientNotReadyError,
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
+  errorText,
   hydrateThread,
   type InputAttachment,
+  invalidateHistory,
   isStaleCursorError,
+  issueLatestWindowRead,
+  isTranscriptHistoryFailedError,
   mergeOlderItemPage,
   mutationErrorData,
   notificationRoutingKey,
@@ -363,6 +370,17 @@ type PendingThreadHydration = {
   // trackedHydrationAttempts, which the Stop-cancellation unwind compares
   // against that map so only the ref's newest attempt may unwind.
   attempt?: number;
+  // The model this hydration's latest-window read was issued against
+  // (already carrying the bumped history.issuedGeneration - see
+  // issuedGenerationFor), when the ref already held a v6 model. undefined for
+  // a ref's very first read, or one whose held model predates v6: there is no
+  // held history for issueLatestWindowRead/applyReadResponse to work from, so
+  // the response goes through hydrateThread's plain-replace path instead.
+  baseModel?: ThreadModel;
+  // The request generation this hydration's thread/read carries
+  // (ThreadReadParams.requestGeneration), echoed by the response and used to
+  // discard a superseded ErrorTranscriptHistoryFailed rejection.
+  requestGeneration?: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
@@ -1376,7 +1394,18 @@ const watchHydratedIncludeTurns = new Map<string, boolean>();
 // releaseThread's unsubscribe is what drops the entry again.
 const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
 
-function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean) {
+// heldSnapshot lets the server answer with HistoryChanges instead of a full
+// re-read when nothing outside the client's window changed (spec "Reads":
+// "Later completions of held items"). Sent whenever the request carries a
+// held v6 model's identity - the server decides whether the read is
+// daemon-served or daemonless; the client sends what it holds either way.
+function threadReadParams(
+  ref: string,
+  includeTurns: boolean,
+  subscribe: boolean,
+  requestGeneration?: number,
+  heldSnapshot?: SnapshotIdentity,
+) {
   return {
     ref,
     includeTurns,
@@ -1384,7 +1413,18 @@ function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean
     subscribe,
     replaceSubscription: false,
     itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE,
+    ...(requestGeneration !== undefined ? { requestGeneration } : {}),
+    ...(heldSnapshot ? { heldSnapshot } : {}),
   } as const;
+}
+
+// The heldSnapshot a pending hydration's thread/read carries: the base
+// model's held history identity, when it has one with a recorded
+// incarnation (a v6 model that has completed at least one latest-window
+// read).
+function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity | undefined {
+  const history = baseModel?.history;
+  return history?.incarnation === undefined ? undefined : { incarnation: history.incarnation, length: history.length };
 }
 
 interface ThreadHydration {
@@ -1451,17 +1491,32 @@ async function hydrateAndSubscribe(
   let response: ThreadReadResponse;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    response = await client.request("thread/read", threadReadParams(ref, true, subscribe));
+    response = await client.request(
+      "thread/read",
+      threadReadParams(ref, true, subscribe, pending.requestGeneration, heldSnapshotFor(pending.baseModel)),
+    );
   } catch (err) {
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
     // lost claim. Ask this ref's owner generation to read again.
     markThreadDeletedIfFenced(ref, err);
-    scheduleOwnedHydrationRetry("thread", ref, pending);
+    // A structured "history failed" response is not a transport hiccup: the
+    // spec says the client shows one visible diagnostic and waits for a later
+    // read to succeed, never auto-retrying in a loop. Applied only against
+    // this hydration's own base model (superseded generations are ignored by
+    // applyHistoryReadFailure itself).
+    if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
+      putThreadModel(ref, applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0));
+    } else {
+      scheduleOwnedHydrationRetry("thread", ref, pending);
+    }
     throw err;
   }
   markSubscribed();
-  const model = hydrateThread(response, ref, now);
+  const model =
+    pending.baseModel?.history !== undefined
+      ? applyReadResponse(pending.baseModel, response, now)
+      : hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
 }
@@ -1550,14 +1605,27 @@ async function hydrateAndSubscribeWatch(
   let resp: ThreadReadResponse;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    resp = await client.request("thread/read", threadReadParams(ref, includeTurns, subscribe));
+    resp = await client.request(
+      "thread/read",
+      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, heldSnapshotFor(pending.baseModel)),
+    );
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
-    scheduleOwnedHydrationRetry("watched", ref, pending);
+    if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
+      putWatchedThreadModel(
+        ref,
+        applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0),
+      );
+    } else {
+      scheduleOwnedHydrationRetry("watched", ref, pending);
+    }
     throw err;
   }
   markSubscribed();
-  const model = hydrateThread(resp, ref, now);
+  const model =
+    pending.baseModel?.history !== undefined
+      ? applyReadResponse(pending.baseModel, resp, now)
+      : hydrateThread(resp, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return model;
 }
@@ -1959,6 +2027,32 @@ function collectPendingRefs(
   }
 }
 
+// Records a new latest-window read against a v6 model's held history
+// (issueLatestWindowRead), synchronously - before the request goes out - so
+// two reads issued back to back (a targeted resync racing an initial read,
+// say) get strictly increasing generations and the held model reflects the
+// newer one immediately. A model with no history (not yet v6, or the ref's
+// very first read) gets no generation: applyReadResponse has nothing to
+// discard against, and hydrateThread's plain-replace path is what applies
+// its response.
+function issuedGenerationFor(model: ThreadModel | undefined): {
+  baseModel: ThreadModel | undefined;
+  requestGeneration: number | undefined;
+} {
+  if (!model?.history) return { baseModel: model, requestGeneration: undefined };
+  const { model: bumped, requestGeneration } = issueLatestWindowRead(model);
+  return { baseModel: bumped, requestGeneration };
+}
+
+// applyReadResponse (reducer.ts) discarded a hydration's response - it
+// answered a request generation a later one already superseded (readDisposition
+// "discard") - by returning the base model itself. The held model already
+// reflects the newer read; publishing this response, or reconciling mutations
+// against it, would overwrite that with older state.
+function isDiscardedReadResult(pending: PendingThreadHydration, model: ThreadModel): boolean {
+  return pending.baseModel !== undefined && model === pending.baseModel;
+}
+
 function beginThreadHydration(
   ref: string,
   client: AppwireClientLike,
@@ -1967,12 +2061,16 @@ function beginThreadHydration(
 ): PendingThreadHydration {
   const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
   trackedHydrationAttempts.set(ref, attempt);
+  const { baseModel, requestGeneration } = issuedGenerationFor(model);
+  if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
   const pending = {
     client,
     epoch,
     notifications: [],
-    routing: pendingHydrationRouting(ref, model),
+    routing: pendingHydrationRouting(ref, baseModel ?? model),
     attempt,
+    baseModel,
+    requestGeneration,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -1984,11 +2082,15 @@ function beginWatchedHydration(
   model: ThreadModel | undefined,
   epoch: number,
 ): PendingThreadHydration {
+  const { baseModel, requestGeneration } = issuedGenerationFor(model);
+  if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
   const pending = {
     client,
     epoch,
     notifications: [],
-    routing: pendingHydrationRouting(ref, model),
+    routing: pendingHydrationRouting(ref, baseModel ?? model),
+    baseModel,
+    requestGeneration,
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
@@ -2284,6 +2386,14 @@ function applyToMap(
 
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
+    // A resync always re-reads the named ref, legacy and v6 threads alike:
+    // legacy has no history.invalidatedAtGeneration for the generic
+    // invalidation trigger below to notice, and a v6 model's re-read
+    // naturally replaces (rather than merges) on this response, since a
+    // resync's epoch/bootGeneration is newer by construction - readDisposition
+    // takes that from the response's own identity, with no separate
+    // invalidation step needed. Short-circuits before the generic fold so the
+    // invalidation trigger below never double-issues a second read for it.
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
   }
@@ -2346,13 +2456,11 @@ function handleNotification(n: AnyNotification): void {
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
   } = applyToMap(threads, threadsIndex, n, now, pendingRefs);
-  const { next: nextWatchedThreads, acceptedRefs: acceptedWatchedThreads } = applyToMap(
-    watchedThreads,
-    watchedThreadsIndex,
-    n,
-    now,
-    pendingWatchedRefs,
-  );
+  const {
+    next: nextWatchedThreads,
+    changedRefs: changedWatchedThreads,
+    acceptedRefs: acceptedWatchedThreads,
+  } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
   if (n.method === "evener/goal/updated") {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
@@ -2365,6 +2473,17 @@ function handleNotification(n: AnyNotification): void {
   }
   if (!nextThreads && !nextWatchedThreads) return;
 
+  // history.invalidatedAtGeneration becoming set - or moving to a newer
+  // signal, on re-invalidation - is the store's cue to issue a fresh
+  // latest-window read (task-15-report.md's store contract). It covers
+  // evener/thread/resync, and equally a history/updated or backfill page that
+  // names another boot generation, a newer epoch, or an unseen incarnation
+  // (reducer.ts's classifySignal): the reducer marks the thread invalid,
+  // whatever notification carried the signal, and this is the one place that
+  // reacts to it, so a re-read is never missed nor duplicated per method.
+  const invalidatedThreadRefs = newlyInvalidatedHistoryRefs(threads, nextThreads, changedThreads);
+  const invalidatedWatchedRefs = newlyInvalidatedHistoryRefs(watchedThreads, nextWatchedThreads, changedWatchedThreads);
+
   const patch: Partial<ThreadsStoreState> = {};
   if (nextThreads) {
     patch.threads = nextThreads;
@@ -2376,6 +2495,39 @@ function handleNotification(n: AnyNotification): void {
     patch.watchedThreads = nextWatchedThreads;
   }
   threadsStore.setState(patch);
+
+  if (invalidatedThreadRefs.length > 0 || invalidatedWatchedRefs.length > 0) {
+    const client = wiredClient;
+    const epoch = readyEpoch;
+    if (client) {
+      // Fire-and-forget, the same idiom the old direct resync handling used:
+      // refreshTrackedThread/refreshWatchedThread own their own currency
+      // checks (client/epoch/refCount), so a race with a release or a
+      // reconnect that lands before this read resolves is already handled.
+      for (const ref of invalidatedThreadRefs) void refreshTrackedThread(client, epoch, ref, true);
+      for (const ref of invalidatedWatchedRefs) void refreshWatchedThread(client, epoch, ref, true);
+    }
+  }
+}
+
+// Refs among `candidates` whose history.invalidatedAtGeneration is set in
+// `next` and differs from what it was in `prev` - a fresh invalidation
+// (first set, or re-armed at a newer signal; reducer.ts's classifySignal).
+// Not every accepted notification invalidates, so this scans only the refs
+// applyToMap actually changed, not the whole map.
+function newlyInvalidatedHistoryRefs(
+  prev: Map<string, ThreadModel>,
+  next: Map<string, ThreadModel> | null,
+  candidates: readonly string[],
+): string[] {
+  if (!next) return [];
+  const refs: string[] = [];
+  for (const ref of candidates) {
+    const before = prev.get(ref)?.history?.invalidatedAtGeneration;
+    const after = next.get(ref)?.history?.invalidatedAtGeneration;
+    if (after !== undefined && after !== before) refs.push(ref);
+  }
+  return refs;
 }
 
 function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolean, generation: number): void {
@@ -2596,6 +2748,7 @@ async function refreshTrackedThread(
       unwindStopCanceledRefresh(ref, pending.attempt);
       throw error;
     }
+    if (isDiscardedReadResult(pending, result.model)) return pending.baseModel;
     return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId);
   });
   const completion = hydration.then(
@@ -2653,7 +2806,9 @@ async function refreshWatchedThread(
   const includeTurns = watchIncludeTurns.get(ref) ?? false;
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
-    publishWatchedHydration(ref, pending, model, includeTurns, generation),
+    isDiscardedReadResult(pending, model)
+      ? pending.baseModel
+      : publishWatchedHydration(ref, pending, model, includeTurns, generation),
   );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
   const hasSufficientPublishedModel =
@@ -2813,6 +2968,7 @@ function rewireClient(client: AppwireClientLike): void {
         dispatchReadyClient = null;
         dispatchReadyEpoch = -1;
         dispatchableMutationRefs.clear();
+        invalidateHeldHistoriesForReconnect();
         void handleReady(client, readyEpoch);
       },
     ),
@@ -2825,7 +2981,29 @@ function rewireClient(client: AppwireClientLike): void {
   // connect() before ever handing it to connectionStore.connect()), so
   // without this, swapping to an already-ready client would never
   // re-subscribe/re-hydrate this store's tracked refs at all.
-  if (client.state === "ready") void handleReady(client, readyEpoch);
+  if (client.state === "ready") {
+    invalidateHeldHistoriesForReconnect();
+    void handleReady(client, readyEpoch);
+  }
+}
+
+// A new connection (a reconnect, or a swapped-in client that is already
+// ready) cannot be trusted to tell a live merge from a replace by identity
+// alone: the daemon it lands on can report the very same boot generation,
+// epoch and incarnation the client already held, even though entries were
+// missed over the gap (task-15-report.md's "Live-merge gap" concern). Every
+// v6 model this store still holds is therefore marked invalid before the
+// reconnect's re-read goes out, so that read always replaces whole history
+// rather than merging by version. A no-op the first time a client ever
+// connects: nothing is tracked yet.
+function invalidateHeldHistoriesForReconnect(): void {
+  const { threads, watchedThreads } = threadsStore.getState();
+  for (const [ref, model] of threads) {
+    if (model.history) putThreadModel(ref, invalidateHistory(model));
+  }
+  for (const [ref, model] of watchedThreads) {
+    if (model.history) putWatchedThreadModel(ref, invalidateHistory(model));
+  }
 }
 
 // The single reactive trigger for rewireClient: every connectionStore
