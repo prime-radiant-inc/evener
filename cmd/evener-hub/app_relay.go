@@ -1798,9 +1798,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// screen is waiting, so nothing needs to be told).
 			var turnRunning bool
 			var runningTurnID string
-			// latestEntry is the highest entry among the history items this
-			// relay forwarded: the entry a give-up notice anchors after.
-			var latestEntry uint64
+			// noticeAnchorEntry is the last relayed entry's ordinal + 1, 0
+			// before any (the spec's notice-anchor rule, appoverlay.go's
+			// anchorEntry): the entry a give-up notice anchors after.
+			var noticeAnchorEntry uint64
 			var consecutiveFailures int
 			trackRelayedThread := func(notification appwire.Notification) {
 				switch notification.Method {
@@ -1821,7 +1822,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					}
 					for _, item := range params.Items {
 						if item.Position != nil {
-							latestEntry = max(latestEntry, item.Position.Entry)
+							noticeAnchorEntry = max(noticeAnchorEntry, item.Position.Entry+1)
 						}
 					}
 				}
@@ -1865,7 +1866,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				server.Broadcast(relayKey, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 					ThreadID: threadID,
 					Ref:      subscribeParams.Ref,
-					Item:     relayGaveUpNotice(runningTurnID, latestEntry, cause),
+					Item:     relayGaveUpNotice(runningTurnID, noticeAnchorEntry, cause),
 				})
 				server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 					ThreadID: threadID,

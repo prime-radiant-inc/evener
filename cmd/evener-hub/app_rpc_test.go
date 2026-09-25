@@ -4354,7 +4354,8 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	// no persisted TurnFailure, exactly like a SIGKILLed process.
 	notifications <- relayActiveStatusNotification(t, threadID, turnID)
 	// The turn records history: the latest item the relay forwards sits at
-	// entry 7, which is where the give-up notice anchors.
+	// entry 7, so the give-up notice anchors after it, at entry 8 (ordinal +
+	// 1 of the preceding entry, the spec's notice-anchor rule).
 	notifications <- *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		ThreadID: threadID, Ref: "codex:" + threadID,
 		Items: []appwire.ThreadItem{
@@ -4389,7 +4390,7 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
 	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
-	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 7, "connection refused (3)")
+	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 8, "connection refused (3)")
 	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	// The cause is recorded in the hub's log: the target, how many re-dials
 	// failed, and the last one's error.
@@ -4417,6 +4418,92 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	case <-time.After(150 * time.Millisecond):
 	}
 	retryClock.expectWait(t, 800*time.Millisecond)
+}
+
+// TestHubRelayGivesUpAnchorsAtHistoryStartWhenNothingWasForwarded covers the
+// other half of the notice-anchor rule: when the relay never forwarded any
+// history item before giving up, there is no preceding entry, so the notice
+// anchors at the start of history (entry 0), not at some earlier entry the
+// hub happens to remember from nowhere.
+func TestHubRelayGivesUpAnchorsAtHistoryStartWhenNothingWasForwarded(t *testing.T) {
+	const threadID = "th_dead_before_history"
+	const turnID = "turn_dead_early"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	logged := make(chan string, 16)
+	cfg.Logf = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	// The turn opens, but the daemon dies before recording anything: the
+	// relay forwards a running status and nothing else.
+	notifications <- relayActiveStatusNotification(t, threadID, turnID)
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyThreadStatusChanged {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyThreadStatusChanged)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for thread/status/changed")
+	}
+	close(notifications)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (1)")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (2)")}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
+	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
+	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 0, "connection refused (3)")
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	select {
+	case <-logged:
+	case <-time.After(time.Second):
+		t.Fatal("give-up logged nothing")
+	}
 }
 
 // TestHubRelayNoSyntheticFailureWithoutActiveTurn covers the scoping half of
