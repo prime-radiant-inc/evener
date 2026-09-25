@@ -47,6 +47,14 @@ var updateLogRecords = 10_000
 // the caller sends a full latest-window replacement with no deltas.
 var ErrUpdateLogTruncated = errors.New("transcript index update log no longer reaches that length")
 
+// testKillAfterRecordWrites, when set, runs right after an extension's or a
+// rebuild's scan has written its records and before the meta commit that
+// would make them readable: it stands for the process being killed at
+// exactly that point, leaving the records on disk uncounted. An error it
+// returns propagates as scan's own would, so writeMeta never runs. Test seam
+// only; nil in production.
+var testKillAfterRecordWrites func() error
+
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
 // over, so a reader never sees a half-built index.
@@ -344,6 +352,11 @@ func (x *Index) extend(length int64) error {
 		}
 		return x.rebuild(length, incarnation)
 	}
+	if testKillAfterRecordWrites != nil {
+		if err := testKillAfterRecordWrites(); err != nil {
+			return err
+		}
+	}
 	return x.writeMeta()
 }
 
@@ -516,6 +529,11 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
+	if testKillAfterRecordWrites != nil {
+		if err := testKillAfterRecordWrites(); err != nil {
+			return err
+		}
+	}
 	if err := x.writeMeta(); err != nil {
 		return err
 	}

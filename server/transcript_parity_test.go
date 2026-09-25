@@ -48,6 +48,9 @@ type parityProvider struct {
 	mu           sync.Mutex
 	steps        []func(llm.Request) (llm.Response, error)
 	childRelease chan struct{}
+	// calls counts every Complete call, so a test can wait for one to have
+	// started without depending on its result.
+	calls int
 }
 
 func (p *parityProvider) Name() string { return "openai" }
@@ -63,6 +66,9 @@ func (p *parityProvider) script(steps ...func(llm.Request) (llm.Response, error)
 }
 
 func (p *parityProvider) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
 	resp, err := p.respond(ctx, req)
 	if resp.Provider == "" {
 		resp.Provider = p.Name()
@@ -653,3 +659,148 @@ var parityBeforeRestart = parityTable()
 
 // parityAfterRestart lists them for a daemon restarted over the transcript.
 var parityAfterRestart = parityTable()
+
+// TestTranscriptParityAcrossACrashAndReclaimedTurn crashes a client-mutation
+// turn after its USER_INPUT entry is recorded but before anything else, so
+// the transcript's last execution has no completion; restoring reclaims it,
+// which writes a TURN_REOPEN marker (spec "Turn status": "A turn reopens
+// only when recovery reclaims and re-runs it under the same ID") and the
+// turn completes once. The parity harness compares the restored daemon's
+// live view with the file, which must agree.
+//
+// The crash is simulated through agent.Session's
+// SimulateCrashMidExecutionForTest, a small exported test-only seam added
+// for this: it runs exactly the claim -> beginExecution -> acceptUserInput
+// sequence agent.TestAReclaimedTurnReopensAndCompletesOnce drives with
+// unexported methods from inside package agent, then returns without
+// running the turn loop, leaving the transcript exactly as a real crash
+// would: USER_INPUT recorded, no completion. Closing the session normally
+// afterward releases its transcript writer's lock, so a restore over the
+// identical state dir path opens cleanly -- no copied state dir, and none of
+// the absolute-path identity checks a copy would trip.
+func TestTranscriptParityAcrossACrashAndReclaimedTurn(t *testing.T) {
+	sess, _, workDir, stateDir := newScriptedSession(t)
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "crash-start", ExpectedInstanceID: sess.ID(),
+		Input: []appwire.InputItem{{Type: "text", Text: "crash before completion"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.SimulateCrashMidExecutionForTest(); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+
+	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := llm.NewClient()
+	restoredScript := &parityProvider{childRelease: make(chan struct{})}
+	client.Register(restoredScript)
+	restoredScript.script(step(parityCommunicate("comm-reclaim", "Recovered from the crash.", true)))
+	restored, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(workDir), meta, agent.RestoreSessionConfig{
+		StateDir: stateDir,
+		LLMSleep: noSleep,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.SetClientMutationStartWakeFunc(func() {})
+	ps := bridgeParitySession(t, restored, stateDir)
+	t.Cleanup(func() { ps.close(t) })
+	if _, _, err := restored.ProcessClientMutationStart(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	ps.await(t, events.EventSessionEnd, nil)
+
+	turns := transcriptTurns(t, restored.TranscriptPath())
+	reopens := 0
+	for _, turn := range turns {
+		if turn.Kind == schema.TurnReopen {
+			reopens++
+		}
+	}
+	if reopens != 1 {
+		t.Fatalf("the restored transcript has %d TURN_REOPEN markers, want 1", reopens)
+	}
+	assertParity(t, "crash and reclaim", ps, parityCrashAndReclaim)
+}
+
+// parityCrashAndReclaim lists the divergences for the crash-and-reclaim
+// scenario. The reclaim writes a TURN_REOPEN marker and one completion, both
+// new-format entries the index projects the same way live and from the file,
+// so there are none.
+var parityCrashAndReclaim = parityTable()
+
+// legacyTurn writes turn to path verbatim, with no format marker: today's
+// pre-identity shape.
+func legacyTurn(t *testing.T, w *transcript.Writer, turn schema.Turn) {
+	t.Helper()
+	if _, err := w.Record(turn, transcript.RecordOptions{Place: transcript.PlaceVerbatim}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTranscriptParityOfALegacyPrefix resumes a transcript whose first lines
+// were written before persisted identity (no format marker), then runs one
+// more turn. Legacy lines keep their inferred identity and are never
+// rewritten (spec "Legacy entries"); only the entries recorded after resume
+// carry the new positioning and identity scheme the index and the live view
+// share, so the two agree on everything but the legacy turns' identity.
+func TestTranscriptParityOfALegacyPrefix(t *testing.T) {
+	sess, script, _, stateDir := newScriptedSession(t)
+	path := sess.TranscriptPath()
+	// A fresh session's transcript is header-only; close it and read the
+	// header back to rewrite the file as a pre-identity build left it.
+	sess.Close()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLine, _, ok := bytes.Cut(raw, []byte("\n"))
+	if !ok {
+		t.Fatal("the fresh transcript has no header line")
+	}
+	header, err := transcript.DecodeHeader(firstLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriterNoSync(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyTurn(t, w, schema.NewTurn(schema.TurnUserInput, llm.User("a legacy question")))
+	legacyTurn(t, w, schema.NewTurn(schema.TurnAssistant, llm.Assistant("a legacy answer")))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := llm.NewClient()
+	client.Register(script)
+	restored, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, agent.RestoreSessionConfig{
+		StateDir: stateDir,
+		LLMSleep: noSleep,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.SetClientMutationStartWakeFunc(func() {})
+	ps := bridgeParitySession(t, restored, stateDir)
+	t.Cleanup(func() { ps.close(t) })
+	script.script(step(parityCommunicate("comm-legacy", "Answering after the legacy prefix.", true)))
+	if _, err := restored.ProcessInput(context.Background(), "a question after resume", nil); err != nil {
+		t.Fatal(err)
+	}
+	ps.await(t, events.EventSessionEnd, nil)
+	assertParity(t, "legacy prefix", ps, parityLegacyPrefix)
+}
+
+// parityLegacyPrefix lists the divergences the legacy prefix produces. Every
+// row is a legacy turn keeping today's identity (spec "Legacy entries");
+// nothing here concerns an entry recorded after resume.
+var parityLegacyPrefix = parityTable()
