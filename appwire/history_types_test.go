@@ -265,26 +265,13 @@ func TestThreadReadResponseHistoryVocabularyJSONRoundTrip(t *testing.T) {
 		t.Fatalf("round trip ThreadReadParams = %+v", decodedParams)
 	}
 
-	// ThreadTurnsListParams/Response additions.
-	listParams := ThreadTurnsListParams{Ref: "local:thread", Cursor: "opaque", RequestGeneration: 4}
-	raw, err = json.Marshal(listParams)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decodedListParams ThreadTurnsListParams
-	if err := json.Unmarshal(raw, &decodedListParams); err != nil {
-		t.Fatal(err)
-	}
-	if decodedListParams.RequestGeneration != 4 {
-		t.Fatalf("round trip ThreadTurnsListParams = %+v", decodedListParams)
-	}
-
+	// ThreadTurnsListResponse additions.
 	listResponse := ThreadTurnsListResponse{
-		Data:              []Turn{turn},
-		RequestGeneration: 4,
-		Epoch:             2,
-		Snapshot:          &SnapshotIdentity{Incarnation: "incarnation-1", Length: 17},
-		Authoritative:     true,
+		Data:           []Turn{turn},
+		BootGeneration: "5",
+		Epoch:          2,
+		Snapshot:       &SnapshotIdentity{Incarnation: "incarnation-1", Length: 17},
+		Authoritative:  true,
 	}
 	raw, err = json.Marshal(listResponse)
 	if err != nil {
@@ -294,7 +281,7 @@ func TestThreadReadResponseHistoryVocabularyJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &decodedListResponse); err != nil {
 		t.Fatal(err)
 	}
-	if decodedListResponse.RequestGeneration != 4 || decodedListResponse.Epoch != 2 || !decodedListResponse.Authoritative {
+	if decodedListResponse.BootGeneration != "5" || decodedListResponse.Epoch != 2 || !decodedListResponse.Authoritative {
 		t.Fatalf("round trip ThreadTurnsListResponse = %+v", decodedListResponse)
 	}
 	if decodedListResponse.Snapshot == nil || decodedListResponse.Snapshot.Incarnation != "incarnation-1" {

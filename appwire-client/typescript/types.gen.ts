@@ -1002,6 +1002,11 @@ export interface HistoryChanges {
 export interface HistoryUpdatedParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the publishing daemon's boot generation; see
+   * CompareBootGeneration.
+   */
+  bootGeneration: string;
   epoch: number;
   snapshot: SnapshotIdentity;
   turns?: Turn[];
@@ -2999,6 +3004,15 @@ export interface ThreadItem {
    * for items that are not projected from an ASSISTANT entry.
    */
   roundId?: string;
+  /**
+   * CompletedAtEntry is, on a tool item, the entry ordinal + 1 of the
+   * TOOL_RESULTS entry that completed it (the spec's `completedAt`
+   * metadata; CompletedAt is the completion timestamp). 0 until results
+   * are recorded. Key and position stay the opener's, so the item never
+   * moves when it completes; a client drops the overlay's execution state
+   * for the item's key once it holds a non-zero value.
+   */
+  completedAtEntry?: number;
 }
 
 export interface ThreadItemPosition {
@@ -3115,6 +3129,11 @@ export interface ThreadReadResponse {
    */
   requestGeneration?: number;
   /**
+   * BootGeneration is the boot generation of the daemon that served this
+   * read, or DaemonlessBootGeneration; see CompareBootGeneration.
+   */
+  bootGeneration?: string;
+  /**
    * Epoch is the history epoch this response was projected under; it
    * advances on a replacement (a new incarnation, a resync epoch, or an
    * authoritative daemonless read).
@@ -3164,6 +3183,11 @@ export interface ThreadResumeResponse {
 export interface ThreadResyncParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the publishing daemon's boot generation; see
+   * CompareBootGeneration. Empty on a resync the hub pushes itself.
+   */
+  bootGeneration?: string;
   /**
    * Epoch is the history epoch a client should resync to, when known.
    */
@@ -3312,20 +3336,16 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
-  /**
-   * RequestGeneration is the client's own read-request counter; see
-   * ThreadReadParams.RequestGeneration.
-   */
-  requestGeneration?: number;
 }
 
 export interface ThreadTurnsListResponse {
   data: Turn[];
   nextCursor?: string;
   /**
-   * RequestGeneration echoes ThreadTurnsListParams.RequestGeneration.
+   * BootGeneration is the boot generation of the daemon that served this
+   * page, or DaemonlessBootGeneration; see CompareBootGeneration.
    */
-  requestGeneration?: number;
+  bootGeneration?: string;
   /**
    * Epoch is the history epoch this page was projected under; see
    * ThreadReadResponse.Epoch.

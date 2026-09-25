@@ -1443,7 +1443,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	}
 	history := s.appHistoryForID(threadID)
 	if history == nil {
-		return appwire.ThreadTurnsListResponse{RequestGeneration: params.RequestGeneration}, nil
+		return appwire.ThreadTurnsListResponse{}, nil
 	}
 	epoch := history.Epoch()
 	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
@@ -1451,11 +1451,10 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	response := appwire.ThreadTurnsListResponse{
-		Data:              turns,
-		NextCursor:        olderCursor,
-		RequestGeneration: params.RequestGeneration,
-		Epoch:             epoch,
-		Snapshot:          &snapshot,
+		Data:       turns,
+		NextCursor: olderCursor,
+		Epoch:      epoch,
+		Snapshot:   &snapshot,
 	}
 	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err

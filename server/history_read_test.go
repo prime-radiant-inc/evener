@@ -186,7 +186,7 @@ func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 			t.Fatalf("%s = %v, want a wire error", label, err)
 		}
 		data, _ := wireErr.Data.(appwire.ErrorData)
-		if wireErr.Code != appwire.CodeInternalError || data.EvenerErrorInfo != appwire.ErrorHistoryFailed || !strings.Contains(wireErr.Message, strconv.FormatUint(bad.Ordinal, 10)) {
+		if wireErr.Code != appwire.CodeInternalError || data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed || !strings.Contains(wireErr.Message, strconv.FormatUint(bad.Ordinal, 10)) {
 			t.Fatalf("%s = %+v, want historyFailed naming entry %d", label, wireErr, bad.Ordinal)
 		}
 	}

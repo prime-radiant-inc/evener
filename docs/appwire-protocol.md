@@ -796,6 +796,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
+| `bootGeneration` | `string` |  |  |
 | `epoch` | `uint64` |  |  |
 | `snapshot` | `appwire.SnapshotIdentity` |  |  |
 | `turns` | `[]appwire.Turn` | yes |  |
@@ -2094,6 +2095,7 @@ _(no fields)_
 | `thread` | `appwire.Thread` |  |  |
 | `olderCursor` | `string` | yes |  |
 | `requestGeneration` | `uint64` | yes |  |
+| `bootGeneration` | `string` | yes |  |
 | `epoch` | `uint64` | yes |  |
 | `snapshot` | `*appwire.SnapshotIdentity` | yes |  |
 | `overlay` | `[]appwire.OverlayItem` | yes |  |
@@ -2139,6 +2141,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
+| `bootGeneration` | `string` | yes |  |
 | `epoch` | `uint64` | yes |  |
 
 
@@ -2237,7 +2240,6 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `itemsView` | `string` | yes |  |
 | `itemLimit` | `int` | yes |  |
-| `requestGeneration` | `uint64` | yes |  |
 
 
 ### `ThreadTurnsListResponse`
@@ -2246,7 +2248,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.Turn` |  |  |
 | `nextCursor` | `string` | yes |  |
-| `requestGeneration` | `uint64` | yes |  |
+| `bootGeneration` | `string` | yes |  |
 | `epoch` | `uint64` | yes |  |
 | `snapshot` | `*appwire.SnapshotIdentity` | yes |  |
 | `authoritative` | `bool` | yes |  |

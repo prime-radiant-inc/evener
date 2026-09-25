@@ -78,13 +78,13 @@ func (h *threadHistory) before(threadRef, cursor string, limit int) (turns []app
 }
 
 // read runs fn on the thread's index extended to the recorded length. A
-// failed thread's read is appwire.HistoryFailed, naming the entry.
+// failed thread's read is appwire.TranscriptHistoryFailed, naming the entry.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
 	h.mu.Lock()
 	failed := h.failed
 	h.mu.Unlock()
 	if failed != nil {
-		return appwire.HistoryFailed(failed.Ordinal)
+		return appwire.TranscriptHistoryFailed(failed.Ordinal)
 	}
 	length, err := h.RecordedLength()
 	if err != nil {

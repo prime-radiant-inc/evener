@@ -33,9 +33,10 @@ const (
 	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
 	ErrorInternal                  ErrorInfo = "internal"
-	// ErrorHistoryFailed marks a read of a thread whose history entered its
-	// failed state: an entry that fails to project, named in the message.
-	ErrorHistoryFailed ErrorInfo = "historyFailed"
+	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
+	// entered its failed state: an entry that fails to project, named in the
+	// message. Its data is HistoryReadErrorData.
+	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
 	// ErrorUpgradeRequired marks initialize refusing a client that announced
 	// an older AppWire protocol than the server speaks; the message names both
 	// versions.
@@ -211,14 +212,36 @@ func InternalError(message string) WireError {
 	}
 }
 
-// HistoryFailed reports a read of a thread whose history failed: the
-// transcript entry at ordinal cannot be projected, so no read can serve it.
-func HistoryFailed(ordinal uint64) WireError {
+// TranscriptHistoryFailed reports a read of a thread whose history failed:
+// the transcript entry at ordinal cannot be projected, so no read can serve
+// it. The history read stamps it with WithHistoryReadIdentity.
+func TranscriptHistoryFailed(ordinal uint64) WireError {
 	return WireError{
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
-		Data:    ErrorData{EvenerErrorInfo: ErrorHistoryFailed},
+		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
 	}
+}
+
+// HistoryReadErrorData is the data of a thread/read or thread/turns/list
+// error: the error's own data plus the boot generation and resync epoch the
+// read ran under. It carries no snapshot identity and no items, so a client
+// never adopts a generation or epoch from it, and never replaces anything
+// with it.
+type HistoryReadErrorData struct {
+	ErrorData
+	BootGeneration string `json:"bootGeneration"`
+	Epoch          uint64 `json:"epoch"`
+}
+
+// WithHistoryReadIdentity stamps a history read's error with the boot
+// generation and epoch it ran under. An error whose data is not ErrorData
+// keeps its own data unchanged.
+func WithHistoryReadIdentity(err WireError, bootGeneration string, epoch uint64) WireError {
+	if data, ok := err.Data.(ErrorData); ok {
+		err.Data = HistoryReadErrorData{ErrorData: data, BootGeneration: bootGeneration, Epoch: epoch}
+	}
+	return err
 }
 
 // UpgradeRequired refuses a client that announced clientVersion, an AppWire

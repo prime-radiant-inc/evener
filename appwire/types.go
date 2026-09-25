@@ -1551,6 +1551,13 @@ type ThreadItem struct {
 	// RoundID names the round an ASSISTANT-projected item belongs to. Empty
 	// for items that are not projected from an ASSISTANT entry.
 	RoundID string `json:"roundId,omitempty"`
+	// CompletedAtEntry is, on a tool item, the entry ordinal + 1 of the
+	// TOOL_RESULTS entry that completed it (the spec's `completedAt`
+	// metadata; CompletedAt is the completion timestamp). 0 until results
+	// are recorded. Key and position stay the opener's, so the item never
+	// moves when it completes; a client drops the overlay's execution state
+	// for the item's key once it holds a non-zero value.
+	CompletedAtEntry uint64 `json:"completedAtEntry,omitempty"`
 }
 
 type OutputImage struct {
@@ -1622,6 +1629,9 @@ type ThreadReadResponse struct {
 	OlderCursor string `json:"olderCursor,omitempty"`
 	// RequestGeneration echoes ThreadReadParams.RequestGeneration.
 	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// BootGeneration is the boot generation of the daemon that served this
+	// read, or DaemonlessBootGeneration; see CompareBootGeneration.
+	BootGeneration string `json:"bootGeneration,omitempty"`
 	// Epoch is the history epoch this response was projected under; it
 	// advances on a replacement (a new incarnation, a resync epoch, or an
 	// authoritative daemonless read).
@@ -1653,12 +1663,15 @@ const NotifyHistoryUpdated = "history/updated"
 // whose recorded entries changed. Turns carry no Items — the reducer merges
 // them against items it already holds by key.
 type HistoryUpdatedParams struct {
-	ThreadID string           `json:"threadId"`
-	Ref      string           `json:"ref"`
-	Epoch    uint64           `json:"epoch"`
-	Snapshot SnapshotIdentity `json:"snapshot"`
-	Turns    []Turn           `json:"turns,omitempty"`
-	Items    []ThreadItem     `json:"items,omitempty"`
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	// BootGeneration is the publishing daemon's boot generation; see
+	// CompareBootGeneration.
+	BootGeneration string           `json:"bootGeneration"`
+	Epoch          uint64           `json:"epoch"`
+	Snapshot       SnapshotIdentity `json:"snapshot"`
+	Turns          []Turn           `json:"turns,omitempty"`
+	Items          []ThreadItem     `json:"items,omitempty"`
 }
 
 // OverlayKind discriminates the four shapes of live, not-yet-recorded state
@@ -1774,16 +1787,17 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
-	// RequestGeneration is the client's own read-request counter; see
-	// ThreadReadParams.RequestGeneration.
-	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
 }
 
+// ThreadTurnsListResponse is one backfill page. It carries no request
+// generation: backfill pages accumulate within their snapshot in any arrival
+// order, and only latest-window reads are ordered by generation.
 type ThreadTurnsListResponse struct {
 	Data       []Turn `json:"data"`
 	NextCursor string `json:"nextCursor,omitempty"`
-	// RequestGeneration echoes ThreadTurnsListParams.RequestGeneration.
-	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// BootGeneration is the boot generation of the daemon that served this
+	// page, or DaemonlessBootGeneration; see CompareBootGeneration.
+	BootGeneration string `json:"bootGeneration,omitempty"`
 	// Epoch is the history epoch this page was projected under; see
 	// ThreadReadResponse.Epoch.
 	Epoch uint64 `json:"epoch,omitempty"`
@@ -2878,6 +2892,9 @@ type ThreadClosedParams struct {
 type ThreadResyncParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
+	// BootGeneration is the publishing daemon's boot generation; see
+	// CompareBootGeneration. Empty on a resync the hub pushes itself.
+	BootGeneration string `json:"bootGeneration,omitempty"`
 	// Epoch is the history epoch a client should resync to, when known.
 	Epoch uint64 `json:"epoch,omitempty"`
 }
