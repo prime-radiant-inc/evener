@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // collapseViewWhitespace flattens a rendered Overlay/popup view (box-drawing
@@ -3614,7 +3615,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
 	// A live turn whose id and transcript entry index have diverged: the fork
-	// request must carry the ENTRY index, which is what sourceTurnId means.
+	// request must carry a sourceItemKey naming the ENTRY index.
 	m.session.messages = []transcript.ChatMessage{
 		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 2, TranscriptEntryIndex: 3},
 		{Kind: transcript.MsgAssistant, Text: "answer"},
@@ -3651,7 +3652,8 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	if got.detail.SessionID != "02CHILD" {
 		t.Fatalf("detail=%+v", got.detail)
 	}
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -3744,7 +3746,8 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	if !strings.Contains(view, "Fork failed:") || !strings.Contains(view, "fork failed from test") {
 		t.Fatalf("missing fork failure notice:\n%s", view)
 	}
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }

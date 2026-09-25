@@ -46,13 +46,14 @@ export interface ItemModel {
   position?: ThreadItemPosition;
   // The item's 1-based position in the parent transcript's ENTRY list (wire
   // ThreadItem.transcriptEntryIndex), counting every entry - user, assistant,
-  // checkpoint - not just the ones that opened a turn. This is the only field
-  // that names a thread/fork divergence position: the hub reads
-  // ThreadForkParams.sourceTurnId as exactly this index
-  // (cmd/evener-hub/app_threadlifecycle.go's parseSourceTurnID, feeding
-  // agent.ForkSessionAtUserTurn). turnId is NOT interchangeable with it - a
-  // replayed transcript numbers turn_N off the entry index and makes the two
-  // look equal, but every live minter numbers turns off its own counter.
+  // checkpoint - not just the ones that opened a turn. transcriptKey above is
+  // what a thread/fork divergence position is actually sent as
+  // (ThreadForkParams.sourceItemKey, parsed by
+  // cmd/evener-hub/app_threadlifecycle.go's parseSourceItemKey into this same
+  // index before it feeds agent.ForkSessionAtUserTurn). turnId is NOT
+  // interchangeable with either - a replayed transcript numbers turn_N off
+  // the entry index and makes the two look equal, but every live minter
+  // numbers turns off its own counter.
   // Undefined when the wire carried none, which means "no persisted transcript
   // position" and never entry 0; a fork affordance must refuse rather than
   // guess (see UserMessageItem.tsx).

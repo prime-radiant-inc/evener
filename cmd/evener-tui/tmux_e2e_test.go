@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // tuiE2EFixtureRoot holds the fixture hub's project directories. TestMain
@@ -610,8 +611,9 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.SendKeys("Enter")
 	app.WaitFor("evener / session / fork child")
 	forks := hub.WaitForForks(t, 1)
-	if forks[0].SourceTurnID != "1" {
-		t.Fatalf("fork source turn=%q, want 1", forks[0].SourceTurnID)
+	_, gotPos, err := transcriptindex.ParseItemKey(forks[0].SourceItemKey)
+	if err != nil || gotPos.Entry != 1 {
+		t.Fatalf("fork source item key=%q (err=%v), want an item key naming entry 1", forks[0].SourceItemKey, err)
 	}
 	if forks[0].EditedInput != "initial question" {
 		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
