@@ -146,6 +146,64 @@ func findTurn(t *testing.T, read appwire.ThreadReadResponse, turnID string) appw
 	return appwire.Turn{}
 }
 
+// TestPaginatedReadOverlappingCrossProcessRollback simulates a second
+// process's write and its rollback: a second writer sharing the file's
+// append tail (transcript.OpenWriterForSession, real filesystem) extends the
+// file with one entry, another handle's index catches up to that longer
+// file the way another process's own index would, and then the write is
+// rolled back -- the file truncated to what it covered before. The index
+// sees the file stop extending (transcriptindex's extend(): grownByAppends
+// fails once info.Size() < the covered length) and rebuilds under a new
+// incarnation. A backfill cursor minted before the rollback is stale; the
+// next latest read carries the new incarnation, so a client replaces its
+// history rather than merging into it.
+func TestPaginatedReadOverlappingCrossProcessRollback(t *testing.T) {
+	hx := newHistoryHarness(t)
+	hx.record(t, "one")
+	two := hx.record(t, "two")
+	hx.updatesThrough(t, two.Offset+two.Length)
+
+	_, older, snapshotBefore, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 1)
+	if err != nil || older == "" {
+		t.Fatalf("latest = cursor %q, %v; want an older cursor", older, err)
+	}
+
+	w2, _, err := transcript.OpenWriterForSession(hx.path, "th_history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extended, err := w2.Record(schema.NewTurn(schema.TurnUserInput, llm.User("from another process")), transcript.RecordOptions{})
+	if err != nil || !extended.Recorded {
+		t.Fatalf("second writer's record = %+v, %v", extended, err)
+	}
+	if err := w2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := hx.cache.Acquire(hx.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.CatchUpTo(extended.Offset + extended.Length); err != nil {
+		t.Fatal(err)
+	}
+	hx.cache.Release(idx)
+	if err := os.Truncate(hx.path, extended.Offset); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := hx.history.before("local:th_history", older, 1); !isTranscriptItemCursorStale(err) {
+		t.Fatalf("before after the rollback = %v, want stale", err)
+	}
+
+	_, _, snapshotAfter, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotAfter.Incarnation == snapshotBefore.Incarnation {
+		t.Fatalf("incarnation after the rollback = %q, want a new one (was %q)", snapshotAfter.Incarnation, snapshotBefore.Incarnation)
+	}
+}
+
 // TestFailedHistoryPublication fails one publish; the thread resyncs at a
 // new epoch and a client that re-reads on the resync (the reducer's rule for
 // any resync) holds every item once the rebuild catches back up, none
