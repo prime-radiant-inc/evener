@@ -22,10 +22,13 @@ import (
 //
 // The walk starts by opening root as a directory descriptor, then opens each
 // component of filepath.Rel(root, path) one at a time beneath the previous
-// descriptor. The final component is opened read-only with O_NOFOLLOW and
-// O_NONBLOCK (so a FIFO at the leaf does not block), then fstat'd to confirm
-// a regular file. The validation and the read share one descriptor tree, so
-// nothing can be swapped between the check and the bytes.
+// descriptor. Intermediate components are opened with O_NOFOLLOW and
+// O_NONBLOCK (so a FIFO at an intermediate does not block waiting for a
+// writer), then fstat'd to confirm a directory. The final component is
+// opened read-only with O_NOFOLLOW and O_NONBLOCK (so a FIFO at the leaf does
+// not block), then fstat'd to confirm a regular file. The validation and the
+// read share one descriptor tree, so nothing can be swapped between the check
+// and the bytes.
 //
 // path must be beneath root (filepath.Rel returns a non-".." relative path);
 // callers that pass a path outside root get an error from the escape guard.
@@ -55,10 +58,18 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 	}
 
 	// Walk intermediate components (all but the last) as directories. We open
-	// with O_RDONLY|O_NOFOLLOW (no O_DIRECTORY): O_NOFOLLOW alone returns ELOOP
-	// for a symlink (which is what we want), while O_NOFOLLOW|O_DIRECTORY
-	// returns ENOTDIR instead — less legible and ambiguous with a real
-	// non-directory. After opening, fstat confirms the result is a directory.
+	// with O_RDONLY|O_NOFOLLOW|O_NONBLOCK (no O_DIRECTORY): O_NOFOLLOW alone
+	// returns ELOOP for a symlink (which is what we want), while
+	// O_NOFOLLOW|O_DIRECTORY returns ENOTDIR instead — less legible and
+	// ambiguous with a real non-directory. O_NONBLOCK is essential here: an
+	// openat(O_RDONLY) on a FIFO at an intermediate component blocks
+	// indefinitely waiting for a writer, so without it the fstat directory
+	// check below never runs and the whole read hangs — a regression of the
+	// pre-fix full-path open, which rejected a FIFO intermediate immediately
+	// (ENOTDIR during path resolution). O_NONBLOCK is harmless on directories;
+	// it makes the FIFO open immediately (nonblocking), and the fstat +
+	// "is not a directory" error then rejects it promptly. After opening,
+	// fstat confirms the result is a directory.
 	cur := rootFd
 	curOwned := true
 	closeCur := func() {
@@ -67,7 +78,7 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 		}
 	}
 	for i := 0; i < len(comps)-1; i++ {
-		next, err := unix.Openat(cur, comps[i], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		next, err := unix.Openat(cur, comps[i], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 		closeCur()
 		if err != nil {
 			if errors.Is(err, unix.ELOOP) {

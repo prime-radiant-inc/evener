@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestOpenRegularBeneathRoot_RefusesSymlinkedIntermediateDir (FU3 round 13, M2)
@@ -108,5 +111,97 @@ func TestOpenRegularBeneathRoot_OpensRegularFile(t *testing.T) {
 	}
 	if string(got) != "payload" {
 		t.Fatalf("read = %q, want payload", got)
+	}
+}
+
+// openBeneathRootOrFailFast runs OpenRegularBeneathRoot and returns its result,
+// failing the test (with a clear message) if it does not return within a few
+// seconds. This guards the suite against an unbounded hang: openat(O_RDONLY) on
+// a FIFO at an intermediate component blocks indefinitely waiting for a writer,
+// so a regression that drops O_NONBLOCK from the intermediate openat surfaces
+// as a visible timeout rather than a stuck suite.
+func openBeneathRootOrFailFast(t *testing.T, path, root string) (*os.File, error) {
+	t.Helper()
+	type result struct {
+		f   *os.File
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		f, err := OpenRegularBeneathRoot(path, root)
+		resCh <- result{f, err}
+	}()
+	select {
+	case res := <-resCh:
+		return res.f, res.err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("OpenRegularBeneathRoot hung on %q beneath %q (an intermediate openat blocked, likely a FIFO without O_NONBLOCK)", path, root)
+		return nil, nil // unreachable
+	}
+}
+
+// TestOpenRegularBeneathRoot_RefusesFIFOIntermediate (FU3 round 14, M-FIFO)
+// asserts the descriptor walk opens every intermediate component with
+// O_NONBLOCK so a FIFO planted at an intermediate directory component fails
+// fast instead of hanging the read. openat(O_RDONLY) on a FIFO blocks
+// indefinitely waiting for a writer, so without O_NONBLOCK the fstat "is it a
+// directory?" check never runs and the whole read hangs — a regression of the
+// pre-fix full-path open, which rejected a FIFO intermediate immediately
+// (ENOTDIR during path resolution). Post-fix the FIFO opens nonblocking and
+// fstat rejects it as "not a directory" promptly. The goroutine +
+// select-timeout makes a regression fail as a visible timeout instead of
+// hanging the suite.
+func TestOpenRegularBeneathRoot_RefusesFIFOIntermediate(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Plant a FIFO at the first intermediate component (sessions/).
+	if err := unix.Mkfifo(filepath.Join(root, "sessions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The leaf need not exist: the walk must reject the FIFO at the
+	// intermediate before ever reaching it.
+	target := filepath.Join(root, "sessions", "transcript.jsonl")
+
+	f, err := openBeneathRootOrFailFast(t, target, root)
+	if f != nil {
+		_ = f.Close()
+		t.Fatal("OpenRegularBeneathRoot returned a file through a FIFO intermediate; should refuse")
+	}
+	if err == nil {
+		t.Fatal("OpenRegularBeneathRoot returned no error through a FIFO intermediate; should refuse")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected prompt not-a-directory error for FIFO intermediate, got: %v", err)
+	}
+}
+
+// TestOpenRegularBeneathRoot_RefusesFIFOIntermediateNested asserts the same
+// O_NONBLOCK guarantee holds at an intermediate component beyond the first one,
+// proving every iteration of the walk's openat loop carries O_NONBLOCK — not
+// just the root-relative open at index 0.
+func TestOpenRegularBeneathRoot_RefusesFIFOIntermediateNested(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// A real directory at the first component, a FIFO at the second.
+	if err := os.MkdirAll(filepath.Join(root, "level1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(filepath.Join(root, "level1", "sessions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "level1", "sessions", "transcript.jsonl")
+
+	f, err := openBeneathRootOrFailFast(t, target, root)
+	if f != nil {
+		_ = f.Close()
+		t.Fatal("OpenRegularBeneathRoot returned a file through a nested FIFO intermediate; should refuse")
+	}
+	if err == nil {
+		t.Fatal("OpenRegularBeneathRoot returned no error through a nested FIFO intermediate; should refuse")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected prompt not-a-directory error for nested FIFO intermediate, got: %v", err)
 	}
 }
