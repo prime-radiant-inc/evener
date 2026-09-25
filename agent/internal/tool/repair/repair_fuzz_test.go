@@ -147,6 +147,9 @@ func FuzzRepairDiagnostics(f *testing.F) {
 	f.Add("edit_file", "old_string", "unexpected end", uint8(0), true, false)
 	f.Add("read_file", "file_path", "invalid escape", uint8(1), false, false)
 	f.Add("tool", "", "bad JSON", uint8(2), false, true)
+	// A path-shaped offending field: the literal key differs from the path.
+	f.Add("edit_file", "a/b", "bad JSON", uint8(0), true, false)
+	f.Add("edit_file", "file_path/x", "bad JSON", uint8(0), true, false)
 
 	f.Fuzz(func(t *testing.T, toolName, offendingField, parseErr string, requiredForm uint8, fieldPresent, noOffendingField bool) {
 		if len(toolName)+len(offendingField)+len(parseErr) > 1<<16 {
@@ -155,11 +158,18 @@ func FuzzRepairDiagnostics(f *testing.F) {
 		params := repairDiagnosticParams(requiredForm)
 		args := map[string]any{}
 		if fieldPresent {
-			args[offendingField] = "present"
+			// The explainer reads the offending field as the validator's
+			// instance location, a JSON Pointer path, so build the args tree that
+			// path names rather than a literal flat key: a fuzzed field like
+			// "a/b" is present only when args["a"]["b"] exists.
+			setInstancePath(args, offendingField, "present")
 		}
 		if noOffendingField {
 			offendingField = ""
 		}
+		// Re-derive presence from the same path semantics the explainer uses, so
+		// the invariant below also holds for path-shaped fields.
+		present := instancePathPresent(args, offendingField)
 
 		schemaMessage := ExplainSchemaError(toolName, params, args, offendingField, "")
 		if schemaMessage != ExplainSchemaError(toolName, params, args, offendingField, "") {
@@ -172,10 +182,10 @@ func FuzzRepairDiagnostics(f *testing.F) {
 			t.Fatalf("schema explanation omitted tool name %q: %q", toolName, schemaMessage)
 		}
 		if offendingField != "" {
-			if fieldPresent && !strings.Contains(schemaMessage, "wrong type or value") {
+			if present && !strings.Contains(schemaMessage, "wrong type or value") {
 				t.Fatalf("present offending field was not classified as wrong type: %q", schemaMessage)
 			}
-			if !fieldPresent && !strings.Contains(schemaMessage, "missing required argument") {
+			if !present && !strings.Contains(schemaMessage, "missing required argument") {
 				t.Fatalf("missing offending field was not classified as missing: %q", schemaMessage)
 			}
 		}
@@ -188,6 +198,29 @@ func FuzzRepairDiagnostics(f *testing.F) {
 			t.Fatalf("JSON explanation omitted object guidance: %q", jsonMessage)
 		}
 	})
+}
+
+// setInstancePath installs value at a JSON-Pointer-style path in args, creating
+// intermediate objects, mirroring instancePathPresent's map walk so a
+// path-shaped offending field is genuinely present.
+func setInstancePath(args map[string]any, path, value string) {
+	if path == "" {
+		return
+	}
+	segs := strings.Split(path, "/")
+	cur := args
+	for i, seg := range segs {
+		if i == len(segs)-1 {
+			cur[seg] = value
+			return
+		}
+		next, ok := cur[seg].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			cur[seg] = next
+		}
+		cur = next
+	}
 }
 
 func repairDiagnosticParams(requiredForm uint8) map[string]any {

@@ -114,16 +114,11 @@ func TestConstraintMessage_EnumEmpty(t *testing.T) {
 	}
 }
 
-// TestConstraintMessage_FieldSchemaNil covers the nil-fieldSchema path
-// (line 106-108): the field has no schema properties.
+// TestConstraintMessage_FieldSchemaNil covers the nil-fieldSchema path: the
+// field has no resolvable schema.
 func TestConstraintMessage_FieldSchemaNil(t *testing.T) {
-	params := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-		"required":   []string{"missing"},
-	}
 	args := map[string]any{"missing": "value"}
-	got := constraintMessage("my_tool", params, "missing", "missing", "maxLength", args, "missing")
+	got := constraintMessage("my_tool", nil, "missing", "missing", "maxLength", args, "missing")
 	if got != "" {
 		t.Fatalf("constraintMessage = %q, want empty", got)
 	}
@@ -140,7 +135,7 @@ func TestConstraintMessage_UnrecognizedKeyword(t *testing.T) {
 		"required": []string{"val"},
 	}
 	args := map[string]any{"val": float64(5)}
-	got := constraintMessage("my_tool", params, "val", "val", "minimum", args, "val")
+	got := constraintMessage("my_tool", schemaProps(params)["val"].(map[string]any), "val", "val", "minimum", args, "val")
 	if got != "" {
 		t.Fatalf("constraintMessage = %q, want empty for unrecognized keyword", got)
 	}

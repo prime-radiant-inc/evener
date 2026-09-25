@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"maps"
 	"strings"
 	"testing"
 )
@@ -63,8 +64,10 @@ func delegateOneOfSwappedParams() map[string]any {
 // arm-internal, and its bare "enum" keyword must not be read against the
 // top-level sandbox property — that announces `"off" is not one of the allowed
 // values: off, read-only, workspace-write, restricted`, an allowed-values list
-// that literally contains the rejected value. The message must render the
-// branch-level pairing rule and its narrowed enum instead.
+// that literally contains the rejected value. The sibling `not` arm accepts
+// sandbox "off" (as long as sandbox_net is omitted), so the failing arm's
+// narrowed enum is not the globally accepted set either; the message must render
+// the branch-level pairing rule and its narrowed enum instead.
 func TestExplainSchemaError_OneOfPositiveArmFirstDoesNotRenderTopLevelEnum(t *testing.T) {
 	msg := ExplainSchemaError("delegate", delegateOneOfSwappedParams(), delegateOneOfArgs(), "sandbox", "oneOf/0/properties/sandbox/enum")
 	if strings.Contains(msg, "is not one of the allowed values") {
@@ -528,11 +531,15 @@ func TestExplainSchemaError_ArmEnumNotRenderedByBranchFallsThrough(t *testing.T)
 			if strings.Contains(msg, "Branch 0 requires") {
 				t.Fatalf("enum the branch prose does not render was explained as a branch requirement the call already satisfied: %q", msg)
 			}
-			// The top-level enum is wider than the arm's and contains the
-			// rejected value, so rendering it would announce a list that
-			// includes the value it calls disallowed.
-			if strings.Contains(msg, "is not one of the allowed values") {
-				t.Fatalf("unrenderable arm enum printed the top-level allowed-values list (issue #621 misdirection): %q", msg)
+			// The top-level enum is WIDER than the arm's and contains the
+			// rejected value "b"; reproducing it would announce a value the
+			// message calls disallowed. The arm's own enum (issue #622) is
+			// narrower and excludes "b", so that is the list to render.
+			if strings.Contains(msg, `"a", "b"`) {
+				t.Fatalf("unrenderable arm enum printed the top-level allowed-values list containing the rejected value: %q", msg)
+			}
+			if !strings.Contains(msg, `"a"`) {
+				t.Fatalf("arm-narrowed enum must be rendered: %q", msg)
 			}
 			leaf := tc.field[strings.IndexAny(tc.field, "/")+1:]
 			if !strings.Contains(msg, leaf) {
@@ -686,27 +693,34 @@ func stricterLimitParams(refWrapped bool) map[string]any {
 	return params
 }
 
-// a maxLength reached inside a root-level arm, or behind a
-// $ref, can be stricter than the top-level property's. Reading the top-level
-// schema would coach "exceeds maxLength (100)" for a value that only exceeds
-// the arm's limit of 3.
+// a maxLength reached inside a root-level arm can be stricter than the
+// top-level property's. The renderer resolves the failing cause's own schema
+// from the arm (issue #622), so it reports the arm's limit (3), never the
+// top-level property's (100). A $ref behind the root cannot be resolved here, so
+// its message is the bare generic mismatch — the referenced schema owns the
+// property and its guidance.
 func TestExplainSchemaError_StricterNestedLimitDoesNotReadTopLevel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		params map[string]any
 		loc    string
 		named  bool
+		limit  string
 	}{
-		// An arm is attributed to the branch, so the present-field path still
-		// names the property. A $ref cannot be resolved here, so the message
-		// is the bare generic mismatch — the referenced schema owns both the
-		// property and its guidance.
-		"arm":         {stricterLimitParams(false), "oneOf/0/properties/x/maxLength", true},
-		"ref-wrapped": {stricterLimitParams(true), "/$ref/properties/x/maxLength", false},
+		// An arm is attributed to the branch; the resolved arm constraint names
+		// the property with the arm's own stricter limit.
+		"arm":         {stricterLimitParams(false), "oneOf/0/properties/x/maxLength", true, "maxLength (3)"},
+		"ref-wrapped": {stricterLimitParams(true), "/$ref/properties/x/maxLength", false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			msg := ExplainSchemaError("probe_tool", tc.params, map[string]any{"x": "abcd"}, "x", tc.loc)
-			if strings.Contains(msg, "maxLength") {
+			if strings.Contains(msg, "maxLength (100)") {
 				t.Fatalf("nested stricter limit was read against the top-level property: %q", msg)
+			}
+			if tc.limit != "" && !strings.Contains(msg, tc.limit) {
+				t.Fatalf("message must report the arm's own limit %q: %q", tc.limit, msg)
+			}
+			if tc.limit == "" && strings.Contains(msg, "maxLength") {
+				t.Fatalf("unresolved $ref failure must not report a limit: %q", msg)
 			}
 			if tc.named && !strings.Contains(msg, `argument "x"`) {
 				t.Fatalf("message must still name the offending property: %q", msg)
@@ -1036,11 +1050,11 @@ func TestExplainSchemaError_OneOfExampleOmittedForDependencies(t *testing.T) {
 	}
 }
 
-// a defect nested beneath an arm's items is not branch
-// structure — the arm prose would tell the caller to supply a field it already
-// sent — and the walk cannot resolve the item, so the message must be the
-// generic mismatch rather than naming a field that does not exist.
-func TestExplainSchemaError_ArmNestedItemDefectStaysGeneric(t *testing.T) {
+// A defect nested beneath an arm's items is not branch structure — the arm prose
+// would tell the caller to supply a field it already sent — but the element WAS
+// sent, so the resolved item schema explains it by its instance path rather than
+// falling back to the generic mismatch (issue #622 review).
+func TestExplainSchemaError_ArmNestedItemDefectNamesElement(t *testing.T) {
 	params := map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}},
@@ -1049,8 +1063,11 @@ func TestExplainSchemaError_ArmNestedItemDefectStaysGeneric(t *testing.T) {
 		},
 	}
 	msg := ExplainSchemaError("probe_tool", params, map[string]any{"xs": []any{"abc"}}, "xs/0", "oneOf/0/properties/xs/items/type")
-	if msg != "probe_tool: arguments did not match the schema." {
-		t.Fatalf("arm-nested item defect must be the generic mismatch, got: %q", msg)
+	if strings.Contains(msg, "missing required argument") {
+		t.Fatalf("a sent array element was reported as a missing argument: %q", msg)
+	}
+	if !strings.Contains(msg, `argument "xs.0"`) {
+		t.Fatalf("arm-nested item defect must name the element: %q", msg)
 	}
 }
 
@@ -1397,5 +1414,277 @@ func TestExplainSchemaError_RefWrappedPresentEnumStaysGeneric(t *testing.T) {
 	}
 	if !strings.Contains(msg, "arguments did not match the schema") {
 		t.Fatalf("$ref-wrapped arm enum must fall back to the generic mismatch: %q", msg)
+	}
+}
+
+// A required property whose schema carries enum/const is rendered as an actual
+// member of that set, so the Example satisfies the constraint the call failed
+// rather than emitting a placeholder the set rejects.
+func TestExampleObjectValid_RendersEnumOrConstMember(t *testing.T) {
+	enumSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"status"},
+		"properties": map[string]any{
+			"status": map[string]any{"type": "string", "enum": []string{"complete", "blocked"}},
+		},
+	}
+	if !exampleObjectValid(enumSchema) {
+		t.Fatal("valid enum-member example rejected")
+	}
+	if got := exampleForParams(enumSchema); !strings.Contains(got, `"complete"`) || strings.Contains(got, `"..."`) {
+		t.Fatalf("example must render an enum member: %q", got)
+	}
+	constSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"mode"},
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "const": "fast"},
+		},
+	}
+	if got := exampleForParams(constSchema); !strings.Contains(got, `"fast"`) {
+		t.Fatalf("example must render the const member: %q", got)
+	}
+}
+
+// patternProperties apply to declared names too, so a declared property matched
+// by patternProperties:false is forbidden.
+func TestPropertyForbidden_PatternPropertiesOnDeclaredProperty(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"x": map[string]any{"type": "string"}},
+		"patternProperties":    map[string]any{"^x$": false},
+		"additionalProperties": true,
+	}
+	if !propertyForbidden(schema, "x") {
+		t.Fatal("declared property matched by patternProperties:false not forbidden")
+	}
+}
+
+// An enum member chosen for an Example must satisfy the property's other
+// modelable constraints, so a member the schema rejects is never rendered.
+func TestExampleForParams_EnumMemberSatisfiesOtherConstraints(t *testing.T) {
+	lengthSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"speed"},
+		"properties": map[string]any{
+			"speed": map[string]any{"type": "string", "enum": []string{"verbose", "fast"}, "maxLength": 4},
+		},
+	}
+	got := exampleForParams(lengthSchema)
+	if !strings.Contains(got, `"fast"`) || strings.Contains(got, `"verbose"`) {
+		t.Fatalf("example must pick the enum member satisfying maxLength: %q", got)
+	}
+	patternSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"mode"},
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "enum": []string{"bad", "good"}, "pattern": "^good$"},
+		},
+	}
+	if got := exampleForParams(patternSchema); !strings.Contains(got, `"good"`) || strings.Contains(got, `"bad"`) {
+		t.Fatalf("example must pick the enum member satisfying pattern: %q", got)
+	}
+	typedSchema := map[string]any{
+		"type":     "object",
+		"required": []string{"n"},
+		"properties": map[string]any{
+			"n": map[string]any{"type": "integer", "enum": []any{"auto", float64(1)}},
+		},
+	}
+	if got := exampleForParams(typedSchema); strings.Contains(got, `"auto"`) || !strings.Contains(got, `1`) {
+		t.Fatalf("example must pick the type-compatible enum member: %q", got)
+	}
+}
+
+// A const the schema otherwise rejects cannot be rendered, so the Example is
+// omitted rather than coaching a value that fails validation.
+func TestExampleForParams_ImpossibleConstOmitsExample(t *testing.T) {
+	schema := map[string]any{
+		"type":     "object",
+		"required": []string{"mode"},
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "const": "toolong", "maxLength": 3},
+		},
+	}
+	if got := exampleForParams(schema); got != "" {
+		t.Fatalf("example emitted for a const the schema rejects: %q", got)
+	}
+}
+
+// A fractional minimum must not be truncated to an integer when the placeholder
+// is checked: the numeric placeholder 0 violates minimum 0.5.
+func TestExampleForParams_FractionalMinimumOmitsExample(t *testing.T) {
+	schema := map[string]any{
+		"type":     "object",
+		"required": []string{"n"},
+		"properties": map[string]any{
+			"n": map[string]any{"type": "number", "minimum": 0.5},
+		},
+	}
+	if got := exampleForParams(schema); got != "" {
+		t.Fatalf("example emitted for a value below a fractional minimum: %q", got)
+	}
+}
+
+// tighterBound must keep fractional bounds rather than truncating them.
+func TestTighterBound_PreservesFractional(t *testing.T) {
+	if got := tighterBound(1.1, 1.9, false); got != 1.9 {
+		t.Fatalf("minimum tighter bound = %v, want 1.9", got)
+	}
+	if got := tighterBound(1.9, 1.1, false); got != 1.9 {
+		t.Fatalf("minimum tighter bound = %v, want 1.9", got)
+	}
+	if got := tighterBound(4.4, 4.9, true); got != 4.4 {
+		t.Fatalf("maximum tighter bound = %v, want 4.4", got)
+	}
+}
+
+// A required property whose nested object requires an enum-constrained key must
+// render that key's member, not a generic placeholder the enum rejects. This
+// nested shape is what hid the validation/rendering depth mismatch.
+func TestExampleForParams_NestedRequiredObjectWithEnum(t *testing.T) {
+	params := map[string]any{
+		"type":     "object",
+		"required": []string{"output"},
+		"properties": map[string]any{
+			"output": map[string]any{
+				"type":       "object",
+				"required":   []string{"status"},
+				"properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"ok", "error"}}},
+			},
+		},
+	}
+	got := exampleForParams(params)
+	if !strings.Contains(got, `"ok"`) || strings.Contains(got, `"..."`) {
+		t.Fatalf("nested enum key must render a member: %q", got)
+	}
+}
+
+// Object-level constraints of the schema the example renders must be validated.
+func TestExampleObjectValid_ObjectLevelConstraints(t *testing.T) {
+	falseRequired := map[string]any{"type": "object", "required": []string{"x"}, "properties": map[string]any{"x": false}}
+	if exampleObjectValid(falseRequired) {
+		t.Fatal("required property declared false admitted")
+	}
+	minProps := map[string]any{
+		"type": "object", "required": []string{"a"}, "minProperties": 2,
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+	}
+	if exampleObjectValid(minProps) {
+		t.Fatal("example with fewer than minProperties admitted")
+	}
+	addlFalse := map[string]any{
+		"type": "object", "required": []string{"b"}, "additionalProperties": false,
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+	}
+	if exampleObjectValid(addlFalse) {
+		t.Fatal("undeclared required key under additionalProperties:false admitted")
+	}
+}
+
+// A declared required property is also governed by matching patternProperties.
+func TestExampleObjectValid_DeclaredPropertyPatternProperties(t *testing.T) {
+	schema := map[string]any{
+		"type": "object", "required": []string{"x"},
+		"properties":        map[string]any{"x": map[string]any{"type": "string"}},
+		"patternProperties": map[string]any{"^x$": map[string]any{"minLength": 10}},
+	}
+	if exampleObjectValid(schema) {
+		t.Fatal("placeholder violating patternProperties:minLength admitted")
+	}
+	if got := exampleForParams(schema); got != "" {
+		t.Fatalf("example emitted violating patternProperties: %q", got)
+	}
+}
+
+// An arm requiring a property its own properties forbids is unsatisfiable, so
+// branch prose must not tell the caller to send it.
+func TestBranchProseForbidsRequired_ArmOwnRules(t *testing.T) {
+	params := map[string]any{
+		"oneOf": []any{map[string]any{
+			"required":   []string{"b"},
+			"properties": map[string]any{"b": false},
+		}},
+	}
+	if !branchProseForbidsRequired(params, "oneOf") {
+		t.Fatal("arm requiring its own forbidden property not detected")
+	}
+}
+
+// A hand-built oneOf stored as a typed slice must still be traversed and
+// rendered as branch prose rather than falling back to a generic message.
+func TestExplainSchemaError_TypedOneOfArmsRenderBranchProse(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"a": map[string]any{
+				"type":  "object",
+				"oneOf": []map[string]any{{"required": []string{"x"}}, {"required": []string{"y"}}},
+			},
+		},
+	}
+	msg := ExplainSchemaError("probe_tool", params, map[string]any{"a": map[string]any{}}, "a", "/properties/a/oneOf/0/required")
+	if !strings.Contains(msg, "oneOf constraint") || !strings.Contains(msg, "Branch 0 requires") {
+		t.Fatalf("typed oneOf arms not rendered as branch prose: %q", msg)
+	}
+}
+
+// exampleForParams must not emit an example under a root applicator/value set it
+// cannot evaluate (issue #622 review).
+func TestExampleForParams_RejectsUnmodeledRootConstraints(t *testing.T) {
+	base := map[string]any{
+		"type": "object", "required": []string{"a"},
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+	}
+	for name, extra := range map[string]map[string]any{
+		"oneOf": {"oneOf": []any{map[string]any{"required": []string{"a"}}, map[string]any{"required": []string{"b"}}}},
+		"allOf": {"allOf": []any{map[string]any{"required": []string{"a"}}}},
+		"not":   {"not": map[string]any{"required": []string{"a"}}},
+		"const": {"const": map[string]any{"a": "x"}},
+		"enum":  {"enum": []any{map[string]any{"a": "x"}}},
+	} {
+		schema := map[string]any{}
+		maps.Copy(schema, base)
+		maps.Copy(schema, extra)
+		if got := exampleForParams(schema); got != "" {
+			t.Fatalf("root %s: example emitted for unmodeled root constraint: %q", name, got)
+		}
+	}
+}
+
+// A container-valued enum must select the member that satisfies the container
+// constraints, not the first-listed one (issue #622 review).
+func TestExampleForParams_ContainerEnumSelectsValidMember(t *testing.T) {
+	schema := map[string]any{
+		"type": "object", "required": []string{"p"},
+		"properties": map[string]any{
+			"p": map[string]any{"type": "array", "enum": []any{[]any{}, []any{"x"}}, "minItems": 1},
+		},
+	}
+	got := exampleForParams(schema)
+	if !strings.Contains(got, `"x"`) || strings.Contains(got, `"p": []`) {
+		t.Fatalf("container enum must pick the member satisfying minItems: %q", got)
+	}
+}
+
+// A required child is governed by matching patternProperties as well as its
+// declared schema, so an example it would violate is omitted (issue #622
+// review).
+func TestExplainSchemaError_RequiredExampleHonorsPatternProperties(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task": map[string]any{"type": "string"},
+			"output": map[string]any{
+				"type": "object", "required": []string{"x"},
+				"properties":        map[string]any{"x": map[string]any{"type": "string"}},
+				"patternProperties": map[string]any{"^x$": map[string]any{"minLength": 10}},
+			},
+		},
+		"required": []string{"task"},
+	}
+	msg := ExplainSchemaError("probe_tool", params, map[string]any{"task": "t", "output": map[string]any{}}, "output", "required")
+	if strings.Contains(msg, `"x": "..."`) {
+		t.Fatalf("required example violated patternProperties: %q", msg)
 	}
 }

@@ -194,10 +194,13 @@ func issue621Validate(t *testing.T, schemaJSON string, args map[string]any) (map
 	return params, args, verr
 }
 
-// Issue #621: the real caller's attribution must not depend on the oneOf arm
-// order. Whichever arm is first, the deepest cause's location lives inside the
-// root oneOf, so the explained message names the branch rule and its narrowed
-// enum — never the top-level enum that lists "off" as allowed.
+// Issue #621/#622: the real caller's attribution must not depend on the oneOf
+// arm order, and neither order may render the top-level enum that lists "off" as
+// allowed. Either way the failing arm's sibling (`not: {required:
+// ["sandbox_net"]}`) still accepts sandbox "off" when sandbox_net is omitted, so
+// the failing arm's narrowed enum is not the globally accepted set: the message
+// must render the branch-level pairing rule, naming sandbox_net, and never an
+// allowed-values list that calls "off" invalid.
 func TestExplainSchemaError_OneOfAttributionIsArmOrderIndependent(t *testing.T) {
 	for name, schemaJSON := range map[string]string{
 		"positive-arm-first": issue621SwappedOneOfSchema,
@@ -211,13 +214,12 @@ func TestExplainSchemaError_OneOfAttributionIsArmOrderIndependent(t *testing.T) 
 			}
 			msg := repair.ExplainSchemaError("delegate", params, args, offendingField(verr), loc)
 			if strings.Contains(msg, "is not one of the allowed values") {
-				t.Fatalf("branch-level enum failure rendered as a top-level allowed-values violation (issue #621): %q", msg)
+				t.Fatalf("ambiguous oneOf arm enum rendered as a global allowed-values list: %q", msg)
 			}
+			// The top-level sandbox enum starts "off", which the failing branch
+			// narrows away; the message must not reproduce that list.
 			if strings.Contains(msg, `"off", "read-only"`) {
 				t.Fatalf("message lists the top-level sandbox enum instead of the branch's (issue #621): %q", msg)
-			}
-			if !strings.Contains(msg, "oneOf constraint") {
-				t.Fatalf("message must name the oneOf constraint, not the arm-internal leaf: %q", msg)
 			}
 			if !strings.Contains(msg, `"sandbox" must be one of "read-only", "workspace-write", "restricted"`) {
 				t.Fatalf("message must render the branch's narrowed sandbox enum: %q", msg)
@@ -329,11 +331,17 @@ func TestExplainSchemaError_NestedArmEnumStaysGeneric(t *testing.T) {
 		t.Fatalf("offendingKeywordLocation = %q, want a location under the root oneOf", loc)
 	}
 	msg := repair.ExplainSchemaError("probe_tool", params, args, offendingField(verr), loc)
-	if strings.Contains(msg, "is not one of the allowed values") {
+	// The top-level enum is wider than the arm's and contains the rejected "b";
+	// reproducing it would announce a disallowed value. The arm's own narrowed
+	// enum (issue #622) excludes "b" and is the list to render.
+	if strings.Contains(msg, `"a", "b"`) {
 		t.Fatalf("nested arm enum printed the top-level allowed-values list containing the rejected value: %q", msg)
 	}
 	if strings.Contains(msg, "Branch 0 requires") {
 		t.Fatalf("nested arm enum rendered a branch requirement the call already satisfied: %q", msg)
+	}
+	if !strings.Contains(msg, `"a"`) {
+		t.Fatalf("nested arm enum must render the arm's narrowed list: %q", msg)
 	}
 	if !strings.Contains(msg, "opts.status") {
 		t.Fatalf("nested arm enum must name the offending property: %q", msg)
@@ -438,12 +446,13 @@ func TestExplainSchemaError_StricterNestedLimit(t *testing.T) {
 		schemaJSON string
 		wantLoc    string
 		named      bool
+		limit      string
 	}{
-		// The arm is attributed to the branch, so the property is still named.
-		// The $ref cannot be resolved here, so the message is the bare generic
-		// mismatch.
-		"arm":         {issue621StricterArmLimitSchema, "/oneOf/0/properties/x/maxLength", true},
-		"ref-wrapped": {issue621StricterRefLimitSchema, "/$ref/properties/x/maxLength", false},
+		// The arm is resolved to its own schema (issue #622), so the arm's
+		// stricter limit is reported, never the top-level property's. The $ref
+		// cannot be resolved here, so the message is the bare generic mismatch.
+		"arm":         {issue621StricterArmLimitSchema, "/oneOf/0/properties/x/maxLength", true, "maxLength (3)"},
+		"ref-wrapped": {issue621StricterRefLimitSchema, "/$ref/properties/x/maxLength", false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			params, args, verr := issue621Validate(t, tc.schemaJSON, map[string]any{"x": "abcd"})
@@ -455,8 +464,14 @@ func TestExplainSchemaError_StricterNestedLimit(t *testing.T) {
 				t.Fatalf("offendingField = %q, want %q (the test must exercise a present property)", got, "x")
 			}
 			msg := repair.ExplainSchemaError("probe_tool", params, args, offendingField(verr), loc)
-			if strings.Contains(msg, "maxLength") {
+			if strings.Contains(msg, "maxLength (100)") {
 				t.Fatalf("nested stricter limit (%s) was read against the top-level property: %q", loc, msg)
+			}
+			if tc.limit != "" && !strings.Contains(msg, tc.limit) {
+				t.Fatalf("message must report the arm's own limit %q: %q", tc.limit, msg)
+			}
+			if tc.limit == "" && strings.Contains(msg, "maxLength") {
+				t.Fatalf("unresolved $ref failure must not report a limit: %q", msg)
 			}
 			if tc.named && !strings.Contains(msg, `argument "x"`) {
 				t.Fatalf("message must still name the offending property: %q", msg)
