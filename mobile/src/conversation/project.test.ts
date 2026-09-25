@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import type {
   AnyNotification,
   AskQuestionRef,
+  ContentLevel,
   EvenerThread,
   InputItem,
   ItemModel,
@@ -18,6 +19,7 @@ import type {
   ThreadCapabilities,
   ThreadItem,
   ThreadModel,
+  TranscriptDisplayConfigV1,
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
@@ -27,7 +29,12 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "./project";
-import { applyNotification, hydrateThread } from "@evener/appwire-client";
+import {
+  applyNotification,
+  CONTENT_LEVELS,
+  hydrateThread,
+  makeTranscriptDisplayConfig,
+} from "@evener/appwire-client";
 import {
   liveAsksFor,
   MAX_ITEM_BYTES,
@@ -2449,5 +2456,454 @@ describe("rowsForTurn's per-turn cache", () => {
     ]);
     const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asksB);
     expect(secondPass).toEqual(firstPass);
+  });
+});
+
+// --- D24-3 differential oracle: projectTimeline delegates to the shared projector
+// The swap under test: projectTimeline hands visibility and ordering to the
+// package's projectThread (transcriptProjector.ts) and maps each surviving
+// ProjectedEntry back onto the row the pre-swap projection built for the same
+// item. FULL_ROWS below is that pre-swap projection captured verbatim on main
+// (the 2449-line suite's own behavior, frozen); every content-level case must
+// reproduce exactly the subset the shared projector keeps — byte-identical
+// rows for surviving items, with only the projector's own reclassifications
+// differing (a live current thought becomes a content-free placeholder, a
+// redacted critical reasoning becomes a neutral failure row, an intent row
+// carries the projector's trimmed rationale as its summary line).
+
+const DIFF_ASK_ARGS = JSON.stringify({
+  questions: [
+    {
+      header: "Proceed?",
+      question: "Run the full audit?",
+      options: [{ label: "Yes", detail: "go" }],
+    },
+  ],
+});
+
+// One thread that walks every row family: user input with images, human
+// steering, every notice origin, a tool run that clusters, a failed tool, a
+// settled thought, a warning, an unknown forward-compatible type, a pending
+// ask, a running tool run with output images, a streaming reply, a live
+// current thought, and a failed turn that still owes the reader its error.
+function differentialThread(): Thread {
+  return thread(
+    [
+      turn("t1", [
+        item({
+          id: "u1",
+          turnId: "t1",
+          type: "userMessage",
+          text: "please audit the config",
+          images: [{ type: "image", name: "cat.png", mediaType: "image/png", url: "http://x/cat.png" }],
+        }),
+        item({ id: "steer-user", turnId: "t1", type: "steering", source: "user", text: "include the diff" }),
+        item({ id: "sys-prompt", turnId: "t1", type: "systemMessage", eventKind: "system_prompt", text: "PROMPT LOADED" }),
+        item({ id: "sys-error", turnId: "t1", type: "systemMessage", eventKind: "error", text: "provider hiccup" }),
+        item({ id: "sys-compact", turnId: "t1", type: "systemMessage", eventKind: "compaction", text: "context compacted" }),
+        item({
+          id: "c1",
+          turnId: "t1",
+          type: "commandExecution",
+          toolName: "shell",
+          description: "  run the audit  ",
+          status: "completed",
+          startedAt: 1000,
+          completedAt: 1500,
+          callId: "call-1",
+        }),
+        item({ id: "c2", turnId: "t1", type: "commandExecution", toolName: "grep", description: "grep the results", status: "completed" }),
+        item({ id: "c3", turnId: "t1", type: "commandExecution", toolName: "shell", status: "completed", error: "boom", exitCode: 1 }),
+        item({ id: "r1", turnId: "t1", type: "reasoning", text: "auditing quietly", status: "completed" }),
+        item({ id: "w1", turnId: "t1", type: "warning", text: "disk almost full", status: "completed" }),
+        item({ id: "unk1", turnId: "t1", type: "telemetryPing", text: "opaque payload" }),
+        item({
+          id: "ask1",
+          turnId: "t1",
+          type: "commandExecution",
+          toolName: "ask_user",
+          callId: "call-ask",
+          status: "completed",
+          argumentsJson: DIFF_ASK_ARGS,
+        }),
+      ]),
+      turn(
+        "t2",
+        [
+          item({ id: "c4", turnId: "t2", type: "commandExecution", toolName: "read_file", description: "read config", status: "inProgress" }),
+          item({
+            id: "c5",
+            turnId: "t2",
+            type: "commandExecution",
+            toolName: "view",
+            status: "completed",
+            outputImages: [{ source: "screenshot", name: "shot.png", url: "http://x/shot.png" }],
+          }),
+          item({ id: "a2", turnId: "t2", type: "agentMessage", text: "working on it" }),
+          item({ id: "r2", turnId: "t2", type: "reasoning", text: "secret live thought", status: "inProgress" }),
+        ],
+        { status: "inProgress" },
+      ),
+      turn(
+        "t3",
+        [item({ id: "r3", turnId: "t3", type: "reasoning", text: "final thought", status: "completed" })],
+        { status: "failed", error: { message: "provider exploded", title: "Provider error", hint: "retry" } },
+      ),
+    ],
+    { evener: evenerThread({ askPending: true }) },
+  );
+}
+
+// The wire cannot carry a warning map (only the reducer's live fold stamps
+// one — see the hand-stamped fixtures above), so the differential model
+// stamps it exactly the way those fixtures do.
+function differentialModel(): ThreadModel {
+  const model = hydrateThread({ thread: differentialThread() }, "ref-1", 0);
+  const warning = model.turns[0]?.items.find((entry) => entry.id === "w1");
+  if (!warning) throw new Error("differential fixture lost its warning item");
+  warning.warning = { title: "Low disk", hint: "clean up" };
+  return model;
+}
+
+// Every advanced gate open, so the content vector is the only axis that
+// varies across the five levels (the advanced gates' own parity is D24-2's
+// table above plus the package's projector tests).
+function levelConfig(level: ContentLevel): TranscriptDisplayConfigV1 {
+  return makeTranscriptDisplayConfig(
+    { kind: "preset", level },
+    { roundTimings: true, systemEvents: true, promptEvents: true, hookExits: "all" },
+  );
+}
+
+function rowsAt(model: ThreadModel, level: ContentLevel): MobileTimelineItem[] {
+  return projectTimeline(model, liveAsksFor(model), levelConfig(level));
+}
+
+// The pre-swap projection of the differential thread under the seam default —
+// implementation on main (fa01d55f79) before the swap; note the last activity
+// row, where the pre-swap clustering merges the live thought (r2) and the
+// failed turn's settled thought (r3) into one cross-turn run.
+const FULL_ROWS: MobileTimelineItem[] = [
+  {
+    "kind": "user",
+    "id": "u1",
+    "text": "please audit the config"
+  },
+  {
+    "kind": "attachments",
+    "id": "u1:attachments",
+    "items": [
+      {
+        "id": "u1:0",
+        "src": "http://x/cat.png",
+        "name": "cat.png"
+      }
+    ]
+  },
+  {
+    "kind": "user",
+    "id": "steer-user",
+    "text": "include the diff"
+  },
+  {
+    "kind": "notice",
+    "id": "sys-prompt",
+    "origin": "system",
+    "family": "hidden-instruction",
+    "tone": "system",
+    "text": "PROMPT LOADED",
+    "eventKind": "system_prompt"
+  },
+  {
+    "kind": "notice",
+    "id": "sys-error",
+    "origin": "system",
+    "family": "warning",
+    "tone": "warning",
+    "text": "provider hiccup",
+    "eventKind": "error"
+  },
+  {
+    "kind": "notice",
+    "id": "sys-compact",
+    "origin": "system",
+    "family": "lifecycle",
+    "tone": "system",
+    "text": "context compacted",
+    "eventKind": "compaction"
+  },
+  {
+    "kind": "activity",
+    "id": "c1",
+    "label": "shell",
+    "family": "tool",
+    "state": "completed",
+    "detail": {
+      "description": "  run the audit  ",
+      "durationMs": 500,
+      "callId": "call-1"
+    },
+    "members": [
+      {
+        "id": "c1",
+        "label": "shell",
+        "family": "tool",
+        "state": "completed",
+        "detail": {
+          "description": "  run the audit  ",
+          "durationMs": 500,
+          "callId": "call-1"
+        }
+      },
+      {
+        "id": "c2",
+        "label": "grep",
+        "family": "tool",
+        "state": "completed",
+        "detail": {
+          "description": "grep the results"
+        }
+      }
+    ]
+  },
+  {
+    "kind": "activity",
+    "id": "c3",
+    "label": "shell",
+    "family": "tool",
+    "state": "failed",
+    "detail": {
+      "error": "boom",
+      "exitCode": 1
+    }
+  },
+  {
+    "kind": "activity",
+    "id": "r1",
+    "label": "Reasoning",
+    "family": "reasoning",
+    "state": "completed",
+    "detail": {
+      "output": "auditing quietly"
+    }
+  },
+  {
+    "kind": "failure",
+    "id": "w1",
+    "title": "Low disk",
+    "detail": "disk almost full — clean up"
+  },
+  {
+    "kind": "activity",
+    "id": "unk1",
+    "label": "Activity",
+    "family": "unknown",
+    "state": "completed",
+    "detail": {
+      "output": "opaque payload"
+    }
+  },
+  {
+    "kind": "question",
+    "id": "ask1",
+    "questions": [
+      {
+        "key": "call-ask:0",
+        "callId": "call-ask",
+        "header": "Proceed?",
+        "question": "Run the full audit?",
+        "options": [
+          {
+            "label": "Yes",
+            "detail": "go",
+            "recommended": false
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  },
+  {
+    "kind": "activity",
+    "id": "c4",
+    "label": "read_file",
+    "family": "tool",
+    "state": "running",
+    "detail": {
+      "description": "read config"
+    },
+    "members": [
+      {
+        "id": "c4",
+        "label": "read_file",
+        "family": "tool",
+        "state": "running",
+        "detail": {
+          "description": "read config"
+        }
+      },
+      {
+        "id": "c5",
+        "label": "view",
+        "family": "tool",
+        "state": "completed",
+        "detail": {}
+      }
+    ]
+  },
+  {
+    "kind": "attachments",
+    "id": "c5:attachments",
+    "items": [
+      {
+        "id": "c5:out:0",
+        "src": "http://x/shot.png",
+        "name": "shot.png",
+        "source": "screenshot"
+      }
+    ],
+    "sourceTranscriptKey": "c5"
+  },
+  {
+    "kind": "assistant",
+    "id": "a2",
+    "markdown": "working on it",
+    "streaming": true
+  },
+  {
+    "kind": "activity",
+    "id": "r2",
+    "label": "Reasoning",
+    "family": "reasoning",
+    "state": "running",
+    "detail": {
+      "output": "secret live thought"
+    },
+    "members": [
+      {
+        "id": "r2",
+        "label": "Reasoning",
+        "family": "reasoning",
+        "state": "running",
+        "detail": {
+          "output": "secret live thought"
+        }
+      },
+      {
+        "id": "r3",
+        "label": "Reasoning",
+        "family": "reasoning",
+        "state": "completed",
+        "detail": {
+          "output": "final thought"
+        }
+      }
+    ]
+  },
+  {
+    "kind": "failure",
+    "id": "failure:t3",
+    "title": "Provider error",
+    "detail": "provider exploded\nretry"
+  }
+];
+
+const rowId = (row: MobileTimelineItem): string => row.id;
+
+describe("D24-3 differential oracle: projectTimeline delegates to the shared projector", () => {
+  const model = differentialModel();
+
+  it("reproduces the pre-swap rows byte-for-byte under the default config", () => {
+    // The seam call (state/conversation.ts) is config-less: the swap must not
+    // change one byte of what it produces.
+    expect(projectConversation(model).items).toEqual(FULL_ROWS);
+    // The no-config default is exactly the full-visibility config.
+    expect(projectTimeline(model)).toEqual(rowsAt(model, "full"));
+  });
+
+  it.each([
+    ["chat", true],
+    ["intent", true],
+    ["tools", false],
+    ["activity", false],
+  ] as const)(
+    "level %s: keeps exactly the rows the shared projector keeps, byte-identical except its own reclassifications",
+    (level, intentRows) => {
+      const rows = rowsAt(model, level);
+      // Visibility: every pre-swap row survives except the settled thought
+      // r1, which the projector hides when the reasoning flag is off. The
+      // cross-turn r2+r3 cluster cannot form — the projector reclassifies
+      // both members — so r3 becomes its own row here.
+      expect(rows.map(rowId)).toEqual([
+        "u1",
+        "u1:attachments",
+        "steer-user",
+        "sys-prompt",
+        "sys-error",
+        "sys-compact",
+        "c1",
+        "c3",
+        "w1",
+        "unk1",
+        "ask1",
+        "c4",
+        "c5:attachments",
+        "a2",
+        "r2",
+        "r3",
+        "failure:t3",
+      ]);
+
+      // Byte parity: every surviving row the projector did not reclassify is
+      // the pre-swap row for the same item, field for field.
+      const reclassified = intentRows ? ["c1", "r2", "r3"] : ["r2", "r3"];
+      for (const row of rows) {
+        if (reclassified.includes(rowId(row))) continue;
+        expect(row).toEqual(FULL_ROWS.find((golden) => rowId(golden) === rowId(row)));
+      }
+
+      // The live current thought becomes a content-free placeholder.
+      expect(rows.find((row) => rowId(row) === "r2")).toEqual({
+        kind: "activity",
+        id: "r2",
+        label: "Reasoning",
+        family: "reasoning",
+        state: "running",
+        detail: {},
+      });
+      // The failed turn's settled thought explains the turn without its text.
+      expect(rows.find((row) => rowId(row) === "r3")).toEqual({
+        kind: "failure",
+        id: "r3",
+        title: "Thought not shown",
+        detail: "",
+      });
+
+      // A settled tool call is an intent row at intent levels: the same
+      // activity, with the projector's trimmed rationale as the summary line
+      // (the cluster and each member). At call levels the row is the pre-swap
+      // one verbatim.
+      const c1 = rows.find((row) => rowId(row) === "c1");
+      if (c1?.kind !== "activity") throw new Error("differential lost the c1 cluster");
+      expect(c1.detail.description).toBe(intentRows ? "run the audit" : "  run the audit  ");
+      const c1Member = c1.members?.[0];
+      expect(c1Member?.detail.description).toBe(intentRows ? "run the audit" : "  run the audit  ");
+      expect(c1.members?.[1]?.detail.description).toBe("grep the results");
+    },
+  );
+
+  it("never leaks a hidden thought's text at any level", () => {
+    for (const level of CONTENT_LEVELS) {
+      if (level === "full") continue;
+      const shown = JSON.stringify(rowsAt(model, level));
+      expect(shown).not.toContain("auditing quietly");
+      expect(shown).not.toContain("secret live thought");
+      expect(shown).not.toContain("final thought");
+    }
+    // ...while the full level still shows all three, exactly as the pre-swap
+    // projection did.
+    expect(JSON.stringify(rowsAt(model, "full"))).toContain("auditing quietly");
+    expect(JSON.stringify(rowsAt(model, "full"))).toContain("secret live thought");
+    expect(JSON.stringify(rowsAt(model, "full"))).toContain("final thought");
   });
 });
