@@ -2457,6 +2457,27 @@ describe("rowsForTurn's per-turn cache", () => {
     const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asksB);
     expect(secondPass).toEqual(firstPass);
   });
+
+  // D24-3: the cache must key on the config's VALUE, not its object identity.
+  // D24-5 routes the user's display config into the projection by resolving it
+  // per publish (resolveEffectiveConfig builds a fresh object on every call), so
+  // a reference-keyed cache would re-derive every turn's rows on every frame
+  // despite the config value never changing. Two value-equal configs must
+  // reuse the same cached row objects.
+  it("reuses cached rows across value-equal config objects", () => {
+    const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+    const asks = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+    const config = makeTranscriptDisplayConfig(
+      { kind: "preset", level: "chat" },
+      { roundTimings: true, systemEvents: true, promptEvents: true, hookExits: "all" },
+    );
+
+    const firstPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, config);
+    const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, {
+      ...config,
+    });
+    expect(secondPass[0]).toBe(firstPass[0]);
+  });
 });
 
 // --- D24-3 differential oracle: projectTimeline delegates to the shared projector
