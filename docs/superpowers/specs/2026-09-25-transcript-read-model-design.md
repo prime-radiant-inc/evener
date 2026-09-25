@@ -176,10 +176,17 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   carrying a lower generation is ignored.
   - **Daemonless reads.** The hub has no running daemon for the session. It
     stamps the distinguished generation `daemonless` instead of a number.
-    - A `daemonless` latest-window response always replaces the thread's whole
-      history, and it is exempt from the lower-generation rule.
-    - A daemon that later starts for that session has a numeric generation. That
-      numeric generation replaces the `daemonless` history in turn.
+  - **Which response wins.** Request generations decide which response applies.
+    A client has one latest-window read per thread in flight and applies only the
+    newest, so a delayed response from any generation cannot overtake a newer
+    one.
+  - **Replace or merge.** The generation token decides only that.
+    - A latest-window response whose token differs from the one the client holds
+      replaces the thread's whole history. That covers numeric to `daemonless`,
+      `daemonless` to numeric, and a higher number.
+    - Within the same `daemonless` token and incarnation, a daemonless response
+      follows the scoped rules under Reads.
+    - Updates carrying a lower numeric generation are ignored.
   That rule takes precedence over the index incarnation, epoch
   or recorded length say. So entries lost in a crash never survive on a client,
   even when the truncated file happens to match the index's covered length.
@@ -305,7 +312,7 @@ Status is derived from persisted facts:
   by the turn's completion entry, which records failed. Running the work again is a new admission and a
   new execution turn with its own ID. Model-call retries inside a round write no
   completion and stay in the running turn. Recovery re-running a reclaimed turn
-  is the only way a failed turn's ID runs again, and it writes a reopen marker.
+  is the only way an interrupted turn's ID runs again, and it writes a reopen marker.
 
 **On resume**, the session writes an interrupted completion for each new-format
 execution turn it finds open, except a turn it is about to reclaim and re-run.
@@ -574,13 +581,16 @@ one rule for when a served session fails closed. It fails closed when:
   entry records (see The projector). An unrecorded COMMUNICATE therefore means
   `communicate` cannot deliver it, and the session fails closed instead of
   dropping the message silently or delivering it without history.
+- a completion entry is not recorded. A turn's terminal status must never be
+  lost.
 
 A writer is closed only when its session closes, and a closed session accepts no
 input, so a closed writer cannot lose history while input continues. A missing
 writer in a served session is the "cannot be created" case above.
 
-Any other append that is not recorded, for example a cleanly rolled-back durable
-append, leaves the writer usable. The caller's existing error handling applies,
+Any other append that is not recorded leaves the writer usable. For example, a
+cleanly rolled-back durable append of an entry that is neither COMMUNICATE nor a
+completion. The caller's existing error handling applies,
 and nothing was announced, so no history is missing. Failing closed means:
 - a running execution is interrupted
 - `overlay/end` turns its streams and tool state into notices
@@ -809,8 +819,14 @@ phase 3 plan.
 - **Completion entries.** An unrecorded completion entry fails the session
   closed, the same as COMMUNICATE. A turn's terminal status is never silently
   lost.
-- **Tool items** carry the ordinal of their completing TOOL_RESULTS entry. That
-  makes the rule for dropping overlay execution state decidable from wire data.
+- **Tool items** carry the ordinal of their completing TOOL_RESULTS entry, as a
+  separate `completedAt` metadata field. Key and position stay tied to the
+  opener, so an item never moves when it completes. The field makes the rule for
+  dropping overlay execution state decidable from wire data.
+- **Backfill pages during an incarnation change.** A client that has seen a new
+  incarnation defers any backfill page from the new incarnation until the
+  latest-window replacement for it has applied. It discards backfill pages from
+  any other incarnation.
 - **The prelude** has its own `TurnKind` value, `prelude`.
 
 ## Acceptance criteria
