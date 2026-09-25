@@ -424,3 +424,12 @@ func historyIndex(entries []transcript.Entry, i int) int {
 	}
 	return kept
 }
+
+// entryTurns is the turns of entries, in order.
+func entryTurns(entries []transcript.Entry) []schema.Turn {
+	turns := make([]schema.Turn, len(entries))
+	for i, entry := range entries {
+		turns[i] = entry.Turn
+	}
+	return turns
+}

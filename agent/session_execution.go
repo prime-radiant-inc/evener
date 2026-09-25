@@ -247,3 +247,20 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) {
 	_, _ = s.recordTranscriptOnly(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}})
 	s.emit(events.EventCommunicate, data)
 }
+
+// highestClientMutationTurnSequence is the highest turn_m<N> sequence any of
+// turns names, as its TurnID, StableTurnID or OwningTurnID; 0 when none does.
+// A transcript holding copied turns (a fork's prefix) names sequences its own
+// client-mutation store never reserved, and its next reservation must exceed
+// them.
+func highestClientMutationTurnSequence(turns []schema.Turn) uint64 {
+	var highest uint64
+	for _, turn := range turns {
+		for _, name := range []string{turn.TurnID, turn.StableTurnID, turn.OwningTurnID} {
+			if sequence, ok := clientMutationStartSequence(name); ok {
+				highest = max(highest, sequence)
+			}
+		}
+	}
+	return highest
+}

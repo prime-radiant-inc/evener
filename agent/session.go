@@ -552,6 +552,10 @@ type Session struct {
 	// write, unset when it recorded nothing; guarded by mu and meaningful only
 	// inside the attentionMu hold that made the write.
 	lastRecorded recordedOrdinal
+	// turnSequenceFloor is the highest turn_m<N> sequence the transcript this
+	// session was created with already names (a delegate's inherited
+	// context); its client-mutation store reserves above it.
+	turnSequenceFloor uint64
 	// recordedExecutions holds the TurnID of every execution turn this
 	// session's transcript records, so one that runs again reopens; guarded
 	// by mu.

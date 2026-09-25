@@ -1786,6 +1786,18 @@ func (s *clientMutationStore) commitStateLocked(next clientMutationSnapshot) {
 // answers while another mutation is still writing its own generation to disk --
 // the answer is the same either way, since an uncommitted generation is not
 // state yet.
+// raiseTurnSequence makes the store's next reserved turn id exceed
+// turn_m<floor>: a transcript can name turns this store never reserved (a
+// fork's copied prefix). The raise is in memory; the next mutation persists
+// it, and a restart that finds none recomputes the floor from the transcript.
+func (s *clientMutationStore) raiseTurnSequence(floor uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.NextTurnSequence = max(s.state.NextTurnSequence, floor)
+}
+
 func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()

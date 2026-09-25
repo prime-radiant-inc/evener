@@ -541,6 +541,16 @@ func assertParityScenarioCoverage(t *testing.T, turns []schema.Turn) {
 			covered["delegate attention"] = true
 		case turn.Kind == schema.TurnSteering && turn.ClientMutationID != "":
 			covered["client steering"] = true
+		case turn.Kind == schema.TurnNotice:
+			covered["notice "+string(turn.Notice.Kind)] = true
+		case turn.Kind == schema.TurnCompletion:
+			covered["completion "+string(turn.Completion.Status)] = true
+		}
+		if turn.TurnKind == schema.TurnSpanExecution && strings.HasPrefix(turn.TurnID, "turn_m") {
+			covered["client-mutation execution"] = true
+		}
+		if turn.TurnKind != "" {
+			covered["turn kind "+string(turn.TurnKind)] = true
 		}
 		for _, part := range turn.Message.Content {
 			if part.Kind == llm.ContentThinking {
@@ -556,6 +566,11 @@ func assertParityScenarioCoverage(t *testing.T, turns []schema.Turn) {
 		string(schema.TurnHookCompleted), string(schema.TurnModelSwitch), string(schema.TurnCheckpoint),
 		string(schema.TurnSummary), string(schema.TurnFailure), string(schema.TurnAttentionResolution),
 		"goal continuation", "delegate attention", "client steering", "reasoning", "image result",
+		// Phase 2 identity and the transcript-only entries.
+		string(schema.TurnCommunicate), "notice " + string(schema.NoticeGoalEnded),
+		"completion " + string(schema.TurnCompleted), "completion " + string(schema.TurnFailed),
+		"client-mutation execution", "turn kind " + string(schema.TurnSpanExecution),
+		"turn kind " + string(schema.TurnSpanGap), "turn kind " + string(schema.TurnSpanDelivery),
 	} {
 		if !covered[want] {
 			t.Errorf("the parity scenario no longer records %s", want)
