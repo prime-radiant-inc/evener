@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appoverlay"
 	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // The test seams below are package-level and read by the projection
@@ -41,6 +42,9 @@ type threadHistoryConfig struct {
 	overlay             *appoverlay.Overlay
 	publish             func(appwire.HistoryUpdatedParams) error // commits one history/updated
 	resync              func(epoch uint64)                       // commits one evener/thread/resync
+	// cost prices a turn's usage at the model its entries recorded; nil
+	// reports usage without cost.
+	cost func(model string) *registry.Cost
 }
 
 // threadHistory is one thread's history projection: the recorded entries the
@@ -52,6 +56,7 @@ type threadHistory struct {
 	overlay             *appoverlay.Overlay
 	publish             func(appwire.HistoryUpdatedParams) error
 	resync              func(epoch uint64)
+	cost                func(model string) *registry.Cost
 
 	mu sync.Mutex // leaf: taken by the append hook
 	// recordedLength is the latest recorded length the hook saw, 0 before
@@ -85,6 +90,7 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 		overlay:  cfg.overlay,
 		publish:  cfg.publish,
 		resync:   cfg.resync,
+		cost:     cfg.cost,
 		wake:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -99,15 +105,17 @@ func (h *threadHistory) recorded(rec transcript.Record) {
 	if !rec.Recorded {
 		return
 	}
+	// Under the append lock, so the overlay sees records in ordinal order;
+	// outside h.mu, so h.mu stays a leaf. Before the recorded length
+	// advances, so a read that projects to a length finds every entry within
+	// it already applied to the overlay (history_read.go).
+	h.overlay.Recorded(rec)
 	h.mu.Lock()
 	if h.recordedLength == 0 {
 		h.published = rec.Offset
 	}
 	h.recordedLength, h.ordinal = rec.Offset+rec.Length, rec.Ordinal
 	h.mu.Unlock()
-	// Still under the append lock, so the overlay sees records in ordinal
-	// order; outside h.mu, so h.mu stays a leaf.
-	h.overlay.Recorded(rec)
 	select {
 	case h.wake <- struct{}{}:
 	default:

@@ -46,6 +46,19 @@ func (x *Index) Latest(limit int) (Window, error) {
 	return window, err
 }
 
+// Incarnation is the index's current incarnation, as the sidecar holds it:
+// a backfill cursor naming any other is stale.
+func (x *Index) Incarnation() (string, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	var incarnation string
+	err := x.locked(false, func() error {
+		incarnation = x.meta.Incarnation
+		return nil
+	})
+	return incarnation, err
+}
+
 // Before returns up to limit items immediately before the exclusive position.
 // A position that names no item is appwire.TranscriptItemCursorStale().
 func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, error) {

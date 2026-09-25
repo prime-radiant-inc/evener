@@ -1,5 +1,7 @@
 package appwire
 
+import "fmt"
+
 const (
 	CodeParseError     = -32700
 	CodeInvalidRequest = -32600
@@ -31,6 +33,9 @@ const (
 	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
 	ErrorInternal                  ErrorInfo = "internal"
+	// ErrorHistoryFailed marks a read of a thread whose history entered its
+	// failed state: an entry that fails to project, named in the message.
+	ErrorHistoryFailed ErrorInfo = "historyFailed"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -199,6 +204,16 @@ func InternalError(message string) WireError {
 		Code:    CodeInternalError,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInternal},
+	}
+}
+
+// HistoryFailed reports a read of a thread whose history failed: the
+// transcript entry at ordinal cannot be projected, so no read can serve it.
+func HistoryFailed(ordinal uint64) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
+		Data:    ErrorData{EvenerErrorInfo: ErrorHistoryFailed},
 	}
 }
 

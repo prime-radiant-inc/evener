@@ -67,6 +67,7 @@ func TestWireErrorConstructors(t *testing.T) {
 		{"InstanceRenamePersisted", InstanceRenamePersisted("leftover"), -32603, ErrorInstanceRenamePersisted, "leftover"},
 		{"InstanceRemoveApplied", InstanceRemoveApplied("leftover"), -32603, ErrorInstanceRemoveApplied, "leftover"},
 		{"EndpointConflict", EndpointConflict("moved"), -32013, ErrorEndpointConflict, "moved"},
+		{"HistoryFailed", HistoryFailed(7), -32603, ErrorHistoryFailed, "thread history failed at entry 7"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.err.Code != c.wantCode {
