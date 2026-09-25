@@ -57,8 +57,12 @@ func TestWriterZeroProgressReturnsErrShortWrite(t *testing.T) {
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("Append error = %v, want io.ErrShortWrite", err)
 	}
-	if seq := tailNextSeq(w); seq != 0 {
-		t.Fatalf("next sequence = %d, want 0 after failed append", seq)
+	// The attempt consumed its sequence number but recorded no ordinal.
+	if seq := tailNextSeq(w); seq != 1 {
+		t.Fatalf("next sequence = %d, want 1: a failed append consumes its sequence", seq)
+	}
+	if w.tail.nextOrdinal != 0 {
+		t.Fatalf("next ordinal = %d, want 0: nothing was recorded", w.tail.nextOrdinal)
 	}
 
 	data, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -202,8 +206,11 @@ func TestAppendDurable_PartialLineRollbackFailurePoisonsWriter(t *testing.T) {
 	if !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("append error = %v, want a rollback failure over the partial line", err)
 	}
-	if seq := tailNextSeq(w); seq != 0 {
-		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", seq)
+	if seq := tailNextSeq(w); seq != 1 {
+		t.Fatalf("next sequence = %d, want 1: an append consumes its sequence even when it records nothing", seq)
+	}
+	if w.tail.nextOrdinal != 0 {
+		t.Fatalf("next ordinal = %d, want 0: a partial line is no entry", w.tail.nextOrdinal)
 	}
 
 	before, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -280,8 +287,11 @@ func TestAppend_PartialLineFailurePoisonsWriter(t *testing.T) {
 	if err == nil || errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("buffered append error = %v, want the write failure itself", err)
 	}
-	if seq := tailNextSeq(w); seq != 0 {
-		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", seq)
+	if seq := tailNextSeq(w); seq != 1 {
+		t.Fatalf("next sequence = %d, want 1: an append consumes its sequence even when it records nothing", seq)
+	}
+	if w.tail.nextOrdinal != 0 {
+		t.Fatalf("next ordinal = %d, want 0: a partial line is no entry", w.tail.nextOrdinal)
 	}
 
 	before, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -358,8 +368,8 @@ func TestAppend_NoBytesWrittenLeavesWriterUsable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode retry entry: %v", err)
 	}
-	if entry.Seq != 0 {
-		t.Fatalf("retry entry seq = %d, want the 0 the failed append never spent", entry.Seq)
+	if entry.Seq != 1 {
+		t.Fatalf("retry entry seq = %d, want 1: the failed append consumed 0", entry.Seq)
 	}
 }
 
@@ -412,8 +422,8 @@ func assertSingleLandedEntry(t *testing.T, path, text string) {
 	if entry.Turn.Message.Text() != text {
 		t.Fatalf("entry text = %q, want %q", entry.Turn.Message.Text(), text)
 	}
-	if entry.Seq != 0 {
-		t.Fatalf("entry seq = %d, want the 0 the rolled-back entry never spent", entry.Seq)
+	if entry.Seq != 1 {
+		t.Fatalf("entry seq = %d, want 1: the rolled-back entry consumed 0", entry.Seq)
 	}
 }
 

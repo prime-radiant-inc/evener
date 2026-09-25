@@ -589,8 +589,9 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 
 // AppendBatch writes every turn as one write and one fsync, all-or-nothing:
 // either every line is in the file at contiguous sequence numbers, or a
-// rollback to the batch's start offset leaves none of them and spends no
-// sequence number. It returns the sequence number the first turn took. A batch
+// rollback to the batch's start offset leaves none of them. A rolled-back batch
+// still consumes its sequence numbers (a reader in another process may have
+// seen its lines) but takes no entry ordinal. It returns the sequence number the first turn took. A batch
 // whose whole buffer landed but did not sync is a retained record, per the
 // contract on Append. No caller until A2's fold; kept here as the exported
 // entry to the one write primitive. No-op returning (0, nil) for a nil or
@@ -676,6 +677,11 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(buf.Len() - start), Turn: turn}
 	}
 	data := buf.Bytes()
+	// The batch's sequence numbers are spent from here on, whatever becomes of
+	// its lines. A rolled-back line was in the file for a moment, and a reader
+	// in another process may have seen it; reusing its Seq would give that
+	// reader two different entries under one number.
+	w.tail.nextSeq += len(turns)
 
 	// Only the durable door rolls back, and only a rollback needs the start
 	// offset. The buffered door leaves a failed write's bytes where they are,
@@ -763,8 +769,8 @@ func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOff
 
 // commitBatchLocked records a batch whose whole buffer is in the file: each
 // line takes the next entry ordinal and its place in the recorded length, and
-// spends its sequence number and counts the failures it settles — the
-// bookkeeping a later reader of the file would do. Callers hold the tail.
+// counts the failures it settles — the bookkeeping a later reader of the file
+// would do. Only a recorded line takes an ordinal. Callers hold the tail.
 func (w *Writer) commitBatchLocked(batch []Record) {
 	for i := range batch {
 		rec := &batch[i]
@@ -772,7 +778,7 @@ func (w *Writer) commitBatchLocked(batch []Record) {
 		rec.Offset = w.tail.recordedLength
 		w.tail.nextOrdinal++
 		w.tail.recordedLength += rec.Length
-		w.countAppendedEntryLocked(rec.Turn)
+		w.failures.Observe(rec.Turn)
 	}
 }
 
@@ -878,16 +884,6 @@ func (w *Writer) DrainWarnings() []error {
 func (w *Writer) queueWarningLocked(err error) {
 	w.retainedWarnings = append(w.retainedWarnings, err)
 	w.pendingWarnings.Store(int32(len(w.retainedWarnings)))
-}
-
-// countAppendedEntryLocked spends the entry's sequence number and counts the
-// failures the entry settles. Both figures are statements about the transcript,
-// so they move for exactly the entries a later reader of that file would see —
-// which is why a rollback that could not take a written entry back out spends
-// them too, and a rollback that removed the entry does not.
-func (w *Writer) countAppendedEntryLocked(turn schema.Turn) {
-	w.tail.nextSeq++
-	w.failures.Observe(turn)
 }
 
 // writeLineLocked writes the whole line, reporting how much of it reached the
