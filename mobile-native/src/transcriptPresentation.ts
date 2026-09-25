@@ -108,9 +108,8 @@ function actionSummary(
 	);
 }
 
-// activityMode is only ever called with activity rows, so an activity's own
-// failed/running state is the whole attention rule here. Notice criticality is
-// timeline.ts's isCriticalNotice, not a second copy in this layer.
+// An activity that is running or failed is attention-worthy. Notice criticality
+// is timeline.ts's isCriticalNotice, not a rule of this layer.
 function activityIsCritical(
 	item: Extract<MobileTimelineItem, { kind: "activity" }>,
 ): boolean {
