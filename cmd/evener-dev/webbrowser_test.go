@@ -703,15 +703,17 @@ func TestExecGuardLauncherTerminateSendsTERM(t *testing.T) {
 // inherited GOCACHE (the helper then leaves it alone, as on CI) or the helper
 // resolved it.
 func TestExecGuardLauncherPreparesThePrivateGoHome(t *testing.T) {
-	userCache := strings.TrimSpace(string(must(exec.Command("go", "env", "GOCACHE").Output())))
 	for _, inherited := range []bool{true, false} {
 		t.Run(map[bool]string{true: "GOCACHE inherited", false: "GOCACHE resolved"}[inherited], func(t *testing.T) {
 			if inherited {
-				t.Setenv("GOCACHE", userCache)
+				t.Setenv("GOCACHE", t.TempDir())
 			} else {
 				t.Setenv("GOCACHE", "")
 				os.Unsetenv("GOCACHE") //nolint:errcheck // t.Setenv restores it
 			}
+			// The user's cache is whatever go itself resolves in this
+			// environment: GOCACHE when set, else the XDG or HOME default.
+			userCache := strings.TrimSpace(string(must(exec.Command("go", "env", "GOCACHE").Output())))
 			t.Chdir(filepath.Join("..", ".."))
 			root := t.TempDir()
 			var log bytes.Buffer
