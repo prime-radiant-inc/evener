@@ -335,6 +335,13 @@ func (h *threadHistory) retire() uint64 {
 	return h.epoch
 }
 
+// retired reports whether the history was retired (or closed).
+func (h *threadHistory) retired() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closed
+}
+
 // close publishes every entry recorded so far, then stops the projection
 // goroutine and waits for it. Idempotent.
 func (h *threadHistory) close() {
@@ -499,7 +506,7 @@ func (h *threadHistory) recover() bool {
 	h.resync(epoch)
 	var err error
 	for attempt := range threadHistoryMaxRebuilds {
-		if attempt > 0 && h.stopping() {
+		if attempt > 0 && (h.stopping() || h.retired()) {
 			return false
 		}
 		if err = h.rebuildThroughBoundary(); err == nil {
@@ -511,6 +518,12 @@ func (h *threadHistory) recover() bool {
 		entryErr = &transcriptindex.EntryError{Ordinal: ordinal, Err: err}
 	}
 	h.mu.Lock()
+	if h.closed {
+		// Retired mid-recovery: its epoch is final, recorded by the registry
+		// for the thread's next history, and must not move past it.
+		h.mu.Unlock()
+		return false
+	}
 	h.failed = entryErr
 	h.dropQueueLocked()
 	h.overflowed = false

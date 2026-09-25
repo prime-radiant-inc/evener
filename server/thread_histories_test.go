@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -203,5 +204,52 @@ func TestThreadHistoriesRecreatedHistoryKeepsItsEpoch(t *testing.T) {
 	closeHistories([]*threadHistory{r.detach("child")})
 	if third := r.ensureDescendant("", "child", "local:child", path, "1", noopHistoryPublish, noopHistoryResync, nil); third == nil || third.Epoch() < 5 {
 		t.Fatalf("history recreated after a detach = %v", third)
+	}
+}
+
+// A delegate released while its recovery is failing retires at its epoch:
+// the failing recovery neither bumps it nor pushes a resync afterwards, so
+// the history recreated for the thread starts at or above every epoch any
+// client was sent.
+func TestThreadHistoriesReleaseDuringAFailingRecoveryKeepsEpochsMonotonic(t *testing.T) {
+	r := newTestThreadHistories(t)
+	path := filepath.Join(t.TempDir(), "child.transcript.jsonl")
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	var sentMu sync.Mutex
+	var sent uint64
+	resync := func(epoch uint64) {
+		sentMu.Lock()
+		sent = max(sent, epoch)
+		sentMu.Unlock()
+	}
+	h := r.ensure("child", "local:child", path, 0, 0, "1", noopHistoryPublish, resync, nil)
+	writer.OnRecorded(h.recorded)
+	parked, release := make(chan struct{}), make(chan struct{})
+	rebuilds := 0
+	// Parked in the last attempt: nothing after it checks for close.
+	breakProjection(t, func() {
+		rebuilds++
+		if rebuilds == threadHistoryMaxRebuilds {
+			close(parked)
+			<-release
+		}
+	})
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("fails to project")), transcript.RecordOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	awaitClosed(t, parked, "the last failing rebuild to park")
+	released := r.detach("child")
+	close(release)
+	closeHistories([]*threadHistory{released})
+
+	again := r.ensure("child", "local:child", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	if again.Epoch() < sent {
+		t.Fatalf("recreated history at epoch %d, below the %d a client was sent", again.Epoch(), sent)
 	}
 }
