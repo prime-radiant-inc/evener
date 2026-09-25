@@ -23,8 +23,8 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 3
-	projectionID  = "apptranscript-items-v1/entry-ordinal-positions-v2"
+	formatVersion = 4
+	projectionID  = "transcript-read-model-v3"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -69,8 +69,8 @@ type meta struct {
 	Items        uint64 `json:"items"`
 	Turns        uint64 `json:"turns"`
 	Updates      uint64 `json:"updates"`
-	// The open turn, for grouping the next entry. There is one once any
-	// entry is covered.
+	// The legacy grouping state, for grouping the next legacy entry: whether
+	// a legacy group is open, and its id and summary slot.
 	Open       bool   `json:"open"`
 	OpenTurnID string `json:"open_turn_id"`
 	TurnSlot   uint64 `json:"turn_slot"`
@@ -321,16 +321,15 @@ func (x *Index) tailSum(end int64) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// restoreBuilder recovers the open turn's state from meta and records.
+// restoreBuilder recovers the builder's state from meta and records: the open
+// legacy group's calls, and the new-format turns that can still take entries.
 func (x *Index) restoreBuilder() error {
-	b := builder{x: x, grouper: apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}, calls: map[string]uint64{}, names: map[string]toolName{}}
-	if x.meta.Entries > 0 {
-		buf, err := x.turns.read(x.meta.TurnSlot, 1)
-		if err != nil {
-			return err
-		}
-		b.turn, b.turnSlot = decodeTurn(buf), x.meta.TurnSlot
-		// The open turn's items are the newest records.
+	b := newBuilder(x)
+	b.grouper = apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}
+	if x.meta.Open {
+		b.turnSlot = x.meta.TurnSlot
+		// The open legacy group's items are the newest records: any
+		// new-format entry would have closed it.
 		for slot := x.items.n; slot > 0; slot-- {
 			buf, err := x.items.read(slot-1, 1)
 			if err != nil {
@@ -349,8 +348,57 @@ func (x *Index) restoreBuilder() error {
 			}
 		}
 	}
+	if err := b.restoreOpenTurns(); err != nil {
+		return err
+	}
 	x.builder = b
 	x.builderStale = false
+	return nil
+}
+
+// restoreOpenTurns fills the open map from the summaries: every open
+// execution, the latest gap turn and the prelude.
+func (b *builder) restoreOpenTurns() error {
+	const chunk = 256
+	var open []uint64
+	gap, prelude := -1, -1
+	for start := uint64(0); start < b.x.turns.n; start += chunk {
+		count := min(chunk, b.x.turns.n-start)
+		buf, err := b.x.turns.read(start, int(count))
+		if err != nil {
+			return err
+		}
+		for i := range count {
+			record := decodeTurn(buf[i*turnRecordSize:])
+			switch {
+			case record.Kind == turnKindExecution && record.Status == statusOpen:
+				open = append(open, start+i)
+			case record.Kind == turnKindGap:
+				gap = int(start + i)
+			case record.Kind == turnKindPrelude:
+				prelude = int(start + i)
+			}
+		}
+	}
+	for _, slot := range []int{gap, prelude} {
+		if slot >= 0 {
+			open = append(open, uint64(slot))
+		}
+	}
+	for _, slot := range open {
+		buf, err := b.x.turns.read(slot, 1)
+		if err != nil {
+			return err
+		}
+		id, err := b.x.strings.get(decodeTurn(buf).ID)
+		if err != nil {
+			return err
+		}
+		b.open[string(id)] = slot
+		if gap >= 0 && slot == uint64(gap) {
+			b.gap = string(id)
+		}
+	}
 	return nil
 }
 
@@ -412,7 +460,8 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.meta = meta{Format: formatVersion, Projection: projectionID, Incarnation: incarnation, FileIdentity: apptranscript.FileIdentity(info)}
 	x.prelude = nil
 	x.stale, x.builderStale = false, false
-	x.builder = builder{x: x, global: map[string]string{}}
+	x.builder = newBuilder(x)
+	x.builder.global = map[string]string{}
 	x.rebuilds++
 	if err := x.scan(length); err != nil {
 		return err

@@ -52,6 +52,31 @@ func assertAllWindows(t testing.TB, x *Index, path string) {
 	}
 }
 
+// assertAllCandidates pages through every item, newest page first, and
+// requires the whole list to equal the reference of the transcript at path.
+func assertAllCandidates(t testing.TB, x *Index, path string) {
+	t.Helper()
+	want := referenceCandidates(t, path)
+	var got []appitempaging.TranscriptItemCandidate
+	window, err := x.Latest(appwire.TranscriptItemPageLimit)
+	for {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(append([]appitempaging.TranscriptItemCandidate(nil), window.Candidates...), got...)
+		if !window.HasOlder {
+			break
+		}
+		window, err = x.Before(window.Candidates[0].Position, appwire.TranscriptItemPageLimit)
+	}
+	if len(want) == 0 {
+		want = nil
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("items diverge from the reference\n got: %s\nwant: %s", dump(got), dump(want))
+	}
+}
+
 func TestWindowsEqualTheReferenceOnEveryBoundary(t *testing.T) {
 	for _, fx := range fixtures() {
 		t.Run(fx.name, func(t *testing.T) {

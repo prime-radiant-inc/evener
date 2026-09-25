@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/schema/schematest"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -252,9 +253,10 @@ func fixtures() []fixture {
 		{name: "failures", header: header, lines: failures},
 		{name: "standalone kinds", header: header, lines: standalones},
 		{name: "transcript only", header: header, lines: interleaveTranscriptOnly(append(append([]fixtureLine(nil), basic...), communicate...))},
-		// Last: its final entry sits in the validated tail of "everything".
-		{name: "ordinals", header: header, lines: ordinals},
 	}
+	sets = append(sets, newFormatFixtures(header, prelude)...)
+	// Last: its final entry sits in the validated tail of "everything".
+	sets = append(sets, fixture{name: "ordinals", header: header, lines: ordinals})
 	var everything []fixtureLine
 	for _, set := range sets {
 		everything = append(everything, set.lines...)
@@ -275,4 +277,196 @@ func interleaveTranscriptOnly(lines []fixtureLine) []fixtureLine {
 		out = append(out, entryLine(turn))
 	}
 	return out
+}
+
+// inTurn stamps turn as a new-format entry of turn turnID: the identity format
+// marker and TurnID every writer placement stamps.
+func inTurn(turnID string, turn schema.Turn) schema.Turn {
+	turn.Format = schema.TurnFormatIdentity
+	turn.TurnID = turnID
+	return turn
+}
+
+// opens is inTurn for a turn's first entry, which also records the turn's kind.
+func opens(turnID string, kind schema.TurnSpanKind, turn schema.Turn) schema.Turn {
+	turn = inTurn(turnID, turn)
+	turn.TurnKind = kind
+	return turn
+}
+
+func transcriptOnly(kind schema.TurnKind) schema.Turn {
+	return schema.Turn{Kind: kind, Message: llm.Message{Role: llm.RoleUser}}
+}
+
+func completion(turnID string, status schema.TurnCompletionStatus, second int, durationMS int64) schema.Turn {
+	turn := at(transcriptOnly(schema.TurnCompletion), second)
+	turn.Completion = &schema.TurnCompletionInfo{Status: status, CompletedAt: turn.Timestamp, DurationMS: durationMS}
+	return inTurn(turnID, turn)
+}
+
+func reopen(turnID string) schema.Turn { return inTurn(turnID, transcriptOnly(schema.TurnReopen)) }
+
+func communicated(turnID, callID, message string) schema.Turn {
+	turn := transcriptOnly(schema.TurnCommunicate)
+	turn.Communicate = &schema.CommunicateInfo{CallID: callID, EndTurn: true, Message: message}
+	return inTurn(turnID, turn)
+}
+
+func noticed(info schema.NoticeInfo) schema.Turn {
+	turn := transcriptOnly(schema.TurnNotice)
+	turn.Notice = &info
+	return turn
+}
+
+func withModel(turn schema.Turn, model string) schema.Turn {
+	turn.Model = model
+	return turn
+}
+
+func inRound(turn schema.Turn, roundID string) schema.Turn {
+	turn.RoundID = roundID
+	return turn
+}
+
+// foldCopy is the copy of turn a compaction fold re-appends after its markers.
+func foldCopy(turn schema.Turn, original uint64) schema.Turn {
+	turn.OriginalOrdinal = &original
+	return turn
+}
+
+// newFormatFixtures are transcripts whose entries carry persisted turn
+// identity. Turn ids are unique across them, since "everything" joins them.
+func newFormatFixtures(header, prelude transcript.Header) []fixture {
+	execution, gap, delivery := schema.TurnSpanExecution, schema.TurnSpanGap, schema.TurnSpanDelivery
+
+	session := []fixtureLine{
+		entryLine(opens(appwire.SystemPreludeTurnID, schema.TurnSpanPrelude, at(standalone(schema.TurnEnvironment, "prelude environment"), 1))),
+		entryLine(inTurn(appwire.SystemPreludeTurnID, standalone(schema.TurnNotesContext, "prelude notes"))),
+		entryLine(opens("turn_m10", execution, withModel(at(user("new format"), 2), "gpt-test"))),
+		entryLine(inTurn("turn_m10", withModel(withUsage(at(inRound(assistant(
+			text("a"), text("b"), thinking("plan"),
+			call("f1", "read_file", `{"path":"x","intent":"read x"}`),
+			call("fk1", "communicate", `{"message":"told"}`),
+		), "r_10"), 3), 11, 4, 2, 15), "gpt-test"))),
+		entryLine(at(communicated("turn_m10", "fk1", "told"), 4)),
+		// Both results are nameless: the call names them, and the
+		// communicate call's result shows nothing.
+		entryLine(inTurn("turn_m10", at(results(result("f1", "", "file body"), result("fk1", "", "delivered")), 4))),
+		entryLine(inTurn("turn_m10", withModel(withUsage(at(inRound(assistant(text("done")), "r_11"), 5), 3, 2, 0, 5), "gpt-next"))),
+		entryLine(completion("turn_m10", schema.TurnCompleted, 6, 4000)),
+	}
+
+	gaps := []fixtureLine{
+		entryLine(opens("t_gap11", gap, at(standalone(schema.TurnHookCompleted, "first hook"), 10))),
+		entryLine(inTurn("t_gap11", standalone(schema.TurnHookCompleted, "second hook"))),
+		entryLine(inTurn("t_gap11", withModel(standalone(schema.TurnModelSwitch, "switched to gpt-next"), "gpt-next"))),
+		entryLine(opens("turn_m11", execution, user("between the gaps"))),
+		entryLine(completion("turn_m11", schema.TurnCompleted, 11, 5)),
+		entryLine(opens("t_gap11b", gap, standalone(schema.TurnHookCompleted, "a later gap"))),
+	}
+
+	deliveries := []fixtureLine{
+		entryLine(opens("turn_m12", execution, user("deliver"))),
+		entryLine(inTurn("turn_m12", inRound(assistant(text("working"), call("d1", "shell", `{"cmd":"ls"}`)), "r_12"))),
+		entryLine(opens("t_delivery12", delivery, steering("a delivered note"))),
+		entryLine(inTurn("turn_m12", results(result("d1", "shell", "listing"), result("zz", "", "no such call"), result("zy", "grep", "named, no such call")))),
+		entryLine(inTurn("turn_m12", assistant(text("after the delivery")))),
+		entryLine(completion("turn_m12", schema.TurnCompleted, 20, 1500)),
+	}
+
+	failure := schema.NewTurn(schema.TurnFailure, llm.User(""))
+	failure.Error = &schema.TurnFailureInfo{Message: "model refused", Title: "Provider error"}
+	failedRetry := []fixtureLine{
+		entryLine(opens("turn_m13", execution, user("try"))),
+		entryLine(inTurn("turn_m13", assistant(text("trying")))),
+		entryLine(inTurn("turn_m13", failure)),
+		entryLine(completion("turn_m13", schema.TurnFailed, 30, 900)),
+		entryLine(opens("turn_m14", execution, user("try again"))),
+		entryLine(inTurn("turn_m14", assistant(text("succeeded")))),
+		entryLine(completion("turn_m14", schema.TurnCompleted, 31, 800)),
+	}
+
+	reclaimed := []fixtureLine{
+		entryLine(opens("turn_m15", execution, at(user("crash here"), 40))),
+		entryLine(inTurn("turn_m15", withUsage(at(assistant(text("partial")), 41), 5, 5, 0, 10))),
+		// Recovery reclaims the open turn and runs it again.
+		entryLine(reopen("turn_m15")),
+		entryLine(inTurn("turn_m15", at(assistant(text("reclaimed work")), 43))),
+		entryLine(completion("turn_m15", schema.TurnCompleted, 45, 5000)),
+		// A failed turn recovery reclaims after other work.
+		entryLine(opens("turn_m16", execution, user("fail first"))),
+		entryLine(inTurn("turn_m16", standalone(schema.TurnFailure, "first run failed"))),
+		entryLine(completion("turn_m16", schema.TurnFailed, 46, 100)),
+		entryLine(opens("t_gap16", gap, standalone(schema.TurnHookCompleted, "between the runs"))),
+		entryLine(reopen("turn_m16")),
+		entryLine(inTurn("turn_m16", assistant(text("second run")))),
+		entryLine(completion("turn_m16", schema.TurnCompleted, 48, 2500)),
+	}
+
+	legacyPrefix := []fixtureLine{
+		entryLine(user("legacy question")),
+		entryLine(assistant(text("legacy answer"), call("lg1", "read_file", `{}`))),
+		entryLine(results(result("lg1", "read_file", "legacy result"))),
+		entryLine(opens("turn_m18", execution, user("new question"))),
+		entryLine(inTurn("turn_m18", assistant(text("new answer")))),
+		entryLine(completion("turn_m18", schema.TurnCompleted, 50, 10)),
+	}
+
+	question := inTurn("turn_m19", user("fold me"))
+	answer := inTurn("turn_m19", withUsage(assistant(text("original answer"), call("fc1", "read_file", `{}`)), 2, 2, 0, 4))
+	answered := inTurn("turn_m19", results(result("fc1", "read_file", "original result")))
+	question.TurnKind = execution
+	folds := []fixtureLine{
+		entryLine(question),
+		entryLine(answer),
+		entryLine(answered),
+		entryLine(completion("turn_m19", schema.TurnCompleted, 52, 10)),
+		entryLine(opens("t_gap19", gap, standalone(schema.TurnCheckpoint, "checkpoint"))),
+		entryLine(foldCopy(question, 0)),
+		entryLine(foldCopy(answer, 1)),
+		entryLine(foldCopy(answered, 2)),
+		entryLine(inTurn("t_gap19", standalone(schema.TurnHookCompleted, "after the fold"))),
+	}
+
+	echoes := []fixtureLine{
+		entryLine(opens("turn_m20", execution, user("say it"))),
+		entryLine(inTurn("turn_m20", assistant(text("same "), text("words"), call("ek1", "communicate", `{"message":"same words"}`)))),
+		entryLine(communicated("turn_m20", "ek1", " same words ")),
+		entryLine(inTurn("turn_m20", results(result("ek1", "communicate", "delivered")))),
+		entryLine(inTurn("turn_m20", assistant(text("more"), call("ek2", "communicate", `{"message":"other words"}`)))),
+		entryLine(communicated("turn_m20", "ek2", "other words")),
+		entryLine(inTurn("turn_m20", results(result("ek2", "", "delivered")))),
+		entryLine(completion("turn_m20", schema.TurnCompleted, 60, 10)),
+	}
+
+	notices := []fixtureLine{
+		entryLine(opens("t_gap21", gap, noticed(schema.NoticeInfo{Kind: schema.NoticeToolRepair, ToolRepair: &schema.ToolRepairNotice{ToolName: "read_file", CallID: "c9", Changes: []string{"renamed argument"}}}))),
+		entryLine(inTurn("t_gap21", noticed(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: "complete", Iterations: 2}}))),
+		entryLine(inTurn("t_gap21", noticed(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: 3}}))),
+		entryLine(opens("turn_m21", execution, user("notice inside"))),
+		entryLine(inTurn("turn_m21", noticed(schema.NoticeInfo{Kind: schema.NoticeSkillActivated, SkillActivated: &schema.SkillActivatedNotice{Name: "a-skill"}}))),
+		entryLine(completion("turn_m21", schema.TurnCompleted, 70, 10)),
+	}
+
+	return []fixture{
+		{name: "new format session", header: prelude, lines: session},
+		{name: "gap turns", header: header, lines: gaps},
+		{name: "delivery inside an execution", header: header, lines: deliveries},
+		{name: "failed execution and retry", header: header, lines: failedRetry},
+		{name: "open and reclaimed", header: header, lines: reclaimed},
+		{name: "legacy prefix", header: header, lines: legacyPrefix},
+		{name: "fold copies", header: header, lines: folds},
+		{name: "communicate echoes", header: header, lines: echoes},
+		{name: "notices", header: header, lines: notices},
+	}
+}
+
+// legacy reports whether every entry of the fixture is a legacy entry.
+func (fx fixture) legacy() bool {
+	for _, line := range fx.lines {
+		if line.turn.Format != 0 {
+			return false
+		}
+	}
+	return true
 }

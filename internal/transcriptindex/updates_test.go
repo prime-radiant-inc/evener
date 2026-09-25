@@ -31,12 +31,12 @@ func TestChangedSinceReturnsWhatLaterEntriesChanged(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		before := referenceCandidates(t, path)
-		beforeTurns := referenceTurns(t, path)
+		beforeProjection := referenceProjection(t, path)
+		before, beforeTurns := candidatesOf(beforeProjection), shownTurns(beforeProjection)
 		appendBytes(t, path, joinLines(lines[cut:]))
 		catchUp(t, x)
-		after := referenceCandidates(t, path)
-		afterTurns := referenceTurns(t, path)
+		afterProjection := referenceProjection(t, path)
+		after, afterTurns, allAfterTurns := candidatesOf(afterProjection), shownTurns(afterProjection), allTurns(afterProjection)
 
 		changes, err := x.ChangedSince(held.Length)
 		if err != nil {
@@ -63,10 +63,11 @@ func TestChangedSinceReturnsWhatLaterEntriesChanged(t *testing.T) {
 				t.Fatalf("cut %d: item %v changed but was not returned", cut, old.Position)
 			}
 		}
-		// Every returned turn is the current form of a turn with its id, and
-		// every turn held before the cut whose scalars changed is returned.
+		// Every returned turn is the current form of a turn with its id (one
+		// with no items yet included), and every turn held before the cut
+		// whose scalars changed is returned.
 		currentTurn := func(turn appwire.Turn) bool {
-			for _, candidate := range afterTurns {
+			for _, candidate := range allAfterTurns {
 				if reflect.DeepEqual(turn, turnScalars(candidate)) {
 					return true
 				}

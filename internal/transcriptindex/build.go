@@ -3,17 +3,21 @@ package transcriptindex
 import (
 	"errors"
 	"maps"
+	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
-// errRebuild reports an entry the index cannot apply incrementally: a tool
-// result with no name of its own, for a call the open turn does not know. The
-// whole-file projection names it from every call seen before it, which only
-// a full build has at hand.
+// errRebuild reports an entry the index cannot apply incrementally. One is a
+// legacy tool result with no name of its own, for a call the open legacy turn
+// does not know: the whole-file projection names it from every call seen
+// before it, which only a full build has at hand. The other is a new-format
+// tool result or communicate message replayed after a crash, whose turn's
+// awaiting ASSISTANT entry an in-place rewrite already moved past it.
 var errRebuild = errors.New("transcript index needs a full rebuild")
 
 // toolName is the projection's tool-name state for one call id: the name its
@@ -23,23 +27,56 @@ type toolName struct {
 	present bool
 }
 
-// builder applies entries, in file order, to the index's records. Its state
-// is the open turn: the grouping state, the open turn's summary and call
-// items, and the tool names the open turn registered. A full build also keeps
-// every tool name registered so far (global), as the whole-file projection
-// does; an index that only extends does without it (see errRebuild).
+// builder applies entries, in file order, to the index's records.
+//
+// Legacy entries are grouped as today's projection groups them. The builder
+// holds the open legacy group: the grouping state, the group's call items,
+// and the tool names it registered. A full build also keeps every tool name
+// registered so far (global), as the whole-file projection does; an index
+// that only extends does without it (see errRebuild).
+//
+// New-format entries join the turn their TurnID names. The builder holds the
+// turns that can still take entries (open), so the common case finds its
+// turn without a search; everything else a new-format turn needs, its status
+// and its awaiting ASSISTANT entry, is in its summary record.
 type builder struct {
 	x        *Index
 	grouper  apptranscript.TurnGrouper
-	turnSlot uint64
-	turn     turnRecord
-	calls    map[string]uint64 // open turn: call id -> item slot
+	turnSlot uint64            // the open legacy group's summary
+	calls    map[string]uint64 // open legacy group: call id -> item slot
 	names    map[string]toolName
 	global   map[string]string
+	// open maps the TurnID of each new-format turn that can still take
+	// entries to its summary slot: open executions, the latest gap turn and
+	// the prelude. An entry of any other turn searches for it (findTurn).
+	open map[string]uint64
+	gap  string // the latest gap turn's id
+	// summary caches the summary record at summarySlot, written through.
+	summary     turnRecord
+	summarySlot uint64
+	hasSummary  bool
+	// assistant is the latest ASSISTANT entry with tool calls this builder
+	// applied, at assistantOffset, so the results after it need not read it
+	// back.
+	assistant       *schema.Turn
+	assistantOffset int64
+	models          map[string]strRef
+}
+
+func newBuilder(x *Index) builder {
+	return builder{x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{}}
 }
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	if entry.Format == schema.TurnFormatIdentity {
+		return b.applyIdentity(ordinal, offset, length, entry)
+	}
+	return b.applyLegacy(ordinal, offset, length, entry)
+}
+
+// applyLegacy indexes a legacy entry by today's rules.
+func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
 	if entry.Kind.TranscriptOnly() {
 		// Today's projection passes over it: the entry takes its ordinal and
 		// nothing else.
@@ -49,15 +86,19 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 	version := ordinal + 1
 	turnID, newTurn := b.grouper.Place(entry, entryIndex)
 	if newTurn {
-		if err := b.openTurn(turnID, ordinal, offset); err != nil {
+		slot, err := b.openTurn(turnID, turnKindLegacy, ordinal, offset)
+		if err != nil {
 			return err
 		}
+		b.turnSlot = slot
+		b.calls = map[string]uint64{}
+		b.names = map[string]toolName{}
 	}
 	seed, err := b.seed(entry)
 	if err != nil {
 		return err
 	}
-	items, parts := apptranscript.ProjectTurnParts(turnID, entryIndex, *entry, maps.Clone(seed), nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, maps.Clone(seed), nil, apptranscript.ToolResultOutputImages)
 	b.recordNames(entry, seed)
 	for i, item := range items {
 		c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
@@ -75,13 +116,7 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 				continue
 			}
 		}
-		record := itemRecord{Entry: version, Part: uint32(parts[i]), Turn: uint32(b.turnSlot), Version: version, Opener: c}
-		if merges {
-			if record.Call, err = b.x.strings.put([]byte(item.CallID)); err != nil {
-				return err
-			}
-		}
-		slot, err := b.x.items.append(encodeItem(record))
+		slot, err := b.appendItem(item, parts[i], b.turnSlot, c)
 		if err != nil {
 			return err
 		}
@@ -89,22 +124,320 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 			b.calls[item.CallID] = slot
 		}
 	}
-	return b.stampTurn(entry, version, offset, length)
+	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
 }
 
-func (b *builder) openTurn(turnID string, ordinal uint64, offset int64) error {
+// applyIdentity indexes a new-format entry: it joins the turn its TurnID
+// names, and a tool result completes the call of its turn's awaiting
+// ASSISTANT entry.
+func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	if entry.OriginalOrdinal != nil {
+		// A fold copy is model history for resume; its original already
+		// projected. It takes its ordinal and nothing else.
+		return nil
+	}
+	// A legacy continuation after a new-format entry opens its own group.
+	b.grouper = apptranscript.TurnGrouper{}
+	slot, err := b.place(ordinal, offset, entry)
+	if err != nil {
+		return err
+	}
+	summary, err := b.load(slot)
+	if err != nil {
+		return err
+	}
+	switch entry.Kind {
+	case schema.TurnTool, schema.TurnToolResults, schema.TurnCommunicate:
+		if summary.AwaitingLength > 0 && summary.AwaitingOrdinal > ordinal {
+			return errRebuild
+		}
+	}
+	turnID := entry.TurnID
+	c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
+	switch entry.Kind {
+	case schema.TurnTool, schema.TurnToolResults:
+		if err := b.applyResults(slot, summary, entry, c); err != nil {
+			return err
+		}
+	case schema.TurnCommunicate:
+		echoes, err := b.echoesAwaiting(summary, entry)
+		if err != nil {
+			return err
+		}
+		if !echoes {
+			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
+				return err
+			}
+		}
+	default:
+		if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
+			return err
+		}
+	}
+	if entry.Kind == schema.TurnCompletion {
+		delete(b.open, turnID)
+	}
+	if entry.Kind == schema.TurnAssistant && hasToolCall(entry) {
+		b.assistant, b.assistantOffset = entry, offset
+	}
+	return b.stampTurn(slot, entry, ordinal, offset, length)
+}
+
+// place returns the summary slot of the new-format turn the entry joins,
+// appending a summary for a turn's first entry.
+func (b *builder) place(ordinal uint64, offset int64, entry *schema.Turn) (uint64, error) {
+	id := entry.TurnID
+	if slot, ok := b.open[id]; ok {
+		return slot, nil
+	}
+	// Only a turn's first entry records its kind. An entry without one joins
+	// a turn recorded earlier: a reopened turn, or resume completing a turn a
+	// crash left open.
+	if entry.TurnKind == "" {
+		slot, found, err := b.findTurn(id)
+		if err != nil {
+			return 0, err
+		}
+		if found {
+			b.open[id] = slot
+			return slot, nil
+		}
+	}
+	kind := turnKindOf(entry.TurnKind)
+	slot, err := b.openTurn(id, kind, ordinal, offset)
+	if err != nil {
+		return 0, err
+	}
+	switch kind {
+	case turnKindExecution, turnKindPrelude:
+		b.open[id] = slot
+	case turnKindGap:
+		if b.gap != "" {
+			delete(b.open, b.gap)
+		}
+		b.gap = id
+		b.open[id] = slot
+	}
+	return slot, nil
+}
+
+// turnKindOf maps a recorded TurnKind to the summary's kind. A turn whose
+// first entry the index never saw records none; it is an execution being
+// reopened.
+func turnKindOf(kind schema.TurnSpanKind) uint32 {
+	switch kind {
+	case schema.TurnSpanGap:
+		return turnKindGap
+	case schema.TurnSpanDelivery:
+		return turnKindDelivery
+	case schema.TurnSpanPrelude:
+		return turnKindPrelude
+	default:
+		return turnKindExecution
+	}
+}
+
+// findTurn searches the summaries, newest first, for the new-format turn id.
+// Legacy turns never match: a new-format entry never joins one.
+func (b *builder) findTurn(id string) (uint64, bool, error) {
+	const chunk = 256
+	for end := b.x.turns.n; end > 0; {
+		start := end - min(end, chunk)
+		buf, err := b.x.turns.read(start, int(end-start))
+		if err != nil {
+			return 0, false, err
+		}
+		for slot := end; slot > start; slot-- {
+			record := decodeTurn(buf[(slot-1-start)*turnRecordSize:])
+			if record.Kind == turnKindLegacy || int(record.ID.Len) != len(id) {
+				continue
+			}
+			name, err := b.x.strings.get(record.ID)
+			if err != nil {
+				return 0, false, err
+			}
+			if string(name) == id {
+				return slot - 1, true, nil
+			}
+		}
+		end = start
+	}
+	return 0, false, nil
+}
+
+// awaitedCall is one call of an awaiting ASSISTANT entry: its content part and
+// tool name.
+type awaitedCall struct {
+	part int
+	name string
+}
+
+// applyResults indexes a new-format TOOL_RESULTS (or TOOL) entry. Each result
+// whose call id names a call of the turn's awaiting ASSISTANT entry completes
+// that call's item; any other result projects as its own item.
+func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Turn, c contributor) error {
+	calls := map[string]awaitedCall{}
+	if summary.AwaitingLength > 0 {
+		awaiting, err := b.awaitingEntry(summary)
+		if err != nil {
+			return err
+		}
+		for part, content := range awaiting.Message.Content {
+			if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
+				continue
+			}
+			if _, seen := calls[content.ToolCall.ID]; !seen {
+				calls[content.ToolCall.ID] = awaitedCall{part: part, name: content.ToolCall.Name}
+			}
+		}
+	}
+	// A result with no name of its own takes its call's.
+	seed := map[string]string{}
+	for _, part := range entry.Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Name == "" {
+			if call, ok := calls[part.ToolResult.ToolCallID]; ok {
+				seed[part.ToolResult.ToolCallID] = call.name
+			}
+		}
+	}
+	version := c.Ordinal + 1
+	return b.appendItems(slot, entry, c, seed, func(item appwire.ThreadItem) (bool, error) {
+		call, ok := calls[item.CallID]
+		if !ok || !apptranscript.MergesByCallID(item) {
+			return false, nil
+		}
+		// A communicate call projects no item, so its result has none to
+		// complete.
+		target, found, err := b.x.findItem(appwire.ThreadItemPosition{Entry: summary.AwaitingOrdinal + 1, Item: uint32(call.part)})
+		if err != nil || !found {
+			return false, err
+		}
+		completer := c
+		if name, named := seed[item.CallID]; named {
+			if completer.Name, err = b.x.strings.put([]byte(name)); err != nil {
+				return false, err
+			}
+		}
+		return true, b.addContributor(target, completer, version)
+	})
+}
+
+// appendItems projects a new-format entry and appends an item record for each
+// item absorb (when set) does not take. seed names the entry's nameless tool
+// results.
+func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
+	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, seed, nil, apptranscript.ToolResultOutputImages)
+	for i, item := range items {
+		if absorb != nil {
+			absorbed, err := absorb(item)
+			if err != nil {
+				return err
+			}
+			if absorbed {
+				continue
+			}
+		}
+		if _, err := b.appendItem(item, parts[i], slot, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// appendItem appends the record of an item the entry c opens at part.
+func (b *builder) appendItem(item appwire.ThreadItem, part int, turnSlot uint64, c contributor) (uint64, error) {
+	version := c.Ordinal + 1
+	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c}
+	if apptranscript.MergesByCallID(item) {
+		var err error
+		if record.Call, err = b.x.strings.put([]byte(item.CallID)); err != nil {
+			return 0, err
+		}
+	}
+	return b.x.items.append(encodeItem(record))
+}
+
+// echoesAwaiting reports whether a COMMUNICATE entry's message repeats the
+// last text run of its turn's awaiting ASSISTANT entry, which already shows it.
+func (b *builder) echoesAwaiting(summary turnRecord, entry *schema.Turn) (bool, error) {
+	if entry.Communicate == nil || summary.AwaitingLength == 0 {
+		return false, nil
+	}
+	awaiting, err := b.awaitingEntry(summary)
+	if err != nil {
+		return false, err
+	}
+	return apptranscript.EchoesAssistantText(lastTextRun(awaiting.Message.Content), entry.Communicate.Message), nil
+}
+
+// lastTextRun is the text of the last maximal run of consecutive text parts,
+// the run the entry's last agentMessage shows.
+func lastTextRun(content []llm.ContentPart) string {
+	end := len(content)
+	for end > 0 && content[end-1].Kind != llm.ContentText {
+		end--
+	}
+	start := end
+	for start > 0 && content[start-1].Kind == llm.ContentText {
+		start--
+	}
+	var run strings.Builder
+	for _, part := range content[start:end] {
+		run.WriteString(part.Text)
+	}
+	return run.String()
+}
+
+func (b *builder) awaitingEntry(summary turnRecord) (*schema.Turn, error) {
+	if b.assistant != nil && b.assistantOffset == summary.AwaitingOffset {
+		return b.assistant, nil
+	}
+	entry, err := b.x.readEntry(summary.AwaitingOffset, summary.AwaitingLength)
+	if err != nil {
+		return nil, err
+	}
+	b.assistant, b.assistantOffset = entry, summary.AwaitingOffset
+	return entry, nil
+}
+
+func hasToolCall(entry *schema.Turn) bool {
+	for _, part := range entry.Message.Content {
+		if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// openTurn appends the summary of a turn whose first entry is at ordinal.
+func (b *builder) openTurn(turnID string, kind uint32, ordinal uint64, offset int64) (uint64, error) {
 	id, err := b.x.strings.put([]byte(turnID))
 	if err != nil {
-		return err
+		return 0, err
 	}
-	b.turn = turnRecord{ID: id, FirstOffset: offset, FirstOrdinal: ordinal}
-	b.turnSlot, err = b.x.turns.append(encodeTurn(b.turn))
+	record := turnRecord{ID: id, Kind: kind, FirstOffset: offset, FirstOrdinal: ordinal}
+	if kind == turnKindExecution {
+		record.Status = statusOpen
+	}
+	slot, err := b.x.turns.append(encodeTurn(record))
 	if err != nil {
-		return err
+		return 0, err
 	}
-	b.calls = map[string]uint64{}
-	b.names = map[string]toolName{}
-	return nil
+	b.summary, b.summarySlot, b.hasSummary = record, slot, true
+	return slot, nil
+}
+
+// load returns the summary at slot.
+func (b *builder) load(slot uint64) (turnRecord, error) {
+	if b.hasSummary && b.summarySlot == slot {
+		return b.summary, nil
+	}
+	buf, err := b.x.turns.read(slot, 1)
+	if err != nil {
+		return turnRecord{}, err
+	}
+	b.summary, b.summarySlot, b.hasSummary = decodeTurn(buf), slot, true
+	return b.summary, nil
 }
 
 // seed resolves, for each tool result in the entry that carries no name, the
@@ -212,16 +545,22 @@ func (b *builder) logUpdate(kind uint32, slot uint64, offset int64) error {
 	return err
 }
 
-// stampTurn folds the entry into the open turn's summary, the way
-// apptranscript.StampGroupedTurn folds a group's entries.
-func (b *builder) stampTurn(entry *schema.Turn, version uint64, offset int64, length uint32) error {
-	r := &b.turn
+// stampTurn folds the entry into its turn's summary: the way
+// apptranscript.StampGroupedTurn folds a legacy group's entries, or, for a
+// new-format turn, its status from completions and reopen markers and its
+// awaiting ASSISTANT entry.
+func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, offset int64, length uint32) error {
+	r, err := b.load(slot)
+	if err != nil {
+		return err
+	}
+	version := ordinal + 1
 	// The turn's first entry creates its summary; every later one rewrites
 	// it, and logs that it did. The log record is redone even when a crashed
 	// extension already applied the entry: the truncation before this
 	// extension removed its log record, and readers take each slot once.
 	if version > r.FirstOrdinal+1 {
-		if err := b.logUpdate(updatedTurn, b.turnSlot, offset); err != nil {
+		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
 			return err
 		}
 	}
@@ -229,10 +568,33 @@ func (b *builder) stampTurn(entry *schema.Turn, version uint64, offset int64, le
 		return nil // already accounted before an interrupted catch-up
 	}
 	if entry.Kind == schema.TurnFailure {
-		r.LifecycleOffset, r.LifecycleLength, r.Status = offset, length, statusFailed
+		r.FailureOffset, r.FailureLength = offset, length
 	}
-	if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted && r.Status != statusFailed {
-		r.Status = statusInterrupted
+	switch r.Kind {
+	case turnKindLegacy:
+		if entry.Kind == schema.TurnFailure {
+			r.Status = statusFailed
+		}
+		if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted && r.Status != statusFailed {
+			r.Status = statusInterrupted
+		}
+	case turnKindExecution:
+		switch entry.Kind {
+		case schema.TurnCompletion:
+			info := schema.TurnCompletionInfo{}
+			if entry.Completion != nil {
+				info = *entry.Completion
+			}
+			r.Status, r.HasCompletion, r.DurationMS, r.CompletedAt = completionStatus(info.Status), true, info.DurationMS, 0
+			if !info.CompletedAt.IsZero() {
+				r.CompletedAt = info.CompletedAt.UnixMilli()
+			}
+		case schema.TurnReopen:
+			r.Status, r.HasCompletion, r.DurationMS, r.CompletedAt = statusOpen, false, 0, 0
+		}
+	}
+	if r.Kind != turnKindLegacy && entry.Kind == schema.TurnAssistant && hasToolCall(entry) {
+		r.AwaitingOffset, r.AwaitingLength, r.AwaitingOrdinal = offset, length, ordinal
 	}
 	if !r.Started && !entry.Timestamp.IsZero() {
 		r.StartedAt, r.Started = entry.Timestamp.UnixMilli(), true
@@ -244,6 +606,40 @@ func (b *builder) stampTurn(entry *schema.Turn, version uint64, offset int64, le
 		r.Usage[2] += int64(*usage.CacheReadTokens)
 	}
 	r.Usage[3] += int64(usage.TotalTokens)
+	if entry.Model != "" {
+		if r.Model, err = b.modelRef(entry.Model); err != nil {
+			return err
+		}
+	}
 	r.Version = version
-	return b.x.turns.write(b.turnSlot, encodeTurn(*r))
+	if err := b.x.turns.write(slot, encodeTurn(r)); err != nil {
+		return err
+	}
+	b.summary, b.summarySlot, b.hasSummary = r, slot, true
+	return nil
+}
+
+// completionStatus maps a completion entry's status to the summary's.
+func completionStatus(status schema.TurnCompletionStatus) uint32 {
+	switch status {
+	case schema.TurnFailed:
+		return statusFailed
+	case schema.TurnInterrupted:
+		return statusInterrupted
+	default:
+		return statusCompleted
+	}
+}
+
+// modelRef stores each model name once per builder.
+func (b *builder) modelRef(model string) (strRef, error) {
+	if ref, ok := b.models[model]; ok {
+		return ref, nil
+	}
+	ref, err := b.x.strings.put([]byte(model))
+	if err != nil {
+		return strRef{}, err
+	}
+	b.models[model] = ref
+	return ref, nil
 }

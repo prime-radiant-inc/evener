@@ -3,9 +3,11 @@ package transcriptindex
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -13,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 const testMaxLineBytes = 128 << 20
@@ -58,92 +61,323 @@ func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Tur
 	return header, entries
 }
 
-// referenceTurns is today's whole-file projection with the spec's positions:
-// the production grouping, per-entry projection, call-id merge and turn stamp,
-// with each item keyed by the entry and content part that opened it.
-func referenceTurns(t testing.TB, path string) []appwire.Turn {
+// referenceTurn is one turn of the reference projection, with what the
+// candidate list needs beside the wire turn: the model for cost, and the
+// turn's identity (its index), which two turns sharing an id keep apart.
+type referenceTurn struct {
+	turn  appwire.Turn
+	model string
+}
+
+// referenceProjection is the whole-file projection the index reproduces,
+// written directly over the whole entry list rather than through the index's
+// builder. Legacy entries follow today's rules: the production grouping,
+// per-entry projection, call-id merge and turn stamp. New-format entries
+// follow the read model's: turns by TurnID in first-appearance order, status
+// from the latest completion or reopen, each tool result folded into the call
+// of the same id in its turn's latest ASSISTANT entry with tool calls,
+// communicate messages that echo that entry's last text run dropped, and fold
+// copies passed over. Every item is keyed by the entry and content part that
+// opened it and versioned by the latest entry that contributed to it.
+func referenceProjection(t testing.TB, path string) []referenceTurn {
 	t.Helper()
 	header, entries := readFixtureFile(t, path)
-	type group struct {
+	type turnState struct {
 		id        string
-		entries   []schema.Turn
+		legacy    bool
+		entries   []schema.Turn // legacy: the group's entries, for its stamp
 		items     []appwire.ThreadItem
 		positions []appwire.ThreadItemPosition
-		calls     map[string]int
+		calls     map[string]int // legacy: call id -> item
+		version   uint64
+		model     string
+		// New format.
+		execution  bool
+		open       bool
+		completion *schema.TurnCompletionInfo
+		failure    *schema.Turn
+		startedAt  *int64
+		usage      llm.Usage
+		// awaiting is the turn's latest ASSISTANT entry with tool calls:
+		// each call id's first call there, its name, and the item it
+		// projected (-1 for none).
+		awaiting      *schema.Turn
+		awaitingItem  map[string]int
+		awaitingNames map[string]string
 	}
-	var groups []*group
+	var turns []*turnState
+	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
-	toolNames := map[string]string{}
+	legacyNames := map[string]string{}
+	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
+		item.Version = uint64(entryIndex)
+		s.items = append(s.items, item)
+		s.positions = append(s.positions, appwire.ThreadItemPosition{Entry: uint64(entryIndex), Item: uint32(part)})
+		return len(s.items) - 1
+	}
 	for i, entry := range entries {
 		entryIndex := i + 1
-		if entry.Kind.TranscriptOnly() {
-			continue // takes an entry index, and nothing else
+		if entry.Format != schema.TurnFormatIdentity {
+			if entry.Kind.TranscriptOnly() {
+				continue // takes an entry index, and nothing else
+			}
+			id, isNew := grouper.Place(&entry, entryIndex)
+			if isNew {
+				turns = append(turns, &turnState{id: id, legacy: true, calls: map[string]int{}})
+			}
+			s := turns[len(turns)-1]
+			s.entries = append(s.entries, entry)
+			s.version = uint64(entryIndex)
+			if entry.Model != "" {
+				s.model = entry.Model
+			}
+			items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, legacyNames, nil, apptranscript.ToolResultOutputImages)
+			for j, item := range items {
+				if apptranscript.MergesByCallID(item) {
+					if at, ok := s.calls[item.CallID]; ok {
+						s.items[at] = apptranscript.MergeThreadItems(s.items[at], item)
+						s.items[at].Version = uint64(entryIndex)
+						continue
+					}
+					s.calls[item.CallID] = len(s.items)
+				}
+				add(s, item, entryIndex, parts[j])
+			}
+			continue
 		}
-		id, isNew := grouper.Place(&entry, entryIndex)
-		if isNew {
-			groups = append(groups, &group{id: id, calls: map[string]int{}})
+		if entry.OriginalOrdinal != nil {
+			continue // a fold copy: its original already projected
 		}
-		g := groups[len(groups)-1]
-		g.entries = append(g.entries, entry)
-		items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, toolNames, nil, apptranscript.ToolResultOutputImages)
+		grouper = apptranscript.TurnGrouper{}
+		s := byID[entry.TurnID]
+		if s == nil {
+			execution := entry.TurnKind == schema.TurnSpanExecution || entry.TurnKind == ""
+			s = &turnState{id: entry.TurnID, execution: execution, open: execution}
+			turns = append(turns, s)
+			byID[entry.TurnID] = s
+		}
+		s.version = uint64(entryIndex)
+		if entry.Model != "" {
+			s.model = entry.Model
+		}
+		if s.startedAt == nil && !entry.Timestamp.IsZero() {
+			ms := entry.Timestamp.UnixMilli()
+			s.startedAt = &ms
+		}
+		s.usage = s.usage.Add(entry.Usage)
+		switch entry.Kind {
+		case schema.TurnCompletion:
+			if s.execution {
+				info := schema.TurnCompletionInfo{}
+				if entry.Completion != nil {
+					info = *entry.Completion
+				}
+				s.open, s.completion = false, &info
+			}
+		case schema.TurnReopen:
+			if s.execution {
+				s.open, s.completion = true, nil
+			}
+		case schema.TurnFailure:
+			failure := entry
+			s.failure = &failure
+		}
+		seed := map[string]string{}
+		if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Name == "" {
+					if name, ok := s.awaitingNames[part.ToolResult.ToolCallID]; ok {
+						seed[part.ToolResult.ToolCallID] = name
+					}
+				}
+			}
+		}
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
+			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
+			continue
+		}
+		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, seed, nil, apptranscript.ToolResultOutputImages)
+		added := map[int]int{} // part -> item
 		for j, item := range items {
-			if apptranscript.MergesByCallID(item) {
-				if at, ok := g.calls[item.CallID]; ok {
-					g.items[at] = apptranscript.MergeThreadItems(g.items[at], item)
+			if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
+				if at, ok := s.awaitingItem[item.CallID]; ok && at >= 0 && apptranscript.MergesByCallID(item) {
+					// The call keeps its id and round through its results.
+					call := s.items[at]
+					s.items[at] = apptranscript.MergeThreadItems(call, item)
+					s.items[at].ID, s.items[at].RoundID, s.items[at].Version = call.ID, call.RoundID, uint64(entryIndex)
 					continue
 				}
-				g.calls[item.CallID] = len(g.items)
 			}
-			g.items = append(g.items, item)
-			g.positions = append(g.positions, appwire.ThreadItemPosition{Entry: uint64(entryIndex), Item: uint32(parts[j])})
+			added[parts[j]] = add(s, item, entryIndex, parts[j])
+		}
+		if entry.Kind == schema.TurnAssistant {
+			calls := map[string]int{}
+			names := map[string]string{}
+			for part, content := range entry.Message.Content {
+				if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
+					continue
+				}
+				if _, seen := calls[content.ToolCall.ID]; seen {
+					continue
+				}
+				at, ok := added[part]
+				if !ok {
+					at = -1
+				}
+				calls[content.ToolCall.ID], names[content.ToolCall.ID] = at, content.ToolCall.Name
+			}
+			if len(calls) > 0 {
+				awaiting := entry
+				s.awaiting, s.awaitingItem, s.awaitingNames = &awaiting, calls, names
+			}
 		}
 	}
-	var turns []appwire.Turn
+	var out []referenceTurn
 	if prelude := apptranscript.PreludeTurn(header); prelude != nil {
 		for i := range prelude.Items {
 			position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 			prelude.Items[i].Position = &position
 			prelude.Items[i].TranscriptKey = ItemKey(prelude.ID, position)
 		}
-		turns = append(turns, *prelude)
+		out = append(out, referenceTurn{turn: *prelude})
 	}
-	for _, g := range groups {
-		if len(g.items) == 0 {
+	for _, s := range turns {
+		turn := appwire.Turn{ID: s.id, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted, Version: s.version}
+		for j := range s.items {
+			position := s.positions[j]
+			s.items[j].TurnID = s.id
+			s.items[j].Position = &position
+			s.items[j].TranscriptKey = ItemKey(s.id, position)
+		}
+		turn.Items = s.items
+		if s.legacy {
+			apptranscript.StampGroupedTurn(&turn, s.entries)
+		} else {
+			switch {
+			case !s.execution:
+			case s.open:
+				turn.Status = appwire.TurnStatusInProgress
+			case s.completion.Status == schema.TurnFailed:
+				turn.Status = appwire.TurnStatusFailed
+				if s.failure != nil {
+					apptranscript.StampTurnFailure(&turn, *s.failure)
+				}
+			case s.completion.Status == schema.TurnInterrupted:
+				turn.Status = appwire.TurnStatusInterrupted
+			}
+			if s.execution && !s.open {
+				duration := s.completion.DurationMS
+				turn.DurationMS = &duration
+				if !s.completion.CompletedAt.IsZero() {
+					completedAt := s.completion.CompletedAt.UnixMilli()
+					turn.CompletedAt = &completedAt
+				}
+			}
+			turn.StartedAt = s.startedAt
+			turn.Usage = appwire.EvenerUsageFromLLM(s.usage)
+		}
+		out = append(out, referenceTurn{turn: turn, model: s.model})
+	}
+	return out
+}
+
+// referenceLastTextRun is the text of the last maximal run of consecutive
+// text parts.
+func referenceLastTextRun(content []llm.ContentPart) string {
+	var runs []string
+	inRun := false
+	for _, part := range content {
+		if part.Kind != llm.ContentText {
+			inRun = false
 			continue
 		}
-		turn := appwire.Turn{ID: g.id, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-		for j := range g.items {
-			position := g.positions[j]
-			g.items[j].TurnID = g.id
-			g.items[j].Position = &position
-			g.items[j].TranscriptKey = ItemKey(g.id, position)
+		if !inRun {
+			runs = append(runs, "")
+			inRun = true
 		}
-		turn.Items = g.items
-		apptranscript.StampGroupedTurn(&turn, g.entries)
-		turns = append(turns, turn)
+		runs[len(runs)-1] += part.Text
+	}
+	if len(runs) == 0 {
+		return ""
+	}
+	return runs[len(runs)-1]
+}
+
+// referenceTurns is the reference projection's wire turns that hold items:
+// the turns a reader sees.
+func referenceTurns(t testing.TB, path string) []appwire.Turn {
+	t.Helper()
+	return shownTurns(referenceProjection(t, path))
+}
+
+func shownTurns(projection []referenceTurn) []appwire.Turn {
+	var turns []appwire.Turn
+	for _, turn := range projection {
+		if len(turn.turn.Items) > 0 {
+			turns = append(turns, turn.turn)
+		}
 	}
 	return turns
 }
 
-// referenceCandidates is referenceTurns as the chronological candidate list a
-// window read returns: each candidate's Turn carries no items.
-func referenceCandidates(t testing.TB, path string) []appitempaging.TranscriptItemCandidate {
-	t.Helper()
-	candidates, err := appitempaging.CandidatesFromTurns(referenceTurns(t, path))
-	if err != nil {
-		t.Fatal(err)
+// allTurns is every turn of the projection, including those with no items
+// yet, whose summaries an index still updates.
+func allTurns(projection []referenceTurn) []appwire.Turn {
+	var turns []appwire.Turn
+	for _, turn := range projection {
+		turns = append(turns, turn.turn)
 	}
-	for i := range candidates {
-		candidates[i].Turn.Items = nil
-	}
-	return candidates
+	return turns
 }
 
+// referenceCandidates is the reference projection as the chronological
+// candidate list a window read returns: items in position order, each
+// candidate's Turn carrying no items, and HasEarlierItems/HasLaterItems
+// reporting whether the neighbouring item belongs to the same turn.
+func referenceCandidates(t testing.TB, path string) []appitempaging.TranscriptItemCandidate {
+	t.Helper()
+	return candidatesOf(referenceProjection(t, path))
+}
+
+func candidatesOf(projection []referenceTurn) []appitempaging.TranscriptItemCandidate {
+	var candidates []appitempaging.TranscriptItemCandidate
+	var turnOf []int // each candidate's turn, by index
+	for i, turn := range projection {
+		scalars := turn.turn
+		scalars.Items = nil
+		for _, item := range turn.turn.Items {
+			candidates = append(candidates, appitempaging.TranscriptItemCandidate{
+				TurnID: scalars.ID, Turn: scalars, Item: item, Position: *item.Position, Model: turn.model,
+			})
+			turnOf = append(turnOf, i)
+		}
+	}
+	order := make([]int, len(candidates))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		pa, pb := candidates[a].Position, candidates[b].Position
+		return cmp.Or(cmp.Compare(pa.Entry, pb.Entry), cmp.Compare(pa.Item, pb.Item))
+	})
+	sorted := make([]appitempaging.TranscriptItemCandidate, len(order))
+	for i, at := range order {
+		sorted[i] = candidates[at]
+		sorted[i].HasEarlierItems = i > 0 && turnOf[order[i-1]] == turnOf[at]
+		sorted[i].HasLaterItems = i+1 < len(order) && turnOf[order[i+1]] == turnOf[at]
+	}
+	return sorted
+}
+
+// stripPositions clears what today's projection lacks: positions, keys and
+// versions.
 func stripPositions(turns []appwire.Turn) []appwire.Turn {
 	for i := range turns {
+		turns[i].Version = 0
 		for j := range turns[i].Items {
 			turns[i].Items[j].Position = nil
 			turns[i].Items[j].TranscriptKey = ""
+			turns[i].Items[j].Version = 0
 		}
 	}
 	return turns
@@ -156,6 +390,9 @@ func dump(v any) string {
 
 func TestReferenceEqualsTodaysFileProjectionApartFromPositions(t *testing.T) {
 	for _, fx := range fixtures() {
+		if !fx.legacy() {
+			continue // today's projection has no new-format rules
+		}
 		t.Run(fx.name, func(t *testing.T) {
 			path := writeFixture(t, fx)
 			toolNames := map[string]string{}

@@ -3,12 +3,15 @@
 // contribute to the returned items, found through fixed-size records in a
 // sidecar directory, and never decodes a whole turn or file to do it.
 //
-// The projection it reproduces is today's file projection
-// (apptranscript.ItemTurnsFromFile): the same grouping, turn and item ids,
-// call-id merge, status, error and usage. Only positions and keys follow the
-// transcript read model's entry-ordinal scheme (docs/superpowers/specs/
-// 2026-09-25-transcript-read-model-design.md): an item sits at {entry: ordinal
-// + 1, item: part} of the entry and content part that opened it.
+// The projection follows the transcript read model (docs/superpowers/specs/
+// 2026-09-25-transcript-read-model-design.md). Legacy entries project as
+// today's file projection (apptranscript.ItemTurnsFromFile) does: the same
+// grouping, turn and item ids, call-id merge, status, error and usage.
+// New-format entries join the turn their TurnID names, take their status from
+// completion and reopen entries, and complete the calls of their turn's
+// awaiting ASSISTANT entry. Every item sits at {entry: ordinal + 1, item:
+// part} of the entry and content part that opened it, and carries the version
+// of the latest entry that contributed to it.
 package transcriptindex
 
 import (
