@@ -811,6 +811,12 @@ func writeDocumentHeader(b *strings.Builder, header transcript.Header, opt rende
 
 // writeEntry emits one transcript entry as markdown.
 func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool string, idx *resultIndex, opt renderOpts) {
+	if !publicTranscriptKind(e.Turn.Kind) {
+		// Attention resolutions are durable private correlation records, and
+		// transcript-only entries exist for the history projection. Both are
+		// transparent to the public conversation and its tool-round structure.
+		return
+	}
 	switch e.Turn.Kind {
 	case schema.TurnUserInput:
 		fmt.Fprintf(b, "\n## Turn %d — User\n", seq)
@@ -854,10 +860,6 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 	case schema.TurnHookCompleted:
 		fmt.Fprintf(b, "\n## Turn %d — Hook\n", seq)
 		writeCompactNote(b, "Hook", e.Turn, wantFullTurn(opt, seq))
-
-	case schema.TurnAttentionResolution:
-		// Resolution markers are durable private correlation records. They are
-		// transparent to the public conversation and its tool-round structure.
 
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the

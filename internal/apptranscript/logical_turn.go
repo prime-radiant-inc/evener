@@ -137,6 +137,12 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // its per-entry turn id (the per-entry contract unchanged) and buffers the
 // result for grouping.
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	if turn.Kind.TranscriptOnly() {
+		// Written for the history projection phase 3 introduces. Today's
+		// projection passes over it: it joins no group, closes none, and
+		// projects nothing, though its line still takes an entry index.
+		return
+	}
 	turnID := persistedTurnID(turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {

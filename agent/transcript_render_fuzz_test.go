@@ -91,8 +91,9 @@ func trender_isSubsequence(want, have []string) bool {
 // so a render that RETAINED a private key cannot match its source line and the
 // subsequence check still fails on the leak.
 func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
-	// An ATTENTION_RESOLUTION entry is not redacted by publicTranscriptLine, it
-	// is OMITTED (include=false, session_tools_transcript.go). Leaving those
+	// An ATTENTION_RESOLUTION entry, like a transcript-only one, is not redacted
+	// by publicTranscriptLine, it is OMITTED (include=false,
+	// session_tools_transcript.go). Leaving those
 	// lines among the source candidates lets a render that emitted one find a
 	// matching source line and satisfy the subsequence check, so the oracle
 	// would accept the exact leak it exists to catch. A rendered entry of that
@@ -103,7 +104,7 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	}
 	have := make([]string, 0, len(fileLines))
 	for _, line := range fileLines {
-		if trender_isAttentionResolution(line) {
+		if trender_isOmittedKind(line) {
 			continue
 		}
 		have = append(have, trender_canonicalEntry(line, true))
@@ -111,10 +112,11 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	return trender_isSubsequence(want, have)
 }
 
-// trender_isAttentionResolution reports whether a JSONL entry line carries the
-// private turn kind publicTranscriptLine refuses to render. A line that is not a
-// decodable entry is not one, which leaves it to the ordinary comparison.
-func trender_isAttentionResolution(line string) bool {
+// trender_isOmittedKind reports whether a JSONL entry line carries a turn kind
+// publicTranscriptLine refuses to render (publicTranscriptKind). A line that
+// is not a decodable entry is not one, which leaves it to the ordinary
+// comparison.
+func trender_isOmittedKind(line string) bool {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return false
@@ -127,7 +129,7 @@ func trender_isAttentionResolution(line string) bool {
 	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
 		return false
 	}
-	return kind == schema.TurnAttentionResolution
+	return !publicTranscriptKind(kind)
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection
@@ -208,6 +210,8 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 	// changes nothing, so the rendered copy matches its source and the
 	// subsequence check accepts a record the projection must never emit.
 	resolution := `{"kind":"entry","seq":%d,"turn":{"kind":"ATTENTION_RESOLUTION"}}`
+	// Transcript-only kinds are omitted the same way.
+	communicate := `{"kind":"entry","seq":%d,"turn":{"kind":"COMMUNICATE"}}`
 	at := func(tmpl string, seq int) string { return fmt.Sprintf(tmpl, seq) }
 
 	tests := []struct {
@@ -248,6 +252,18 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 			file:     []string{trenderHeader, at(entryA, 0), at(resolution, 1)},
 			rendered: []string{at(entryA, 0), at(resolution, 1)},
 			want:     false,
+		},
+		{
+			name:     "transcript-only entry emitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(communicate, 1)},
+			rendered: []string{at(entryA, 0), at(communicate, 1)},
+			want:     false,
+		},
+		{
+			name:     "transcript-only entry omitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(communicate, 1), at(entryB, 2)},
+			rendered: []string{at(entryA, 0), at(entryB, 1)},
+			want:     true,
 		},
 		{
 			name:     "attention resolution omitted by the render",

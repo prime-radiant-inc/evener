@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -321,14 +322,14 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	// identifies it) instead of the full file.
 	var restoredHistory []schema.Turn
 	var restoredRepairInsertions []int
-	retained := 0
+	var restoredEntries []transcript.Entry
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
 		_, entries, _, err := readTranscript(path)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
-			retained = retainedFrom(entries)
+			restoredEntries = entries
 		}
 	}
 	release := func(transitioned bool, turnMS int64) {
@@ -344,9 +345,9 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	divergence := s.fork.divergence
 	if restoredHistory != nil {
 		// Map the immutable full-transcript divergence into the resumed
-		// history's coordinates (retained window plus repair insertions)
-		// before consulting journal provenance.
-		divergence = mapDivergenceThroughResumedHistory(divergence, retained, restoredRepairInsertions)
+		// history's coordinates (retained window, skipped transcript-only
+		// entries and repair insertions) before consulting journal provenance.
+		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions)
 	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {

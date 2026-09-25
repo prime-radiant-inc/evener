@@ -17,13 +17,22 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fork delegate context: %w", err)
 	}
-	entries := completedDelegateContext(data.Entries)
+	return delegateContextEntries(data.Entries), nil
+}
+
+// delegateContextEntries is the conversation a forked delegate inherits from
+// its parent's entries: the completed rounds, as conversation only.
+func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
+	entries := completedDelegateContext(parent)
 	out := make([]transcript.Entry, 0, len(entries))
 	for _, entry := range entries {
 		t := entry.Turn
 		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch, schema.TurnFailure:
+		case schema.TurnHookCompleted, schema.TurnModelSwitch, schema.TurnFailure:
 			continue
+		}
+		if !publicTranscriptKind(t.Kind) {
+			continue // never conversation
 		}
 		// Copy conversation and content provenance, without adopting the
 		// parent's delivery receipts, client mutation IDs, usage, or server
@@ -40,7 +49,7 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 		}
 		out = append(out, entry)
 	}
-	return out, nil
+	return out
 }
 
 // completedDelegateContext cuts before an unfinished assistant tool round.
@@ -67,6 +76,9 @@ func completedDelegateContext(entries []transcript.Entry) []transcript.Entry {
 		case schema.TurnSteering, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch:
 			// Settings and telemetry can change while tools are executing.
 		default:
+			if t.Kind.TranscriptOnly() {
+				continue // recorded while tools run, and not conversation
+			}
 			clear(pending)
 		}
 	}

@@ -565,7 +565,7 @@ func turnRoleLabel(kind schema.TurnKind) string {
 // full tool-result bodies. Used by the cross-session content scan so a query
 // appearing only in a long command tail or a written file body IS found.
 func rawEntryText(t schema.Turn) string {
-	if t.Kind == schema.TurnAttentionResolution {
+	if !publicTranscriptKind(t.Kind) {
 		return ""
 	}
 	var parts []string

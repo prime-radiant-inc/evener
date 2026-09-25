@@ -120,9 +120,10 @@ func parseBinaryJudge(raw string) bool {
 func turnsToMessages(turns []schema.Turn) []llm.Message {
 	msgs := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
-		switch t.Kind {
-		case schema.TurnAttentionResolution:
+		if !publicTranscriptKind(t.Kind) {
 			continue
+		}
+		switch t.Kind {
 		case schema.TurnSteering:
 			msgs = append(msgs, llm.User(t.Message.Text()))
 		case schema.TurnToolResults:

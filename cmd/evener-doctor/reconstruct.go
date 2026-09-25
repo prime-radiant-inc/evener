@@ -421,6 +421,11 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			return fail(err)
 		}
 		turn := schema.Turn{Kind: schema.TurnKind(m.Kind), Timestamp: stamp}
+		if turn.Kind.TranscriptOnly() {
+			// Written for the history projection, never conversation: the
+			// source snapshot keeps the record and the transcript omits it.
+			continue
+		}
 		if turn.Kind == schema.TurnSteering {
 			turn.SteeringSource = m.PromptSource
 		}
