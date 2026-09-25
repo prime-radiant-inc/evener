@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -255,42 +256,55 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// The removal is registered BEFORE the mkdir, not after it: a creation whose ssh
 	// response is lost may still have made the directory on the host, and a cleanup
 	// registered only once mkdir answered would leave that directory behind for good.
-	// What may be removed depends on what is known, which is runDirectoryRemoval's
-	// judgement: rm -rf only once this run watched the mkdir succeed, rmdir while the
-	// outcome is unknown, so an unknown creation can never delete a pre-existing
-	// directory holding someone else's files. The stop arm below runs first (cleanups
-	// are LIFO) and sets sessionLeftBehind when a session it could not stop may still
-	// be running here: a directory a running session still references is better left
-	// than deleted out from under it.
-	var hostDirCreated bool
+	// What may be removed depends on what the mkdir told us, which is
+	// runDirectoryRemoval's judgement over the three outcomes: rm -rf only once this
+	// run watched the mkdir succeed; rmdir while the outcome is unknown, so an
+	// unproven creation can never be deleted with its contents; and nothing at all
+	// when the mkdir answered that the path already existed — someone else's
+	// directory, even an empty one. The stop arm below runs first (cleanups are LIFO)
+	// and sets sessionLeftBehind when a session it could not stop may still be running
+	// here: a directory a running session still references is better left than deleted
+	// out from under it.
+	var dirOutcome hostDirOutcome
 	var sessionLeftBehind bool
 	t.Cleanup(func() {
 		if sessionLeftBehind {
 			t.Logf("leaving %s in place: this run could not establish that nothing it started is still running there", hostDir)
 			return
 		}
-		remove := runDirectoryRemoval(hostDir, hostDirCreated)
+		remove := runDirectoryRemoval(hostDir, dirOutcome)
+		if remove == "" {
+			t.Logf("not removing %s on host %s: the mkdir refused it, so the path already existed and is not this run's directory", hostDir, host.target)
+			return
+		}
 		out, err := host.run(remove)
 		if err == nil {
-			if !hostDirCreated {
+			if dirOutcome == hostDirUnknown {
 				t.Logf("removed %s with rmdir: the mkdir response was lost and the directory was empty, which is what a creation this run just made leaves behind", hostDir)
 			}
 			return
 		}
-		if hostDirCreated {
+		if dirOutcome == hostDirWatched {
 			t.Errorf("remove the test-owned directory %s on host %s (%s): %v (%s)", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
 			return
 		}
-		t.Logf("did not remove %s on host %s (%s): %v (%s) — the mkdir response was lost, so only an empty directory this run made is reconciled away; anything else is left alone", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
+		t.Logf("did not remove %s on host %s (%s): %v (%s) — the mkdir response was lost, so only an empty directory is reconciled away with rmdir; anything holding content is left alone", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
 	})
 	// Plain `mkdir`, not `test -e` followed by `mkdir -p`: the atomic form refuses an
 	// existing path, while the two-step form would adopt a directory created in the
 	// gap — and once this run has watched that directory come into being, the cleanup
-	// takes it with whatever the session left inside.
+	// takes it with whatever the session left inside. Its failure is read by
+	// classifyHostDirOutcome, so a refusal (the path exists) and an unknown outcome
+	// (ssh never said whether the command ran) are told apart rather than lumped
+	// together.
 	if out, err := host.run("mkdir " + shellquote.RemoteWord(hostDir)); err != nil {
-		t.Fatalf("host %s refused to create %s (%v: %s); this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
+		dirOutcome = classifyHostDirOutcome(err)
+		if dirOutcome == hostDirRefused {
+			t.Fatalf("host %s already has %s (%v: %s); this check creates and removes its own directory, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
+		}
+		t.Fatalf("could not tell whether host %s made %s (%v: %s); this check creates and removes its own directory, so it stops rather than adopt one it cannot account for", host.target, hostDir, err, strings.TrimSpace(string(out)))
 	}
-	hostDirCreated = true
+	dirOutcome = hostDirWatched
 
 	evenerPath := os.Getenv("EVENER_SSH_E2E_EVENER_PATH")
 	if evenerPath == "" {
@@ -614,17 +628,75 @@ func sessionStopTarget(ref string) (string, error) {
 	return ref, nil
 }
 
+// hostDirOutcome is what this run knows about the directory it wants on the host,
+// judged from what the mkdir itself said.
+type hostDirOutcome int
+
+const (
+	// hostDirUnknown: the call failed without telling us whether the remote command
+	// ran at all — a transport failure, a dropped connection, a timeout.
+	hostDirUnknown hostDirOutcome = iota
+	// hostDirWatched: the mkdir answered success, so this run made the directory.
+	hostDirWatched
+	// hostDirRefused: the mkdir answered with its own non-zero status, which for a
+	// plain mkdir means the path already existed — someone else's directory.
+	hostDirRefused
+)
+
+// String implements fmt.Stringer, so a table failure names the outcome it read.
+func (o hostDirOutcome) String() string {
+	switch o {
+	case hostDirWatched:
+		return "watched"
+	case hostDirRefused:
+		return "refused"
+	}
+	return "unknown"
+}
+
+// sshTransportExitCode is the single status ssh(1) uses for its own failures. ssh
+// forwards the remote command's own status unchanged, so a completed run cannot in
+// general prove whose failure a status is (sshconn's isSSHAuthFailure says so) — but
+// this call site runs a plain mkdir, which exits 0 or 1 and never 255, so a 255
+// here is not the mkdir answering.
+const sshTransportExitCode = 255
+
+// classifyHostDirOutcome reads what this run knows about the directory from the
+// mkdir's own result:
+//
+//   - nil is the watched case: the mkdir answered success.
+//   - a completed ssh run whose status is not ssh's own failure convention is the
+//     remote mkdir answering — for a plain mkdir, the refusal it gives when the
+//     path already exists.
+//   - everything else — ssh's own 255, a context that ended, a spawn failure — does
+//     not say whether the remote command ran, so it is unknown.
+func classifyHostDirOutcome(err error) hostDirOutcome {
+	if err == nil {
+		return hostDirWatched
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() != sshTransportExitCode {
+		return hostDirRefused
+	}
+	return hostDirUnknown
+}
+
 // runDirectoryRemoval returns the one command the directory cleanup may run on the
-// host, and with it the safety property the atomic mkdir exists for. A directory
-// this run watched itself create may be taken with whatever the session left in it;
-// one whose creation outcome is unknown — the ssh response was lost — may only be
-// reconciled with rmdir, which removes an empty directory this run just made and
-// fails harmlessly on a pre-existing directory holding someone else's files.
-func runDirectoryRemoval(dir string, created bool) string {
-	if created {
+// host, or "" when nothing may be removed at all:
+//
+//   - watched: rm -rf may take the directory with whatever the session left in it;
+//   - unknown: rmdir reconciles an empty directory this run just made, and fails
+//     harmlessly on anything else, so an rm -rf never runs on a guess;
+//   - refused: nothing at all — the path was already there, and it is not this
+//     run's directory to delete.
+func runDirectoryRemoval(dir string, outcome hostDirOutcome) string {
+	if outcome == hostDirWatched {
 		return "rm -rf " + shellquote.RemoteWord(dir)
 	}
-	return "rmdir " + shellquote.RemoteWord(dir)
+	if outcome == hostDirUnknown {
+		return "rmdir " + shellquote.RemoteWord(dir)
+	}
+	return "" // refused: the path was already there, and it is not this run's directory
 }
 
 // startErrorIsDefiniteRefusal reports whether a thread/start error is the HOST
@@ -795,26 +867,69 @@ func TestSessionStopTarget(t *testing.T) {
 	}
 }
 
-// TestRunDirectoryRemoval pins the one command the directory cleanup may run, and
-// with it the property the atomic mkdir exists for: a directory this run watched
-// itself create may be taken with its contents, while one whose creation outcome is
-// unknown may only be reconciled with rmdir — an empty directory this run just made
-// disappears, a pre-existing one holding someone else's files is left alone.
+// TestRunDirectoryRemoval pins the one command the directory cleanup may run, per
+// outcome, and with it the property the atomic mkdir exists for: rm -rf only for a
+// directory this run watched itself create; rmdir — never rm -rf — while the
+// creation outcome is unknown; and nothing at all when the mkdir answered that the
+// path already existed, because that directory is not this run's to delete.
 func TestRunDirectoryRemoval(t *testing.T) {
 	const dir = "/Users/jesse/evener-session-e2e-1-2"
 	tests := []struct {
 		name    string
-		created bool
+		outcome hostDirOutcome
 		want    string
 	}{
-		{"a directory this run watched itself create", true, "rm -rf " + shellquote.RemoteWord(dir)},
-		{"a creation whose outcome is unknown", false, "rmdir " + shellquote.RemoteWord(dir)},
+		{"a directory this run watched itself create", hostDirWatched, "rm -rf " + shellquote.RemoteWord(dir)},
+		{"a creation whose outcome is unknown", hostDirUnknown, "rmdir " + shellquote.RemoteWord(dir)},
+		{"a creation the host refused because the path exists", hostDirRefused, ""},
 	}
 	for _, tc := range tests {
-		if got := runDirectoryRemoval(dir, tc.created); got != tc.want {
-			t.Errorf("runDirectoryRemoval(%q, created=%v) = %q, want %q (%s)", dir, tc.created, got, tc.want, tc.name)
+		got := runDirectoryRemoval(dir, tc.outcome)
+		if got != tc.want {
+			t.Errorf("runDirectoryRemoval(%q, %s) = %q, want %q (%s)", dir, tc.outcome, got, tc.want, tc.name)
+		}
+		if strings.Contains(got, "rm -rf") && tc.outcome != hostDirWatched {
+			t.Errorf("runDirectoryRemoval(%q, %s) = %q: rm -rf is only for a directory this run watched itself create", dir, tc.outcome, got)
 		}
 	}
+}
+
+// TestClassifyHostDirOutcome pins the discriminator: ssh's own failure status, and
+// any failure that never completed, are unknown; a completed run's own (non-ssh)
+// status is the remote mkdir answering, which for a plain mkdir is the refusal it
+// gives when the path already exists. The errors are the real shapes hostSSH.run
+// leaves behind: a completed command's *exec.ExitError with its status, and the
+// context or spawn failures that never ran one.
+func TestClassifyHostDirOutcome(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want hostDirOutcome
+	}{
+		{"the mkdir answered success", nil, hostDirWatched},
+		{"the remote mkdir answered with its own status", exitStatusError(t, 1), hostDirRefused},
+		{"ssh's own failure status", exitStatusError(t, sshTransportExitCode), hostDirUnknown},
+		{"a timeout", context.DeadlineExceeded, hostDirUnknown},
+		{"a dropped connection", net.ErrClosed, hostDirUnknown},
+		{"ssh never started", &exec.Error{Name: "ssh", Err: exec.ErrNotFound}, hostDirUnknown},
+	}
+	for _, tc := range tests {
+		if got := classifyHostDirOutcome(tc.err); got != tc.want {
+			t.Errorf("classifyHostDirOutcome(%v) = %s, want %s (%s)", tc.err, got, tc.want, tc.name)
+		}
+	}
+}
+
+// exitStatusError returns the error a completed local command leaves behind when it
+// exits with code: the same *exec.ExitError shape hostSSH.run reports for a
+// completed ssh run, whose status is the remote command's own.
+func exitStatusError(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if err == nil {
+		t.Fatalf("sh -c 'exit %d' returned no error", code)
+	}
+	return err
 }
 
 // TestSessionCleanupWindowFitsARetry pins the cleanup window's arithmetic: one
