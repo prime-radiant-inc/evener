@@ -503,6 +503,66 @@ real file being touched. Both the guard's default target and the gate's skip
 order are pinned without a host by `TestHostSettingsUIGateSkipsWithoutOptIn`,
 which runs in ordinary `go test`.
 
+### `EVENER_SSH_E2E_SESSION=1` — the live session spawned on a host
+
+The session half of the multi-host contract: a session the CONTROLLER asks for,
+from a host attached through `evener/host/attach`, is spawned and served by that
+host's own hub, shows up in the controller's fleet, and can be stopped again
+through the controller. It drives the same private loopback hub and add → attach
+wire path the checks above do, then starts a session with the host as its source
+and **no model**. Four claims, each its own assertion:
+
+- **spawn** — the returned ref parses and belongs to the host, not `local:`;
+- **provenance** — the host resolved the launch from its OWN configuration, not
+  this controller's: the spawn carries no model to inherit, and the session's own
+  record must name a model provider that is not the one this check's controller
+  serves (a session naming the controller's provider, or none at all, fails);
+- **fleet visibility** — the controller's own `thread/list` carries the ref, so a
+  user sees their remote session beside the local ones;
+- **stop** — `thread/shutdown` through the controller stops the session it did not
+  host. The controller forwards it on the owning host's client (the remote
+  capability mask in `appsource` names `Shutdown`), so the stop is **in band**:
+  the check never reaches for a process table, a `pkill`, or a pattern on the
+  host, and cleanup needs no host-side kill.
+
+**This gate writes to the host**, which is why it is a separate opt-in from the
+read-only `EVENER_SSH_E2E` check — a developer running that one is not signed up
+for a session start. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as
+well, and skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user,
+and `EVENER_SSH_E2E_EVENER_PATH` overrides the host's evener path (default
+`~/.local/bin/evener`), as in the sibling checks.
+
+What it creates and removes: its own directory on the host
+(`$HOME/evener-session-e2e-<pid>-<timestamp>`), used as the spawned session's
+working directory and removed when the check finishes. A name that already exists
+is refused before anything is created, so the cleanup cannot adopt a directory
+this run did not make. What it cannot remove is the session *record* the host
+keeps in its own state root — `thread/shutdown` stops the daemon, it does not
+delete the session — and the session runs against the host's real provider and
+credentials. Both are why this gate asks for a **disposable** host, the same
+contract the deploy check states.
+
+It sends no input items, so **no turn runs and no completion is requested**. That
+is narrower than it sounds: resolving the spawn still makes the host enumerate its
+own models, and that enumeration calls each configured provider's model endpoint
+(`launchCheckModels`), so a run depends on the host's credentials, network, and
+quota being healthy.
+
+Prerequisites: the sibling checks' live-stack build prerequisites, and a
+disposable host reachable over non-interactive ssh that already carries a
+matching evener build at `EVENER_SSH_E2E_EVENER_PATH` (a test hub has no
+`BuildSource`, so the version-match ladder refuses a host it cannot bridge to)
+whose own launch configuration resolves a model — a `model` in its `launch.toml`,
+or its provider environment. A host that cannot resolve one refuses the spawn,
+which is the failure this check exists to surface. The controller side needs
+nothing: this check's own hub runs a fake provider that a remote session never
+reaches.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_SESSION=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostSpawnSessionE2E' -count=1 -v
+~~~
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
