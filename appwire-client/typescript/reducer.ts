@@ -2431,8 +2431,7 @@ function pruneCoveredOverlay(
   turns: readonly TurnModel[],
   overlay: Record<string, OverlayItem>,
 ): Record<string, OverlayItem> {
-  const entries = Object.entries(overlay);
-  if (entries.length === 0) return overlay;
+  if (Object.keys(overlay).length === 0) return overlay;
   const rounds = new Set<string>();
   const communicated = new Set<string>();
   const completed = new Set<string>();
@@ -2455,15 +2454,14 @@ function pruneCoveredOverlay(
         return false;
     }
   };
-  const kept = entries.filter(([, item]) => !covered(item));
-  return kept.length === entries.length ? overlay : Object.fromEntries(kept);
+  return filterOverlay(overlay, covered);
 }
 
+// Drops the overlay items drop names; returns overlay itself when none go.
 function filterOverlay(
-  overlay: Record<string, OverlayItem> | undefined,
+  overlay: Record<string, OverlayItem>,
   drop: (item: OverlayItem) => boolean,
-): Record<string, OverlayItem> | undefined {
-  if (!overlay) return overlay;
+): Record<string, OverlayItem> {
   const entries = Object.entries(overlay);
   const kept = entries.filter(([, item]) => !drop(item));
   return kept.length === entries.length ? overlay : Object.fromEntries(kept);
@@ -2869,6 +2867,8 @@ function applyOverlayDelta<M extends ThreadModel>(model: M, params: OverlayDelta
   const index = model.turns.findIndex((turn) => displayTurnSources.get(turn)?.overlay.includes(held));
   const turn = model.turns[index];
   const source = turn && displayTurnSources.get(turn);
+  // Every overlay item a display shows is in its turn's source; one that is not
+  // shown yet (no turn found) takes the full derivation.
   if (!turn || !source) return withDisplay(live, model.history, overlay);
   const rebuilt = buildDisplayTurn(
     turn.id,
@@ -3750,20 +3750,14 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "overlay/reset": {
       if (!notificationTargetsThread(n, model)) return model;
       const streamId = n.params.streamId;
-      return applyOverlayChange(
-        model,
-        now,
-        (overlay) => filterOverlay(overlay, (item) => item.streamId === streamId) ?? overlay,
-      );
+      return applyOverlayChange(model, now, (overlay) => filterOverlay(overlay, (item) => item.streamId === streamId));
     }
 
     case "overlay/end": {
       if (!notificationTargetsThread(n, model)) return model;
       const roundId = n.params.roundId;
-      return applyOverlayChange(
-        model,
-        now,
-        (overlay) => filterOverlay(overlay, (item) => item.kind !== "notice" && item.roundId === roundId) ?? overlay,
+      return applyOverlayChange(model, now, (overlay) =>
+        filterOverlay(overlay, (item) => item.kind !== "notice" && item.roundId === roundId),
       );
     }
 
