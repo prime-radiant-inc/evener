@@ -1585,6 +1585,56 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       expect(store.getState().pendingMutations).toHaveLength(1);
     });
+
+    it("a slower older read cannot resurrect a row a newer read removed", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Hold the next read open; a later read (the settlement) resolves first.
+      let releaseRead: (() => void) | null = null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let held = false;
+      port.read = async () => {
+        if (!held) {
+          held = true;
+          await heldRead;
+          return { outbox: [outbox()], optimistic: [], recovery: [] };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      port.publish({}); // the held, older read
+      port.publish({}); // the newer read: the row is gone
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("rebinding clears the prior target's rows even when the new read fails", async () => {
+      const first = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(first);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A replacement seam whose first read rejects must not leave the retired
+      // target's rows on screen.
+      const replacement = fakePort();
+      replacement.read = () => Promise.reject(new Error("storage unavailable"));
+      store.getState().bindPendingMutations(replacement);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error

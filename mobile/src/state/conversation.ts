@@ -3727,10 +3727,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       bindPendingMutations(port) {
         // One conversation follows one target: release any prior binding first.
         detachPendingRows();
+        // Replacing the binding retires the prior target's published rows at
+        // once: they belong to the seam being replaced, and a replacement whose
+        // own first read never lands must not leave them standing.
+        set({ pendingMutations: null });
         const generation = pendingGeneration;
         pendingPort = port;
+        // Within one binding, only the newest read may publish: a slow earlier
+        // read that resolves after a newer one cannot resurrect a row the newer
+        // read already dropped.
+        let latestRequest = 0;
 
         const read = () => {
+          const request = ++latestRequest;
           let pending: Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
           try {
             pending = port.read();
@@ -3741,7 +3750,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           }
           void pending.then(
             (snapshot) => {
-              if (generation !== pendingGeneration) return;
+              if (generation !== pendingGeneration || request !== latestRequest)
+                return;
               pendingSnapshot = {
                 outbox: snapshot.outbox,
                 optimistic: snapshot.optimistic,
