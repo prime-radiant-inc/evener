@@ -187,6 +187,17 @@ func (c *Cache) evict() {
 	}
 }
 
+// OpenHandles reports how many paths currently hold a cache entry: idle,
+// acquired or still opening, each counted once. Diagnostic/test seam: a
+// server-level registry over several transcripts (internal/transcriptindex's
+// own tests already cover eviction at capacity) uses it to assert the
+// registry's shared cache never grows past its capacity.
+func (c *Cache) OpenHandles() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
 // Forget closes the handle for path if nothing holds it and no Acquire is
 // still opening it: a caller uses it for a session that is gone, so the
 // cache does not keep a stale sidecar for a deleted transcript.

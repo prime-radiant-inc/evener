@@ -45,6 +45,12 @@ type threadHistoryConfig struct {
 	// cost prices a turn's usage at the model its entries recorded; nil
 	// reports usage without cost.
 	cost func(model string) *registry.Cost
+	// recordedLength seeds recordedLength and published: the length already
+	// recorded before any entry reaches this history's hook (a
+	// transcript.Writer's in-memory RecordedLength(), never a stat). Zero
+	// for a history whose hook is wired from the start, matching the
+	// existing behavior where the first hooked entry sets published.
+	recordedLength int64
 }
 
 // threadHistory is one thread's history projection: the recorded entries the
@@ -83,17 +89,19 @@ type threadHistory struct {
 
 func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 	h := &threadHistory{
-		threadID: cfg.threadID,
-		ref:      cfg.ref,
-		path:     cfg.path,
-		cache:    cfg.cache,
-		overlay:  cfg.overlay,
-		publish:  cfg.publish,
-		resync:   cfg.resync,
-		cost:     cfg.cost,
-		wake:     make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		threadID:       cfg.threadID,
+		ref:            cfg.ref,
+		path:           cfg.path,
+		cache:          cfg.cache,
+		overlay:        cfg.overlay,
+		publish:        cfg.publish,
+		resync:         cfg.resync,
+		cost:           cfg.cost,
+		recordedLength: cfg.recordedLength,
+		published:      cfg.recordedLength,
+		wake:           make(chan struct{}, 1),
+		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 	go h.run()
 	return h
