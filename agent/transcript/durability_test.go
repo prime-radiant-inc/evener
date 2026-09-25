@@ -286,12 +286,12 @@ func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("after close"))
 
 	// Ordinary door (failClosed=false): a closed writer is a silent nil no-op.
-	if _, _, retained, err := w.appendBatch([]schema.Turn{turn}, Placement{}, true, true, false); err != nil || retained != nil {
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, PlaceVerbatim, DoorDurable); err != nil || retained != nil {
 		t.Fatalf("ordinary appendBatch on a closed writer = (retained %v, err %v), want the silent nil no-op", retained, err)
 	}
 	// Synced owner (failClosed=true): a closed writer fails closed, so
 	// AppendSynced never reads a dropped write as durable.
-	if _, _, retained, err := w.appendBatch([]schema.Turn{turn}, Placement{}, true, false, true); !errors.Is(err, ErrWriterClosed) || retained != nil {
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, PlaceVerbatim, DoorSynced); !errors.Is(err, ErrWriterClosed) || retained != nil {
 		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
 	}
 }

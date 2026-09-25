@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -61,108 +60,103 @@ func PlaceInTurn(turnID string) Placement {
 	return Placement{mode: placeInTurn, turnID: turnID}
 }
 
+// openTurn is a turn entries can still join: its TurnID, "" when there is
+// none, and whether its TurnKind is still to be recorded on its next entry.
+type openTurn struct {
+	id    string
+	fresh bool
+}
+
+// join stamps turn into t, with kind if it is t's first recorded entry.
+func (t *openTurn) join(turn *schema.Turn, kind schema.TurnSpanKind) {
+	stamp(turn, t.id, "")
+	if t.fresh {
+		turn.TurnKind = kind
+		t.fresh = false
+	}
+}
+
+func stamp(turn *schema.Turn, turnID string, kind schema.TurnSpanKind) {
+	turn.Format = schema.TurnFormatIdentity
+	turn.TurnID = turnID
+	turn.TurnKind = kind
+}
+
 // turnPlacement is the append tail's turn state for its file.
 type turnPlacement struct {
-	// runningID is the running execution's TurnID, "" when none runs.
-	// runningFresh reports that none of its entries is recorded yet, so the
-	// next one carries its TurnKind; a reopened execution is never fresh.
-	runningID    string
-	runningFresh bool
-	// gapID is the open gap turn, "" when none is open; gapFresh as above.
-	gapID    string
-	gapFresh bool
-	// prelude reports that the file is a fresh transcript that has not begun
-	// its first execution; preludeStamped that its TurnKind is recorded.
-	prelude        bool
-	preludeStamped bool
+	// running is the running execution; a reopened execution is not fresh.
+	running openTurn
+	// gap is the open gap turn.
+	gap openTurn
+	// prelude, while its id is set, is the prelude of a fresh transcript that
+	// has not begun its first execution.
+	prelude openTurn
 }
 
 // place stamps turn for p against state and advances state as if the entry
 // were recorded. The caller keeps the advanced state only if it is. skip
 // reports a completion with nothing to complete.
 func (state *turnPlacement) place(turn *schema.Turn, p Placement) (skip bool, err error) {
-	if p.mode == placeVerbatim {
-		return false, nil
-	}
-	stamp := func(turnID string, kind schema.TurnSpanKind) {
-		turn.Format = schema.TurnFormatIdentity
-		turn.TurnID = turnID
-		turn.TurnKind = kind
-	}
-	fresh := func() (string, error) {
-		id, err := identifier.NewTurnID()
-		if err != nil {
-			return "", fmt.Errorf("mint transcript turn id: %w", err)
-		}
-		return id, nil
-	}
-	// joinRunning stamps the entry into the running execution. Any entry of
-	// another turn closes the open gap.
-	joinRunning := func() {
-		kind := schema.TurnSpanKind("")
-		if state.runningFresh {
-			kind = schema.TurnSpanExecution
-		}
-		stamp(state.runningID, kind)
-		state.runningFresh = false
-		state.gapID = ""
-	}
-	delivery := func() error {
-		id, err := fresh()
-		if err != nil {
-			return err
-		}
-		stamp(id, schema.TurnSpanDelivery)
-		state.gapID = ""
-		return nil
-	}
 	switch p.mode {
+	case placeVerbatim:
+		return false, nil
 	case placeCompletion:
-		if state.runningID == "" || state.runningFresh {
+		if state.running.id == "" || state.running.fresh {
 			// Nothing ran, or nothing it did was recorded: no turn to end.
-			state.runningID, state.runningFresh = "", false
+			state.running = openTurn{}
 			return true, nil
 		}
-		joinRunning()
-		state.runningID = ""
+		state.running.join(turn, schema.TurnSpanExecution)
+		state.running = openTurn{}
 	case placeInTurn:
-		stamp(p.turnID, "")
-		state.gapID = ""
-	case placeDelivery:
-		return false, delivery()
-	case placeAsync:
-		if state.runningID == "" {
-			return false, delivery()
+		stamp(turn, p.turnID, "")
+	case placeAsync, placeDelivery:
+		if p.mode == placeAsync && state.running.id != "" {
+			state.running.join(turn, schema.TurnSpanExecution)
+			break
 		}
-		joinRunning()
+		if err := stampDelivery(turn); err != nil {
+			return false, err
+		}
 	case placeSession:
 		switch {
-		case state.runningID != "":
-			joinRunning()
-		case state.prelude:
-			kind := schema.TurnSpanKind("")
-			if !state.preludeStamped {
-				kind = schema.TurnSpanPrelude
-			}
-			stamp(appwire.SystemPreludeTurnID, kind)
-			state.preludeStamped = true
+		case state.running.id != "":
+			state.running.join(turn, schema.TurnSpanExecution)
+		case state.prelude.id != "":
+			state.prelude.join(turn, schema.TurnSpanPrelude)
 		default:
-			if state.gapID == "" {
-				id, err := fresh()
+			if state.gap.id == "" {
+				id, err := newTurnID()
 				if err != nil {
 					return false, err
 				}
-				state.gapID, state.gapFresh = id, true
+				state.gap = openTurn{id: id, fresh: true}
 			}
-			kind := schema.TurnSpanKind("")
-			if state.gapFresh {
-				kind = schema.TurnSpanGap
-			}
-			stamp(state.gapID, kind)
-			state.gapFresh = false
+			state.gap.join(turn, schema.TurnSpanGap)
+			return false, nil // the one entry that keeps the gap open
 		}
 	}
+	// Any entry of another turn closes the open gap.
+	state.gap = openTurn{}
 	return false, nil
+}
+
+// stampDelivery stamps turn as a delivery turn of its own.
+func stampDelivery(turn *schema.Turn) error {
+	id, err := newTurnID()
+	if err != nil {
+		return err
+	}
+	stamp(turn, id, schema.TurnSpanDelivery)
+	return nil
+}
+
+func newTurnID() (string, error) {
+	id, err := identifier.NewTurnID()
+	if err != nil {
+		return "", fmt.Errorf("mint transcript turn id: %w", err)
+	}
+	return id, nil
 }
 
 // BeginExecution names the running execution for the file: from here until
@@ -177,7 +171,7 @@ func (w *Writer) BeginExecution(turnID string, reopen bool) {
 	}
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
-	w.tail.turns = turnPlacement{runningID: turnID, runningFresh: !reopen}
+	w.tail.turns = turnPlacement{running: openTurn{id: turnID, fresh: !reopen}}
 }
 
 // RunningTurnID is the running execution's TurnID for the file, "" when none
@@ -188,5 +182,5 @@ func (w *Writer) RunningTurnID() string {
 	}
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
-	return w.tail.turns.runningID
+	return w.tail.turns.running.id
 }

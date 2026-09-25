@@ -125,6 +125,7 @@ const (
 // TurnCompletionStatus is how an execution turn ended.
 type TurnCompletionStatus string
 
+// The statuses an execution turn ends with.
 const (
 	TurnCompleted   TurnCompletionStatus = "completed"
 	TurnFailed      TurnCompletionStatus = "failed"
@@ -150,6 +151,7 @@ type CommunicateInfo struct {
 // NoticeKind names a presentational notice.
 type NoticeKind string
 
+// The presentational notices, named as the live notices they replace.
 const (
 	NoticeToolRepair     NoticeKind = "tool_repair"
 	NoticeGoalEnded      NoticeKind = "goal_ended"

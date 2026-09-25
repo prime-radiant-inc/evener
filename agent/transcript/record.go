@@ -33,7 +33,8 @@ type Record struct {
 	// are meaningful only when it is set.
 	Recorded bool
 	// Ordinal is the entry ordinal: the 0-based index of the entry line among
-	// the file's entry lines (the header excluded).
+	// the file's entry lines (the header excluded). FailureCounter's older
+	// fromEntryOrdinal counts from 1: it is Ordinal+1.
 	Ordinal uint64
 	// Seq is the entry's sequence number.
 	Seq int
@@ -53,19 +54,11 @@ type Record struct {
 // line that is recorded but could not be made durable — Record then reports
 // Recorded with the error, and the caller adopts the record.
 func (w *Writer) Record(turn schema.Turn, opts RecordOptions) (Record, error) {
-	if w == nil {
-		return Record{}, nil // no writer to record into — see Append's nil no-op
-	}
-	switch opts.Door {
-	case DoorSynced:
+	if opts.Door == DoorSynced {
 		return w.recordSynced(turn, opts.Place)
-	case DoorDurable:
-		records, _, _, err := w.appendBatch([]schema.Turn{turn}, opts.Place, true, true, false)
-		return firstRecord(records), err
-	default:
-		records, _, _, err := w.appendBatch([]schema.Turn{turn}, opts.Place, false, true, false)
-		return firstRecord(records), err
 	}
+	records, _, err := w.appendBatch([]schema.Turn{turn}, opts.Place, opts.Door)
+	return firstRecord(records), err
 }
 
 func firstRecord(records []Record) Record {
@@ -77,17 +70,13 @@ func firstRecord(records []Record) Record {
 
 // recordSynced is the synced door: see AppendSynced for its three outcomes.
 func (w *Writer) recordSynced(turn schema.Turn, place Placement) (Record, error) {
-	// failClosed=true: a closed writer records nothing, and this door must not
-	// read that as durable. The decision is made under appendBatch's lock, so a
-	// Close concurrent with this call cannot leave the caller believing a write
-	// that landed nowhere is durable.
-	records, firstSeq, retained, err := w.appendBatch([]schema.Turn{turn}, place, true, false, true)
+	records, retained, err := w.appendBatch([]schema.Turn{turn}, place, DoorSynced)
 	if err != nil {
 		return Record{}, err // not recorded (includes ErrWriterClosed)
 	}
 	rec := firstRecord(records)
 	if retained == nil {
-		return rec, nil // recorded and its own fsync succeeded: durable
+		return rec, nil // recorded and its own fsync succeeded: durable, or no writer
 	}
 	// Recorded but unsynced: the record is in the file, so a barrier that
 	// fsyncs the whole file settles it.
@@ -101,7 +90,7 @@ func (w *Writer) recordSynced(turn schema.Turn, place Placement) (Record, error)
 	w.mu.Lock()
 	w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
 	w.mu.Unlock()
-	return rec, &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
+	return rec, &RetainedUnsyncedError{Seq: rec.Seq, Cause: retained}
 }
 
 // RecordedLength is the length of the file's recorded prefix: the header and

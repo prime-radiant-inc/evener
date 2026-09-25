@@ -23,6 +23,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -492,7 +493,7 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 	if tail.recordedLength == 0 {
 		// A new file's tail: the transcript is fresh, so its startup entries
 		// form the prelude until the first execution begins.
-		tail.turns.prelude = true
+		tail.turns.prelude = openTurn{id: appwire.SystemPreludeTurnID, fresh: true}
 	}
 	// Never below what a shared tail already holds; see resumeWriter.
 	tail.recordedLength = max(tail.recordedLength, int64(len(data)+1))
@@ -597,44 +598,48 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 // either every line is in the file at contiguous sequence numbers, or a
 // rollback to the batch's start offset leaves none of them. A rolled-back batch
 // still consumes its sequence numbers (a reader in another process may have
-// seen its lines) but takes no entry ordinal. It returns the sequence number the first turn took. A batch
-// whose whole buffer landed but did not sync is a retained record, per the
-// contract on Append. No caller until A2's fold; kept here as the exported
-// entry to the one write primitive. No-op returning (0, nil) for a nil or
-// closed writer, matching Append.
+// seen its lines) but takes no entry ordinal. It returns the sequence number
+// the first turn took, or 0 when nothing was recorded. A batch whose whole
+// buffer landed but did not sync is a retained record, per the contract on
+// Append. No caller until A2's fold; kept here as the exported entry to the
+// one write primitive. No-op returning (0, nil) for a nil or closed writer,
+// matching Append.
 func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
-	_, firstSeq, _, err := w.appendBatch(turns, Placement{}, true, true, false)
-	return firstSeq, err
+	records, _, err := w.appendBatch(turns, PlaceVerbatim, DoorDurable)
+	return firstRecord(records).Seq, err
 }
 
-// appendBatch is the locked entry to the sole write primitive. append() is a
-// batch of one through it. queueRetained puts a retained record's sync-failure
-// diagnostic on the warning queue for the session to surface (the ordinary
-// doors); AppendSynced passes false and takes the diagnostic through the
-// returned error instead, so it neither queues nor drains the shared channel.
-// failClosed decides what a closed writer means to the caller. The ordinary
-// doors pass false: a closed (or nil) writer is a silent nil no-op, because a
-// session with no state directory writes into one for its whole life.
-// AppendSynced passes true: it must never read a dropped write as durable, so a
-// closed writer is ErrWriterClosed. The check is made UNDER THE LOCK, so Close
-// cannot slip in between a caller's own closed check and the append — the race
-// that let AppendSynced return nil (durable) for a write that recorded nothing.
-func (w *Writer) appendBatch(turns []schema.Turn, place Placement, forceSync, queueRetained, failClosed bool) (records []Record, firstSeq int, retained, err error) {
+// appendBatch is the locked entry to the sole write primitive. A single append
+// is a batch of one through it. The door decides three things:
+//   - whether the append fsyncs (and so rolls back on failure): every door but
+//     the buffered one;
+//   - where a retained record's sync-failure diagnostic goes: the ordinary
+//     doors queue it for the session to surface, while the synced door takes
+//     it through the returned error, so it neither queues nor drains the
+//     shared channel;
+//   - what a closed writer means: to the ordinary doors a closed (or nil)
+//     writer is a silent nil no-op, because a session with no state directory
+//     writes into one for its whole life; the synced door must never read a
+//     dropped write as durable, so a closed writer is ErrWriterClosed. The
+//     check is made UNDER THE LOCK, so Close cannot slip in between a caller's
+//     own closed check and the append — the race that let AppendSynced return
+//     nil (durable) for a write that recorded nothing.
+func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (records []Record, retained, err error) {
 	if w == nil {
 		// A writer that never existed (a session with no state directory) is a
 		// nil no-op for every door, synced or not — there is nothing to record
 		// and nothing to lose. Only a CLOSED writer fails closed.
-		return nil, 0, nil, nil
+		return nil, nil, nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed.Load() {
-		if failClosed {
-			return nil, 0, nil, ErrWriterClosed
+		if door == DoorSynced {
+			return nil, nil, ErrWriterClosed
 		}
-		return nil, 0, nil, nil
+		return nil, nil, nil
 	}
-	return w.appendBatchLocked(turns, place, forceSync, queueRetained)
+	return w.appendBatchLocked(turns, place, door != DoorBuffered, door != DoorSynced)
 }
 
 // appendBatchLocked encodes every turn into one buffer, seeks to the end once,
@@ -644,30 +649,31 @@ func (w *Writer) appendBatch(turns []schema.Turn, place Placement, forceSync, qu
 // unsynced in the file — separately from err, a hard failure that recorded
 // nothing. records holds one Record per turn when the batch was recorded, and
 // is nil when it was not.
-func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSync, queueRetained bool) (records []Record, firstSeq int, retained, err error) {
+func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSync, queueRetained bool) (records []Record, retained, err error) {
 	if w.poisoned {
-		return nil, 0, nil, ErrWriterPoisoned
+		return nil, nil, ErrWriterPoisoned
 	}
 	// The tail is held to the end of the append, rollback included; see
 	// appendTail.
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
-	firstSeq = w.tail.nextSeq
 	if len(turns) == 0 {
-		return nil, firstSeq, nil, nil
+		return nil, nil, nil
 	}
 	// Place every turn against a copy of the tail's turn state; the copy
 	// becomes the tail's state only if the batch is recorded.
 	placed := w.tail.turns
-	turns = slices.Clone(turns)
+	if place != PlaceVerbatim {
+		turns = slices.Clone(turns) // placement stamps each turn
+	}
 	for i := range turns {
 		skip, placeErr := placed.place(&turns[i], place)
 		if placeErr != nil {
-			return nil, firstSeq, nil, placeErr
+			return nil, nil, placeErr
 		}
 		if skip {
 			w.tail.turns = placed // what there was to end is over
-			return nil, firstSeq, nil, nil
+			return nil, nil, nil
 		}
 	}
 	if w.tailMove != w.tail.move {
@@ -680,19 +686,20 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 		// leaves the flag set, so the next attempt re-establishes it rather
 		// than writing into the gap.
 		if _, seekErr := w.file.Seek(0, io.SeekEnd); seekErr != nil {
-			return nil, firstSeq, nil, fmt.Errorf("seek transcript append position: %w", seekErr)
+			return nil, nil, fmt.Errorf("seek transcript append position: %w", seekErr)
 		}
 		w.positionUnknown = false
 	}
 	w.tailMove = w.tail.moved()
 
+	firstSeq := w.tail.nextSeq
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
 	batch := make([]Record, len(turns))
 	for i, turn := range turns {
 		start := buf.Len()
 		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
-			return nil, firstSeq, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
+			return nil, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
 		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(buf.Len() - start), Turn: turn}
 	}
@@ -711,34 +718,33 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 	if forceSync {
 		var seekErr error
 		if startOffset, seekErr = w.file.Seek(0, io.SeekEnd); seekErr != nil {
-			return nil, firstSeq, nil, fmt.Errorf("seek transcript append start: %w", seekErr)
+			return nil, nil, fmt.Errorf("seek transcript append start: %w", seekErr)
 		}
 	}
 
 	previousDirty := w.dirty
-	if written, writeErr := w.writeLineLocked(data); writeErr != nil {
-		retained, hard := w.settleFailedWriteLocked("write transcript entry", writeErr, startOffset, batch, written, len(data), forceSync, previousDirty, queueRetained)
-		if hard != nil {
-			return nil, firstSeq, nil, hard
-		}
-		w.commitBatchLocked(batch, placed)
-		return batch, firstSeq, retained, nil
-	}
-	w.dirty = true
-	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
-		if syncErr := w.file.Sync(); syncErr != nil {
-			retained, hard := w.settleFailedWriteLocked("sync transcript entry", syncErr, startOffset, batch, len(data), len(data), forceSync, previousDirty, queueRetained)
-			if hard != nil {
-				return nil, firstSeq, nil, hard
+	operation, failure, written := "", error(nil), len(data)
+	if n, writeErr := w.writeLineLocked(data); writeErr != nil {
+		operation, failure, written = "write transcript entry", writeErr, n
+	} else {
+		w.dirty = true
+		if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
+			if syncErr := w.file.Sync(); syncErr != nil {
+				operation, failure = "sync transcript entry", syncErr
+			} else {
+				w.lastSync = time.Now()
+				w.dirty = false
 			}
-			w.commitBatchLocked(batch, placed)
-			return batch, firstSeq, retained, nil
 		}
-		w.lastSync = time.Now()
-		w.dirty = false
+	}
+	if failure != nil {
+		var hard error
+		if retained, hard = w.settleFailedWriteLocked(operation, failure, startOffset, written, len(data), forceSync, previousDirty, queueRetained); hard != nil {
+			return nil, nil, hard
+		}
 	}
 	w.commitBatchLocked(batch, placed)
-	return batch, firstSeq, nil, nil
+	return batch, retained, nil
 }
 
 // settleFailedWriteLocked is the single classification of a batch whose write
@@ -753,7 +759,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 //     queueRetained, else handed to the caller — the writer stays usable;
 //   - only part of the buffer is in the file (a partial line): the writer is
 //     poisoned permanently, hard = the error.
-func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOffset int64, batch []Record, written, bufLen int, attemptRollback, previousDirty, queueRetained bool) (retained, hard error) {
+func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOffset int64, written, bufLen int, attemptRollback, previousDirty, queueRetained bool) (retained, hard error) {
 	if attemptRollback {
 		removed, rollbackErr := w.rollbackAppendLocked(startOffset)
 		if rollbackErr == nil {

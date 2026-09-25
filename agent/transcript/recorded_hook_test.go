@@ -1,7 +1,7 @@
 package transcript
 
 import (
-	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -36,20 +36,18 @@ func TestRecordedHookSeesEveryOrdinalInOrderUnderConcurrentAppends(t *testing.T)
 	const perWriter = 200
 	var wg sync.WaitGroup
 	for _, w := range []*Writer{a, b} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range perWriter {
 				door := DoorBuffered
 				if i%3 == 0 {
 					door = DoorDurable
 				}
-				if _, err := w.Record(steeringTurn(fmt.Sprint(i)), RecordOptions{Door: door, Place: PlaceAsync}); err != nil {
+				if _, err := w.Record(steeringTurn(strconv.Itoa(i)), RecordOptions{Door: door, Place: PlaceAsync}); err != nil {
 					t.Error(err)
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if len(seen) != 2*perWriter {

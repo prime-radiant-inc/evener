@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -47,7 +48,7 @@ func TestNewTurnFieldsRoundTripAndStayInKeyOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(sorted) != string(data) {
+	if !bytes.Equal(sorted, data) {
 		t.Fatalf("field order differs from key order:\n got %s\nwant %s", data, sorted)
 	}
 }
