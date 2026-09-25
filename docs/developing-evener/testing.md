@@ -550,7 +550,10 @@ What it creates and removes: its own directory on the host
 working directory and removed when the check finishes — unless a session it
 started could not be stopped, in which case it stays. A name that already exists
 is refused before anything is created, so the cleanup cannot adopt a directory
-this run did not make. The stop is registered before the spawn is asked for, so a
+this run did not make. The removal is registered before that creation runs, and a
+creation whose ssh response was lost is only reconciled with `rmdir`: an empty
+directory this run just made goes, while a pre-existing one is left alone. The
+stop is registered before the spawn is asked for, so a
 session that came back with a ref this check may stop — one that parses as the
 host's own, never a controller-local or another host's ref — is stopped in band,
 retrying inside one bounded window, and a session that could not be stopped is left

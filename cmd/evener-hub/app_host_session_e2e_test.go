@@ -36,14 +36,20 @@ import (
 // ref only as a spelling this controller could produce.
 const (
 	sessionCheckControllerProvider = "fake"
-	// sessionCleanupStopTimeout bounds the cleanup's in-band stop, retries
-	// included: one forwarded thread/shutdown can legitimately take the host
-	// daemon's own drain budget (serve's is 30s), so the window matches that drain
-	// and still fits the retries inside it. There is no second arm to share it
-	// with — a stop that does not settle leaves the directory in place and says so.
-	sessionCleanupStopTimeout = 30 * time.Second
+	// sessionCleanupStopTimeout bounds the cleanup's in-band stop. It is strictly
+	// larger than one worst-case attempt plus the wait between attempts — one
+	// attempt can spend the host daemon's whole drain budget (sessionStopDrainBudget)
+	// before it answers at all — because a window that size would never run a retry,
+	// and the failure an operator saw would be the deadline rather than the shutdown
+	// error stopFailureToReport exists to surface. Two minutes leaves room for two
+	// full-length attempts and their waits, and matches the STOP assertion's clock.
+	sessionCleanupStopTimeout = 2 * time.Minute
 	// sessionCleanupRetryWait is the pause between the cleanup's stop attempts.
 	sessionCleanupRetryWait = 2 * time.Second
+	// sessionStopDrainBudget is the host daemon's own shutdown drain budget (serve's
+	// is 30s): one stop attempt can spend that long before it answers at all, which is
+	// the worst case the cleanup's window has to leave room for.
+	sessionStopDrainBudget = 30 * time.Second
 	// sessionSpawnTimeout bounds the spawn: the host resolves the launch with
 	// several sequentially bounded shell-outs (two launch-checks and the daemon
 	// spawn), so the lease is generous for one spawn. It counts from
@@ -67,7 +73,7 @@ const (
 	// and a slow attach must not turn a stop that works into a failure. It is
 	// generous for the same reason the call is not instant — it is forwarded to the
 	// host's hub, and the host's daemon drains its session state on the way down
-	// (serve's own shutdown drain budget is 30s).
+	// (sessionStopDrainBudget, the same figure the cleanup window is sized around).
 	sessionStopTimeout = 2 * time.Minute
 )
 
@@ -246,27 +252,45 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	}
 	token := fmt.Sprintf("evener-session-e2e-%d-%d", os.Getpid(), time.Now().UnixNano())
 	hostDir := home + "/" + token
-	// Plain `mkdir`, not `test -e` followed by `mkdir -p`: the atomic form refuses an
-	// existing path, while the two-step form would adopt a directory created in the
-	// gap — and this check's cleanup deletes whatever is in that directory.
-	if out, err := host.run("mkdir " + shellquote.RemoteWord(hostDir)); err != nil {
-		t.Fatalf("host %s refused to create %s (%v: %s); this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
-	}
-	// Registered before anything is spawned, so a run that dies anywhere after the
-	// mkdir still removes the directory it made. The stop arm below runs first
-	// (cleanups are LIFO) and sets sessionLeftBehind when a session it could not
-	// stop may still be running here: a directory a running session still
-	// references is better left than deleted out from under it.
+	// The removal is registered BEFORE the mkdir, not after it: a creation whose ssh
+	// response is lost may still have made the directory on the host, and a cleanup
+	// registered only once mkdir answered would leave that directory behind for good.
+	// What may be removed depends on what is known, which is runDirectoryRemoval's
+	// judgement: rm -rf only once this run watched the mkdir succeed, rmdir while the
+	// outcome is unknown, so an unknown creation can never delete a pre-existing
+	// directory holding someone else's files. The stop arm below runs first (cleanups
+	// are LIFO) and sets sessionLeftBehind when a session it could not stop may still
+	// be running here: a directory a running session still references is better left
+	// than deleted out from under it.
+	var hostDirCreated bool
 	var sessionLeftBehind bool
 	t.Cleanup(func() {
 		if sessionLeftBehind {
 			t.Logf("leaving %s in place: this run could not establish that nothing it started is still running there", hostDir)
 			return
 		}
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		remove := runDirectoryRemoval(hostDir, hostDirCreated)
+		out, err := host.run(remove)
+		if err == nil {
+			if !hostDirCreated {
+				t.Logf("removed %s with rmdir: the mkdir response was lost and the directory was empty, which is what a creation this run just made leaves behind", hostDir)
+			}
+			return
 		}
+		if hostDirCreated {
+			t.Errorf("remove the test-owned directory %s on host %s (%s): %v (%s)", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
+			return
+		}
+		t.Logf("did not remove %s on host %s (%s): %v (%s) — the mkdir response was lost, so only an empty directory this run made is reconciled away; anything else is left alone", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
 	})
+	// Plain `mkdir`, not `test -e` followed by `mkdir -p`: the atomic form refuses an
+	// existing path, while the two-step form would adopt a directory created in the
+	// gap — and once this run has watched that directory come into being, the cleanup
+	// takes it with whatever the session left inside.
+	if out, err := host.run("mkdir " + shellquote.RemoteWord(hostDir)); err != nil {
+		t.Fatalf("host %s refused to create %s (%v: %s); this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
+	}
+	hostDirCreated = true
 
 	evenerPath := os.Getenv("EVENER_SSH_E2E_EVENER_PATH")
 	if evenerPath == "" {
@@ -590,6 +614,19 @@ func sessionStopTarget(ref string) (string, error) {
 	return ref, nil
 }
 
+// runDirectoryRemoval returns the one command the directory cleanup may run on the
+// host, and with it the safety property the atomic mkdir exists for. A directory
+// this run watched itself create may be taken with whatever the session left in it;
+// one whose creation outcome is unknown — the ssh response was lost — may only be
+// reconciled with rmdir, which removes an empty directory this run just made and
+// fails harmlessly on a pre-existing directory holding someone else's files.
+func runDirectoryRemoval(dir string, created bool) string {
+	if created {
+		return "rm -rf " + shellquote.RemoteWord(dir)
+	}
+	return "rmdir " + shellquote.RemoteWord(dir)
+}
+
 // startErrorIsDefiniteRefusal reports whether a thread/start error is the HOST
 // answering with a refusal, which means it never got as far as starting a
 // session: the directory this check made then holds nothing, so it can be
@@ -755,6 +792,39 @@ func TestSessionStopTarget(t *testing.T) {
 		if got != tc.want || (err != nil) != tc.wantErr {
 			t.Errorf("sessionStopTarget(%q) = (%q, %v), want (%q, err=%v) (%s)", tc.ref, got, err, tc.want, tc.wantErr, tc.name)
 		}
+	}
+}
+
+// TestRunDirectoryRemoval pins the one command the directory cleanup may run, and
+// with it the property the atomic mkdir exists for: a directory this run watched
+// itself create may be taken with its contents, while one whose creation outcome is
+// unknown may only be reconciled with rmdir — an empty directory this run just made
+// disappears, a pre-existing one holding someone else's files is left alone.
+func TestRunDirectoryRemoval(t *testing.T) {
+	const dir = "/Users/jesse/evener-session-e2e-1-2"
+	tests := []struct {
+		name    string
+		created bool
+		want    string
+	}{
+		{"a directory this run watched itself create", true, "rm -rf " + shellquote.RemoteWord(dir)},
+		{"a creation whose outcome is unknown", false, "rmdir " + shellquote.RemoteWord(dir)},
+	}
+	for _, tc := range tests {
+		if got := runDirectoryRemoval(dir, tc.created); got != tc.want {
+			t.Errorf("runDirectoryRemoval(%q, created=%v) = %q, want %q (%s)", dir, tc.created, got, tc.want, tc.name)
+		}
+	}
+}
+
+// TestSessionCleanupWindowFitsARetry pins the cleanup window's arithmetic: one
+// attempt can spend the host daemon's whole drain budget before it answers, so a
+// window no larger than that plus the retry wait would never run a retry and the
+// failure an operator saw would be the deadline rather than the shutdown error
+// stopFailureToReport exists to surface.
+func TestSessionCleanupWindowFitsARetry(t *testing.T) {
+	if sessionCleanupStopTimeout <= sessionStopDrainBudget+sessionCleanupRetryWait {
+		t.Fatalf("the cleanup's window %s leaves no room for a retry after one full-length attempt (%s) plus the wait (%s): the stop would report the deadline instead of why it failed", sessionCleanupStopTimeout, sessionStopDrainBudget, sessionCleanupRetryWait)
 	}
 }
 
