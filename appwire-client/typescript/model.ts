@@ -9,6 +9,7 @@ import type {
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
+  OverlayItem,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
@@ -17,6 +18,7 @@ import type {
   ThreadCapabilities,
   ThreadItemPosition,
   ThreadStatus,
+  ThreadTurnsListResponse,
 } from "./types.gen";
 
 // A single image handle on an item: `src` is the already-resolved fetch URL
@@ -130,6 +132,22 @@ export interface ItemModel {
   // Populated only by the reducer's `case "warning"` fold (see reducer.ts);
   // undefined for every other item.
   warning?: { source?: string; title?: string; hint?: string };
+  /** The wire ThreadItem.version: the highest contributing entry ordinal + 1.
+   * Merges keep the higher version; undefined on overlay items and on items
+   * from a pre-v6 read. */
+  version?: number;
+  /** The wire ThreadItem.roundId: the round an ASSISTANT-projected item came
+   * from. History holding it covers that round's overlay streams. */
+  roundId?: string;
+  /** The wire ThreadItem.completedAtEntry: on a tool item, the entry ordinal + 1
+   * of the TOOL_RESULTS entry that completed it. Once set, the overlay's
+   * execution state for the item is dropped. */
+  completedAtEntry?: number;
+  /** Set on display items the overlay contributes: the OverlayItem.key of a
+   * stream, preview, notice or unmatched tool item, and of the tool overlay
+   * laid over a history item (whose id and version stay the history item's).
+   * Undefined on plain history items. */
+  overlayKey?: string;
 }
 
 export interface TurnModel {
@@ -142,6 +160,10 @@ export interface TurnModel {
   usage?: unknown;
   cost?: unknown;
   error?: unknown;
+  /** The wire Turn.version: the highest contributing entry ordinal + 1.
+   * Merges keep the higher version; undefined on a placeholder turn the overlay
+   * opened before history held the turn, and on pre-v6 reads. */
+  version?: number;
 }
 
 // SYSTEM_PRELUDE_TURN_ID is the synthetic turn id for content that belongs
@@ -209,6 +231,49 @@ export interface ThreadDiagnostics {
   plugins?: Array<{ name: string }>;
 }
 
+/**
+ * The recorded history a thread holds and the read identity it was taken
+ * under (spec "Recorded length", "Reads", "Live history notifications").
+ * reducer.ts owns every field; stores read `invalidatedAtGeneration` and
+ * `failed` to decide when to issue a read and what to show.
+ */
+export interface HistoryState {
+  /** The boot generation token the held history was read under ("" before any
+   * v6 read). See bootGeneration.ts's compareBootGeneration. */
+  bootGeneration: string;
+  /** The resync epoch the held history was read under. Adopted only from
+   * successful latest-window reads. */
+  epoch: number;
+  /** The held snapshot's index incarnation: compared by equality only. */
+  incarnation?: string;
+  /** The held snapshot's recorded length: the latest-window read's, which is
+   * what a request's heldSnapshot names. */
+  length: number;
+  /** The highest request generation whose latest-window response was applied. */
+  appliedGeneration: number;
+  /** The newest request generation issued for this thread (issueLatestWindowRead).
+   * Never reset, not even when a read replaces the whole history. */
+  issuedGeneration: number;
+  /** Set while the thread is invalid (a higher boot generation, a newer epoch,
+   * another incarnation, or a resync push): the newest request generation issued
+   * when it was invalidated. Nothing merges until a latest-window response to a
+   * later generation replaces the whole history, so a store that sees this set
+   * issues that read at once. */
+  invalidatedAtGeneration?: number;
+  /** The incarnation an update or page announced while invalidating: backfill
+   * pages from it wait in `deferredPages` until its latest window applied. */
+  pendingIncarnation?: string;
+  /** Pages of `pendingIncarnation`, merged after its latest window replaces. */
+  deferredPages: ThreadTurnsListResponse[];
+  /** The one diagnostic to show while the thread's history failed
+   * (ErrorTranscriptHistoryFailed). History is held unchanged and nothing
+   * merges until a latest-window read succeeds; the overlay keeps updating. */
+  failed?: string;
+  /** The recorded turns, in display order, with their items ordered by
+   * position. ThreadModel.turns is this plus the overlay. */
+  turns: TurnModel[];
+}
+
 export interface ThreadModel {
   ref: string;
   parentRef?: string;
@@ -246,8 +311,22 @@ export interface ThreadModel {
   // model-visible projection." THREAD-level, never a turn item; always an
   // array (hydrateThread defaults an absent wire value to []).
   pendingEscalations: SandboxEscalationRequested[];
+  // The display structure every consumer reads. For a v6 read it is derived
+  // from `history` and `overlay` (reducer.ts): recorded turns ordered by their
+  // first item's position, tool state laid over in-progress items, notices at
+  // their anchors, and streams and previews at the end of their turn.
   turns: TurnModel[];
   activeTurnId?: string;
+  /** The recorded history behind `turns`. Absent on a model built from a pre-v6
+   * read or assembled by hand, which then merges no versioned history. */
+  history?: HistoryState;
+  /** The live overlay (streams, previews, running tools, notices) by
+   * OverlayItem.key. Replaced by every read; absent where `history` is. */
+  overlay?: Record<string, OverlayItem>;
+  /** The running turn (thread/status/changed's activeTurnId; the read's
+   * evener.activeTurnId). An inProgress turn displays as running only while it
+   * is this one (itemFailure.ts's displayTurnStatus). */
+  runningTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
   tasks: TaskAggregate | null;

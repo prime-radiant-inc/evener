@@ -190,6 +190,7 @@ export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverv
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
+  displayTurnStatus,
   hasErrorText,
   hasFailureStatus,
   hasItemFailure,
@@ -302,6 +303,7 @@ export {
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,
+  HistoryState,
   ItemImage,
   ItemModel,
   ModelRetryState,
@@ -338,13 +340,16 @@ export type {
   TurnHistoryMergeResult,
 } from "./reducer";
 export {
+  applyHistoryReadFailure,
   applyNotification,
+  applyReadResponse,
   collectAuthoritativeMutationIds,
   copyItemTextPresence,
   foldWarningParams,
   hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  issueLatestWindowRead,
   isToolCallItemId,
   isToolResultItemId,
   itemIdentityMatches,
