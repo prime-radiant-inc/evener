@@ -1206,8 +1206,16 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if !captured {
 		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 	}
+	if threadReadAfterCutHook != nil {
+		threadReadAfterCutHook()
+	}
 	return s.finishAppThreadRead(params, cut)
 }
+
+// threadReadAfterCutHook, when set, runs in a subscribing thread/read after
+// its subscription cut and before it projects history. Test seam only; nil
+// in production.
+var threadReadAfterCutHook func()
 
 // appThreadReadCut is what a thread read takes inside the subscription cut:
 // the thread envelope, and the thread's overlay and resync epoch. Its history
