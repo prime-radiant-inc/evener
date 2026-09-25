@@ -419,7 +419,7 @@ func TestTranscriptParity(t *testing.T) {
 		t.Fatal("the retried request emitted no retry event")
 	}
 
-	// 6. A terminal provider error fails the turn.
+	// 6. A terminal provider error fails the turn, and a new turn retries it.
 	script.script(func(llm.Request) (llm.Response, error) {
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil)
 	})
@@ -427,6 +427,9 @@ func TestTranscriptParity(t *testing.T) {
 		t.Fatal("the failing request succeeded")
 	}
 	endOfInput()
+	// The user retries the failed work as a new turn.
+	script.script(step(parityCommunicate("comm-retry", "Done on the second try.", true)))
+	processInput("retry the request that failed")
 
 	// 7. Goal continuation: the user turn ends, the goal continues it, and the
 	// continuation completes the goal.
