@@ -248,6 +248,11 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/settings/keybindings/changed` | `KeybindingsOverrides` | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |
 | `evener/settings/agentsDoc/changed` | `AgentsDocResponse` | Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content. |
 | `evener/host/notification` | `HostNotificationParams` | Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here. |
+| `history/updated` | `HistoryUpdatedParams` | The full current form of every item and turn whose recorded entries changed. |
+| `overlay/upserted` | `OverlayUpsertedParams` | One overlay item (a stream, preview, running tool, or notice) was created or replaced. |
+| `overlay/delta` | `OverlayDeltaParams` | An incremental chunk appended to one overlay item's text or output. |
+| `overlay/reset` | `OverlayResetParams` | Discard a stream's in-progress overlay item; a retry replaces it. |
+| `overlay/end` | `OverlayEndParams` | A round's overlay state is final and about to be replaced by recorded history. |
 
 ## Type reference
 
@@ -783,6 +788,18 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.HarnessDescriptor` |  |  |
+
+
+### `HistoryUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `epoch` | `uint64` |  |  |
+| `snapshot` | `appwire.SnapshotIdentity` |  |  |
+| `turns` | `[]appwire.Turn` | yes |  |
+| `items` | `[]appwire.ThreadItem` | yes |  |
 
 
 ### `HostAddParams`
@@ -1544,6 +1561,44 @@ _(no fields)_
 | `agentNote` | `string` | yes |  |
 
 
+### `OverlayDeltaParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `key` | `string` |  |  |
+| `field` | `appwire.OverlayDeltaField` |  |  |
+| `delta` | `string` |  |  |
+
+
+### `OverlayEndParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `roundId` | `string` |  |  |
+
+
+### `OverlayResetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `streamId` | `string` |  |  |
+
+
+### `OverlayUpsertedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `item` | `appwire.OverlayItem` |  |  |
+
+
 ### `PathValidateParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1915,6 +1970,7 @@ _(no fields)_
 | `model` | `string` | yes |  |
 | `deferInput` | `bool` | yes |  |
 | `aside` | `bool` | yes |  |
+| `sourceItemKey` | `string` | yes |  |
 
 
 ### `ThreadForkResponse`
@@ -2027,6 +2083,8 @@ _(no fields)_
 | `subscribe` | `bool` | yes |  |
 | `replaceSubscription` | `bool` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `requestGeneration` | `uint64` | yes |  |
+| `heldSnapshot` | `*appwire.SnapshotIdentity` | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -2035,6 +2093,12 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
 | `olderCursor` | `string` | yes |  |
+| `requestGeneration` | `uint64` | yes |  |
+| `epoch` | `uint64` | yes |  |
+| `snapshot` | `*appwire.SnapshotIdentity` | yes |  |
+| `overlay` | `[]appwire.OverlayItem` | yes |  |
+| `authoritative` | `bool` | yes |  |
+| `changes` | `*appwire.HistoryChanges` | yes |  |
 
 
 ### `ThreadReasoningEffortChangedParams`
@@ -2075,6 +2139,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
+| `epoch` | `uint64` | yes |  |
 
 
 ### `ThreadShutdownParams`
@@ -2127,6 +2192,7 @@ _(no fields)_
 | `failedToolCalls` | `*int` | yes |  |
 | `askPending` | `*bool` | yes |  |
 | `capabilities` | `*appwire.ThreadCapabilities` | yes |  |
+| `activeTurnId` | `string` | yes |  |
 
 
 ### `ThreadTranscriptListParams`
@@ -2171,6 +2237,7 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `itemsView` | `string` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `requestGeneration` | `uint64` | yes |  |
 
 
 ### `ThreadTurnsListResponse`
@@ -2179,6 +2246,10 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.Turn` |  |  |
 | `nextCursor` | `string` | yes |  |
+| `requestGeneration` | `uint64` | yes |  |
+| `epoch` | `uint64` | yes |  |
+| `snapshot` | `*appwire.SnapshotIdentity` | yes |  |
+| `authoritative` | `bool` | yes |  |
 
 
 ### `ThreadUnsubscribeParams`

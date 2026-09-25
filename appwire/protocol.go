@@ -323,4 +323,9 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerSettingsKeybindingsChanged, KeybindingsOverrides{}, "Broadcast after the user keybinding overrides change; carries the revision and canonical rules."},
 	{NotifyEvenerSettingsAgentsDocChanged, AgentsDocResponse{}, "Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content."},
 	{NotifyEvenerHostNotification, HostNotificationParams{}, "Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here."},
+	{NotifyHistoryUpdated, HistoryUpdatedParams{}, "The full current form of every item and turn whose recorded entries changed."},
+	{NotifyOverlayUpserted, OverlayUpsertedParams{}, "One overlay item (a stream, preview, running tool, or notice) was created or replaced."},
+	{NotifyOverlayDelta, OverlayDeltaParams{}, "An incremental chunk appended to one overlay item's text or output."},
+	{NotifyOverlayReset, OverlayResetParams{}, "Discard a stream's in-progress overlay item; a retry replaces it."},
+	{NotifyOverlayEnd, OverlayEndParams{}, "A round's overlay state is final and about to be replaced by recorded history."},
 }

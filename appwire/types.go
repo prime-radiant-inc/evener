@@ -1304,11 +1304,18 @@ const (
 )
 
 // ThreadItemPosition is an absolute position in the decoded transcript and
-// the final visible projected item slice for that entry.
+// the final visible projected item slice for that entry. Sub orders notices
+// anchored at the same (Entry, Item) position; it is omitted at zero.
 type ThreadItemPosition struct {
 	Entry uint64 `json:"entry"`
 	Item  uint32 `json:"item"`
+	Sub   uint32 `json:"sub,omitempty"`
 }
+
+// NoticeAnchorItem is the Item value of every notice anchor: past every real
+// content part index, so a notice's position always sorts after the entry's
+// real items.
+const NoticeAnchorItem uint32 = 1 << 30
 
 type Turn struct {
 	ID        string        `json:"id"`
@@ -1316,6 +1323,9 @@ type Turn struct {
 	ItemsView TurnItemsView `json:"itemsView"`
 	Status    string        `json:"status"`
 	Error     *TurnError    `json:"error,omitempty"`
+	// Version is the highest contributing entry ordinal + 1 (0 means an
+	// overlay-only turn with no recorded history yet).
+	Version uint64 `json:"version,omitempty"`
 	// HasEarlierItems and HasLaterItems describe completeness at the item
 	// boundaries of a fragment. They are omitted by legacy/full responses.
 	HasEarlierItems bool `json:"hasEarlierItems,omitempty"`
@@ -1523,6 +1533,13 @@ type ThreadItem struct {
 	// non-steering items and on steering items the daemon didn't classify.
 	SteeringKind     string `json:"steeringKind,omitempty"`
 	ClientMutationID string `json:"clientMutationId,omitempty"`
+	// Version is the highest entry ordinal (below) among the entries that
+	// contributed to this item, stored and sent as ordinal + 1 so 0 means "no
+	// history version" (an overlay item). The higher version wins.
+	Version uint64 `json:"version,omitempty"`
+	// RoundID names the round an ASSISTANT-projected item belongs to. Empty
+	// for items that are not projected from an ASSISTANT entry.
+	RoundID string `json:"roundId,omitempty"`
 }
 
 type OutputImage struct {
@@ -1576,6 +1593,14 @@ type ThreadReadParams struct {
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 	ItemLimit           int    `json:"itemLimit,omitempty"`
+	// RequestGeneration is the client's own read-request counter, echoed back
+	// on ThreadReadResponse so a client can discard a stale reply that
+	// resolves after a newer request it already issued.
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// HeldSnapshot names what the client's currently held read was projected
+	// from, so the server can answer with HistoryChanges instead of a full
+	// re-read when nothing outside the client's window changed.
+	HeldSnapshot *SnapshotIdentity `json:"heldSnapshot,omitempty"`
 }
 
 type ThreadReadResponse struct {
@@ -1584,6 +1609,131 @@ type ThreadReadResponse struct {
 	// to thread/turns/list to fetch the page just before the window. Empty means
 	// the response already includes the oldest item.
 	OlderCursor string `json:"olderCursor,omitempty"`
+	// RequestGeneration echoes ThreadReadParams.RequestGeneration.
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// Epoch is the history epoch this response was projected under; it
+	// advances on a replacement (a new incarnation, a resync epoch, or an
+	// authoritative daemonless read).
+	Epoch uint64 `json:"epoch,omitempty"`
+	// Snapshot names what this read was projected from.
+	Snapshot *SnapshotIdentity `json:"snapshot,omitempty"`
+	// Overlay carries the live, not-yet-recorded state (streams, previews,
+	// running tools, notices) alongside the recorded thread.
+	Overlay []OverlayItem `json:"overlay,omitempty"`
+	// Authoritative is true when this response can settle uncertain state
+	// (a live daemon read), false for a saved-transcript read that cannot.
+	Authoritative bool `json:"authoritative,omitempty"`
+	// Changes carries items and turns outside the client's held window whose
+	// version grew since HeldSnapshot, in place of a full re-read.
+	Changes *HistoryChanges `json:"changes,omitempty"`
+}
+
+// SnapshotIdentity names what a history read or update was projected from:
+// the incarnation (identity of the recorded history line, changed by a
+// replacement) and its length at projection time.
+type SnapshotIdentity struct {
+	Incarnation string `json:"incarnation"`
+	Length      int64  `json:"length"`
+}
+
+const NotifyHistoryUpdated = "history/updated"
+
+// HistoryUpdatedParams carries the full current form of every item and turn
+// whose recorded entries changed. Turns carry no Items — the reducer merges
+// them against items it already holds by key.
+type HistoryUpdatedParams struct {
+	ThreadID string           `json:"threadId"`
+	Ref      string           `json:"ref"`
+	Epoch    uint64           `json:"epoch"`
+	Snapshot SnapshotIdentity `json:"snapshot"`
+	Turns    []Turn           `json:"turns,omitempty"`
+	Items    []ThreadItem     `json:"items,omitempty"`
+}
+
+// OverlayKind discriminates the four shapes of live, not-yet-recorded state
+// an OverlayItem can carry.
+type OverlayKind string
+
+const (
+	OverlayStream  OverlayKind = "stream"
+	OverlayPreview OverlayKind = "preview"
+	OverlayTool    OverlayKind = "tool"
+	OverlayNotice  OverlayKind = "notice"
+)
+
+// OverlayItem is one piece of live state that is not recorded history: a
+// streaming assistant/reasoning run, a tool-call preview, a running tool, or
+// an ephemeral notice.
+type OverlayItem struct {
+	// Key identifies this overlay slot: "stream:<streamId>:<agentMessage|reasoning>",
+	// "preview:<callId>", "tool:<historyKey>", or "notice:<n>".
+	Key        string              `json:"key"`
+	Kind       OverlayKind         `json:"kind"`
+	TurnID     string              `json:"turnId,omitempty"`
+	RoundID    string              `json:"roundId,omitempty"`
+	StreamID   string              `json:"streamId,omitempty"`
+	CallID     string              `json:"callId,omitempty"`
+	HistoryKey string              `json:"historyKey,omitempty"` // tool: the call item's transcriptKey
+	Anchor     *ThreadItemPosition `json:"anchor,omitempty"`     // notice
+	Item       ThreadItem          `json:"item"`                 // the display form
+}
+
+const (
+	NotifyOverlayUpserted = "overlay/upserted" // OverlayUpsertedParams
+	NotifyOverlayDelta    = "overlay/delta"    // OverlayDeltaParams
+	NotifyOverlayReset    = "overlay/reset"    // OverlayResetParams
+	NotifyOverlayEnd      = "overlay/end"      // OverlayEndParams
+)
+
+// OverlayUpsertedParams is the payload of overlay/upserted: one overlay item
+// was created or replaced.
+type OverlayUpsertedParams struct {
+	ThreadID string      `json:"threadId"`
+	Ref      string      `json:"ref"`
+	Item     OverlayItem `json:"item"`
+}
+
+// OverlayDeltaField selects which field of a targeted overlay item an
+// OverlayDeltaParams appends to.
+type OverlayDeltaField string
+
+const (
+	OverlayDeltaText   OverlayDeltaField = "text"
+	OverlayDeltaOutput OverlayDeltaField = "output"
+)
+
+// OverlayDeltaParams is the payload of overlay/delta: an incremental chunk
+// appended to one overlay item's text or output.
+type OverlayDeltaParams struct {
+	ThreadID string            `json:"threadId"`
+	Ref      string            `json:"ref"`
+	Key      string            `json:"key"`
+	Field    OverlayDeltaField `json:"field"`
+	Delta    string            `json:"delta"`
+}
+
+// OverlayResetParams is the payload of overlay/reset: discard the named
+// stream's in-progress overlay item (a retry replaces it).
+type OverlayResetParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	StreamID string `json:"streamId"`
+}
+
+// OverlayEndParams is the payload of overlay/end: the named round's overlay
+// state (previews, running tools) is final and about to be replaced by
+// recorded history.
+type OverlayEndParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	RoundID  string `json:"roundId"`
+}
+
+// HistoryChanges are items and turns outside a daemonless latest window whose
+// version grew since the snapshot the client held.
+type HistoryChanges struct {
+	Turns []Turn       `json:"turns,omitempty"`
+	Items []ThreadItem `json:"items,omitempty"`
 }
 
 func decodeStrictJSON(data []byte, dst any) error {
@@ -1613,11 +1763,24 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	// RequestGeneration is the client's own read-request counter; see
+	// ThreadReadParams.RequestGeneration.
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
 }
 
 type ThreadTurnsListResponse struct {
 	Data       []Turn `json:"data"`
 	NextCursor string `json:"nextCursor,omitempty"`
+	// RequestGeneration echoes ThreadTurnsListParams.RequestGeneration.
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// Epoch is the history epoch this page was projected under; see
+	// ThreadReadResponse.Epoch.
+	Epoch uint64 `json:"epoch,omitempty"`
+	// Snapshot names what this page was projected from.
+	Snapshot *SnapshotIdentity `json:"snapshot,omitempty"`
+	// Authoritative is true when this page can settle uncertain state; see
+	// ThreadReadResponse.Authoritative.
+	Authoritative bool `json:"authoritative,omitempty"`
 }
 
 func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {
@@ -1730,6 +1893,10 @@ type ThreadForkParams struct {
 	// is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
 	// Label, and is only supported for local evener threads.
 	Aside bool `json:"aside,omitempty"`
+	// SourceItemKey names the divergence position as an item key
+	// (transcriptindex.ItemKey), the versioned-history successor to
+	// SourceTurnID's entry-index addressing.
+	SourceItemKey string `json:"sourceItemKey,omitempty"`
 }
 
 type ThreadForkResponse struct {
@@ -2592,6 +2759,9 @@ type ThreadStatusChangedParams struct {
 	// A client that read the daemon's own all-false set there would lose the
 	// follow-up composer for a session the hub would happily resume (kata pk2d).
 	Capabilities *ThreadCapabilities `json:"capabilities,omitempty"`
+	// ActiveTurnID is the currently running turn's id, empty when none. See
+	// EvenerThread.ActiveTurnID.
+	ActiveTurnID string `json:"activeTurnId,omitempty"`
 }
 
 type AgentMessageDeltaParams struct {
@@ -2697,6 +2867,8 @@ type ThreadClosedParams struct {
 type ThreadResyncParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
+	// Epoch is the history epoch a client should resync to, when known.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // TurnStartedParams is the params shape for the turn/started notification:

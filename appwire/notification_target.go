@@ -151,3 +151,28 @@ func (p ThreadResyncParams) WithNotificationTarget(threadID, ref string) Notific
 	p.ThreadID, p.Ref = threadID, ref
 	return p
 }
+
+func (p HistoryUpdatedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p OverlayUpsertedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p OverlayDeltaParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p OverlayResetParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p OverlayEndParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}

@@ -994,6 +994,20 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HistoryChanges {
+  turns?: Turn[];
+  items?: ThreadItem[];
+}
+
+export interface HistoryUpdatedParams {
+  threadId: string;
+  ref: string;
+  epoch: number;
+  snapshot: SnapshotIdentity;
+  turns?: Turn[];
+  items?: ThreadItem[];
+}
+
 export interface HostAddParams {
   entry: HostEntry;
 }
@@ -2178,6 +2192,48 @@ export interface OutputImage {
   path?: string;
 }
 
+export interface OverlayDeltaParams {
+  threadId: string;
+  ref: string;
+  key: string;
+  field: string;
+  delta: string;
+}
+
+export interface OverlayEndParams {
+  threadId: string;
+  ref: string;
+  roundId: string;
+}
+
+export interface OverlayItem {
+  /**
+   * Key identifies this overlay slot: "stream:<streamId>:<agentMessage|reasoning>",
+   * "preview:<callId>", "tool:<historyKey>", or "notice:<n>".
+   */
+  key: string;
+  kind: string;
+  turnId?: string;
+  roundId?: string;
+  streamId?: string;
+  callId?: string;
+  historyKey?: string;
+  anchor?: ThreadItemPosition;
+  item: ThreadItem;
+}
+
+export interface OverlayResetParams {
+  threadId: string;
+  ref: string;
+  streamId: string;
+}
+
+export interface OverlayUpsertedParams {
+  threadId: string;
+  ref: string;
+  item: OverlayItem;
+}
+
 export interface PathValidateParams {
   path: string;
   kind?: string;
@@ -2626,6 +2682,11 @@ export interface SettingsStorageOverview {
   stateDir?: string;
 }
 
+export interface SnapshotIdentity {
+  incarnation: string;
+  length: number;
+}
+
 export interface Source {
   id: string;
   label: string;
@@ -2828,6 +2889,12 @@ export interface ThreadForkParams {
    * Label, and is only supported for local evener threads.
    */
   aside?: boolean;
+  /**
+   * SourceItemKey names the divergence position as an item key
+   * (transcriptindex.ItemKey), the versioned-history successor to
+   * SourceTurnID's entry-index addressing.
+   */
+  sourceItemKey?: string;
 }
 
 export interface ThreadForkResponse {
@@ -2921,11 +2988,23 @@ export interface ThreadItem {
    */
   steeringKind?: string;
   clientMutationId?: string;
+  /**
+   * Version is the highest entry ordinal (below) among the entries that
+   * contributed to this item, stored and sent as ordinal + 1 so 0 means "no
+   * history version" (an overlay item). The higher version wins.
+   */
+  version?: number;
+  /**
+   * RoundID names the round an ASSISTANT-projected item belongs to. Empty
+   * for items that are not projected from an ASSISTANT entry.
+   */
+  roundId?: string;
 }
 
 export interface ThreadItemPosition {
   entry: number;
   item: number;
+  sub?: number;
 }
 
 export interface ThreadListParams {
@@ -3009,6 +3088,18 @@ export interface ThreadReadParams {
   subscribe?: boolean;
   replaceSubscription?: boolean;
   itemLimit?: number;
+  /**
+   * RequestGeneration is the client's own read-request counter, echoed back
+   * on ThreadReadResponse so a client can discard a stale reply that
+   * resolves after a newer request it already issued.
+   */
+  requestGeneration?: number;
+  /**
+   * HeldSnapshot names what the client's currently held read was projected
+   * from, so the server can answer with HistoryChanges instead of a full
+   * re-read when nothing outside the client's window changed.
+   */
+  heldSnapshot?: SnapshotIdentity;
 }
 
 export interface ThreadReadResponse {
@@ -3019,6 +3110,35 @@ export interface ThreadReadResponse {
    * the response already includes the oldest item.
    */
   olderCursor?: string;
+  /**
+   * RequestGeneration echoes ThreadReadParams.RequestGeneration.
+   */
+  requestGeneration?: number;
+  /**
+   * Epoch is the history epoch this response was projected under; it
+   * advances on a replacement (a new incarnation, a resync epoch, or an
+   * authoritative daemonless read).
+   */
+  epoch?: number;
+  /**
+   * Snapshot names what this read was projected from.
+   */
+  snapshot?: SnapshotIdentity;
+  /**
+   * Overlay carries the live, not-yet-recorded state (streams, previews,
+   * running tools, notices) alongside the recorded thread.
+   */
+  overlay?: OverlayItem[];
+  /**
+   * Authoritative is true when this response can settle uncertain state
+   * (a live daemon read), false for a saved-transcript read that cannot.
+   */
+  authoritative?: boolean;
+  /**
+   * Changes carries items and turns outside the client's held window whose
+   * version grew since HeldSnapshot, in place of a full re-read.
+   */
+  changes?: HistoryChanges;
 }
 
 export interface ThreadReasoningEffortChangedParams {
@@ -3044,6 +3164,10 @@ export interface ThreadResumeResponse {
 export interface ThreadResyncParams {
   threadId: string;
   ref: string;
+  /**
+   * Epoch is the history epoch a client should resync to, when known.
+   */
+  epoch?: number;
 }
 
 export interface ThreadShutdownParams {
@@ -3144,6 +3268,11 @@ export interface ThreadStatusChangedParams {
    * follow-up composer for a session the hub would happily resume (kata pk2d).
    */
   capabilities?: ThreadCapabilities;
+  /**
+   * ActiveTurnID is the currently running turn's id, empty when none. See
+   * EvenerThread.ActiveTurnID.
+   */
+  activeTurnId?: string;
 }
 
 export interface ThreadTranscriptListParams {
@@ -3183,11 +3312,34 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   itemsView?: string;
   itemLimit?: number;
+  /**
+   * RequestGeneration is the client's own read-request counter; see
+   * ThreadReadParams.RequestGeneration.
+   */
+  requestGeneration?: number;
 }
 
 export interface ThreadTurnsListResponse {
   data: Turn[];
   nextCursor?: string;
+  /**
+   * RequestGeneration echoes ThreadTurnsListParams.RequestGeneration.
+   */
+  requestGeneration?: number;
+  /**
+   * Epoch is the history epoch this page was projected under; see
+   * ThreadReadResponse.Epoch.
+   */
+  epoch?: number;
+  /**
+   * Snapshot names what this page was projected from.
+   */
+  snapshot?: SnapshotIdentity;
+  /**
+   * Authoritative is true when this page can settle uncertain state; see
+   * ThreadReadResponse.Authoritative.
+   */
+  authoritative?: boolean;
 }
 
 export interface ThreadUnsubscribeParams {
@@ -3277,6 +3429,11 @@ export interface Turn {
   itemsView: string;
   status: string;
   error?: TurnError;
+  /**
+   * Version is the highest contributing entry ordinal + 1 (0 means an
+   * overlay-only turn with no recorded history yet).
+   */
+  version?: number;
   /**
    * HasEarlierItems and HasLaterItems describe completeness at the item
    * boundaries of a fragment. They are omitted by legacy/full responses.
@@ -3640,6 +3797,11 @@ export const NOTIFICATION_NAMES = [
   "evener/settings/keybindings/changed",
   "evener/settings/agentsDoc/changed",
   "evener/host/notification",
+  "history/updated",
+  "overlay/upserted",
+  "overlay/delta",
+  "overlay/reset",
+  "overlay/end",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -3850,6 +4012,11 @@ export interface NotificationTypes {
   "evener/settings/keybindings/changed": KeybindingsOverrides;
   "evener/settings/agentsDoc/changed": AgentsDocResponse;
   "evener/host/notification": HostNotificationParams;
+  "history/updated": HistoryUpdatedParams;
+  "overlay/upserted": OverlayUpsertedParams;
+  "overlay/delta": OverlayDeltaParams;
+  "overlay/reset": OverlayResetParams;
+  "overlay/end": OverlayEndParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];
