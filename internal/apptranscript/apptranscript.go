@@ -319,7 +319,30 @@ func UserFacingText(msg llm.Message) string {
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
-func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
+func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) []appwire.ThreadItem {
+	return projectTurn(turnID, turnIndex, turn, toolNames, imageProjector, outputImageProjector, nil)
+}
+
+// ProjectTurnParts is ProjectTurn plus, for each item, the index of the entry
+// content part it came from. Each part projects at most one item, so the index
+// names an item within its entry. A kind that projects the whole entry as one
+// item reports part 0. Hidden parts (an echoed communicate, empty text) still
+// occupy their index, so a part's index never depends on its neighbours.
+func ProjectTurnParts(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) ([]appwire.ThreadItem, []int) {
+	var parts []int
+	items := projectTurn(turnID, turnIndex, turn, toolNames, imageProjector, outputImageProjector, &parts)
+	if parts == nil && len(items) == 1 {
+		parts = []int{0}
+	}
+	invariant.Hold(len(parts) == len(items),
+		"apptranscript: ProjectTurnParts reported %d parts for %d items (kind %s)", len(parts), len(items), turn.Kind)
+	return items, parts
+}
+
+// projectTurn is ProjectTurn. When parts is non-nil, the kinds that project
+// one item per content part (assistant and tool results) record each item's
+// part index in it.
+func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector, parts *[]int) (out []appwire.ThreadItem) {
 	// A persisted message has the entry's recorded instant, not a duration.
 	defer func() {
 		if turn.Timestamp.IsZero() {
@@ -516,6 +539,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 						Text:   part.Text,
 						Status: appwire.TurnStatusCompleted,
 					})
+					recordPart(parts, i)
 					lastAssistantText = strings.TrimSpace(part.Text)
 				}
 			case llm.ContentThinking:
@@ -527,6 +551,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 						Text:   part.Thinking.Text,
 						Status: appwire.TurnStatusCompleted,
 					})
+					recordPart(parts, i)
 				}
 			case llm.ContentRedThinking:
 				items = append(items, appwire.ThreadItem{
@@ -536,6 +561,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					Text:   "[redacted thinking]",
 					Status: appwire.TurnStatusCompleted,
 				})
+				recordPart(parts, i)
 			case llm.ContentWebSearch:
 				if part.WebSearch == nil {
 					continue
@@ -556,6 +582,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					Output:        results,
 					Status:        appwire.TurnStatusCompleted,
 				})
+				recordPart(parts, i)
 			case llm.ContentToolCall:
 				if part.ToolCall == nil {
 					continue
@@ -570,6 +597,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 							Text:   text,
 							Status: appwire.TurnStatusCompleted,
 						})
+						recordPart(parts, i)
 						lastAssistantText = strings.TrimSpace(text)
 					}
 					continue
@@ -591,6 +619,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					item.StartedAt = &ms
 				}
 				items = append(items, item)
+				recordPart(parts, i)
 			}
 		}
 		return items
@@ -636,10 +665,19 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				item.OutputImages = outputImageProjector(part.ToolResult)
 			}
 			items = append(items, item)
+			recordPart(parts, i)
 		}
 		return items
 	default:
 		return nil
+	}
+}
+
+// recordPart appends a projected item's part index when the caller asked for
+// part indices.
+func recordPart(parts *[]int, part int) {
+	if parts != nil {
+		*parts = append(*parts, part)
 	}
 }
 
