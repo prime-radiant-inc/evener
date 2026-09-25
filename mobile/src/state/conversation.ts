@@ -2065,6 +2065,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // Every durable record this client submitted, id -> createdAt, carried past
   // the record's own settle so the reconciliation's provenance rule can still
   // answer after the durable read reports the id out of storage.
+  // Growth is bounded by the store's own lifetime: a store is per conversation,
+  // client mutation ids are unique per submission, and close/reset forget the
+  // map. The package store this mirrors deliberately never prunes it, because
+  // pruning an id the daemon still reports would flip an own in-flight send to
+  // `fromThisClient: false` and misroute tier-6 send/queue availability.
   const pendingSubmittedHere = new Map<string, number>();
 
   function reconcilePendingMutations(): readonly PendingTurnEntry[] {
@@ -3839,7 +3844,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               if (request <= lastPublishedRequest) return;
               lastPublishedRequest = request;
               pendingSnapshot = snapshot;
-              set({ pendingMutations: reconcilePendingMutations() });
+              // The same stability check the conversation-write path uses: a
+              // storage read that re-serves identical rows must not churn
+              // subscribers with a fresh array.
+              const next = reconcilePendingMutations();
+              if (!samePendingRows(get().pendingMutations, next)) {
+                set({ pendingMutations: next });
+              }
             },
             () => {
               // A failed read leaves the last durable projection standing: the

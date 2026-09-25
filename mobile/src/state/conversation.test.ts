@@ -46,6 +46,7 @@ import type {
   ConversationMutationPendingPort,
 } from "./conversationMutation";
 import type {
+  MutationOptimisticRecord,
   MutationOutboxRecord,
   MutationPersistenceSnapshot,
   MutationRecoveryRecord,
@@ -1431,6 +1432,12 @@ describe("ConversationStore", () => {
       return { ...outbox(), recoveryKind: "rejected", ...over };
     }
 
+    function optimistic(
+      over: Partial<MutationOptimisticRecord> = {},
+    ): MutationOptimisticRecord {
+      return { ...outbox(), state: "accepted", ...over };
+    }
+
     function fakePort(initial: Partial<MutationPersistenceSnapshot> = {}) {
       let snapshot: MutationPersistenceSnapshot = {
         outbox: [],
@@ -1924,6 +1931,58 @@ describe("ConversationStore", () => {
         .openProjected(other, createFakeSink(), "ref-2");
       expect(port.listenerCount()).toBe(0);
       expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("projects an optimistic record", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ clientMutationId: "cmid-3" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-3",
+        source: "optimistic",
+        state: "accepted",
+      });
+    });
+
+    it("an optimistic record the model reflects never projects", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ clientMutationId: "cmid-3" })],
+      });
+      const store = await openStore(
+        makeConversation({
+          queue: { revision: 1, clientMutationIds: ["cmid-3"] },
+        }),
+      );
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("ignores an optimistic record another target owns", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a durable read that re-serves identical rows keeps the projection reference", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const before = store.getState().pendingMutations;
+      expect(before).toHaveLength(1);
+
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toBe(before);
     });
   });
 
