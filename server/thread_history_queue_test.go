@@ -117,27 +117,39 @@ func TestRecordedHookTakesOnlyTheQueueMutex(t *testing.T) {
 		t.Fatal("no history")
 	}
 	recorded := make(chan struct{})
-	// Inside a projection commit, so the appserver's commit lock is held too.
-	srv.appServer.CommitProjection(func() []appserver.SequencedNotification {
-		srv.mu.Lock()
-		srv.appHistories.mu.Lock()
+	held := make(chan struct{})
+	// Every lock in production order: the projection serialization, then the
+	// commit lock (a projection commit), then the server's, the registry's
+	// and the history's apply mutex, as the event path takes them.
+	go func() {
+		defer close(held)
 		history.serial.Lock()
-		history.applyMu.Lock()
-		go func() {
-			defer close(recorded)
-			st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("under every other lock")))
-		}()
-		select {
-		case <-recorded:
-		case <-time.After(historyTestWait):
-			t.Error("the recorded hook blocked on a lock other than the queue mutex")
-		}
-		history.applyMu.Unlock()
-		history.serial.Unlock()
-		srv.appHistories.mu.Unlock()
-		srv.mu.Unlock()
-		return nil
-	})
+		defer history.serial.Unlock()
+		srv.appServer.CommitProjection(func() []appserver.SequencedNotification {
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			srv.appHistories.mu.Lock()
+			defer srv.appHistories.mu.Unlock()
+			history.applyMu.Lock()
+			defer history.applyMu.Unlock()
+			go func() {
+				defer close(recorded)
+				st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("under every other lock")))
+			}()
+			select {
+			case <-recorded:
+			case <-time.After(historyTestWait):
+				t.Error("the recorded hook blocked on a lock other than the queue mutex")
+			}
+			return nil
+		})
+	}()
+	// A tripwire, not a wait: taking the locks must not hang either.
+	select {
+	case <-held:
+	case <-time.After(2 * historyTestWait):
+		t.Fatal("taking every other lock in production order hung")
+	}
 	<-recorded
 	st.settle(t)
 }
@@ -392,6 +404,7 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 	}
 	t.Cleanup(func() { threadHistoryPublishHook = nil })
 	hx := newHistoryHarnessWith(t, smallQueueBytes)
+	hx.commits = appserver.NewServer(appserver.ServerConfig{})
 	// Consume what the history publishes, so a full channel never holds the
 	// projection goroutine.
 	consumed := make(chan struct{})
@@ -436,7 +449,11 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 					return
 				default:
 				}
-				hx.history.overlayEvent(events.New(events.LoopDetectionData{Message: fmt.Sprintf("loop %d", i)}))
+				// Through a projection commit, as the event path runs.
+				hx.commits.CommitProjection(func() []appserver.SequencedNotification {
+					hx.history.overlayEvent(events.New(events.LoopDetectionData{Message: fmt.Sprintf("loop %d", i)}))
+					return nil
+				})
 			}
 		})
 		var appenders sync.WaitGroup

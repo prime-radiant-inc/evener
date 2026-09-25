@@ -75,12 +75,17 @@ func TestChangedSinceReturnsCreatedAndUpdatedRecords(t *testing.T) {
 	}
 }
 
+// deliberatelyUnreadable is the field corruptEntryLine adds: no entry has it,
+// so the line fails strict decoding, and readFixtureFile accepts the failure
+// only on a line that carries it.
+const deliberatelyUnreadable = `"deliberately_unreadable":true`
+
 // corruptEntryLine is an entry line that fails strict decoding: it carries a
 // field no entry has.
 func corruptEntryLine(t testing.TB, text string) []byte {
 	t.Helper()
 	line := bytes.TrimRight(encodeEntry(t, 1, user(text)), "\n")
-	return append(line[:len(line)-1], []byte(`,"unknown_field":true}`+"\n")...)
+	return append(line[:len(line)-1], []byte(","+deliberatelyUnreadable+"}\n")...)
 }
 
 // An entry that fails to decode is quarantined: it projects as one visible

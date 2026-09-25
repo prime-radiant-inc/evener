@@ -23,8 +23,9 @@ const testMaxLineBytes = 128 << 20
 
 // readFixtureFile strictly decodes a transcript the way the whole-file readers
 // do: blank lines are skipped, an unterminated tail is dropped. An entry line
-// that does not decode takes its place as a zero turn, its decode error in
-// unreadable at the same index.
+// a fixture deliberately corrupted (corruptEntryLine) takes its place as a
+// zero turn, its decode error in unreadable at the same index; any other line
+// that does not decode fails the test.
 func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Turn, map[int]error) {
 	t.Helper()
 	f, err := os.Open(path)
@@ -58,6 +59,9 @@ func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Tur
 		}
 		entry, err := transcript.DecodeEntry(line)
 		if err != nil {
+			if !bytes.Contains(line, []byte(deliberatelyUnreadable)) {
+				t.Fatalf("fixture entry %d does not decode: %v", len(entries), err)
+			}
 			unreadable[len(entries)] = err
 		}
 		entries = append(entries, entry.Turn)

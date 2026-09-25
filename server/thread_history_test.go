@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appoverlay"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -44,6 +45,21 @@ type historyHarness struct {
 	onRecord func(transcript.Record) // runs in the append hook before the history's
 	// publications wakes awaitPublished.
 	publications *historyPublications
+	// commits, when set, is the appserver whose projection commits the
+	// history's publish and resync go through, as production's do.
+	commits *appserver.Server
+}
+
+// deliver runs send inside a projection commit when the harness has one.
+func (hx *historyHarness) deliver(send func()) {
+	if hx.commits == nil {
+		send()
+		return
+	}
+	hx.commits.CommitProjection(func() []appserver.SequencedNotification {
+		send()
+		return nil
+	})
 }
 
 // awaitPublished returns once the history holds clients' history through
@@ -93,10 +109,10 @@ func newHistoryHarnessWith(t *testing.T, maxQueuedBytes int64) *historyHarness {
 		cache:          cache,
 		overlay:        overlay,
 		publish: func(params appwire.HistoryUpdatedParams) error {
-			hx.updates <- params
+			hx.deliver(func() { hx.updates <- params })
 			return nil
 		},
-		resync:         func(epoch uint64) { hx.resyncs <- epoch },
+		resync:         func(epoch uint64) { hx.deliver(func() { hx.resyncs <- epoch }) },
 		maxQueuedBytes: maxQueuedBytes,
 	})
 	t.Cleanup(hx.history.close)
