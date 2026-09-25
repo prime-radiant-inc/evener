@@ -59,12 +59,15 @@ register/unregister path anywhere in this component or in 05.
 - Deploy: obtain the matching controller build for the host's `GOOS`/`GOARCH`
   (cross-compile, mirroring `make build-linux`) and push it (`scp`/`ssh cat`) or
   run `install.sh` on the host; `chmod +x`.
-- Version auto-match on attach: compare controller `buildinfo.Version()` with the
-  host's **running** hub `version` (`/api/health`) and its on-disk
-  `launch-check` `version`; deploy when the on-disk binary differs and restart
-  the host hub when the running version differs, then verify the **restarted**
-  hub reports the expected `version` through `/api/health`, probed on the host,
-  before re-attaching.
+- Version auto-match on attach, where a deploy path is configured: compare
+  controller `buildinfo.Version()` with the host's **running** hub `version`
+  (`/api/health`) and its on-disk `launch-check` `version`; deploy when the
+  on-disk binary differs and restart the host hub when the running version
+  differs, then verify the **restarted** hub reports the expected `version`
+  through `/api/health`, probed on the host, before re-attaching. With no
+  deploy path there is nothing to converge: a protocol-compatible host on
+  another build is attached and the difference is reported rather than refused
+  (§5).
 - Client handoff: publish the current client per host so component 05 can rebind
   after a reconnect without ever caching a dead client (§"Client handoff").
 
