@@ -531,7 +531,7 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		return turnIndexDisk{}, stats, fmt.Errorf("stat transcript: %w", err)
 	}
 	projectionID := projectionIdentity(project)
-	currentFileIdentity := fileIdentity(info)
+	currentFileIdentity := FileIdentity(info)
 	currentChangeIdentity := fileChangeIdentity(info)
 
 	var candidate *turnIndexDisk
@@ -915,7 +915,8 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			} else if n := index.recordCount(); n > 0 {
 				prevKind = index.recordAt(n - 1).TurnKind
 			}
-			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
+			grouper := TurnGrouper{Open: groupOpenAfter(prevKind), TurnID: openTurnID}
+			_, record.StartsGroup = grouper.Place(&entry.Turn, entryIndex)
 			if record.StartsGroup {
 				openTurnID = record.TurnID
 				openCalls = map[string]bool{}
@@ -1269,7 +1270,7 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 		return nil, projected, err
 	}
 	turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-	stampGroupedTurnFromEntries(&turn, entries)
+	StampGroupedTurn(&turn, entries)
 	return &turn, projected, nil
 }
 
@@ -1637,7 +1638,10 @@ func turnIndexIntegrityStampObserved(index turnIndexDisk, stats *ReadStats) stri
 	return hex.EncodeToString(sum[:])
 }
 
-func fileIdentity(info os.FileInfo) string {
+// FileIdentity names the file behind info (device and inode, or the Windows
+// volume and file index), or "" when the platform reports neither. Two infos
+// with the same non-empty identity are the same file.
+func FileIdentity(info os.FileInfo) string {
 	if info == nil || info.Sys() == nil {
 		return ""
 	}

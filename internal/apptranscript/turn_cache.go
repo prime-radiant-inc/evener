@@ -90,7 +90,7 @@ func scanMemoIdentity(info os.FileInfo, fromEntryOrdinal int) scanMemoKey {
 	return scanMemoKey{
 		size:           info.Size(),
 		modUnixNano:    info.ModTime().UnixNano(),
-		fileIdentity:   fileIdentity(info),
+		fileIdentity:   FileIdentity(info),
 		changeIdentity: fileChangeIdentity(info),
 		fromOrdinal:    fromEntryOrdinal,
 	}
@@ -193,7 +193,7 @@ func (c *TurnCache) loadItemProjectionContext(ctx context.Context, path string, 
 		return nil, err
 	}
 	if e, ok := c.entries[path]; ok && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
-		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) &&
+		e.fileIdentity == FileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) &&
 		e.full {
 		c.touch(path)
 		c.mu.Unlock()
@@ -219,13 +219,13 @@ func (c *TurnCache) loadItemProjectionContext(ctx context.Context, path string, 
 		return nil, err
 	}
 	entry := c.entries[path]
-	if entry.size != fi.Size() || !entry.mod.Equal(fi.ModTime()) || entry.fileIdentity != fileIdentity(fi) || entry.changeIdentity != fileChangeIdentity(fi) {
+	if entry.size != fi.Size() || !entry.mod.Equal(fi.ModTime()) || entry.fileIdentity != FileIdentity(fi) || entry.changeIdentity != fileChangeIdentity(fi) {
 		entry.turns = nil
 		entry.full = false
 	}
 	entry.size = fi.Size()
 	entry.mod = fi.ModTime()
-	entry.fileIdentity = fileIdentity(fi)
+	entry.fileIdentity = FileIdentity(fi)
 	entry.changeIdentity = fileChangeIdentity(fi)
 	entry.turns = turns
 	entry.full = true
