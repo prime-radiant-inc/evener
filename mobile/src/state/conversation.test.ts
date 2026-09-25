@@ -5395,6 +5395,109 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
+    // The read model's transcript frame (history/updated) takes the same gap
+    // rule as item/turn frames: the package's applyHistoryUpdated hands back
+    // `turns` by reference for a stale replay or an invalidating epoch, and
+    // that identity-unchanged case is what requests the canonical read.
+    describe("history/updated gap rule (v6)", () => {
+      // A store opened on a v6-hydrated thread (a snapshot on the read
+      // response), so applyNotification's package call takes
+      // applyHistoryUpdated's branch instead of the pre-v6 fallback.
+      async function openV6RunningTurn(): Promise<{
+        store: ReturnType<typeof createConversationStore>;
+        service: FakeConversationService;
+      }> {
+        const thread = runningTurnThread();
+        const service = new FakeConversationService();
+        service.readProjectionResult = {
+          conversation: projectConversation(
+            hydrateThread(
+              {
+                thread,
+                bootGeneration: "1",
+                epoch: 1,
+                snapshot: { incarnation: "inc-1", length: 1 },
+              },
+              thread.evener.ref,
+              0,
+            ),
+          ),
+          activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+          olderCursor: null,
+        };
+        const store = createConversationStore();
+        await store.getState().openProjected(service, createFakeSink(), "ref-1");
+        return { store, service };
+      }
+
+      it("rereads when history/updated names a newer epoch than held", async () => {
+        const { store, service } = await openV6RunningTurn();
+        expect(store.getState().conversation?.history?.epoch).toBe(1);
+        const initialReads = service.readProjectionCalls.length;
+        store.getState().applyNotification({
+          method: "history/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            bootGeneration: "1",
+            epoch: 2,
+            snapshot: { incarnation: "inc-1", length: 1 },
+          },
+        } as unknown as AnyNotification);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+      });
+
+      it("does not reread for a history/updated at the same epoch carrying new content", async () => {
+        const { store, service } = await openV6RunningTurn();
+        const initialReads = service.readProjectionCalls.length;
+        store.getState().applyNotification({
+          method: "history/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 2 },
+            items: [{ ...agentMessageItem("m1", "hi"), turnId: "t1", version: 1 }],
+            turns: [{ id: "t1", status: "inProgress", itemsView: "default", items: [] }],
+          },
+        } as unknown as AnyNotification);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(service.readProjectionCalls.length).toBe(initialReads);
+        expect(
+          store.getState().conversation?.turns.flatMap((turn) => turn.items).some((item) => item.id === "m1"),
+        ).toBe(true);
+      });
+
+      it("rereads for a history/updated that names no item or turn this model can place", async () => {
+        const { store, service } = await openV6RunningTurn();
+        const initialReads = service.readProjectionCalls.length;
+        // Same signal identity as held (no invalidation) but no turns/items:
+        // applyHistoryUpdated's merge is then a no-op and `turns` comes back
+        // by reference — the same "nothing matched" gap an unplaceable item
+        // frame produces.
+        store.getState().applyNotification({
+          method: "history/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+          },
+        } as unknown as AnyNotification);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+      });
+    });
+
     it("warning insertion obeys item cap", async () => {
       // 500 user messages in the settled turn, at the cap, plus a running
       // turn for the warning to land in.
