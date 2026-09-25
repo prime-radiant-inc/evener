@@ -63,11 +63,9 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	}
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
-	for _, tail := range openTails.tails {
-		if os.SameFile(tail.info, info) {
-			tail.refs++
-			return tail, nil
-		}
+	if tail := findTailLocked(info); tail != nil {
+		tail.refs++
+		return tail, nil
 	}
 	pin := pinFile(f.Name(), info)
 	if pin == nil {
@@ -89,7 +87,18 @@ func openInProcess(path string) bool {
 	}
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
-	return slices.ContainsFunc(openTails.tails, func(tail *appendTail) bool { return os.SameFile(tail.info, info) })
+	return findTailLocked(info) != nil
+}
+
+// findTailLocked returns the registered tail of the file info describes, or
+// nil. Callers hold openTails.mu.
+func findTailLocked(info os.FileInfo) *appendTail {
+	for _, tail := range openTails.tails {
+		if os.SameFile(tail.info, info) {
+			return tail
+		}
+	}
+	return nil
 }
 
 // pinFile opens a read-only handle on the file at name if it is the file info

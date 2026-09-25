@@ -452,7 +452,9 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 	}
 
 	// Create truncates. Truncating a transcript another writer in this process
-	// has open would cut its records out from under it, and no caller means to.
+	// has open would cut its records out from under it. No caller does; this
+	// catches that mistake, and does not hold off a writer opening the file
+	// concurrently with the create.
 	if openInProcess(path) {
 		return nil, fmt.Errorf("create transcript file: %s is open in this process", path)
 	}
