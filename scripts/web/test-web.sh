@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-web.sh — make test-web's entry point. The gate itself is
-# `evener dev web-checks` (cmd/evener-dev/webchecks.go): the frontend's
+# `evener-dev dev web-checks` (cmd/evener-dev/webchecks.go): the frontend's
 # typecheck, unit tests and lint, run side by side, each in private roots, with
 # verdicts, log replay and interrupt handling.
 #

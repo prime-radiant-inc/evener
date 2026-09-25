@@ -106,11 +106,11 @@ func browserGuardSlots(value string) int {
 	return n
 }
 
-// runWebBrowserGuards is `evener dev web-browser-guards`, run from the
+// runWebBrowserGuards is `evener-dev dev web-browser-guards`, run from the
 // repository root.
 func runWebBrowserGuards(args []string) int {
 	if len(args) != 0 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: evener dev web-browser-guards (BROWSER_GUARD_CONCURRENCY sets the slots)")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: evener-dev dev web-browser-guards (BROWSER_GUARD_CONCURRENCY sets the slots)")
 		return 2
 	}
 	gate := newBrowserGate(browserGuardSlots(os.Getenv("BROWSER_GUARD_CONCURRENCY")), !frontendBuilt(frontendDir))
