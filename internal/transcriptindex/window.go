@@ -65,16 +65,17 @@ func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *
 	var window Window
 	var changes *Changes
 	err = x.locked(false, func() error {
-		window, err = x.latest(limit)
-		if err != nil || held.Incarnation != x.meta.Incarnation {
-			return err
+		var windowErr error
+		window, windowErr = x.latest(limit)
+		if windowErr != nil || held.Incarnation != x.meta.Incarnation {
+			return windowErr
 		}
-		since, err := x.changedSince(held.Length)
-		if errors.Is(err, ErrUpdateLogTruncated) {
+		since, sinceErr := x.changedSince(held.Length)
+		if errors.Is(sinceErr, ErrUpdateLogTruncated) {
 			return nil
 		}
 		changes = &since
-		return err
+		return sinceErr
 	})
 	return window, changes, err
 }

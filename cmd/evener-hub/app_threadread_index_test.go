@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
@@ -397,5 +400,109 @@ func TestDaemonlessReadRoutesAPastedImage(t *testing.T) {
 	want := "/s/" + entry.Meta.ID + "/images/" + imageSha(png)
 	if len(items) != 1 || len(items[0].Images) != 1 || items[0].Images[0].URL != want {
 		t.Fatalf("items = %+v, want the pasted image routed at %s", items, want)
+	}
+}
+
+// TestLiveReadWithNoItemsFallsBackUnderTheDaemonIdentity pins the live-empty
+// fallback: a daemon serving the thread answers a read with no items, and
+// the hub fills the window from the transcript. The daemon still streams the
+// thread, so the response carries its generation and epoch and is not
+// authoritative; stamping it daemonless would make the next live update
+// replace the whole history again.
+func TestLiveReadWithNoItemsFallsBackUnderTheDaemonIdentity(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("hello"))),
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi"))),
+	)
+	ref := "local:" + entry.Meta.ID
+	source := &localItemPackingRPCSource{itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{
+			Thread:         appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, Source: "local", Evener: appwire.EvenerThread{Ref: ref}},
+			BootGeneration: "4",
+			Epoch:          2,
+		},
+		readCandidates: appsource.ItemCandidateResult{Exhausted: true},
+	}}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(cfg, sources)
+	value, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true}),
+	})
+	if err != nil {
+		t.Fatalf("thread/read: %v", err)
+	}
+	response := value.(appwire.ThreadReadResponse)
+	if len(flattenTestItems(response.Thread.Turns)) != 2 {
+		t.Fatalf("turns = %+v, want the transcript's two items", response.Thread.Turns)
+	}
+	if response.BootGeneration != "4" || response.Epoch != 2 || response.Authoritative {
+		t.Fatalf("identity = boot %q epoch %d authoritative %v, want the daemon's 4, 2, not authoritative",
+			response.BootGeneration, response.Epoch, response.Authoritative)
+	}
+}
+
+// TestLiveReadKeepsChangesForItemsThePackerDrops pins a source read that
+// carries changes (a remote hub's daemonless read): when this hub's packer
+// drops the oldest window items for size, those items reach the client in
+// changes instead, so a held copy of one is not left stale.
+func TestLiveReadKeepsChangesForItemsThePackerDrops(t *testing.T) {
+	const ref = "codex:big"
+	big := strings.Repeat("x", transcriptRPCResultSoftLimit/3)
+	var items []appwire.ThreadItem
+	for i := range 4 {
+		position := appwire.ThreadItemPosition{Entry: uint64(i + 1)}
+		items = append(items, appwire.ThreadItem{
+			Type: "agentMessage", ID: fmt.Sprintf("item_%d", i), TurnID: "turn_1", Text: big,
+			TranscriptKey: fmt.Sprintf("key_%d", i), Position: &position, Status: appwire.TurnStatusCompleted,
+		})
+	}
+	turns := []appwire.Turn{{ID: "turn_1", Items: items}}
+	candidates, err := appitempaging.CandidatesFromTurns(turns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{
+			Thread:         appwire.Thread{ID: "big", Source: "codex", Evener: appwire.EvenerThread{Ref: ref}, Turns: turns},
+			BootGeneration: appwire.DaemonlessBootGeneration,
+			Authoritative:  true,
+			Changes:        &appwire.HistoryChanges{},
+		},
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+			Identity:   appitempaging.CursorIdentity{ThreadRef: ref, Incarnation: "remote", ProjectionVersion: 1},
+			Exhausted:  true,
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources)
+	value, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true}),
+	})
+	if err != nil {
+		t.Fatalf("thread/read: %v", err)
+	}
+	response := value.(appwire.ThreadReadResponse)
+	windowKeys := map[string]bool{}
+	for _, item := range flattenTestItems(response.Thread.Turns) {
+		windowKeys[item.TranscriptKey] = true
+	}
+	if len(windowKeys) == len(items) {
+		t.Fatal("the packer dropped nothing; the fixture is too small")
+	}
+	changed := map[string]bool{}
+	if response.Changes != nil {
+		for _, item := range response.Changes.Items {
+			changed[item.TranscriptKey] = true
+		}
+	}
+	for _, item := range items {
+		if !windowKeys[item.TranscriptKey] && !changed[item.TranscriptKey] {
+			t.Fatalf("item %s is in neither the window %v nor changes %v", item.TranscriptKey, windowKeys, changed)
+		}
 	}
 }

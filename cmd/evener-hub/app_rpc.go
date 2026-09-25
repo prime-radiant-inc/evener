@@ -301,6 +301,58 @@ func withReadHistoryIdentity(response, from appwire.ThreadReadResponse) appwire.
 	return response
 }
 
+// fallbackHistoryIdentity is the identity of a live read whose items the hub
+// filled from the transcript because the source returned none. A daemon that
+// serves the thread's history (it names a boot generation) still streams it,
+// so the response merges under the daemon's generation and epoch rather than
+// replacing as a daemonless read would; the transcript's snapshot stands in
+// when the daemon named none. Otherwise nothing serves the thread's history
+// and the transcript read is daemonless.
+func fallbackHistoryIdentity(live, past appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	if live.BootGeneration == "" {
+		return past
+	}
+	if live.Snapshot == nil {
+		live.Snapshot = past.Snapshot
+	}
+	return live
+}
+
+// withDroppedWindowItems adds to a source read's changes the window items
+// this hub's packer dropped for size. The source subtracted its own window
+// from its changes, so a changed item it returned in the window that the
+// packer then dropped would otherwise reach the client in neither: the
+// response is authoritative only from its first returned position, and a
+// held copy of the item would stay stale. A read with no changes replaces
+// whole history and needs none.
+func withDroppedWindowItems(source appsource.Source, changes *appwire.HistoryChanges, window transcriptItemCandidateResult, packed appwire.Thread) *appwire.HistoryChanges {
+	if changes == nil {
+		return nil
+	}
+	kept := map[string]bool{}
+	for _, turn := range packed.Turns {
+		for _, item := range turn.Items {
+			kept[item.TranscriptKey] = true
+		}
+	}
+	var dropped []appwire.ThreadItem
+	for _, candidate := range window.Candidates.Candidates {
+		if !kept[candidate.Item.TranscriptKey] {
+			dropped = append(dropped, candidate.Item)
+		}
+	}
+	if len(dropped) == 0 {
+		return changes
+	}
+	// The image passes work on a thread's turns; the dropped items ride in
+	// one carrier turn through them, as the window's own items did.
+	carrier := enrichSourcedThreadImages(source, appwire.Thread{
+		ID: packed.ID, SessionID: packed.SessionID, CWD: packed.CWD,
+		Turns: []appwire.Turn{{Items: dropped}},
+	})
+	return &appwire.HistoryChanges{Turns: changes.Turns, Items: append(append([]appwire.ThreadItem(nil), changes.Items...), carrier.Turns[0].Items...)}
+}
+
 // listItemTurns returns a packed item-mode page when the source has item
 // candidates or when its source page contains data. A legacy source with
 // no data or a ListTurns error is left for the caller's saved-transcript
@@ -1293,7 +1345,7 @@ func registerThreadHandlers(
 			if pastPage != nil {
 				resp.Thread.Turns = pastPage.Thread.Turns
 				resp.OlderCursor = pastPage.OlderCursor
-				resp = withReadHistoryIdentity(resp, *pastPage)
+				resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 				annotateThreadProjects([]appwire.Thread{resp.Thread})
 			} else {
@@ -1320,6 +1372,7 @@ func registerThreadHandlers(
 					return appwire.ThreadReadResponse{}, packErr
 				}
 				resp = withReadHistoryIdentity(packed, read.response)
+				resp.Changes = withDroppedWindowItems(source, resp.Changes, candidates, resp.Thread)
 			}
 		} else {
 			// A live daemon's turns carry sha-addressed tool-result descriptors with
