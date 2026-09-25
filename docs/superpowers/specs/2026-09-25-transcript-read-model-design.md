@@ -160,8 +160,14 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   identity, and incarnation handling. A record that another process later rolls
   back is gone on the next read.
 - **Crash or power loss** can lose buffered entries whose notifications clients
-  already have. The restarted daemon has a new incarnation, and clients replace
-  their history state when they reconnect to a new incarnation.
+  already have. Every daemon start mints a **boot generation**. Every read
+  response and every `history/updated` carries it. A client that sees a boot
+  generation different from the one it holds replaces that thread's whole
+  history before applying anything else, whatever the index incarnation, epoch
+  or recorded length say. So entries lost in a crash never survive on a client,
+  even when the truncated file happens to match the index's covered length.
+  Resync epochs are per boot generation. They start again at zero on each boot
+  and are compared only within one.
 
 ### Persisted identity
 
@@ -246,7 +252,9 @@ delivery and stop goroutines at any time: model-bound attention STEERING
 - Item `id` derives from the key and keeps today's kind prefixes.
 
 **Position.** Every entry, legacy and new, uses `{entry: ordinal + 1, item:
-part}`. Header-derived prelude items use `{entry: 0}`. A turn is displayed at the
+part}`. Header-derived prelude items use `{entry: 0, item: part}`, with key
+`apptranscript-item-v2:prelude:header:<part>` and version 0. The header never
+changes after creation, so their version never grows. A turn is displayed at the
 position of its first item.
 
 **Format marker.** Every new entry carries an explicit format version, so the
@@ -372,9 +380,14 @@ that projection sees every ordinal in order.
 1. The server bumps the thread's resync epoch.
 2. It pushes `evener/thread/resync`, which already exists
    (`appwire/types.go:213, 2697-2700`), with the new epoch.
-3. It rebuilds the projection state from the file, up to the recorded length,
-   inside the thread's projection serialization. Entries recorded meanwhile
-   are projected after the rebuild, in order.
+3. It rebuilds the projection state from the file, inside the thread's
+   projection serialization, as follows:
+   - **Boundary.** It first captures a boundary ordinal `B`: the last entry
+     recorded when the rebuild starts. It rebuilds through exactly `B`.
+   - **Queued entries.** It discards queued entries whose ordinal is `B` or
+     less, because the rebuild already covers them, and projects only the
+     queued suffix after `B`, in order.
+   - **Result.** No entry is applied twice and none is skipped.
 
 Every read response and `history/updated` carries the epoch. A client that
 receives the resync, or that later reads and sees a newer epoch than it holds,
@@ -545,6 +558,11 @@ announced when they are recorded at attach.
    that this projected history covers. Tool execution state for a key is
    dropped when the projected item's version includes its TOOL_RESULTS entry,
    the same rule notifications use.
+3. Deliver the response. The subscription stays buffered until the response
+   enters the connection's send queue. This is today's `releaseHydration`
+   (`internal/appserver/server.go:1290-1310`), which releases only records past
+   the cut. No notification after the cut can reach the client before the
+   response.
 
 Notifications delivered after the response merge by the same rules. A later
 `history/updated` at a lower or equal version is ignored, and so are overlay
@@ -559,8 +577,11 @@ announced.
 open turn's page. A thread with no runtime has an empty overlay.
 
 **Authoritative replacement is scoped.** The hub serves a daemonless session from
-the file. Every read response, live or daemonless, carries its **snapshot
-identity**: the index incarnation plus the recorded length it read. A daemonless
+the file. Every successful read response, live or daemonless, carries its
+**snapshot identity**: the index incarnation plus the recorded length it read.
+Error responses, including `ErrorTranscriptHistoryFailed`, carry the boot
+generation and epoch but no snapshot identity. They are never used for
+replacement. A daemonless
 response is authoritative for the position range it returned:
 - The client replaces its items in that range and keeps pages outside it.
 - Pages from the same snapshot accumulate.
@@ -577,16 +598,22 @@ response is authoritative for the position range it returned:
 longer an extension of what the index covers: shorter than its indexed length,
 or with different trailing bytes (see Validation). Within one incarnation the
 recorded length only grows, so snapshots of one incarnation order by length.
-Incarnations themselves are not ordered, so every read request carries a
-**request generation** that the client increments for each read it issues. A
-response echoes its request's generation. The client applies a response only if
-no response to a later generation has been applied, so a slow response from an
-old sidecar can never overwrite history from a newer one. Only the current
+Incarnations themselves are not ordered, so every **latest-window** read request
+carries a **request generation**. The client increments it for each latest-window
+read it issues, and the response echoes it.
+- **Ordering.** The client applies a latest-window response only if no response
+  to a later generation has been applied. So a slow response from an old sidecar
+  can never overwrite history from a newer one.
+- **Backfill pages** carry no generation. They accumulate within their snapshot,
+  in any arrival order. A page is dropped only when its snapshot is older than
+  the one the client holds: an older incarnation, or the same incarnation with a
+  shorter recorded length. Only the current
 incarnation is valid. Each rule applies on one side:
 - **The server rejects.** A backfill request whose cursor names an incarnation
   other than the current one gets `TranscriptItemCursorStale`, and the client
   re-reads the latest window.
-- **The client replaces.** A response always carries the current incarnation.
+- **The client replaces.** A successful response always carries the current
+  incarnation.
   If it differs from the one the client holds, the client replaces the thread's
   whole history with the response, as it does for a new daemon incarnation.
 - **The client discards.** A response from the client's incarnation with a
