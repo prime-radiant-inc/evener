@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hydrateThread,
+  makeTranscriptDisplayConfig,
   markItemTextOmitted,
   liveAskQuestions,
   QUEUE_UNAVAILABLE,
@@ -27755,6 +27756,126 @@ describe("ConversationStore", () => {
       expect(after).not.toBe(before);
       // The rows did not: same array, same row objects.
       expect(after?.items).toBe(before?.items);
+    });
+  });
+
+  // D24 slices 5+6: the conversation's projection follows the user's display
+  // config. The level is store state (setDisplayConfig), so the projection
+  // runs ONCE, at the user's level, through the same display boundary
+  // (capAndTruncate: seating, cap, truncation) every other rebuild passes
+  // through — no screen-level re-projection (the rejected D24-5 route
+  // re-projected per render, thrashing the per-turn row cache and bypassing
+  // the boundary).
+  describe("the conversation's projection follows the user's display config", () => {
+    const intentConfig = makeTranscriptDisplayConfig({
+      kind: "preset",
+      level: "intent",
+    });
+    const fullConfig = makeTranscriptDisplayConfig({
+      kind: "preset",
+      level: "full",
+    });
+
+    // One settled turn holding the level's three subjects: a summarized
+    // tool action (a completed shell call whose description the projector
+    // trims into its rationale, plus full arguments/output), a settled
+    // thought, and a user message.
+    function configLevelsThread(): Thread {
+      return makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [
+              userMessageItem("u1", "please audit the config"),
+              {
+                type: "commandExecution",
+                id: "c1",
+                toolName: "shell",
+                status: "completed",
+                description: "  run the audit  ",
+                argumentsJson: JSON.stringify({ cmd: "ls" }),
+                output: "tool output text",
+              } as ThreadItem,
+              reasoningItem("r1", "auditing quietly"),
+            ],
+          }),
+        ],
+      });
+    }
+
+    it("re-projects the live conversation when the level changes", async () => {
+      const store = await openProjectedThread(configLevelsThread());
+      // No config: the show-everything default the seam has always
+      // projected, still on screen.
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "c1")).toMatchObject({
+        detail: { output: "tool output text" },
+      });
+
+      store.getState().setDisplayConfig(intentConfig);
+      expect(store.getState().displayConfig).toEqual(intentConfig);
+      // The settled thought is gone at intent; the summarized tool row
+      // carries only its trimmed summary line (the summary-only ruling).
+      expect(rowById(store, "r1")).toBeUndefined();
+      const c1 = rowById(store, "c1");
+      expect(c1).toMatchObject({
+        kind: "activity",
+        detail: { description: "run the audit" },
+      });
+      expect(JSON.stringify(rows(store))).not.toContain("tool output text");
+
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "c1")).toMatchObject({
+        detail: { output: "tool output text" },
+      });
+    });
+
+    it("treats a value-equal config as no change — the boundary does not re-run", async () => {
+      const store = await openProjectedThread(configLevelsThread());
+      store.getState().setDisplayConfig(intentConfig);
+      const before = store.getState().conversation;
+      expect(before).not.toBeNull();
+      // The provider hands the store a fresh object per publish; the
+      // level is keyed by the config's VALUE (configFingerprint), so an
+      // equal value republishes nothing.
+      store.getState().setDisplayConfig(
+        makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
+      );
+      expect(store.getState().conversation).toBe(before);
+    });
+
+    it("runs the level re-projection through the same display boundary", async () => {
+      // An oversized summary line is bounded in the published rows exactly
+      // as any other row text: capAndTruncate seats, caps and truncates
+      // once, on the config-projected rows.
+      const hugeSummary = "s".repeat(MAX_ITEM_BYTES + 100);
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [
+              {
+                type: "commandExecution",
+                id: "c1",
+                toolName: "shell",
+                status: "completed",
+                description: hugeSummary,
+              } as ThreadItem,
+            ],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().setDisplayConfig(intentConfig);
+      const c1 = rowById(store, "c1");
+      expect(c1).toMatchObject({ kind: "activity" });
+      const summary =
+        c1?.kind === "activity" ? c1.detail.description : undefined;
+      if (summary === undefined) throw new Error("no summarized row");
+      expect(summary.endsWith(TRUNCATION_MARKER)).toBe(true);
     });
   });
 

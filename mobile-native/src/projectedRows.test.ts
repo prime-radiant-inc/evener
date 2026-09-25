@@ -351,6 +351,60 @@ describe("projectedRow — intent entries", () => {
 		expect(row).toMatchObject({ kind: "activity", detail: { description: "Read a.ts" } });
 	});
 
+	// The operator's ruling (Sep-25): a summarized tool-action row carries
+	// ONLY its summary line at compact levels — its full detail (arguments,
+	// output, error, exit code, duration, call id) appears at
+	// tools/activity/full, where the projector routes the call through its
+	// item entry instead. The row is marked summaryOnly so the presentation
+	// layer renders the line without an expansion affordance.
+	it("carries only its summary line, dropping the full detail the source item holds", () => {
+		const row = projectedRow(
+			intentEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					description: "Run ls",
+					argumentsJSON: '{"cmd":"ls"}',
+					output: "a\nb",
+					exitCode: 0,
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:01.000Z",
+					callId: "call-1",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			summaryOnly: true,
+			detail: { description: "Run ls" },
+		});
+	});
+
+	it("carries no detail at all when the projector's summary is unavailable", () => {
+		// ACTION_SUMMARY_UNAVAILABLE means the source carried no description;
+		// the row keeps nothing but the marker, and the presentation layer's
+		// own summary fallback (the write_file path) renders the line.
+		const row = projectedRow(
+			intentEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					argumentsJSON: '{"cmd":"ls"}',
+					output: "a\nb",
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "activity",
+			summaryOnly: true,
+			detail: {},
+		});
+	});
+
 	it("honors the projector's failed intent classification even when the source item carries no signal", () => {
 		// The projector sets intent.failed (hasItemFailure at projection time); the
 		// adapter must render a failed activity from that classification rather
