@@ -677,11 +677,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	call = prep.Call
 	prevalidated := true
 	if len(prep.Changes) > 0 {
-		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
+		repaired := events.ToolCallRepairedData{
 			ToolName: call.Name,
 			CallID:   call.ID,
 			Changes:  changeStrings(prep.Changes),
-		})
+		}
+		s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeToolRepair, ToolRepair: &schema.ToolRepairNotice{ToolName: repaired.ToolName, CallID: repaired.CallID, Changes: repaired.Changes}})
+		s.emit(events.EventToolCallRepaired, repaired)
 	}
 
 	// PreToolUse hooks

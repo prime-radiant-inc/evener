@@ -70,7 +70,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 
-			deps.emit(events.EventCommunicate, events.CommunicateData{
+			deps.deliverCommunicate(events.CommunicateData{
 				CallID:  callIDFromContext(ctx),
 				EndTurn: endTurn,
 				Message: message,

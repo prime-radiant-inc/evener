@@ -546,6 +546,25 @@ type Session struct {
 	// is never reused, so the field needs no clearing: once the inherited turn
 	// ends, no later active turn can equal it again.
 	recoveredTurnID string
+	// execution is the running execution's bookkeeping (session_execution.go).
+	execution executionState
+	// userInputEntry is the 1-based entry index of the latest USER_INPUT
+	// entry the session recorded, 0 before one is; guarded by mu.
+	userInputEntry int
+	// lastRecorded is the entry ordinal of the session's latest transcript
+	// write, unset when it recorded nothing; guarded by mu and meaningful only
+	// inside the attentionMu hold that made the write.
+	lastRecorded recordedOrdinal
+	// openPendingExecutions holds the executions restore found open and left
+	// open because pending client work owns them; guarded by mu.
+	openPendingExecutions map[string]bool
+	// recordedExecutions holds the TurnID of every execution turn this
+	// session's transcript records, so one that runs again reopens; guarded
+	// by mu.
+	recordedExecutions map[string]bool
+	// roundID names the open model round, "" when none is open; guarded by
+	// mu. See roundIDForModelCall.
+	roundID string
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -2052,12 +2071,16 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	// what keeps an owner from discarding its state and re-appending; the
 	// retained diagnostic is on the writer's warning queue, surfaced outside the
 	// lock by the caller's surfaceTranscriptWarnings.
+	s.mu.Lock()
+	s.lastRecorded = recordedOrdinal{}
+	s.mu.Unlock()
 	if err := write(); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
 		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
+	s.markLastPairOrdinalLocked()
 	s.mu.Unlock()
 	return nil
 }
@@ -2068,6 +2091,23 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
+}
+
+// markLastPairOrdinalLocked stamps the most recently logged pair with the
+// entry ordinal and model its write was recorded with, when it was: the copy
+// a fold re-appends after its markers carries them as OriginalOrdinal and
+// Model. The caller holds
+// s.mu inside the attentionMu hold that cleared lastRecorded before the pair's
+// write, so lastRecorded is that write's own record.
+func (s *Session) markLastPairOrdinalLocked() {
+	n := len(s.persistedAppendLog)
+	if n == 0 || !s.lastRecorded.recorded {
+		return
+	}
+	ordinal := s.lastRecorded.ordinal
+	s.persistedAppendLog[n-1].OriginalOrdinal = &ordinal
+	// The copy keeps the model its original was recorded with.
+	s.persistedAppendLog[n-1].Model = s.lastRecorded.model
 }
 
 // tombstoneLastPairPersistedLocked replaces the most recently logged pair with
@@ -2132,9 +2172,14 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.mu.Lock()
 	s.history = append(s.history, live)
 	s.logPairPersistedLocked(persisted)
+	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
 	err := s.writeTranscriptLocked(persisted)
-	if err != nil {
+	if err == nil {
+		s.mu.Lock()
+		s.markLastPairOrdinalLocked()
+		s.mu.Unlock()
+	} else {
 		// The write recorded nothing: the ordinary Append door returns an
 		// error only when no complete line was recorded (a whole line that
 		// landed but did not sync returns nil and is retained), so the pair
@@ -2193,10 +2238,46 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 // other writer's entry can interleave between the publish and the fold's
 // compaction markers.
 func (s *Session) writeTranscriptLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+	_, err := s.recordTranscriptLocked(t, transcript.DoorBuffered, transcript.PlaceSession)
+	return err
+}
+
+// recordTranscriptLocked is the one door every session write to its transcript
+// goes through, with attentionMu held: it stamps the entry with the session's
+// configured model, holds a buffered or durable write made before the writer
+// is attached (see holdTurnUntilTranscriptReady; the synced door refuses one
+// instead), and otherwise appends through door with the given placement,
+// reporting whether the entry was recorded. A held turn reports not recorded,
+// with no error.
+func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, place transcript.Placement) (transcript.Record, error) {
+	t = s.withEntryModel(t)
+	if door == transcript.DoorSynced {
+		s.mu.Lock()
+		ready := s.transcriptReady
+		s.mu.Unlock()
+		if !ready {
+			return transcript.Record{}, errors.New("transcript not ready: a synced write cannot be held before attach")
+		}
+	} else if s.holdTurnUntilTranscriptReady(t) {
+		return transcript.Record{}, nil
 	}
-	return s.attachedTranscript().Append(t)
+	rec, err := s.attachedTranscript().Record(t, transcript.RecordOptions{Door: door, Place: place})
+	s.mu.Lock()
+	s.noteRecordedLocked(rec)
+	s.mu.Unlock()
+	return rec, err
+}
+
+// withEntryModel stamps t with the model the session is configured with, so
+// the entry's usage can be priced from the entry alone, unless t already
+// names one.
+func (s *Session) withEntryModel(t schema.Turn) schema.Turn {
+	if t.Model == "" {
+		if profile := s.currentProfile(); profile != nil {
+			t.Model = profile.Model()
+		}
+	}
+	return t
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
@@ -2214,10 +2295,8 @@ func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 // already holding attentionMu — an append/write pair
 // (appendTurnAfterTranscriptWrite) or the fold publication transaction.
 func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
-	}
-	return s.attachedTranscript().AppendDurable(t)
+	_, err := s.recordTranscriptLocked(t, transcript.DoorDurable, transcript.PlaceSession)
+	return err
 }
 
 // writeTranscriptSyncedLocked is the durability owner's write: it records AND
@@ -2235,13 +2314,8 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 // attach — the tracker guard and the delegate seed's read-back both preclude it
 // — so this is a fail-closed guard, not a live path.)
 func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
-	s.mu.Lock()
-	ready := s.transcriptReady
-	s.mu.Unlock()
-	if !ready {
-		return errors.New("transcript not ready: a synced write cannot be held before attach")
-	}
-	return s.attachedTranscript().AppendSynced(t)
+	_, err := s.recordTranscriptLocked(t, transcript.DoorSynced, transcript.PlaceSession)
+	return err
 }
 
 func (s *Session) attachedTranscript() *transcript.Writer {
@@ -2303,7 +2377,7 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, t := range held {
-		if err := w.Append(t); err != nil {
+		if _, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
@@ -2376,11 +2450,18 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		RoundID:                         s.roundIDForModelCall(),
 	}
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() { s.history = append(s.history, t) },
+		func() {
+			s.history = append(s.history, t)
+			// The round's entry is recorded: the next model call is a new
+			// round (a pause_turn continuation, a bare-text retry, the next
+			// tool round).
+			s.roundID = ""
+		},
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

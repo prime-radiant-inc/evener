@@ -541,6 +541,16 @@ func assertParityScenarioCoverage(t *testing.T, turns []schema.Turn) {
 			covered["delegate attention"] = true
 		case turn.Kind == schema.TurnSteering && turn.ClientMutationID != "":
 			covered["client steering"] = true
+		case turn.Kind == schema.TurnNotice:
+			covered["notice "+string(turn.Notice.Kind)] = true
+		case turn.Kind == schema.TurnCompletion:
+			covered["completion "+string(turn.Completion.Status)] = true
+		}
+		if turn.TurnKind == schema.TurnSpanExecution && strings.HasPrefix(turn.TurnID, "turn_m") {
+			covered["client-mutation execution"] = true
+		}
+		if turn.TurnKind != "" {
+			covered["turn kind "+string(turn.TurnKind)] = true
 		}
 		for _, part := range turn.Message.Content {
 			if part.Kind == llm.ContentThinking {
@@ -556,6 +566,11 @@ func assertParityScenarioCoverage(t *testing.T, turns []schema.Turn) {
 		string(schema.TurnHookCompleted), string(schema.TurnModelSwitch), string(schema.TurnCheckpoint),
 		string(schema.TurnSummary), string(schema.TurnFailure), string(schema.TurnAttentionResolution),
 		"goal continuation", "delegate attention", "client steering", "reasoning", "image result",
+		// Phase 2 identity and the transcript-only entries.
+		string(schema.TurnCommunicate), "notice " + string(schema.NoticeGoalEnded),
+		"completion " + string(schema.TurnCompleted), "completion " + string(schema.TurnFailed),
+		"client-mutation execution", "turn kind " + string(schema.TurnSpanExecution),
+		"turn kind " + string(schema.TurnSpanGap), "turn kind " + string(schema.TurnSpanDelivery),
 	} {
 		if !covered[want] {
 			t.Errorf("the parity scenario no longer records %s", want)
@@ -607,7 +622,7 @@ var parityBeforeRestart = parityTable(
 	parityRows(whyIdentity, "item-field", "systemMessage/environment", "id", "position", "transcriptEntryIndex", "transcriptKey"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage/model_switch", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyTiming, "item-field", "commandExecution", "durationMs"),
 	parityRows(whyTiming, "item-field", "steering", "startedAt"),
 	parityRows(whyTiming, "turn-field", "systemMessage/model_switch", "startedAt"),
@@ -630,7 +645,7 @@ var parityBeforeRestart = parityTable(
 var parityAfterRestart = parityTable(
 	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),
 	parityRows(whyNotices, "live-only-item", "systemMessage/plugin_loaded"),
 	parityRows(whyNotices, "live-only-item", "systemMessage/prompt_loaded"),

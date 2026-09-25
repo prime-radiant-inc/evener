@@ -389,11 +389,12 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	turn.Timestamp = now.UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	// AppendSynced is the durability owner's door: it records AND syncs, or
-	// errors. A read-back would find a retained (recorded but unsynced) line
-	// and wrongly call it durable, so this side of delegate attention asks the
-	// writer, through AppendSynced, rather than the file.
-	if err := writer.AppendSynced(turn); err != nil {
+	// The synced door is the durability owner's door: it records AND syncs,
+	// or errors. A read-back would find a retained (recorded but unsynced)
+	// line and wrongly call it durable, so this side of delegate attention asks
+	// the writer rather than the file. A cold writer has no session, so the
+	// entry is a delivery turn of its own.
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceDelivery}); err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	verified, err := readDelegateAttentionFold(path, expectedSessionID)
@@ -451,7 +452,8 @@ func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID 
 	if allResolved {
 		return writer.EstablishDurability()
 	}
-	return appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration)
+	// A cold writer has no session: each resolution is a delivery turn.
+	return appendDelegateAttentionResolutions(writer, transcript.PlaceDelivery, "", fold, ids, disposition, resumeGeneration)
 }
 
 func delegateAttentionResolutionTurn(attentionID string, disposition delegateAttentionResolution) schema.Turn {
@@ -537,11 +539,16 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	turn.Timestamp = s.sclock().Now().UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	// AppendSynced records AND syncs, or errors; a retained (recorded but
-	// unsynced) line the read-back would find is not durable.
-	if err := writer.AppendSynced(turn); err != nil {
+	// The synced door records AND syncs, or errors; a retained (recorded but
+	// unsynced) line the read-back would find is not durable. Attention
+	// arrives from delivery goroutines at any time, so it joins the running
+	// execution or takes a delivery turn of its own.
+	rec, err := writer.Record(s.withEntryModel(turn), transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceAsync})
+	if err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
+	// The resident turn is the one the file holds, identity included.
+	turn = rec.Turn
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
 	}
@@ -1379,7 +1386,9 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		}
 		break
 	}
-	if err := appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration); err != nil {
+	// Resolutions reach the session's own transcript from delivery and stop
+	// goroutines at any time: the running execution's, or a delivery turn.
+	if err := appendDelegateAttentionResolutions(writer, transcript.PlaceAsync, s.withEntryModel(schema.Turn{}).Model, fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
 	verified, err := s.attentionFoldCursor.read(path, sessionID)
@@ -1487,7 +1496,7 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		disposition = delegateAttentionDiscarded
 	}
 	if !resolved {
-		if err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+		if _, err := reopened.Record(s.withEntryModel(delegateAttentionResolutionTurn(attentionID, disposition)), transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceAsync}); err != nil {
 			return fmt.Errorf("attention %q was not durably stabilized: %w", attentionID, err)
 		}
 	} else if err := reopened.EstablishDurability(); err != nil {
@@ -1518,7 +1527,9 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 // leaves fold unchanged: a resident Session's fold is its attention cursor's,
 // which must hold only what the file holds, or the verify read after this
 // append would confirm it from memory.
-func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
+// model is the resident session's model, "" for a cold writer, which has no
+// session.
+func appendDelegateAttentionResolutions(writer *transcript.Writer, place transcript.Placement, model string, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
@@ -1530,7 +1541,9 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
-		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
+		turn := delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)
+		turn.Model = model
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorSynced, Place: place}); err != nil {
 			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
 		appended[attentionID] = true

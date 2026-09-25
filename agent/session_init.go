@@ -624,7 +624,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			return nil, errors.New("fork delegate context requires a writable child transcript")
 		}
 		for _, entry := range inheritedContext {
-			if err := tw.Append(entry.Turn); err != nil {
+			// The inherited context is conversation only, stripped of the
+			// parent's identity (delegateContextEntries): the fresh child
+			// records it as its prelude.
+			if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
 				_ = tw.Close()
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}
@@ -974,6 +977,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		restoredTranscriptOpened = openErr == nil
 	}
+	// A fork's copied prefix names turns this session's store never reserved;
+	// its own turns are named above them.
+	clientMutations.raiseTurnSequence(highestClientMutationTurnSequence(transcriptEntries))
 	defer func() {
 		if !restoreComplete && resumeTranscript != nil {
 			_ = resumeTranscript.Close()
@@ -1455,6 +1461,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		restoredTranscriptHeader = refreshed.Header
 		return nil
 	}
+	// An execution the crashed process left open ended when it died: record
+	// it interrupted, unless recovery is about to run it again.
+	if tw != nil && s.closeCrashedExecutions(transcriptEntries) {
+		if err := refreshFromDisk("closing crashed executions"); err != nil {
+			return nil, err
+		}
+	}
 	s.delegateDeliveryMu.Lock()
 	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
 	s.delegateDeliveryMu.Unlock()
@@ -1480,8 +1493,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.recoverClientMutationInterrupt(); err != nil {
 		return nil, fmt.Errorf("recover client mutation interrupt: %w", err)
 	}
+	// An execution left open for work the recovery just retired unrun is over.
+	closedAbandoned := s.closeAbandonedExecutions()
 	s.mu.Lock()
-	clientMutationRecoveryAppended := s.clientMutationAppendedTurn
+	clientMutationRecoveryAppended := s.clientMutationAppendedTurn || closedAbandoned
 	s.mu.Unlock()
 	if tw != nil && clientMutationRecoveryAppended {
 		if err := refreshFromDisk("client mutation recovery"); err != nil {
