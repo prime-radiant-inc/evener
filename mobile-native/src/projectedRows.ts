@@ -234,19 +234,28 @@ function unhandledEntryKind(_entry: never): null {
 }
 
 // The operator's summary-only ruling: at compact levels (the projector's
-// intent entries) the row carries ONLY its summary line. The projector hands
-// its trimmed rationale; the source item's full detail (arguments, output,
-// error, exit code, duration, call id) is dropped — it returns at
+// intent entries) a SETTLED tool action carries ONLY its summary line. The
+// projector hands its trimmed rationale; the source item's full detail
+// (arguments, output, exit code, duration, call id) is dropped — it returns at
 // tools/activity/full, where the same call is an "item" entry. The
 // "unavailable" placeholder means the source carried no description, so the
 // detail is left empty and the presentation layer's own summary fallback (the
 // write_file path included) renders the line.
+//
+// The native attention rule outranks the summarization (D24-4's disclosed
+// contract: a failed or running activity renders critical, with its full
+// detail, at every level): a failed or still-running call the projector routed
+// through its intent entry keeps everything, so the reader can always see why
+// a call failed — the ruling covers the settled row.
 function intentRow(
 	entry: Extract<ProjectedEntry, { kind: "intent" }>,
 	context: ProjectedRowContext,
 ): MobileTimelineItem | null {
 	const row = rowForItem(entry.item, context);
 	if (row === null || row.kind !== "activity") return row;
+	if (entry.failed || row.state !== "completed") {
+		return { ...row, state: entry.failed ? "failed" : row.state };
+	}
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
 			? {}

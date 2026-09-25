@@ -429,6 +429,47 @@ describe("projectedRow — intent entries", () => {
 		});
 	});
 
+	// The native attention rule outranks the projector's summarization (the
+	// D24-4 disclosed contract: a failed/running activity renders critical,
+	// with its full detail, at every level). The summary-only ruling covers
+	// the SETTLED summarized row; a failed or still-running call the projector
+	// routed through its intent entry keeps everything.
+	it("keeps a failed call's full detail and renders it critical, not summary-only", () => {
+		const row = projectedRow(
+			intentEntry(
+				item({ type: "commandExecution", toolName: "shell", error: "boom", exitCode: 1 }),
+				{ failed: true },
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "activity",
+			state: "failed",
+			detail: { error: "boom", exitCode: 1 },
+		});
+		expect(row?.kind === "activity" && row.summaryOnly).toBeUndefined();
+	});
+
+	it("keeps a running call's full detail while its turn is in progress", () => {
+		const row = projectedRow(
+			intentEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					description: "Read config",
+					output: "partial output",
+					status: "inProgress",
+				}),
+			),
+			{ turnStatus: "inProgress" },
+		);
+		expect(row).toMatchObject({
+			kind: "activity",
+			state: "running",
+			detail: { description: "Read config", output: "partial output" },
+		});
+		expect(row?.kind === "activity" && row.summaryOnly).toBeUndefined();
+	});
+
 	it("honors the projector's failed intent classification even when the source item carries no signal", () => {
 		// The projector sets intent.failed (hasItemFailure at projection time); the
 		// adapter must render a failed activity from that classification rather
@@ -1045,16 +1086,15 @@ describe("the timeline projection delegates to the shared projector", () => {
 
 			// Byte parity: every surviving row the projector did not reclassify
 			// is the show-everything row for the same item, field for field.
-			// The summary-only ruling puts the summarized rows (c1's cluster
-			// and, at compact levels, the failed c3 — the projector routes a
-			// failed call through its intent entry there) in the reclassified
-			// set with c1 and the running c4 (the projector routes an active call
-			// through its intent entry at compact levels too); the thinking
-			// placeholder (r2) and the redacted critical reasoning (r3) are the
-			// projector's own reclassifications.
-			const reclassified = intentRows
-				? ["c1", "c3", "c4", "r2", "r3"]
-				: ["r2", "r3"];
+			// The summary-only ruling reclassifies the summarized cluster (c1)
+			// at compact levels; the thinking placeholder (r2) and the redacted
+			// critical reasoning (r3) are the projector's own reclassifications.
+			// The running c4 also joins that set at compact levels — not its own
+			// row (the attention rule keeps the running call's full detail,
+			// pinned below) but its cluster's SECOND member, the settled view
+			// call c5, which the ruling summarizes. The failed c3 stays
+			// byte-identical at every level.
+			const reclassified = intentRows ? ["c1", "c4", "r2", "r3"] : ["r2", "r3"];
 			for (const row of rows) {
 				if (reclassified.includes(rowId(row))) continue;
 				expect(row).toEqual(FULL_ROWS.find((golden) => rowId(golden) === rowId(row)));
@@ -1104,33 +1144,24 @@ describe("the timeline projection delegates to the shared projector", () => {
 			expect(c1Member?.summaryOnly).toBe(intentRows ? true : undefined);
 			expect(c1.members?.[1]?.detail.description).toBe("grep the results");
 
-			// A FAILED call the projector summarized carries only its summary
-			// line too — and with no authored description its detail is empty;
-			// the presentation layer's fallback renders the line. The failure
-			// itself stays visible through the row's state.
+			// The attention carve-out: a failed call the projector routed through
+			// its intent entry keeps its full detail and its failed state at
+			// every level, so the reader can always see why it failed.
 			const c3 = rows.find((row) => rowId(row) === "c3");
 			if (c3?.kind !== "activity") throw new Error("differential lost c3");
 			expect(c3.state).toBe("failed");
-			if (intentRows) {
-				expect(c3.summaryOnly).toBe(true);
-				expect(c3.detail).toEqual({});
-			} else {
-				expect(c3.detail).toEqual({ error: "boom", exitCode: 1 });
-			}
+			expect(c3.summaryOnly).toBeUndefined();
+			expect(c3.detail).toEqual({ error: "boom", exitCode: 1 });
 
-			// The running call the projector summarized carries only its
-			// summary line at compact levels; at call levels it is the
-			// show-everything row verbatim.
+			// The running call is the same attention carve-out: full detail,
+			// running state, at every level.
 			const c4 = rows.find((row) => rowId(row) === "c4");
 			if (c4?.kind !== "activity") throw new Error("differential lost the c4 cluster");
 			expect(c4.state).toBe("running");
-			if (intentRows) {
-				expect(c4.summaryOnly).toBe(true);
-				expect(c4.detail).toEqual({ description: "read config" });
-			} else {
-				expect(c4.summaryOnly).toBeUndefined();
-				expect(c4.detail).toEqual({ description: "read config" });
-			}
+			expect(c4.summaryOnly).toBeUndefined();
+			expect(c4.detail).toEqual({ description: "read config" });
+			// The cluster's settled member is the summarized one.
+			expect(c4.members?.[1]?.summaryOnly).toBe(intentRows ? true : undefined);
 		},
 	);
 

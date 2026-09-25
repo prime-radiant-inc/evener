@@ -222,7 +222,7 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 	},
 );
 
-	it("keeps every system-event row the seam produced and masks usage fields independently", () => {
+it("keeps every system-event row the seam produced and masks usage fields independently", () => {
 	const items: MobileTimelineItem[] = [
 		{
 			kind: "notice",
@@ -511,10 +511,10 @@ it.each([
 					label: "write_file",
 					family: "tool",
 					state,
-						// A completed write_file at a compact level reaches the
-						// renderer as the projector's summarized row; a failed or
-						// running one is critical and keeps its full detail.
-						...(state === "completed" ? { summaryOnly: true } : {}),
+					// A completed write_file at a compact level reaches the
+					// renderer as the projector's summarized row; a failed or
+					// running one is critical and keeps its full detail.
+					...(state === "completed" ? { summaryOnly: true } : {}),
 					detail: {
 						arguments: JSON.stringify({
 							file_path: "/tmp/request-16.txt",
@@ -834,7 +834,7 @@ function expectSeamVisibilityLikeProjector(
 }
 
 // A one-item thread for classifying a single system event (the deleted
-// the deleted project.ts's systemEventProbe, kept here as the sweep's local fixture):
+// project.ts's systemEventProbe, kept here as the sweep's local fixture):
 // projectThread reads only `turns`, so the rest of the shape is inert.
 function systemEventModel(
 	eventKind: string | undefined,

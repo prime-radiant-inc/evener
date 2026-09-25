@@ -826,6 +826,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       family: first.family,
       state: first.state,
       detail: first.detail,
+      ...(first.summaryOnly ? { summaryOnly: first.summaryOnly } : {}),
       ...(first.transcriptKey ? { transcriptKey: first.transcriptKey } : {}),
       ...(first.position ? { position: first.position } : {}),
     };

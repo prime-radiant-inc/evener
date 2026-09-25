@@ -120,18 +120,16 @@ function activityIsCritical(
 // config, made once inside the store's seam (D24-6 retired this layer's own
 // config-driven row filtering — the projector subsumed it). What remains
 // here is the mode each surviving row renders in:
-//   - a summary-only row (the projector's intent entry; the operator's
-//     summary-only ruling) renders its summary line, nothing to expand;
 //   - a running or failed activity renders as attention: its summary line
 //     above an expandable body (tools carry the summary; reasoning rows do
-//     not — their body is the thought);
+//     not — their body is the thought) — the attention rule outranks the
+//     summarization, so a failed call never collapses to a bare line;
+//   - a summary-only row (the projector's intent entry; the operator's
+//     summary-only ruling) renders its summary line, nothing to expand;
 //   - everything else renders in full.
 function presentationFor(
 	item: Extract<MobileTimelineItem, { kind: "activity" }>,
 ): ActivityPresentation {
-	if (item.summaryOnly === true) {
-		return { mode: "intent", summary: actionSummary(item) };
-	}
 	if (activityIsCritical(item)) {
 		return {
 			mode: "critical",
@@ -141,6 +139,9 @@ function presentationFor(
 					}
 				: {}),
 		};
+	}
+	if (item.summaryOnly === true) {
+		return { mode: "intent", summary: actionSummary(item) };
 	}
 	return FULL_PRESENTATION;
 }

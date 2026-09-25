@@ -5919,6 +5919,103 @@ describe("ConversationStore", () => {
       ]);
     });
 
+	    // The summary-only ruling meets the R38 split: a cluster of summarized
+	    // rows re-projects its sub-runs through activityRunRow when a notice
+	    // splits it, and the rebuilt top-level rows must stay summary-only —
+      // a run of one loses the marker exactly when the split reduced it to
+      // its first member's fields.
+      it("keeps a split cluster's sub-run rows summary-only at the user's level", async () => {
+        const thread = makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "a-tool",
+                  toolName: "shell",
+                  status: "completed",
+                  description: "first audit",
+                } as ThreadItem,
+                {
+                  type: "commandExecution",
+                  id: "b-tool",
+                  toolName: "shell",
+                  status: "completed",
+                  description: "second audit",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        });
+        const store = await openProjectedThread(thread);
+        store.getState().setDisplayConfig(
+          makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
+        );
+        // The two completed calls cluster into one summary-only row at
+        // intent (the operator's summary-only ruling).
+        const clustered = rows(store).find((row) => row.id === "a-tool");
+        expect(clustered).toMatchObject({
+          kind: "activity",
+          summaryOnly: true,
+          detail: { description: "first audit" },
+        });
+        store.getState().applyNotification({
+          method: "warning",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            title: "Provider",
+            message: "careful",
+          },
+        } as AnyNotification);
+        // A newer same-family activity arrives AFTER the notice: the run
+        // splits at the anchored member, and BOTH sub-runs re-project.
+        store.getState().applyNotification({
+          method: "turn/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turn: { id: "t2", itemsView: "default", status: "running" },
+          },
+        } as AnyNotification);
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: {
+              type: "commandExecution",
+              id: "c-tool",
+              toolName: "shell",
+              status: "completed",
+              description: "third audit",
+            } as ThreadItem,
+          },
+        } as AnyNotification);
+        // The split keeps the members displayed at arrival above the notice
+        // (the [a, b] run) and seats the member that arrived later below it.
+        const split = rows(store).filter((row) => row.kind === "activity");
+        expect(split.map((row) => row.id)).toEqual(["a-tool", "c-tool"]);
+        for (const row of split) {
+          if (row.kind !== "activity") continue;
+          expect(row.summaryOnly, `row ${row.id}`).toBe(true);
+          expect(row.detail.output, `row ${row.id} output`).toBeUndefined();
+        }
+        const above = split[0];
+        expect(above?.detail.description).toBe("first audit");
+        expect(
+          above?.members?.map(
+            (member) => `${member.id}:${member.summaryOnly === true}`,
+          ),
+        ).toEqual(["a-tool:true", "b-tool:true"]);
+        const below = split[1];
+        expect(below?.detail.description).toBe("third audit");
+        expect(below?.members).toBeUndefined();
+      });
+
     // RoboRev review round 1: the anchor a notice records when it arrives
     // over an ALREADY-CLUSTERED row. The cluster's top-level identity
     // belongs to its FIRST member, so a notice that arrived after the

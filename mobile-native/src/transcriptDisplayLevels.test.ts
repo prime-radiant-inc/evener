@@ -82,6 +82,14 @@ function levelsThread(): Thread {
 				output: SHELL_OUTPUT,
 				status: "completed",
 			}),
+			item({
+				id: "f1",
+				type: "commandExecution",
+				toolName: "shell",
+				description: "audit the failure",
+				status: "failed",
+				error: "opaque failure text",
+			}),
 			item({ id: "r1", type: "reasoning", text: "auditing quietly", status: "completed" }),
 		]),
 		turn(
@@ -202,6 +210,31 @@ describe("the summary-only ruling at compact levels", () => {
 				description: "  run the audit  ",
 				arguments: SHELL_ARGS,
 				output: SHELL_OUTPUT,
+			});
+		}
+	});
+
+	it("a failed call keeps its error and renders as attention at every level", () => {
+		// The native attention rule outranks the projector's summarization
+		// (D24-4's disclosed contract): the failed call the projector routed
+		// through its intent entry at compact levels still carries its full
+		// detail and renders critical, so the reader can always see why a
+		// call failed — the summary-only ruling covers the settled row.
+		for (const config of [chat, intent, tools, full]) {
+			const conversation = projectConversation(
+				hydrateThread({ thread: levelsThread() }, "ref-1", 0),
+				undefined,
+				config,
+			);
+			const f1 = conversation.items.find((row) => row.id === "f1");
+			if (f1?.kind !== "activity")
+				throw new Error(`the ${config.content} level lost the failed call`);
+			expect(f1.state).toBe("failed");
+			expect(f1.summaryOnly).toBeUndefined();
+			expect(f1.detail.error).toBe("opaque failure text");
+			const presented = projectNativeTranscript(conversation, config);
+			expect(presented.activityPresentation.get("f1")).toMatchObject({
+				mode: "critical",
 			});
 		}
 	});
