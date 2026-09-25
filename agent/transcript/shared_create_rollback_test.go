@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -126,4 +127,52 @@ func TestRollbackThenAnotherWriterAppendsKeepsOneSequence(t *testing.T) {
 		t.Fatalf("failing Append after rollback: %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"before resume", "failing before", "other before", "other after", "failing after"})
+}
+
+// afterOpenFs is the real filesystem with a callback after each OpenFile: for
+// a resume, that is the moment between opening the transcript and registering
+// its tail.
+type afterOpenFs struct {
+	afero.Fs
+	afterOpen func()
+}
+
+func (fs afterOpenFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err == nil && fs.afterOpen != nil {
+		fs.afterOpen()
+	}
+	return f, err
+}
+
+// A create of a transcript that a resume has opened but not yet registered
+// must not truncate it: the resume and the create are serialized, so the
+// resume reads every record and a create after it is refused. The callback
+// runs a create only when one could run at that moment — the create lock is
+// free — exactly as a racing goroutine could; if the lock is held, a racing
+// create would wait, which is the guarantee under test.
+func TestCreateCannotTruncateATranscriptBeingResumed(t *testing.T) {
+	path := newSharedFileTranscript(t)
+	fs := afterOpenFs{Fs: afero.NewOsFs(), afterOpen: func() {
+		if !createMu.TryLock() {
+			return
+		}
+		createMu.Unlock()
+		if created, err := NewWriterNoSync(path, sharedFileHeader); err == nil {
+			_ = created.Close()
+		}
+	}}
+	resumed, entries, err := OpenWriterForSessionWithFS(fs, path, sharedFileHeader.SessionID)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	defer resumed.Close() //nolint:errcheck // assertion fixture
+	if len(entries) != 1 {
+		t.Fatalf("resume read %d entries, want the 1 record written before it", len(entries))
+	}
+	if created, err := NewWriterNoSync(path, sharedFileHeader); err == nil {
+		_ = created.Close()
+		t.Fatal("a create of a resumed transcript succeeded")
+	}
+	requireOneSequenceInFileOrder(t, path, []string{"before resume"})
 }

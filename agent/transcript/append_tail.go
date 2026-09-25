@@ -76,10 +76,14 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	return tail, nil
 }
 
-// createMu makes creating a transcript one step in this process: the check
-// that no writer has the file open, the create that truncates it, and the
-// registration of its tail. Of two creates racing on one path exactly one
-// wins, and a file is never truncated under a writer this process has open.
+// createMu serializes, within this process, the two ways a writer comes to a
+// transcript file. A create's check that no writer has the file open, its
+// truncating create, and its tail registration are one step; so are an open's
+// open and tail registration. Of two creates on one path exactly one wins, and
+// a create never truncates a file a writer in this package has open or is
+// opening. It does not cover a create racing the create or open of the same
+// file in another process, or code that opens the file other than through
+// this package.
 var createMu sync.Mutex
 
 // createAppendTail creates the transcript at path through create and registers
@@ -93,6 +97,24 @@ func createAppendTail(path string, create func() (afero.File, error)) (afero.Fil
 	f, err := create()
 	if err != nil {
 		return nil, nil, fmt.Errorf("create transcript file: %w", err)
+	}
+	tail, err := acquireAppendTail(f)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the stat error is what matters
+		return nil, nil, err
+	}
+	return f, tail, nil
+}
+
+// openAppendTail opens an existing transcript through open and registers its
+// tail as one step under createMu, so no create of the file can truncate it
+// between the two.
+func openAppendTail(open func() (afero.File, error)) (afero.File, *appendTail, error) {
+	createMu.Lock()
+	defer createMu.Unlock()
+	f, err := open()
+	if err != nil {
+		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
 	}
 	tail, err := acquireAppendTail(f)
 	if err != nil {

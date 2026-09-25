@@ -424,7 +424,9 @@ func NewWriter(path string, header Header) (*Writer, error) {
 
 // NewWriterWithFS creates a transcript writer over fs. It has the same behavior
 // as NewWriter, but allows callers that already own a filesystem boundary to
-// keep transcript persistence on that filesystem.
+// keep transcript persistence on that filesystem. As with
+// OpenWriterForSessionWithFS, writers share a file's append tail only through
+// a filesystem that names files as they are on the real disk.
 func NewWriterWithFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 	return newWriterFS(fs, path, header, true)
 }
@@ -998,38 +1000,32 @@ func OpenWriterForSession(path, expectedSessionID string) (*Writer, []Entry, err
 // OpenWriterForSession. It preserves the same identity validation and semantic
 // entry return while allowing a caller that already owns a filesystem boundary
 // to resume through it.
+//
+// Writers on one file share its append tail (see appendTail) only when fs
+// names files as they are on the real disk, as afero.NewOsFs does: the tail
+// pins the file by that name. Through any other filesystem each writer gets a
+// tail of its own, so two writers on one file through it are not coordinated.
 func OpenWriterForSessionWithFS(fs afero.Fs, path, expectedSessionID string) (*Writer, []Entry, error) {
-	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
-	}
-	return resumeWriter(fs, f, expectedSessionID)
+	return resumeWriter(fs, func() (afero.File, error) { return fs.OpenFile(path, os.O_RDWR, 0o644) }, expectedSessionID)
 }
 
 func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {
-	f, err := openTranscriptAppendFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
-	}
-	return resumeWriter(afero.NewOsFs(), f, expectedSessionID)
+	return resumeWriter(afero.NewOsFs(), func() (afero.File, error) { return openTranscriptAppendFile(path) }, expectedSessionID)
 }
 
 // openWriterFS is the filesystem-injecting seam used by tests and the
 // persistence fuzzer. Production uses openWriter so it can refuse symlinks at
 // the operating-system open boundary.
 func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
-	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open transcript for resume: %w", err)
-	}
-	w, _, err := resumeWriter(fs, f, "")
+	w, _, err := resumeWriter(fs, func() (afero.File, error) { return fs.OpenFile(path, os.O_RDWR, 0o644) }, "")
 	return w, err
 }
 
-func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer, []Entry, error) {
-	tail, err := acquireAppendTail(f)
+// resumeWriter opens an existing transcript through open and rebuilds a writer
+// from its complete records.
+func resumeWriter(fs afero.Fs, open func() (afero.File, error), expectedSessionID string) (*Writer, []Entry, error) {
+	f, tail, err := openAppendTail(open)
 	if err != nil {
-		_ = f.Close() // cleanup on error path; the stat error is what matters
 		return nil, nil, err
 	}
 	// Scan under the tail so another writer's append is either wholly before
