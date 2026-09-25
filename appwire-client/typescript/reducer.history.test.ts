@@ -687,7 +687,8 @@ describe("the live overlay", () => {
 describe("failed history", () => {
   test("a failed read keeps history, stops merges, keeps the overlay live, and a later read recovers", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
-    const failed = applyHistoryReadFailure(model, "thread history failed at entry 7");
+    const [reading, generation] = issue(model);
+    const failed = applyHistoryReadFailure(reading, "thread history failed at entry 7", generation);
     expect(failed.history?.failed).toBe("thread history failed at entry 7");
     expect(shown(failed)).toEqual(shown(model));
     const unmerged = applyNotification(failed, updated([item("t1", 3)]), NOW);
@@ -696,14 +697,45 @@ describe("failed history", () => {
     const live = applyNotification(unmerged, upserted(stream), NOW);
     expect(shown(live)).toEqual([["t1", [itemKey("t1", 0), stream.key]]]);
 
-    const [issued, generation] = issue(live);
+    const [issued, next] = issue(live);
     const recovered = applyReadResponse(
       issued,
-      read([turn("t1", 4, [item("t1", 0), item("t1", 3)])], { epoch: 1, requestGeneration: generation }),
+      read([turn("t1", 4, [item("t1", 0), item("t1", 3)])], { epoch: 1, requestGeneration: next }),
       NOW,
     );
     expect(recovered.history?.failed).toBeUndefined();
     expect(shown(recovered)).toEqual([["t1", [itemKey("t1", 0), itemKey("t1", 3)]]]);
+  });
+});
+
+describe("superseded read failures", () => {
+  function resync(epoch: number): AnyNotification {
+    return { method: "evener/thread/resync", params: { threadId: THREAD_ID, ref: REF, bootGeneration: "1", epoch } };
+  }
+
+  test("a failure of a read a later resync superseded leaves the thread invalid", () => {
+    const model = applyNotification(hydrate([turn("t1", 1, [item("t1", 0)])]), resync(1), NOW);
+    const [reading, generation] = issue(model);
+    const rearmed = applyNotification(reading, resync(2), NOW);
+    const failed = applyHistoryReadFailure(rearmed, "thread history failed at entry 7", generation);
+    expect(failed).toBe(rearmed);
+    expect(failed.history?.invalidatedAtGeneration).toBe(generation);
+    expect(failed.history?.failed).toBeUndefined();
+  });
+
+  test("a failure older than the newest issued read is ignored", () => {
+    const [abandoned, older] = issue(hydrate([turn("t1", 1, [item("t1", 0)])]));
+    const [issued] = issue(abandoned);
+    expect(applyHistoryReadFailure(issued, "late", older)).toBe(issued);
+  });
+
+  test("a failure that applies ends the invalid state and what it awaited", () => {
+    const model = applyNotification(hydrate([turn("t1", 1, [item("t1", 0)])]), resync(1), NOW);
+    const [reading, generation] = issue(model);
+    const failed = applyHistoryReadFailure(reading, "thread history failed at entry 7", generation);
+    expect(failed.history?.failed).toBe("thread history failed at entry 7");
+    expect(failed.history?.invalidatedAtGeneration).toBeUndefined();
+    expect(failed.history?.awaited).toBeUndefined();
   });
 });
 

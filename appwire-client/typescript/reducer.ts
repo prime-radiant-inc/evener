@@ -2744,20 +2744,29 @@ export function issueLatestWindowRead<M extends ThreadModel>(
 }
 
 /**
- * Records that a history read failed with ErrorTranscriptHistoryFailed
- * (errors.ts's isTranscriptHistoryFailedError). The held history stays as it
- * is and `history.failed` carries the one diagnostic to show; nothing merges
- * or replaces until a latest-window read succeeds, while the overlay keeps
- * updating. The error's generation and epoch are never adopted. The failed
- * read ends the thread's invalid state, so a store does not re-issue it in a
- * loop; the next read comes from the next event (a resync, a reconnect, the
- * user).
+ * Records that the latest-window read issued as requestGeneration failed with
+ * ErrorTranscriptHistoryFailed (errors.ts's isTranscriptHistoryFailedError).
+ * The held history stays as it is and `history.failed` carries the one
+ * diagnostic to show; nothing merges or replaces until a latest-window read
+ * succeeds, while the overlay keeps updating. The error's generation and epoch
+ * are never adopted. A failure that applies ends the thread's invalid state
+ * (and what it awaited), so a store does not re-issue the read in a loop; the
+ * next read comes from the next event (a resync, a reconnect, the user).
+ * A failure of a superseded read (older than the newest issued, or issued
+ * before the thread was last invalidated) is ignored and returns model itself,
+ * so the read a later invalidation asked for is still issued.
  */
 export function applyHistoryReadFailure<M extends ThreadModel>(
   model: M,
   diagnostic: string,
+  requestGeneration: number,
 ): ThreadModel & ModelExtras<M> {
-  const { invalidatedAtGeneration: _ended, ...history } = model.history ?? EMPTY_HISTORY;
+  const held = model.history ?? EMPTY_HISTORY;
+  const superseded =
+    requestGeneration < held.issuedGeneration ||
+    (held.invalidatedAtGeneration !== undefined && requestGeneration <= held.invalidatedAtGeneration);
+  if (superseded) return publicModel<M>(model);
+  const { invalidatedAtGeneration: _ended, awaited: _awaited, ...history } = held;
   return publicModel<M>({ ...model, history: { ...history, failed: diagnostic } });
 }
 
