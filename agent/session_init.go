@@ -1494,8 +1494,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.recoverClientMutationInterrupt(); err != nil {
 		return nil, fmt.Errorf("recover client mutation interrupt: %w", err)
 	}
+	// An execution left open for work the recovery just retired unrun is over.
+	closedAbandoned := s.closeAbandonedExecutions()
 	s.mu.Lock()
-	clientMutationRecoveryAppended := s.clientMutationAppendedTurn
+	clientMutationRecoveryAppended := s.clientMutationAppendedTurn || closedAbandoned
 	s.mu.Unlock()
 	if tw != nil && clientMutationRecoveryAppended {
 		if err := refreshFromDisk("client mutation recovery"); err != nil {

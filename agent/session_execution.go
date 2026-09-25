@@ -175,6 +175,33 @@ func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	return recorded
 }
 
+// closeAbandonedExecutions closes, interrupted, every execution restore left
+// open for pending work that recovery then retired without running it — a
+// turn an accepted Stop finalized. It runs after restore's recovery passes and
+// reports whether it recorded anything.
+func (s *Session) closeAbandonedExecutions() bool {
+	pending := s.turnsPendingWork()
+	s.mu.Lock()
+	var abandoned []string
+	for turnID := range s.openPendingExecutions {
+		if !pending[turnID] {
+			abandoned = append(abandoned, turnID)
+			delete(s.openPendingExecutions, turnID)
+		}
+	}
+	s.mu.Unlock()
+	slices.Sort(abandoned)
+	recorded := false
+	for _, turnID := range abandoned {
+		rec, err := s.completeTurn(turnID, schema.TurnInterrupted)
+		if err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
+		recorded = recorded || rec.Recorded
+	}
+	return recorded
+}
+
 // completeTurn records a completion of status for turnID, an execution no
 // running process owns any more.
 func (s *Session) completeTurn(turnID string, status schema.TurnCompletionStatus) (transcript.Record, error) {
