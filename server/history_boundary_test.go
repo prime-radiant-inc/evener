@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -574,6 +575,89 @@ func (st *servedTranscript) readFrom(t *testing.T, srv *Server) appwire.ThreadRe
 		t.Fatal(err)
 	}
 	return response
+}
+
+// isTranscriptHistoryFailed reports whether err is the wire error a read of
+// a failed thread's history gets (appwire.TranscriptHistoryFailed).
+func isTranscriptHistoryFailed(err error) bool {
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		return false
+	}
+	data, ok := wireErr.Data.(appwire.HistoryReadErrorData)
+	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptHistoryFailed
+}
+
+// TestThreeRebuildFailuresEnterTheFailedState is the server-level companion
+// to TestThreadHistoryThirdFailedRebuildFailsTheThread
+// (thread_history_test.go, which pins the projection-level mechanics): after
+// three consecutive rebuild failures, a server-level read of the thread
+// returns ErrorTranscriptHistoryFailed while the writer keeps recording
+// underneath it, and a restart -- a fresh server over the same transcript, at
+// a higher boot generation -- recovers cleanly, holding everything recorded
+// both before and after the failure.
+func TestThreeRebuildFailuresEnterTheFailedState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	st := newServedTranscript(t, srv, "fail-thread", schema.NewTurn(schema.TurnUserInput, llm.User("one")))
+	st.settle(t)
+	history := srv.appHistoryForID("fail-thread")
+	if history == nil {
+		t.Fatal("the served thread has no history")
+	}
+
+	// attemptStarted fires (unsynchronized on purpose, like every other
+	// package-level test seam here) once the projection goroutine holds
+	// history.serial, mid-recovery; that lock is then held across all
+	// threadHistoryMaxRebuilds attempts and the failure finalization, so
+	// once we can take it ourselves, the failed state is already set.
+	attemptStarted := make(chan struct{}, threadHistoryMaxRebuilds)
+	repair := breakProjection(t, func() {
+		select {
+		case attemptStarted <- struct{}{}:
+		default:
+		}
+	})
+	bad := st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("bad")))
+	<-attemptStarted
+	history.serial.Lock()
+	history.serial.Unlock()
+
+	var entryErr *transcriptindex.EntryError
+	if err := history.Failed(); !errors.As(err, &entryErr) || entryErr.Ordinal != bad.Ordinal {
+		t.Fatalf("Failed() = %v, want an entry error naming ordinal %d", err, bad.Ordinal)
+	}
+
+	// The server-level read fails with ErrorTranscriptHistoryFailed while
+	// recording continues underneath it.
+	if _, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: "fail-thread", IncludeTurns: true}); !isTranscriptHistoryFailed(err) {
+		t.Fatalf("read of a failed thread = %v, want transcriptHistoryFailed", err)
+	}
+	st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("after the failure"))) // fatals itself if not recorded
+
+	// A restart recovers: a fresh server over the same transcript, at a
+	// higher boot generation, reads cleanly and holds everything recorded
+	// both before and after the failure.
+	repair()
+	srv2 := NewServer(ServerConfig{})
+	t.Cleanup(srv2.Close)
+	prepared, err := PrepareAppIdentity("local", "fail-thread", st.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2.ReplaceAppIdentity(prepared.WithRecordedLength(st.writer.RecordedLength()).WithBootGeneration("2"), nil)
+	restarted := st.readFrom(t, srv2)
+	texts := readTexts(restarted)
+	for _, want := range []string{"one", "bad", "after the failure"} {
+		found := false
+		for _, text := range texts {
+			if text == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("restarted read = %v, missing %q", texts, want)
+		}
+	}
 }
 
 // boundaryTearingFs is the real filesystem whose files write only half of an
