@@ -50,8 +50,8 @@ func shutdownInstalledServe(ctx context.Context, entry rendezvous.Entry) error {
 // TestWebPreflightRefusesNpmCiThroughASymlink (buildscripts_test.go): it drives the real
 // scripts/native/native-preflight.sh at fixture directories through
 // EVENER_NATIVE_DIR and pins what each state produces. The script never
-// installs, so no npm shim is needed — every branch is decided by what the
-// fixture directory holds.
+// installs, so no npm runs — every branch is decided by what the fixture
+// directory holds.
 //
 // Refusals are asserted by their actionable content (the directory they name
 // and, where the fix is an install, `cd <dir> && npm ci`) rather than by whole
@@ -368,41 +368,6 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 	})
 }
 
-func TestNpmShimRejectsUnsupportedCommand(t *testing.T) {
-	t.Parallel()
-
-	env := npmShimEnv(t, installTestEnv(t, t.TempDir(), nil))
-	var npmPath string
-	for _, item := range env {
-		name, value, ok := strings.Cut(item, "=")
-		if !ok || name != "PATH" {
-			continue
-		}
-		parts := strings.Split(value, string(os.PathListSeparator))
-		if len(parts) == 0 || parts[0] == "" {
-			t.Fatal("npm shim PATH is empty")
-		}
-		npmPath = filepath.Join(parts[0], "npm")
-		break
-	}
-	if npmPath == "" {
-		t.Fatal("npm shim PATH was not configured")
-	}
-
-	_, err := combinedOutputRetryingETXTBSY("", env, npmPath, "install")
-	if err == nil {
-		t.Fatal("npm shim accepted unsupported command")
-	} else {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("npm shim did not execute as a process: %v", err)
-		}
-		if got := exitErr.ExitCode(); got != 2 {
-			t.Fatalf("npm shim exit code = %d, want 2", got)
-		}
-	}
-}
-
 func TestInstallHomeGeneratedHome(t *testing.T) {
 	if testing.Short() {
 		t.Skip("install integration test")
@@ -426,7 +391,12 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		"XDG_CACHE_HOME":  cacheHome,
 	})
 
-	runCommand(t, fixtureRoot, npmShimEnv(t, env), "make", "install")
+	// The web build is left out (-o build-web): this test is about install's
+	// own layout, and building the SPA would run the real npm toolchain.
+	// Ordering the web build before the binaries is pinned by
+	// TestMakeBuildsTheWebBeforeTheHub; the installed evener embeds the tracked
+	// placeholder SPA here, which is all --version and --help need.
+	runCommand(t, fixtureRoot, env, "make", "-o", "build-web", "install")
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
@@ -1489,8 +1459,8 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 
 // combinedOutputRetryingETXTBSY runs the command and returns its combined
 // output, retrying while the exec fails with ETXTBSY. Tests in this package
-// exec binaries they wrote moments earlier (the npm shim, and scripts the
-// shim writes); any forked child of the test binary inherits the whole
+// exec files they wrote moments earlier (the install script tests' stand-in
+// curl and uname); any forked child of the test binary inherits the whole
 // descriptor table, so a sibling forked between our write and close briefly
 // holds a writable fd to the freshly written file and the kernel refuses to
 // exec it — golang/go#22315. The condition clears as soon as that child
@@ -1525,49 +1495,6 @@ func isETXTBSYExecFailure(err error, out []byte) bool {
 		return true
 	}
 	return bytes.Contains(bytes.ToLower(out), []byte("text file busy"))
-}
-
-// npmShimEnv prepends a fake-bin directory containing a network-free npm to
-// env's PATH, for the `make install` invocation above only. install depends on
-// build-web (Makefile-coherence rule: a shipped/installed hub must embed a
-// fresh SPA, never the tracked PLACEHOLDER), which would otherwise run a real
-// npm ci + vite build inside this test — slow, and it would fail entirely in
-// environments without node. This test's subject is install's layout/symlinks,
-// not web freshness; that is pinned separately by
-// TestMakeBuildsTheWebBeforeTheHub in buildscripts_test.go. The shim
-// models only the local compiler contract that web-preflight checks: npm ci
-// creates an executable tsc stub, while npm run build remains a no-op and
-// leaves dist exactly as-is. The real go/git must still resolve from the rest
-// of PATH, so this only prepends.
-func npmShimEnv(t *testing.T, env []string) []string {
-	t.Helper()
-
-	fakeBin := t.TempDir()
-	const npmShim = `#!/bin/sh
-if [ "$#" -eq 1 ] && [ "$1" = "ci" ]; then
-  mkdir -p node_modules/.bin
-  printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
-  chmod +x node_modules/.bin/tsc
-elif [ "$#" -eq 2 ] && [ "$1" = "run" ] && [ "$2" = "build" ]; then
-  :
-else
-  echo "unsupported npm args: $*" >&2
-  exit 2
-fi
-exit 0
-`
-	writeExecutable(t, filepath.Join(fakeBin, "npm"), npmShim)
-
-	path := os.Getenv("PATH")
-	for _, item := range env {
-		if name, value, ok := strings.Cut(item, "="); ok && name == "PATH" {
-			path = value
-			break
-		}
-	}
-	return overlayEnv(env, map[string]string{
-		"PATH": fakeBin + string(os.PathListSeparator) + path,
-	})
 }
 
 func writeInstallReleaseArchive(t *testing.T, path, root string) {
