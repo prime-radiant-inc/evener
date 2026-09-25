@@ -393,17 +393,20 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 	}
 }
 
-// TestFailedRebuildsLeaveNoBuildBehind: a transcript with a line that does
-// not decode fails every catch-up, and each failure rebuilds; the failed
-// builds must not pile up on disk.
+// TestFailedRebuildsLeaveNoBuildBehind: a transcript rewritten with a header
+// that does not decode fails every catch-up, and each failure rebuilds; the
+// failed builds must not pile up on disk. (An entry that does not decode is
+// quarantined instead: TestAnUnreadableEntryIsQuarantined.)
 func TestFailedRebuildsLeaveNoBuildBehind(t *testing.T) {
 	path := writeFixture(t, everything())
 	dir := t.TempDir()
 	x := openIndex(t, path, dir)
-	appendBytes(t, path, []byte("{not json\n"))
+	if err := os.WriteFile(path, []byte("{not a header\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for range 5 {
 		if err := x.CatchUp(); err == nil {
-			t.Fatal("catching up over a line that does not decode succeeded")
+			t.Fatal("catching up over a header that does not decode succeeded")
 		}
 	}
 	entries, err := os.ReadDir(dir)

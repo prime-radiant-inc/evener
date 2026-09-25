@@ -2,10 +2,10 @@ package transcriptindex
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -75,29 +75,55 @@ func TestChangedSinceReturnsCreatedAndUpdatedRecords(t *testing.T) {
 	}
 }
 
-func TestScanOverACorruptEntryYieldsEntryErrorWithItsOrdinal(t *testing.T) {
+// corruptEntryLine is an entry line that fails strict decoding: it carries a
+// field no entry has.
+func corruptEntryLine(t testing.TB, text string) []byte {
+	t.Helper()
+	line := bytes.TrimRight(encodeEntry(t, 1, user(text)), "\n")
+	return append(line[:len(line)-1], []byte(`,"unknown_field":true}`+"\n")...)
+}
+
+// An entry that fails to decode is quarantined: it projects as one visible
+// unreadable-entry item naming its ordinal, in a completed turn of its own,
+// and the entries after it project as usual, whether the index extends over
+// it or builds over it.
+func TestAnUnreadableEntryIsQuarantined(t *testing.T) {
 	fx := everything()
 	path, lines := writeHeaderOnly(t, fx)
 	x := openIndex(t, path, t.TempDir())
 	appendBytes(t, path, joinLines(lines[:3]))
 	catchUp(t, x)
+	appendBytes(t, path, corruptEntryLine(t, "bad"))
+	appendBytes(t, path, encodeEntry(t, 5, user("after the bad entry")))
+	catchUp(t, x)
 
-	line := encodeEntry(t, 1, user("bad"))
-	line = bytes.TrimRight(line, "\n")
-	line = append(line[:len(line)-1], []byte(`,"unknown_field":true}`+"\n")...)
-	appendBytes(t, path, line)
-
-	err := x.CatchUp()
-	var entryErr *EntryError
-	if !errors.As(err, &entryErr) {
-		t.Fatalf("CatchUp over a corrupt entry: err = %v, want *EntryError", err)
+	check := func(label string, x *Index) {
+		t.Helper()
+		window, err := x.Latest(appwire.TranscriptItemPageLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var unreadable, after *appitempaging.TranscriptItemCandidate
+		for i, c := range window.Candidates {
+			switch {
+			case c.Item.EventKind == appwire.ThreadItemEventKindError:
+				unreadable = &window.Candidates[i]
+			case c.Item.Text == "after the bad entry":
+				after = &window.Candidates[i]
+			}
+		}
+		if unreadable == nil || unreadable.Item.Type != "systemMessage" || !strings.Contains(unreadable.Item.Text, "transcript entry 3") ||
+			*unreadable.Item.Position != (appwire.ThreadItemPosition{Entry: 4}) || unreadable.Item.Version != 4 ||
+			unreadable.Turn.Status != appwire.TurnStatusCompleted || unreadable.Item.TranscriptKey == "" {
+			t.Fatalf("%s: unreadable entry item = %s, want a completed systemMessage naming entry 3 at its position", label, dump(unreadable))
+		}
+		if after == nil || after.Item.Version != 5 {
+			t.Fatalf("%s: the entry after the unreadable one = %s, want it projected", label, dump(after))
+		}
 	}
-	if entryErr.Ordinal != 3 {
-		t.Fatalf("EntryError.Ordinal = %d, want 3", entryErr.Ordinal)
-	}
-	if entryErr.Unwrap() == nil {
-		t.Fatal("EntryError.Unwrap() = nil")
-	}
+	check("extended", x)
+	built := openIndex(t, path, t.TempDir())
+	check("built", built)
 }
 
 func TestRebuildMintsANewIncarnation(t *testing.T) {

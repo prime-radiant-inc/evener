@@ -160,12 +160,13 @@ func TestThreadHistoryEntriesDuringARebuildPublishOnce(t *testing.T) {
 	t.Cleanup(func() { threadHistoryPublishHook = nil })
 	parked, release := make(chan struct{}), make(chan struct{})
 	var rebuilds int
-	threadHistoryRebuildHook = func(string) {
+	threadHistoryRebuildHook = func(string) error {
 		rebuilds++
 		if rebuilds == 1 {
 			close(parked)
 			<-release
 		}
+		return nil
 	}
 	t.Cleanup(func() { threadHistoryRebuildHook = nil })
 	hx := newHistoryHarness(t)
@@ -202,8 +203,8 @@ func TestThreadHistoryFailedThreadQueuesNothing(t *testing.T) {
 	hx := newHistoryHarness(t)
 	first := hx.record(t, "first")
 	hx.updatesThrough(t, first.Offset+first.Length)
-	hx.corruptNext(t)
-	hx.record(t, "corrupt")
+	breakProjection(t, nil)
+	hx.record(t, "fails to project")
 	hx.nextResync(t)
 	hx.nextResync(t)
 	if hx.history.Failed() == nil {
@@ -277,12 +278,13 @@ func TestThreadHistoryOverflowDuringARebuildRestartsIt(t *testing.T) {
 	t.Cleanup(func() { threadHistoryPublishHook = nil })
 	parked, release := make(chan struct{}), make(chan struct{})
 	var rebuilds int
-	threadHistoryRebuildHook = func(string) {
+	threadHistoryRebuildHook = func(string) error {
 		rebuilds++
 		if rebuilds == 1 {
 			close(parked)
 			<-release
 		}
+		return nil
 	}
 	t.Cleanup(func() { threadHistoryRebuildHook = nil })
 	hx := newHistoryHarnessWith(t, smallQueueBytes)
@@ -326,13 +328,14 @@ func TestThreadHistoryOverflowingEveryRebuildFailsThenAReadRecovers(t *testing.T
 	var hx *historyHarness
 	var rebuilds int
 	overflowing := true
-	threadHistoryRebuildHook = func(string) {
+	threadHistoryRebuildHook = func(string) error {
 		rebuilds++
 		if overflowing {
 			for i := range 6 {
 				hx.record(t, padded(fmt.Sprintf("rebuild %d overflow %d", rebuilds, i)))
 			}
 		}
+		return nil
 	}
 	t.Cleanup(func() { threadHistoryRebuildHook = nil })
 	hx = newHistoryHarnessWith(t, smallQueueBytes)

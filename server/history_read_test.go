@@ -164,7 +164,8 @@ func isTranscriptItemCursorStale(err error) bool {
 	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 }
 
-// A failed thread's reads error, naming the entry that fails to project.
+// A failed thread whose transcript cannot be read either errors on every
+// read, naming the entry that failed to project.
 func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 	hx := newHistoryHarness(t)
 	hx.record(t, "zeroth")
@@ -174,10 +175,14 @@ func TestHistoryReadOfAFailedThreadNamesTheOrdinal(t *testing.T) {
 	if err != nil || older == "" {
 		t.Fatalf("latest = cursor %q, %v; want an older cursor", older, err)
 	}
-	hx.corruptNext(t)
+	breakProjection(t, nil)
 	bad := hx.record(t, "second")
 	hx.nextResync(t)
 	hx.nextResync(t)
+	// The index is unreadable too: the failure is not the projection's alone.
+	if err := hx.cache.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	assertFailed := func(label string, err error) {
 		t.Helper()

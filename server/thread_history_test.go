@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,9 +123,42 @@ func (hx *historyHarness) recordTurn(t *testing.T, turn schema.Turn) transcript.
 	return rec
 }
 
+// errBrokenProjection is the failure breakProjection injects.
+var errBrokenProjection = errors.New("injected projection failure")
+
+// breakProjection fails every projection publish and every rebuild attempt
+// until repair is called; onRebuild, when set, runs first at each rebuild
+// attempt. It stands for an infrastructure failure (I/O, a corrupt index): an
+// entry that does not decode is quarantined instead.
+func breakProjection(t *testing.T, onRebuild func()) (repair func()) {
+	t.Helper()
+	var broken atomic.Bool
+	broken.Store(true)
+	threadHistoryPublishHook = func(string) error {
+		if broken.Load() {
+			return errBrokenProjection
+		}
+		return nil
+	}
+	threadHistoryRebuildHook = func(string) error {
+		if onRebuild != nil {
+			onRebuild()
+		}
+		if broken.Load() {
+			return errBrokenProjection
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		threadHistoryPublishHook = nil
+		threadHistoryRebuildHook = nil
+	})
+	return func() { broken.Store(false) }
+}
+
 // corruptNext corrupts the next recorded entry's line in place, same length,
-// before the history sees it: a line the index cannot decode. repair writes
-// the original line back.
+// before the history sees it: a line that does not decode. repair writes the
+// original line back.
 func (hx *historyHarness) corruptNext(t *testing.T) (repair func()) {
 	t.Helper()
 	var at int64
@@ -381,19 +416,17 @@ func TestThreadHistoryRotatedIncarnationResyncs(t *testing.T) {
 	hx.expectQuiet(t)
 }
 
-// An entry the index cannot apply fails the projection and every rebuild:
-// after the third failed rebuild the thread's history is failed, naming the
-// entry, a last resync goes out, and projection stops (nothing is queued)
+// A projection that fails, and every rebuild after it: after the third failed
+// rebuild the thread's history is failed, naming the last entry, a last
+// resync goes out, and projection stops (nothing is queued)
 // while the writer keeps recording.
 func TestThreadHistoryThirdFailedRebuildFailsTheThread(t *testing.T) {
 	hx := newHistoryHarness(t)
 	first := hx.record(t, "first")
 	hx.updatesThrough(t, first.Offset+first.Length)
 
-	var rebuilds []string
-	threadHistoryRebuildHook = func(threadID string) { rebuilds = append(rebuilds, threadID) }
-	t.Cleanup(func() { threadHistoryRebuildHook = nil })
-	hx.corruptNext(t)
+	var rebuilds int
+	breakProjection(t, func() { rebuilds++ })
 	bad := hx.record(t, "second")
 
 	if epoch := hx.nextResync(t); epoch != 1 {
@@ -409,8 +442,8 @@ func TestThreadHistoryThirdFailedRebuildFailsTheThread(t *testing.T) {
 	if hx.history.Epoch() != 2 {
 		t.Fatalf("Epoch() = %d, want 2", hx.history.Epoch())
 	}
-	if len(rebuilds) != threadHistoryMaxRebuilds || rebuilds[0] != "th_history" {
-		t.Fatalf("rebuild attempts = %q, want %d", rebuilds, threadHistoryMaxRebuilds)
+	if rebuilds != threadHistoryMaxRebuilds {
+		t.Fatalf("rebuild attempts = %d, want %d", rebuilds, threadHistoryMaxRebuilds)
 	}
 
 	later := hx.record(t, "third")
@@ -455,16 +488,15 @@ func TestThreadHistoryRebuildFailuresCountInARow(t *testing.T) {
 	hx := newHistoryHarness(t)
 	var repair func()
 	rebuilds := 0
-	threadHistoryRebuildHook = func(string) {
+	onRebuild := func() {
 		rebuilds++
 		if rebuilds%threadHistoryMaxRebuilds == 0 {
 			repair()
 		}
 	}
-	t.Cleanup(func() { threadHistoryRebuildHook = nil })
 
 	for round := uint64(1); round <= 2; round++ {
-		repair = hx.corruptNext(t)
+		repair = breakProjection(t, onRebuild)
 		corrupt := hx.record(t, fmt.Sprintf("corrupt %d", round))
 		if epoch := hx.nextResync(t); epoch != round {
 			t.Fatalf("resync epoch = %d, want %d", epoch, round)
@@ -538,16 +570,14 @@ func TestThreadHistoryCloseDuringRecoveryStopsRetrying(t *testing.T) {
 	hx := newHistoryHarness(t)
 	parked, release := make(chan struct{}), make(chan struct{})
 	var rebuilds int
-	threadHistoryRebuildHook = func(string) {
+	breakProjection(t, func() {
 		rebuilds++
 		if rebuilds == 1 {
 			close(parked)
 			<-release
 		}
-	}
-	t.Cleanup(func() { threadHistoryRebuildHook = nil })
-	hx.corruptNext(t)
-	hx.record(t, "corrupt")
+	})
+	hx.record(t, "fails to project")
 	select {
 	case <-parked:
 	case <-time.After(historyTestWait):
@@ -588,4 +618,31 @@ func TestThreadHistoryCloseStopsTheGoroutine(t *testing.T) {
 	hx.record(t, "after close")
 	hx.expectQuiet(t)
 	hx.history.close()
+}
+
+// An entry that does not decode is quarantined, not a failure: it reaches
+// clients as one unreadable-entry item naming its ordinal, with no resync,
+// and the entries after it publish as usual.
+func TestThreadHistoryQuarantinesAnUnreadableEntry(t *testing.T) {
+	hx := newHistoryHarness(t)
+	first := hx.record(t, "first")
+	hx.updatesThrough(t, first.Offset+first.Length)
+	hx.corruptNext(t)
+	bad := hx.record(t, "unreadable")
+	after := hx.record(t, "after")
+	updates := hx.updatesThrough(t, after.Offset+after.Length)
+	var unreadable, afterItem bool
+	for _, params := range updates {
+		for _, item := range params.Items {
+			unreadable = unreadable || (item.EventKind == appwire.ThreadItemEventKindError && strings.Contains(item.Text, fmt.Sprintf("entry %d", bad.Ordinal)))
+			afterItem = afterItem || item.Text == "after"
+		}
+	}
+	if !unreadable || !afterItem {
+		t.Fatalf("updates %+v, want the unreadable entry's notice and the entry after it", updates)
+	}
+	if err := hx.history.Failed(); err != nil || hx.history.Epoch() != 0 {
+		t.Fatalf("Failed() = %v at epoch %d; want a healthy history", err, hx.history.Epoch())
+	}
+	hx.expectQuiet(t)
 }

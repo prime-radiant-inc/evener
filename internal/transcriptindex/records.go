@@ -10,7 +10,7 @@ import (
 // Record sizes. Records are fixed-size so a record's slot names its offset,
 // and an append can rewrite one in place.
 const (
-	itemRecordSize   = 112
+	itemRecordSize   = 120
 	turnRecordSize   = 160
 	contributorSize  = 32
 	updateRecordSize = 24
@@ -46,7 +46,15 @@ type itemRecord struct {
 	Opener    contributor
 	Completer contributor // Length 0 until a later entry contributes
 	Middle    strRef      // contributors between opener and completer, encoded
+	Flags     uint32
 }
+
+// Item record flags.
+const (
+	// itemUnreadable marks the item standing for an entry that does not
+	// decode: the reader projects it without decoding the opener.
+	itemUnreadable uint32 = 1 << iota
+)
 
 // Turn kinds. A legacy turn is today's adjacency group of legacy entries;
 // the others are new-format turns, named by the TurnKind their first entry
@@ -57,6 +65,8 @@ const (
 	turnKindGap
 	turnKindDelivery
 	turnKindPrelude
+	// turnKindUnreadable holds one entry that does not decode.
+	turnKindUnreadable
 )
 
 // Turn statuses. Only a new-format execution is ever open.
@@ -211,6 +221,7 @@ func encodeItem(r itemRecord) []byte {
 	c.putContributor(r.Opener)
 	c.putContributor(r.Completer)
 	c.putRef(r.Middle)
+	c.putU32(r.Flags)
 	return c.buf
 }
 
@@ -225,6 +236,7 @@ func decodeItem(buf []byte) itemRecord {
 	c.contributor(&r.Opener)
 	c.contributor(&r.Completer)
 	c.ref(&r.Middle)
+	c.u32(&r.Flags)
 	return r
 }
 

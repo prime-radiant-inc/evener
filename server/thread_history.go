@@ -30,8 +30,9 @@ import (
 var threadHistoryPublishHook func(threadID string) error
 
 // threadHistoryRebuildHook, when set, runs just before each rebuild attempt,
-// after the attempt captured its boundary. Test seam only; nil in production.
-var threadHistoryRebuildHook func(threadID string)
+// after the attempt captured its boundary; an error it returns fails that
+// attempt. Test seam only; nil in production.
+var threadHistoryRebuildHook func(threadID string) error
 
 // threadHistoryPublishedHook, when set, runs after each projection or
 // recovery that advanced what clients hold history through, with the new
@@ -527,7 +528,9 @@ func (h *threadHistory) rebuildThroughBoundary() error {
 		return err
 	}
 	if threadHistoryRebuildHook != nil {
-		threadHistoryRebuildHook(h.threadID)
+		if err := threadHistoryRebuildHook(h.threadID); err != nil {
+			return err
+		}
 	}
 	if err := h.rebuild(boundary); err != nil {
 		return err

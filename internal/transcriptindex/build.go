@@ -2,6 +2,7 @@ package transcriptindex
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 
@@ -74,6 +75,27 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 	}
 	return b.applyLegacy(ordinal, offset, length, entry)
 }
+
+// quarantine indexes an entry line that does not decode as one unreadable
+// item in a completed turn of its own; the reader projects it from the line
+// alone (reader.unreadable). The legacy grouping state is left as it was.
+func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error {
+	slot, err := b.openTurn(unreadableTurnID(ordinal), turnKindUnreadable, ordinal, offset)
+	if err != nil {
+		return err
+	}
+	b.summary.Version = ordinal + 1
+	if err := b.x.turns.write(slot, encodeTurn(b.summary)); err != nil {
+		return err
+	}
+	c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
+	_, err = b.x.items.append(encodeItem(itemRecord{Entry: ordinal + 1, Turn: uint32(slot), Version: ordinal + 1, Opener: c, Flags: itemUnreadable}))
+	return err
+}
+
+// unreadableTurnID is the id of the turn holding the unreadable entry at
+// ordinal.
+func unreadableTurnID(ordinal uint64) string { return fmt.Sprintf("turn_unreadable_%d", ordinal) }
 
 // applyLegacy indexes a legacy entry by today's rules.
 func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {

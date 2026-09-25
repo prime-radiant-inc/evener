@@ -434,6 +434,9 @@ func (r *reader) turn(slot uint32) (stampedTurn, error) {
 // item projects one item from its contributor entries: the opener's item at
 // the record's part, folded with every later item of the same call.
 func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, error) {
+	if record.Flags&itemUnreadable != 0 {
+		return r.unreadable(record, turnID)
+	}
 	callID := ""
 	if record.Call.Len > 0 {
 		call, err := r.x.strings.get(record.Call)
@@ -510,6 +513,33 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 	item.Position = &position
 	item.TranscriptKey = ItemKey(turnID, position)
 	return item, nil
+}
+
+// unreadable projects a quarantined entry: one error notice naming its
+// ordinal and why it does not decode, which decoding the line again tells.
+func (r *reader) unreadable(record itemRecord, turnID string) (appwire.ThreadItem, error) {
+	ordinal := record.Opener.Ordinal
+	line := make([]byte, record.Opener.Length)
+	if _, err := r.x.transcript.ReadAt(line, record.Opener.Offset); err != nil {
+		return appwire.ThreadItem{}, fmt.Errorf("%w: read transcript entry: %w", errCorrupt, err)
+	}
+	reason := "it does not decode"
+	if _, err := transcript.DecodeEntry(bytes.TrimSpace(line)); err != nil {
+		reason = err.Error()
+	}
+	position := appwire.ThreadItemPosition{Entry: record.Entry, Item: record.Part}
+	return appwire.ThreadItem{
+		Type:          "systemMessage",
+		ID:            fmt.Sprintf("item_unreadable_%d", ordinal),
+		TranscriptKey: ItemKey(turnID, position),
+		Position:      &position,
+		TurnID:        turnID,
+		Description:   "Unreadable transcript entry",
+		Text:          fmt.Sprintf("transcript entry %d could not be read: %s", ordinal, reason),
+		Status:        appwire.TurnStatusCompleted,
+		EventKind:     appwire.ThreadItemEventKindError,
+		Version:       record.Version,
+	}, nil
 }
 
 // project projects a contributor entry with the tool name the whole-file

@@ -23,7 +23,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 4
+	formatVersion = 5
 	projectionID  = "transcript-read-model-v4"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -546,9 +546,13 @@ func (x *Index) scan(length int64) error {
 		} else {
 			entry, err := transcript.DecodeEntry(trimmed)
 			if err != nil {
-				return &EntryError{Ordinal: x.meta.Entries, Err: fmt.Errorf("parse transcript entry: %w", err)}
+				// A line that does not decode never will: it is quarantined
+				// as one visible item, and the history goes on past it.
+				err = x.builder.quarantine(x.meta.Entries, start, uint32(len(line)))
+			} else {
+				err = x.builder.apply(x.meta.Entries, start, uint32(len(line)), &entry.Turn)
 			}
-			if err := x.builder.apply(x.meta.Entries, start, uint32(len(line)), &entry.Turn); err != nil {
+			if err != nil {
 				return &EntryError{Ordinal: x.meta.Entries, Err: err}
 			}
 			x.meta.Entries++
