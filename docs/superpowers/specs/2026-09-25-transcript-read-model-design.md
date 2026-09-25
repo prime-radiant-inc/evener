@@ -224,8 +224,11 @@ delivery and stop goroutines at any time: model-bound attention STEERING
   The open gap turn ID is held the same way: a standalone entry takes it, or
   mints one when none is open, and any execution, delivery or prelude entry
   closes it. An async write that loses the race to the completion therefore
-  takes a delivery turn. The append lock is a leaf: no other lock is taken while
-  it is held.
+  takes a delivery turn.
+- **Lock order.** The append lock is taken before exactly one other lock: the
+  per-thread projection queue's mutex, which is itself a leaf. That mutex is
+  taken only to enqueue a recorded entry, and is never held across blocking,
+  I/O, or another lock. No other lock is taken while the append lock is held.
 
 **Turn membership** comes from `TurnID`, not from entry-kind adjacency.
 
@@ -383,11 +386,18 @@ subscription. The client's reconnect then starts from a fresh read with the
 current epoch. Every subscriber recovers.
 
 If the rebuild itself fails three times in a row, the thread's history enters a
-failed state. The server stops projecting that thread and pushes a resync. Reads
-of the thread's history then return an error naming the entry ordinal that fails
-to project, and the thread shows it as one visible diagnostic. The session keeps
-running, and its entries keep being recorded. A daemon restart projects from the
-file again.
+failed state. The server stops projecting that thread and pushes a resync.
+
+A history read of a failed thread returns the error
+`ErrorTranscriptHistoryFailed`, which names the entry ordinal that fails to
+project. The response carries no items and no snapshot identity. A client that
+receives it keeps the history it already holds unchanged, marks the thread's
+history as failed, and shows one visible diagnostic. It neither replaces nor
+merges anything until a later read succeeds. The overlay keeps updating live.
+
+The session keeps running, and its entries keep being recorded. A daemon
+restart projects from the file again, and the next successful read replaces
+history under the rules above.
 
 ### The live overlay
 
@@ -507,8 +517,10 @@ and `AppendDurable` return nil with Seq 0 for both a missing and a closed writer
 one rule for when a served session fails closed. It fails closed when:
 - its transcript cannot be created, or its writer is poisoned
   (`transcript.go:724-728`)
-- an append of a history entry that has already been announced to the user
-  outside history, namely COMMUNICATE, is not recorded
+- a COMMUNICATE append is not recorded. The message is emitted only after its
+  entry records (see The projector). An unrecorded COMMUNICATE therefore means
+  `communicate` cannot deliver it, and the session fails closed instead of
+  dropping the message silently or delivering it without history.
 
 Any other append that is not recorded, for example a cleanly rolled-back durable
 append, leaves the writer usable. The caller's existing error handling applies,
@@ -720,6 +732,8 @@ restart:
   accumulators plus the open round's call records) and the index handle cache
   (64 handles).
 - Ephemeral notices stay within 64 KB per thread and 16 MB daemon-wide.
+- Running state (streams, running tool output, held images) is bounded per
+  response and per call. It is released at round end, so at idle it is zero.
 - For comparison, the same measurement is about 283 MB today.
 
 **Latency.** `thread/read` of the latest window at the default page size, on the
@@ -779,8 +793,8 @@ Each phase ships on its own and keeps main green.
      the 95 MB root transcript and on the 134 MB coordinator transcript, against
      the latency criteria. It has to build complete turns and items (status,
      usage, tool results) that equal the whole-file projection before any timing
-     counts. If the criteria are not met, stop and redesign the index before
-     phase 2.
+     counts. *Done in PR #2303. The results and the amended criterion are under
+     Acceptance criteria.*
 2. **Write the new fields.**
    - Writers write every new field and entry kind. The consumers listed above
      skip the new kinds, and the new kinds stay out of in-memory history. Every
@@ -819,6 +833,9 @@ Each phase ships on its own and keeps main green.
    - a read between the ASSISTANT and the COMMUNICATE entry
    - a paginated read that overlaps a cross-process rollback
    - a failed history publication, and a failed resync delivery
+   - three consecutive rebuild failures: the thread enters the failed state,
+     recording continues, reads return `ErrorTranscriptHistoryFailed` while
+     clients keep their history, and a restart recovers
    - a read that overlaps a retry reset and the next attempt's deltas
    - a turn that recovery reclaims
    - a read whose cut is captured before a TOOL_RESULTS append and whose
