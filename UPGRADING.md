@@ -2,6 +2,23 @@
 
 Breaking changes and migration notes for evener.
 
+## Unreleased — `evener-dev` is no longer installed
+
+`evener-dev` is repository dev and test tooling, not part of an install.
+`install.sh`, `make install` and `evener upgrade` now install `evener`
+alone. Build `evener-dev` from a checkout with `make build-dev` when you
+need it.
+
+Release archives still carry `evener-dev` for now, so versions that
+required it in the archive can still `evener upgrade` into this release; a
+later release drops it. An `evener-dev` that an earlier install left in
+`~/.local/share/evener/bin` (and its `~/.local/bin` link) is no longer
+updated. Remove it if you don't use it:
+
+```sh
+rm ~/.local/bin/evener-dev ~/.local/share/evener/bin/evener-dev
+```
+
 ## Unreleased — Tool `purpose` param renamed to `intent`
 
 The shared tool parameter that carries the agent's stated reason for a call

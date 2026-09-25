@@ -430,7 +430,8 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
-	for _, bin := range []string{"evener", "evener-dev"} {
+	assertNoEvenerDevInstalled(t, shareBinDir, binDir)
+	for _, bin := range []string{"evener"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -608,7 +609,8 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 
 			binDir := filepath.Join(home, ".local", "bin")
 			shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
-			for _, bin := range []string{"evener", "evener-dev"} {
+			assertNoEvenerDevInstalled(t, shareBinDir, binDir)
+			for _, bin := range []string{"evener"} {
 				installed := filepath.Join(shareBinDir, bin)
 				info, err := os.Stat(installed)
 				if err != nil {
@@ -1570,6 +1572,20 @@ exit 0
 	})
 }
 
+// assertNoEvenerDevInstalled fails if an install put evener-dev, the dev
+// tooling binary, into the managed dir or on PATH.
+func assertNoEvenerDevInstalled(t *testing.T, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if _, err := os.Lstat(filepath.Join(dir, "evener-dev")); !os.IsNotExist(err) {
+			t.Fatalf("the install put evener-dev into %s (err=%v); it is dev tooling, not part of an install", dir, err)
+		}
+	}
+}
+
+// writeInstallReleaseArchive writes a release archive as releases currently
+// ship: evener, plus evener-dev, which the archive keeps carrying so older
+// installed versions (which require it) can still upgrade into it.
 func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	t.Helper()
 
