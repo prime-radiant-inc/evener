@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/spf13/afero"
 )
@@ -34,8 +35,9 @@ type appendTail struct {
 	move uint64
 	// poisoned records a partial line some writer left at the file's end and
 	// could not roll back. Every writer on the tail refuses to append after
-	// it until a resume's scan cuts it off.
-	poisoned bool
+	// it until a resume's scan cuts it off. It changes only under mu; it is
+	// atomic so a writer can report it without waiting out another's append.
+	poisoned atomic.Bool
 
 	// info identifies the file and refs counts the open writers sharing this
 	// tail; both are guarded by openTails.mu. pin is the tail's own handle on

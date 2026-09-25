@@ -63,6 +63,10 @@ var ErrRollbackFailed = errors.New("rollback failed")
 // instead of being discovered by whoever next reads the transcript. Recovery is
 // to reopen the transcript, which rebuilds the writer from the complete records
 // the file still holds.
+//
+// The broken bytes poison every writer in this process on the same file, not
+// only the one that left them. A reopen cuts them off, which clears the other
+// writers; the writer that left them stays poisoned.
 var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
 
 // ErrWriterClosed marks a synced write to a closed writer. The ordinary doors
@@ -662,14 +666,11 @@ func (w *Writer) appendBatch(turns []schema.Turn, forceSync, queueRetained, fail
 // unsynced in the file — separately from err, a hard failure that recorded
 // nothing.
 func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained bool) (firstSeq int, retained, err error) {
-	if w.poisoned {
-		return 0, nil, ErrWriterPoisoned
-	}
 	// The tail is held to the end of the append, rollback included; see
 	// appendTail.
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
-	if w.tail.poisoned {
+	if w.poisoned || w.tail.poisoned.Load() {
 		return 0, nil, ErrWriterPoisoned
 	}
 	firstSeq = w.tail.nextSeq
@@ -768,7 +769,7 @@ func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOff
 		// makes it whole, and an append onto it — by this writer or any other
 		// on the file — would be unreadable.
 		w.poisoned = true
-		w.tail.poisoned = true
+		w.tail.poisoned.Store(true)
 		return nil, fmt.Errorf("%s: %w", operation, cause)
 	}
 	// The whole buffer is a record every reader will find: count it, keep it as
@@ -826,12 +827,7 @@ func (w *Writer) Poisoned() bool {
 // poisonedLocked reports whether this writer, or any writer on its file, left
 // a partial line that no resume has yet cut off. Callers hold w.mu.
 func (w *Writer) poisonedLocked() bool {
-	if w.poisoned {
-		return true
-	}
-	w.tail.mu.Lock()
-	defer w.tail.mu.Unlock()
-	return w.tail.poisoned
+	return w.poisoned || w.tail.poisoned.Load()
 }
 
 // Closed reports whether this writer has been closed and its ordinary appends
@@ -1061,7 +1057,7 @@ func resumeWriter(fs afero.Fs, open func() (afero.File, error), expectedSessionI
 	tail.nextSeq = max(tail.nextSeq, nextSeq)
 	// The scan cut any partial line off the end, so the file ends in whole
 	// records again; only the writer that left the line stays poisoned.
-	tail.poisoned = false
+	tail.poisoned.Store(false)
 	return newWriterOnTail(fs, f, tail, header, tail.moved()), entries, nil
 }
 
