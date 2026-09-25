@@ -523,6 +523,22 @@ Revision 7 (merged from `origin/wip/transcript-read-model`) changed the Index se
 - [ ] **Step 4: Run** the package with `-race`; PASS. Re-run the real-data equality and latency script.
 - [ ] **Step 5: Commit** — `feat(transcriptindex): align the index with spec revision 7`
 
+### Task 4c: Update log and truncate-first extension (spec revision 7, final)
+
+The last revision 7 commits add a third table and tighten extension: each in-place update (a completer filled in, an existing turn summary rewritten) appends an update-log record naming the slot and the offset of the entry that caused it, so a daemonless client holding a snapshot at length `L` can be sent every item and turn whose version grew since; and an extender first truncates each table to the header's record count.
+
+**Files:** Modify `internal/transcriptindex/{records,build,index,window}.go`; Test `internal/transcriptindex/updates_test.go`.
+
+**Interfaces:**
+- Produces: `func (x *Index) ChangedSince(length int64) (Changes, error)` with `type Changes struct { Items []appitempaging.TranscriptItemCandidate; Turns []appwire.Turn; Incarnation string; Length int64 }` — the current form of every item and turn an in-place update changed at or past `length`, in slot order, each once.
+- Update-log record: `kind u32 (item, turn), slot u64, offset i64` (24 bytes); `meta.Updates` counts them.
+
+- [ ] **Step 1: Failing tests:** over the fixture corpus, snapshot at every entry boundary, append the rest, `ChangedSince(snapshot)` equals the reference's candidates and turns for exactly the items and turns an entry past the snapshot completed or restamped, and nothing else; after a simulated crash (tables past the meta counts) an extension leaves every table at exactly its counted size.
+- [ ] **Step 2: Run** — FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** with `-race`; PASS.
+- [ ] **Step 5: Commit** — `feat(transcriptindex): update log for later completions; truncate before extending`
+
 ### Task 5: Real-data equality and the latency gate
 
 **Files:**
