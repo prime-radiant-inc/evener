@@ -47,10 +47,10 @@ func webCheckSpec(check, root string) guardSpec {
 	}
 }
 
-// runWebChecks is `evener dev web-checks`, run from the repository root.
+// runWebChecks is `evener-dev dev web-checks`, run from the repository root.
 func runWebChecks(args []string) int {
 	if len(args) != 0 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: evener dev web-checks")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: evener-dev dev web-checks")
 		return 2
 	}
 	return runWebGate(newWebChecksGate(), "evener-test-web")
