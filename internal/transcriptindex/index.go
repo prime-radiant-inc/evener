@@ -373,8 +373,18 @@ func (x *Index) readHeader() error {
 
 // rebuild indexes the transcript from its start into a new build, then makes
 // it the live one. incarnation carries the covered records' incarnation over
-// when the transcript still extends them; "" mints a new one.
+// when the transcript still extends them; "" mints a new one. A build that
+// fails is removed, and the live build stays as it was.
 func (x *Index) rebuild(length int64, incarnation string) error {
+	err := x.buildNew(length, incarnation)
+	if err != nil && x.build != "" {
+		failed := filepath.Join(x.dir, x.build)
+		err = errors.Join(err, x.closeBuild(), os.RemoveAll(failed))
+	}
+	return err
+}
+
+func (x *Index) buildNew(length int64, incarnation string) error {
 	if err := x.closeBuild(); err != nil {
 		return err
 	}

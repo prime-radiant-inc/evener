@@ -175,7 +175,13 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 	}
 	record := decodeItem(buf)
 	if version <= record.Version {
-		return nil // this entry already contributed
+		// This entry already contributed: before a crash, whose update-log
+		// record the extension truncated away, or earlier in this entry.
+		// Redo the log record; readers take each slot once.
+		if version == record.Opener.Ordinal+1 {
+			return nil // the entry that created the record logs nothing
+		}
+		return b.logUpdate(updatedItem, slot, c.Offset)
 	}
 	if record.Completer.Length > 0 {
 		middle, err := b.x.strings.get(record.Middle)
@@ -205,14 +211,17 @@ func (b *builder) logUpdate(kind uint32, slot uint64, offset int64) error {
 // apptranscript.StampGroupedTurn folds a group's entries.
 func (b *builder) stampTurn(entry *schema.Turn, version uint64, offset int64, length uint32) error {
 	r := &b.turn
-	if version <= r.Version {
-		return nil // already accounted before an interrupted catch-up
-	}
-	// The turn's first entry creates its summary; every later one rewrites it.
-	if r.Version != 0 {
+	// The turn's first entry creates its summary; every later one rewrites
+	// it, and logs that it did. The log record is redone even when a crashed
+	// extension already applied the entry: the truncation before this
+	// extension removed its log record, and readers take each slot once.
+	if version > r.FirstOrdinal+1 {
 		if err := b.logUpdate(updatedTurn, b.turnSlot, offset); err != nil {
 			return err
 		}
+	}
+	if version <= r.Version {
+		return nil // already accounted before an interrupted catch-up
 	}
 	if entry.Kind == schema.TurnFailure {
 		r.LifecycleOffset, r.LifecycleLength, r.Status = offset, length, statusFailed

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -233,6 +234,10 @@ func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	cut := len(lines) - 2
 	appendBytes(t, path, joinLines(lines[:cut]))
 	x := openIndex(t, path, dir)
+	held, err := x.Latest(1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	saved, err := os.ReadFile(filepath.Join(liveBuild(t, dir), metaFile))
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +248,13 @@ func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	// in-place updates the meta does not count.
 	appendBytes(t, path, joinLines(lines[cut:]))
 	catchUp(t, x)
+	changed, err := x.ChangedSince(held.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed.Items) == 0 || len(changed.Turns) == 0 {
+		t.Fatalf("the replayed entries changed nothing held: %+v", changed)
+	}
 	if err := x.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +266,15 @@ func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 		t.Fatal("replaying after a crash rebuilt the index")
 	}
 	assertAllWindows(t, replayed, path)
+	// The replay redoes the update log, so a reader holding the old snapshot
+	// still learns what the replayed entries changed.
+	replayedChanges, err := replayed.ChangedSince(held.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayedChanges, changed) {
+		t.Fatalf("after replay ChangedSince = %s, want %s", dump(replayedChanges), dump(changed))
+	}
 	// Replaying the result entry must not add it as a second contributor.
 	for slot := range replayed.items.n {
 		buf, err := replayed.items.read(slot, 1)
@@ -344,5 +365,33 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			}
 			assertAllWindows(t, reopened, path)
 		})
+	}
+}
+
+// TestFailedRebuildsLeaveNoBuildBehind: a transcript with a line that does
+// not decode fails every catch-up, and each failure rebuilds; the failed
+// builds must not pile up on disk.
+func TestFailedRebuildsLeaveNoBuildBehind(t *testing.T) {
+	path := writeFixture(t, everything())
+	dir := t.TempDir()
+	x := openIndex(t, path, dir)
+	appendBytes(t, path, []byte("{not json\n"))
+	for range 5 {
+		if err := x.CatchUp(); err == nil {
+			t.Fatal("catching up over a line that does not decode succeeded")
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builds := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			builds++
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("%d build directories after failed rebuilds, want the one live build", builds)
 	}
 }
