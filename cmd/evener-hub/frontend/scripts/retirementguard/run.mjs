@@ -21,7 +21,7 @@
 //   RETIREMENT_ARTIFACT_DIR — absolute path for screenshots + result JSON
 //
 // The runner writes its three screenshots and machine-readable result to the
-// fixture-owned artifact directory (NOT the scratch that test-web-browser.sh
+// fixture-owned artifact directory (NOT the scratch that the browser gate
 // deletes on success), and prints that path. The Go test reads the exit code.
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -79,7 +79,7 @@ if (!HUB_URL || !RETIRE_URL || !DEGRADE_URL || !REF || !ARTIFACT_DIR) {
 }
 
 // Ensure the artifact directory exists (it is outside the scratch dir that
-// test-web-browser.sh deletes on success, so evidence survives green runs).
+// the browser gate deletes on success, so evidence survives green runs).
 mkdirSync(ARTIFACT_DIR, { recursive: true });
 console.log(`retirementguard artifacts: ${ARTIFACT_DIR}`);
 

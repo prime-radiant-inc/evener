@@ -407,8 +407,8 @@ var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub"
 var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
 
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
-// run target. Only the shipped `evener` binary can serve a hub: install.sh also
-// ships `evener-dev` (install.sh:5), but that is the development/test tooling
+// run target. Only the shipped `evener` binary can serve a hub: release archives
+// also carry `evener-dev`, but that is the development/test tooling
 // binary — no `hub` subcommand and no `launch-check` — so a host configured to
 // run it installs "successfully" and then fails preflight, health, and restart
 // on a binary that can never serve the hub. Any other basename is no better: the

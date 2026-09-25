@@ -128,7 +128,8 @@ func TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine(t *testing.T) {
 	}
 
 	// The release: a real tar.gz holding the archive root install.sh expects,
-	// with the two binaries it ships.
+	// with the two binaries releases carry: evener, and evener-dev, which the
+	// archive keeps only so older versions can still upgrade into it.
 	var archive bytes.Buffer
 	rootName := fmt.Sprintf("evener_%s_%s", runtime.GOOS, runtime.GOARCH)
 	archiveName := rootName + ".tar.gz"
@@ -227,7 +228,14 @@ printf '200\n'
 
 			shareBin := filepath.Join(home, ".local", "share", "evener", "bin")
 			binDir := filepath.Join(home, ".local", "bin")
-			for _, name := range []string{"evener", "evener-dev"} {
+			for _, dir := range []string{shareBin, binDir} {
+				if _, err := os.Lstat(filepath.Join(dir, "evener-dev")); err == nil {
+					t.Fatalf("install.sh installed evener-dev into %s; it is dev tooling, not part of an install\n%s", dir, out)
+				} else if !os.IsNotExist(err) {
+					t.Fatalf("lstat %s: %v", filepath.Join(dir, "evener-dev"), err)
+				}
+			}
+			for _, name := range []string{"evener"} {
 				installed := filepath.Join(shareBin, name)
 				got, err := os.ReadFile(installed)
 				if err != nil {

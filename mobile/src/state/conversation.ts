@@ -28,6 +28,7 @@ import type {
 } from "@evener/appwire-client/state/mutation";
 import {
   applyNotification,
+  configFingerprint,
   copyItemTextPresence,
   foldWarningParams,
   isStaleCursorError,
@@ -53,6 +54,7 @@ import type {
   MutationReceipt,
   TurnModel,
   ThreadModel,
+  TranscriptDisplayConfigV1,
   WarningParams,
 } from "@evener/appwire-client";
 import type {
@@ -60,7 +62,7 @@ import type {
   BoundText,
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
 import {
   activityIdentity,
   attachmentSourceId,
@@ -77,15 +79,16 @@ import {
   timelineIdentities,
   truncateText,
   truncateItem as sharedTruncateItem,
-} from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
 // Re-exported where they have always been imported from: the bounds are the row
-// shape's, and project.ts owns that shape.
+// shape's, and the row module (mobile-native/src/projectedRows.ts, the D24-6
+// re-home) owns that shape.
 export {
   MAX_ITEM_BYTES,
   RETAINED_ITEM_CAP,
   TRUNCATION_MARKER,
   truncateText,
-} from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -141,6 +144,12 @@ export interface AcceptedConversationMutation {
 export interface ConversationStoreOptions {
   readonly mutationHubId?: string;
   readonly mutationSubmitter?: ConversationMutationSubmitter;
+  // The display config the projection opens at. The screen owns the config's
+  // source (the hub's transcriptDisplay settings); the store holds the value
+  // the projection runs at, and a later change reaches it through
+  // setDisplayConfig — the store is not recreated per config (its identity is
+  // the conversation binding).
+  readonly displayConfig?: TranscriptDisplayConfigV1 | null;
 }
 
 export type LoadOlderResult =
@@ -317,6 +326,13 @@ export interface ConversationState {
   readonly conversationGeneration: number;
 
   readonly conversation: MobileConversation | null;
+  // The display config the projection runs at (D24-5's content dimension,
+  // routed through this seam): null means the show-everything default. The
+  // rows are a projection of the model AT THIS CONFIG — which items exist at
+  // all is the shared projector's decision here — so a level change
+  // re-projects the conversation through the same display boundary
+  // (capAndTruncate) every other rebuild passes through.
+  readonly displayConfig: TranscriptDisplayConfigV1 | null;
   readonly olderCursor: string | null;
   readonly hasEarlierItems: boolean;
   readonly hasLaterItems: boolean;
@@ -351,6 +367,12 @@ export interface ConversationState {
   close(): void;
   applyNotification(n: AnyNotification): void;
   reset(): void;
+  // Sets the display config the projection runs at. A value-equal config is a
+  // no-op (the level is keyed by configFingerprint, so a fresh-but-equal
+  // object from the provider's per-publish resolve does not re-project); a
+  // changed one re-projects a live conversation at the new level, once,
+  // inside the store's display boundary.
+  setDisplayConfig(config: TranscriptDisplayConfigV1 | null): void;
 }
 
 // Required live state interface (F3): the production store always implements
@@ -683,7 +705,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   }[] = [];
   let liveNoticeSerial = 0;
   // The row an idle warning displays as: the same attention row the
-  // canonical projection builds for a model warning item (project.ts's
+  // canonical projection builds for a model warning item projectedRows.ts's
   // warningItem — kind "failure", title its own field, message and hint
   // joined as detail), under the live serial identity main's applier
   // used, since there is no model item to share an identity with.
@@ -804,6 +826,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       family: first.family,
       state: first.state,
       detail: first.detail,
+      ...(first.summaryOnly ? { summaryOnly: first.summaryOnly } : {}),
       ...(first.transcriptKey ? { transcriptKey: first.transcriptKey } : {}),
       ...(first.position ? { position: first.position } : {}),
     };
@@ -943,6 +966,63 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       }
     }
     return seated;
+  }
+
+  // A level change hides rows without withdrawing them from the model, and
+  // the prune in capAndTruncate retires a notice only when its own row left
+  // the window. But the seating walk consumes a notice only at a DISPLAYED
+  // anchor row, so a notice whose anchor the new level hides never seats
+  // and the prune mistakes it for withdrawn. Re-anchor each such notice to
+  // the nearest row the new level still displays at or above its arrival
+  // position — the closest visible seat, not a retirement — and to null
+  // (before everything) when nothing at or above it survives. The anchor
+  // only moves up: on switch-back to the richer level the notice sits at
+  // its re-anchored position, below rows that arrived after it, the
+  // disclosed cost of keeping it visible through the level change.
+  function reanchorTransientWarnings(
+    oldItems: MobileTimelineItem[],
+    newItems: MobileTimelineItem[],
+  ): void {
+    if (transientWarnings.length === 0) return;
+    const displayedIdentities = new Set<string>();
+    for (const row of newItems) {
+      for (const identity of ownTimelineIdentities(row)) {
+        displayedIdentities.add(identity);
+      }
+    }
+    for (const notice of transientWarnings) {
+      const anchor = notice.anchor;
+      if (anchor === null || displayedIdentities.has(anchor)) continue;
+      // The anchor's arrival position in the rows leaving the screen.
+      let arrival = -1;
+      for (let index = 0; index < oldItems.length; index += 1) {
+        const row = oldItems[index];
+        if (row === undefined) continue;
+        for (const identity of ownTimelineIdentities(row)) {
+          if (identity === anchor) {
+            arrival = index;
+            break;
+          }
+        }
+        if (arrival >= 0) break;
+      }
+      // The nearest displayed row at or above it, re-anchored through
+      // one of that row's own displayed identities so the next seating
+      // walk resolves the anchor as written.
+      let reanchor: string | null = null;
+      for (let above = arrival; above >= 0; above -= 1) {
+        const candidate = oldItems[above];
+        if (candidate === undefined) continue;
+        for (const identity of ownTimelineIdentities(candidate)) {
+          if (displayedIdentities.has(identity)) {
+            reanchor = identity;
+            break;
+          }
+        }
+        if (reanchor !== null) break;
+      }
+      notice.anchor = reanchor;
+    }
   }
 
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
@@ -1453,6 +1533,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     previous: MobileConversation | null,
     sameInstance: boolean,
     projected: MobileConversation,
+    config: TranscriptDisplayConfigV1 | undefined,
   ): MobileConversation {
     const activeId = projected.activeTurnId;
     if (
@@ -1501,10 +1582,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     const freshRows = projectTimeline(
       { ...projected, turns: projected.turns },
       combinedAsks,
+      config,
     );
     const preservedRows = projectTimeline(
       { ...projected, turns: [preservedTurn] },
       combinedAsks,
+      config,
     );
     return {
       ...projected,
@@ -1525,6 +1608,30 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // the window moves to pageOwnedCompactTurnIds, which preserveTurnHistory
   // reads together with pageOwnedTurnIds so the compact survivors still cross
   // rehydrates (accounting completeness).
+  // Review round 3 (Medium): a level-carrying publish (the frame publish,
+  // setDisplayConfig) widens the window to level-independent rows — see
+  // retentionWindowItems — so the display level never decides retention.
+  //
+  // The keep-window for a level-carrying publish. The display level decides
+  // what RENDERS, never what payload leaves the model: a window taken from
+  // the level's own rows would shed every turn the level hides — rows that
+  // are hidden, not withdrawn — and the switch back to a richer level could
+  // not rebuild what the re-projection reads, because the payloads would be
+  // gone from the model. The retention truth is the show-everything cap, the
+  // pre-slice rule: only the cap window decides what leaves. The union with
+  // the publish's own rows keeps what the level's deeper cap reach retains —
+  // a coarse level renders fewer rows per turn, so the same row budget
+  // reaches farther down the timeline. At the null config the level IS
+  // show-everything, so the publish's own rows are the window.
+  function retentionWindowItems(
+    model: ThreadModel,
+    levelItems: MobileTimelineItem[],
+    config: TranscriptDisplayConfigV1 | null,
+  ): MobileTimelineItem[] {
+    if (config === null) return levelItems;
+    return levelItems.concat(capItems(projectConversation(model).items));
+  }
+
   function boundRetainedTurns(
     turns: TurnModel[],
     retainedItems: MobileTimelineItem[],
@@ -2188,6 +2295,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       conversationGeneration: 0,
 
       conversation: null,
+      displayConfig: options.displayConfig ?? null,
       olderCursor: null,
       hasEarlierItems: false,
       hasLaterItems: false,
@@ -2200,6 +2308,56 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       pendingMutation: null,
       pendingMutations: null,
       lastAcceptedMutation: null,
+
+      setDisplayConfig(config) {
+        const current = get();
+        // The level is keyed by the config's VALUE: the provider resolves a
+        // fresh object per publish, and an equal config re-derives nothing.
+        if (
+          (current.displayConfig ?? null) === (config ?? null) ||
+          (current.displayConfig !== null &&
+            config !== null &&
+            configFingerprint(current.displayConfig) === configFingerprint(config))
+        ) {
+          return;
+        }
+        // A live conversation re-projects at the new level through the same
+        // display boundary every other rebuild passes through — once, inside
+        // capAndTruncate (seating, cap, truncation) — so the level change is
+        // on screen with no frame and no screen-level re-projection.
+        const conversation = current.conversation;
+        if (conversation === null) {
+          set({ displayConfig: config });
+          return;
+        }
+        const projected = projectConversation(
+          conversation,
+          undefined,
+          config ?? undefined,
+        );
+        // The rows the level change hides are hidden, not withdrawn:
+        // seat each notice whose anchor they include BEFORE the display
+        // boundary runs, or the seating walk drops it and the prune
+        // retires it as if the model had withdrawn the anchor.
+        reanchorTransientWarnings(conversation.items, projected.items);
+        const bounded = capAndTruncate(projected);
+        // The retained-turn bound every other publish runs, against the
+        // level-independent window (retentionWindowItems): the level
+        // change hides rows without shedding their payloads. The active
+        // turn stays exempt inside the helper.
+        set({
+          displayConfig: config,
+          conversation: {
+            ...bounded,
+            turns: boundRetainedTurns(
+              bounded.turns,
+              retentionWindowItems(conversation, bounded.items, config),
+              mergedItemFoldIdentities,
+              bounded.activeTurnId,
+            ),
+          },
+        });
+      },
 
       async open(service, ref) {
         suspendedService = null;
@@ -2622,10 +2780,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // The live-turn preserve keeps the working set the snapshot's
           // bounded window omits (round 28); its rows are the model's
           // projection, re-derived below.
+          // The user's display config, read after the read's await: the rows
+          // below project at it (which rows exist at all is the projector's
+          // decision at that config), and every projection this publish makes
+          // — the preserve, the seated window, the committed rows — shares
+          // the one value so they cannot disagree.
+          const projectConfig = get().displayConfig ?? undefined;
           const merged = withLiveActiveTurn(
             currentConvForMerge,
             sameInstance,
             conversation,
+            projectConfig,
           );
           // The page's cursor is the newer one when page history is kept
           // (turn ownership is the gate — a page whose rows were all deduped
@@ -3353,12 +3518,22 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // this seated window, so hoist it — a notice the window kept
             // survives the commit even when the bound sheds the turn its
             // anchor row came from.
+            const rehydrateModel = { ...merged, turns: mergedTurns };
             const rehydrateSeated = seatTransientWarnings(
-              projectTimeline({ ...merged, turns: mergedTurns }),
+              projectTimeline(rehydrateModel, undefined, projectConfig),
             );
+            // RoboRev panel: the keep-window is level-independent at this
+            // merge too — a coarse rehydrate must not shed the payloads of
+            // the turns the level hides (retentionWindowItems unions the
+            // show-everything cap; the null config keeps the seated window
+            // alone).
             mergedTurns = boundRetainedTurns(
               mergedTurns,
-              capItems(rehydrateSeated),
+              retentionWindowItems(
+                rehydrateModel,
+                capItems(rehydrateSeated),
+                projectConfig ?? null,
+              ),
               mergedItemFoldIdentities,
               conversation.activeTurnId,
             );
@@ -3376,6 +3551,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // projection of the merged model — the snapshot's own turns plus
           // the page history the model still carries, one projector for a
           // frame and for a snapshot.
+          // The projection runs at the user's display config, read after the
+          // read's await: which rows exist at all is the projector's decision
+          // at that config, and the level is read at merge time so a change
+          // that landed mid-read projects here (setDisplayConfig's own
+          // re-projection already republished the old level; this publish
+          // supersedes it with the fresh read).
           // RoboRev local round 1 (Medium): on the history-preserving path
           // the committed rows are the SAME seated projection the
           // retained-turn bound trimmed against — the projector's input is
@@ -3390,7 +3571,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
                   ...merged,
                   turns: mergedTurns,
                   olderCursor: wireOlderCursor,
-                })
+                }, undefined, projectConfig)
               : {
                   ...merged,
                   turns: mergedTurns,
@@ -3649,8 +3830,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               ...pageMerge.model,
               turns: strippedPageTurns,
             };
+            // The page merge projects at the user's display config, exactly
+            // as the rehydrate and frame paths do: one projector, one level.
             const mergedInput = seatTransientWarnings(
-              projectTimeline(mergedModel),
+              projectTimeline(
+                mergedModel,
+                undefined,
+                get().displayConfig ?? undefined,
+              ),
             );
             // F8 under D23d: the pre-cap merged projection can overflow
             // with rows the entry window already discarded — an in-window
@@ -3715,9 +3902,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
             // whose payloads left the keep-window to the compact set.
+            // RoboRev panel: the keep-window is level-independent at this
+            // merge too (retentionWindowItems unions the show-everything
+            // cap; the null config keeps pageMerged alone) — a coarse page
+            // load must not shed the payloads of the turns the level hides.
+            // The F8/atCap inputs read mergedInput above, which this does
+            // not touch: the honest stop is level-independent already.
             const boundedTurns = boundRetainedTurns(
               strippedPageTurns,
-              pageMerged,
+              retentionWindowItems(mergedModel, pageMerged, get().displayConfig),
               mergedItemFoldIdentities,
               currentConv.activeTurnId,
             );
@@ -4352,19 +4545,27 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             changesRows(state.conversation, applied) ||
             unplacedWarningNotice !== null
           ) {
-            const projected = projectConversation(applied);
+            // The frame's rows project at the user's display config — the
+            // same level every other publish projects at.
+            const projected = projectConversation(
+              applied,
+              undefined,
+              get().displayConfig ?? undefined,
+            );
             const bounded = capAndTruncate(projected);
             // #1919 follow-up: a row-changing frame can repopulate a
             // compacted turn's entire payload (a completion's full view)
-            // with no applier pass left to bound it — the rows the cap kept
-            // are the keep-window, exactly as the rehydrate and loadOlder
-            // merges bound theirs; the active turn is exempted inside the
-            // helper (its payloads are the live working set).
+            // with no applier pass left to bound it — the keep-window is
+            // the level-independent retention set (retentionWindowItems:
+            // the capped level rows plus the show-everything cap), so a
+            // coarse level never sheds a turn it merely hides; the active
+            // turn is exempted inside the helper (its payloads are the
+            // live working set).
             const conversation: MobileConversation = {
               ...bounded,
               turns: boundRetainedTurns(
                 bounded.turns,
-                bounded.items,
+                retentionWindowItems(applied, bounded.items, get().displayConfig),
                 mergedItemFoldIdentities,
                 bounded.activeTurnId,
               ),

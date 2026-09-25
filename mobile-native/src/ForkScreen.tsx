@@ -10,7 +10,7 @@ import {
 } from "react";
 import { Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ForkEditor } from "./ForkEditor";

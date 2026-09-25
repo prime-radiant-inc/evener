@@ -2424,7 +2424,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := readTranscriptFull(tpath)
+	data, rerr := readTranscriptFull(tpath, "")
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
@@ -2468,7 +2468,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if tpath == "" {
 		t.Fatal("TranscriptPath is empty")
 	}
-	data, err := readTranscriptFull(tpath)
+	data, err := readTranscriptFull(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -2556,7 +2556,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 			transcriptPath := sess.TranscriptPath()
 			sess.Close()
 
-			data, err := readTranscriptFull(transcriptPath)
+			data, err := readTranscriptFull(transcriptPath, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}
@@ -2699,7 +2699,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := readTranscriptFull(tpath)
+	data, rerr := readTranscriptFull(tpath, "")
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}

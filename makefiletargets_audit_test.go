@@ -85,18 +85,6 @@ func readMakefileSources(t testing.TB, visit func(path string, raw []byte)) {
 	}
 }
 
-// copyMakefileSources copies the root Makefile and every make/*.mk family
-// file from repoRoot into fixtureRoot, so a fixture that runs `make
-// <target>` reaches the split rules the anchored include pulls in. Copying
-// only "Makefile" reaches zero rules post-split — TestRootMakefileHasNoRules
-// keeps the root file rule-free — and `make <target>` there does nothing.
-func copyMakefileSources(t *testing.T, repoRoot, fixtureRoot string) {
-	t.Helper()
-	for _, rel := range makefileSourcePaths(t) {
-		copyRepositoryFile(t, repoRoot, fixtureRoot, rel, 0o644)
-	}
-}
-
 // TestMakefileSourcePathsIncludesRootAndFamilies pins the shape every other
 // Makefile-reading test relies on: the root file first, then the family
 // files in sorted order, so a caller can always assume index 0 is "Makefile".

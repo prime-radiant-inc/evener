@@ -479,7 +479,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	tw.Close()
 
 	// Read back and verify
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, _, err := readTranscript(path)
+	gotHeader, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	f.WriteString(`{"kind":"entry","seq":3,"turn":{"kind":"ASSISTANT"`)
 	f.Close()
 
-	gotHeader, entries, _, err := readTranscript(path)
+	gotHeader, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestReadTranscript_EmptyFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, _, _, err := readTranscript(path)
+	_, _, _, err := readTranscript(path, "")
 	if err == nil {
 		t.Fatal("expected error for empty file, got nil")
 	}
@@ -644,7 +644,7 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, _, err := readTranscript(path)
+	gotHeader, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -808,7 +808,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -962,7 +962,7 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	}
 
 	// Read it back and verify the header.
-	header, entries, _, err := readTranscript(tpath)
+	header, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 
 	// Read the transcript and verify entries were recorded.
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, entries, _, err := readTranscript(tpath)
+	header, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1117,7 +1117,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 
 	// After Close, the transcript file should be readable (properly flushed).
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, _, _, err = readTranscript(tpath)
+	_, _, _, err = readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("transcript not readable after Close: %v", err)
 	}
@@ -1155,7 +1155,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, _, err := readTranscript(files[0])
+	hdr, _, _, err := readTranscript(files[0], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1195,7 +1195,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, _, err := readTranscript(files[0])
+	hdr, _, _, err := readTranscript(files[0], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1367,7 +1367,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// --- Read the transcript ---
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	hdr, entries, _, err := readTranscript(tpath)
+	hdr, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1532,7 +1532,7 @@ func TestReadTranscript_RejectsCorruptInteriorLines(t *testing.T) {
 	f.WriteString("\n")
 	f.Close()
 
-	_, entries, skipped, err := readTranscript(path)
+	_, entries, skipped, err := readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
@@ -1555,7 +1555,7 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg")))
 	w.Close()
 
-	_, entries, skipped, err := readTranscript(path)
+	_, entries, skipped, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1610,7 +1610,7 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	w2.Close()
 
 	// Read back: should have header + 3 clean entries, no partial line.
-	_, entries, skipped, err := readTranscript(path)
+	_, entries, skipped, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1644,7 +1644,7 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	defer sess.Close()
 
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, _, _, err := readTranscript(tpath)
+	header, _, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1700,7 +1700,7 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 	}
 
 	// All entries must be readable.
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1789,7 +1789,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 		t.Fatalf("Close: %v", err)
 	}
 
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1843,10 +1843,10 @@ func TestTranscriptReadersRejectCorruptNonFinalLine(t *testing.T) {
 		t.Fatalf("close append handle: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "", "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
-	_, entries, skipped, err := readTranscript(path)
+	_, entries, skipped, err := readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
@@ -1866,7 +1866,7 @@ func TestStrictChildTranscriptSessionMismatch(t *testing.T) {
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "transcript_session_mismatch") {
+	if _, err := readStrictChildTranscript(path, "", "child-session", 0); err == nil || !strings.Contains(err.Error(), "transcript_session_mismatch") {
 		t.Fatalf("strict read error = %v, want transcript_session_mismatch", err)
 	}
 }
@@ -1895,10 +1895,10 @@ func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
 		t.Fatalf("rewrite transcript: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "", "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
-	_, entries, skipped, err := readTranscript(path)
+	_, entries, skipped, err := readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
@@ -1925,10 +1925,10 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 				t.Fatalf("write transcript: %v", err)
 			}
 
-			if _, err := readStrictChildTranscript(path, "child-session", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if _, err := readStrictChildTranscript(path, "", "child-session", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("strict read error = %v, want ErrUnsupportedFormat", err)
 			}
-			if _, _, _, err := readTranscript(path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if _, _, _, err := readTranscript(path, ""); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("readTranscript error = %v, want ErrUnsupportedFormat", err)
 			}
 		})
@@ -1942,7 +1942,7 @@ func TestStrictChildTranscriptRejectsOversizedHeaderLine(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "", "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 }
@@ -1971,10 +1971,10 @@ func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
 		t.Fatalf("close append handle: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "", "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
-	_, _, _, err = readTranscript(path)
+	_, _, _, err = readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
 		t.Fatalf("readTranscript error = %v, want corruption error", err)
 	}
@@ -1988,9 +1988,9 @@ func TestReadSessionTranscriptRejectsInvalidSourceCombinationsBeforeOpeningTrans
 
 	originalOpen := openTranscriptFile
 	openCount := 0
-	openTranscriptFile = func(path string) (io.ReadCloser, error) {
+	openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 		openCount++
-		return originalOpen(path)
+		return originalOpen(path, root)
 	}
 	t.Cleanup(func() { openTranscriptFile = originalOpen })
 
@@ -2362,7 +2362,7 @@ func TestReadSessionTranscriptAPILogScansHonorCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			var reader *cancelingAPILogReadCloser
-			openAPILogFile = func(path string) (io.ReadCloser, error) {
+			openAPILogFile = func(path, root string) (io.ReadCloser, error) {
 				f, err := os.Open(path)
 				if err != nil {
 					return nil, err
@@ -2394,7 +2394,7 @@ func TestReadSessionTranscriptDefaultSourcesNeverOpenAPILog(t *testing.T) {
 
 	originalOpen := openAPILogFile
 	openCount := 0
-	openAPILogFile = func(string) (io.ReadCloser, error) {
+	openAPILogFile = func(string, string) (io.ReadCloser, error) {
 		openCount++
 		return nil, errors.New("sentinel API log must stay unopened")
 	}
@@ -2424,9 +2424,9 @@ func TestReadSessionTranscriptAttemptRequiresExplicitAPILogSource(t *testing.T) 
 
 	originalOpen := openAPILogFile
 	openCount := 0
-	openAPILogFile = func(path string) (io.ReadCloser, error) {
+	openAPILogFile = func(path, root string) (io.ReadCloser, error) {
 		openCount++
-		return originalOpen(path)
+		return originalOpen(path, root)
 	}
 	t.Cleanup(func() { openAPILogFile = originalOpen })
 
@@ -2543,7 +2543,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 	}
 	path := writeTestAPILog(t, dir, sessionID, records...)
 
-	summaries, totalRecords, partialTail, err := decodeAPILogSummaries(context.Background(), path, "last:100")
+	summaries, totalRecords, partialTail, err := decodeAPILogSummaries(context.Background(), path, "", "last:100")
 	if err != nil {
 		t.Fatalf("decode API-log summaries: %v", err)
 	}
@@ -2568,7 +2568,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 		{rangeArg: "500-600", wantCount: 1, wantFirst: 249, last: 249},
 	} {
 		t.Run(tc.rangeArg, func(t *testing.T) {
-			value, err := readAPILogSummary(context.Background(), path, "local:test", tc.rangeArg)
+			value, err := readAPILogSummary(context.Background(), path, "", "local:test", tc.rangeArg)
 			if err != nil {
 				t.Fatalf("read API-log range %q: %v", tc.rangeArg, err)
 			}
@@ -2884,7 +2884,7 @@ func TestReadAPILogAttemptBodyPageMakesProgressWhenInlineHeadersConsumePage(t *t
 	}
 	path := writeTestAPILog(t, dir, sessionID, attempt)
 
-	value, err := readAPILogAttempt(context.Background(), path, "local:test", attempt.AttemptID, "request", 0, 1024)
+	value, err := readAPILogAttempt(context.Background(), path, "", "local:test", attempt.AttemptID, "request", 0, 1024)
 	if err != nil {
 		t.Fatalf("read API-log request body page: %v", err)
 	}
