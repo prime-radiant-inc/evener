@@ -256,13 +256,17 @@ func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *
 	if err := json.Unmarshal([]byte(captured.startArgs), &startArgs); err != nil {
 		t.Fatalf("unmarshal normalized start args %q: %v", captured.startArgs, err)
 	}
+	// The start event carries the model's original argument bytes (before
+	// normalization) so live display matches reload, which uses
+	// SentArguments() = the original valid-JSON bytes. The normalization
+	// itself is still recorded via ToolCallRepaired (asserted above).
 	for _, field := range []string{"output_match", "context_lines"} {
-		if _, present := startArgs[field]; present {
-			t.Fatalf("normalized start arguments retain %q: %#v", field, startArgs)
+		if _, present := startArgs[field]; !present {
+			t.Fatalf("start arguments missing original field %q: %#v", field, startArgs)
 		}
 	}
 	if got := startArgs["offset_bytes"]; got != float64(-1) {
-		t.Fatalf("normalized start arguments offset_bytes = %#v, want -1", got)
+		t.Fatalf("start arguments offset_bytes = %#v, want -1", got)
 	}
 }
 
@@ -310,11 +314,14 @@ func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *test
 	if err := json.Unmarshal([]byte(captured.startArgs), &startArgs); err != nil {
 		t.Fatalf("unmarshal normalized start args %q: %v", captured.startArgs, err)
 	}
-	if _, present := startArgs["expand_turn"]; present {
-		t.Fatalf("second-pass normalized start arguments retain expand_turn: %#v", startArgs)
+	// The start event carries the model's original argument bytes (before
+	// normalization) so live display matches reload. The normalization is
+	// still recorded via ToolCallRepaired (asserted above).
+	if _, present := startArgs["expand_turn"]; !present {
+		t.Fatalf("start arguments missing original expand_turn: %#v", startArgs)
 	}
 	if got := startArgs["offset_bytes"]; got != float64(-1) {
-		t.Fatalf("second-pass normalized start arguments offset_bytes = %#v, want -1", got)
+		t.Fatalf("start arguments offset_bytes = %#v, want -1", got)
 	}
 }
 

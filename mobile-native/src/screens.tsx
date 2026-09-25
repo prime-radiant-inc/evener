@@ -42,7 +42,10 @@ import { createConversationService } from "../../mobile/src/services/conversatio
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import {
+	createConversationMutationPendingPort,
+	type ConversationMutationSubmitter,
+} from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -78,7 +81,10 @@ import {
 	createDurableSubmitter,
 	type NativeMutationHost,
 } from "./nativeMutationHost";
-import { getNativeMutationRuntime } from "./nativeMutationRuntime";
+import {
+	getNativeMutationRuntime,
+	nativeMutationTargetKey,
+} from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -1058,12 +1064,53 @@ export function ConversationScreen({
 		if (!service || !connected || !focused) return;
 		void store
 			.getState()
-			.resumeProjected(service, activitySink, route.params.ref);
+			.resumeProjected(service, activitySink, route.params.ref)
+			.catch((error) => {
+				// The store surfaces a failed resume in its own state; this only
+				// keeps the rejection from going unobserved.
+				console.error("ConversationScreen: resume failed", error);
+			});
 		return () => {
 			store.getState().suspendProjected();
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	// The durable pending-row seam. The store retires it on EVERY thread open,
+	// and `openProjected` runs from more than the resume effect: the /clear
+	// command's cleared callback, the refresh paths, and resumeProjected's own
+	// fall-through all reopen the thread. Key the rebind on the conversation
+	// generation so any host-initiated (re)open re-establishes the seam once the
+	// store has retired it, while a suspend/rehydrate generation bump that did
+	// not retire it leaves the live subscription untouched (the store's
+	// bindPendingMutationsIfUnbound is idempotent). The store's own close/reset
+	// retires the seam on unmount, so this effect needs no cleanup.
+	useEffect(() => {
+		if (!client || !connected || !focused) return;
+		try {
+			store.getState().bindPendingMutationsIfUnbound(
+				createConversationMutationPendingPort(
+					getNativeMutationRuntime(),
+					nativeMutationTargetKey(route.params.hubId, route.params.ref),
+				),
+			);
+		} catch (error) {
+			// The mutations database could not be opened. The conversation stays
+			// usable; a later reconnect or remount retries, and the failure is
+			// logged so it is not silent.
+			console.error(
+				"ConversationScreen: durable pending seam bind failed",
+				error,
+			);
+		}
+	}, [
+		store,
+		client,
+		connected,
+		focused,
+		route.params.hubId,
+		route.params.ref,
+		snapshot.conversationGeneration,
+	]);
 	async function refresh() {
 		if (!service || !connected || !focused || refreshing) return;
 		setRefreshing(true);

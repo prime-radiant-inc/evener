@@ -1696,6 +1696,49 @@ describe("ConversationStore", () => {
       expect(store.getState().pendingMutations ?? null).toBeNull();
     });
 
+    it("bindPendingMutationsIfUnbound binds once and leaves a live seam untouched", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      const unbind = store.getState().bindPendingMutationsIfUnbound(port);
+      expect(unbind).not.toBeNull();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+      expect(port.listenerCount()).toBe(1);
+
+      // Already bound: a second call is a no-op, leaving the live subscription
+      // and the published rows in place (no churn).
+      const second = fakePort({ outbox: [outbox({ clientMutationId: "cmid-2" })] });
+      expect(store.getState().bindPendingMutationsIfUnbound(second)).toBeNull();
+      expect(second.listenerCount()).toBe(0);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+      expect(store.getState().pendingMutations?.[0]?.id).toBe("cmid-1");
+    });
+
+    it("bindPendingMutationsIfUnbound re-establishes the seam after a thread open retires it", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutationsIfUnbound(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A host-initiated open (the /clear cleared callback, a refresh) retires
+      // the seam and clears the rows.
+      const other = new FakeConversationService();
+      other.openConv = makeConversation();
+      await store.getState().open(other, "ref-1");
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+
+      // The host's rebind re-establishes it: the durable rows are followed
+      // again for the reopened conversation.
+      const rebound = fakePort({ outbox: [outbox()] });
+      expect(store.getState().bindPendingMutationsIfUnbound(rebound)).not.toBeNull();
+      await yieldMicrotask();
+      expect(rebound.listenerCount()).toBe(1);
+      expect(store.getState().pendingMutations).toHaveLength(1);
+    });
+
     it("reopening the same ref through a different target retires the prior seam", async () => {
       const port = fakePort({ outbox: [outbox()] });
       const store = await openStore();
