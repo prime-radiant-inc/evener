@@ -60,45 +60,6 @@ func TestStampAppNotificationTargetPassesThroughUnknownParams(t *testing.T) {
 	}
 }
 
-// TestCloneJSONCompatibleNil covers the nil path.
-func TestCloneJSONCompatibleNil(t *testing.T) {
-	if got := cloneJSONCompatible(nil); got != nil {
-		t.Fatalf("cloneJSONCompatible(nil) = %v, want nil", got)
-	}
-}
-
-// TestCloneJSONCompatibleStruct covers the struct path.
-func TestCloneJSONCompatibleStruct(t *testing.T) {
-	type S struct {
-		Name string `json:"name"`
-	}
-	got := cloneJSONCompatible(S{Name: "test"})
-	s, ok := got.(map[string]any)
-	if !ok {
-		t.Fatalf("got type = %T, want map[string]any", got)
-	}
-	if s["name"] != "test" {
-		t.Fatalf("name = %v, want test", s["name"])
-	}
-}
-
-// TestCloneJSONCompatibleMarshalError covers the marshal-error path.
-func TestCloneJSONCompatibleMarshalError(t *testing.T) {
-	ch := make(chan int)
-	got := cloneJSONCompatible(ch)
-	// Should return the original value.
-	if got == nil {
-		t.Fatal("should return original value, not nil")
-	}
-}
-
-// TestCloneJSONCompatibleUnmarshalError covers the unmarshal-error path. This
-// is hard to trigger because if Marshal succeeds, Unmarshal usually does too.
-// We can use json.RawMessage with invalid JSON content.
-func TestCloneJSONCompatibleUnmarshalErrorUnreachable(t *testing.T) {
-	t.Skip("the Unmarshal-error path in cloneJSONCompatible is unreachable: if Marshal succeeds, Unmarshal into any{} also succeeds")
-}
-
 // TestStampFailureCountOnStatusChangeNotStatusChanged covers the path where
 // the method is not ThreadStatusChanged.
 func TestStampFailureCountOnStatusChangeNotStatusChanged(t *testing.T) {

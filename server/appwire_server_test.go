@@ -3,8 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -23,15 +21,6 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
-
-func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
-	t.Helper()
-	turns, _, err := appTurnsFromTranscriptFile(path)
-	if err != nil {
-		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
-	}
-	return turns
-}
 
 func dialServerAppWire(t *testing.T, srv *Server) *appwire.Client {
 	t.Helper()
@@ -1660,107 +1649,6 @@ func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
 	}
 }
 
-func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
-		Role: llm.RoleAssistant,
-		Content: []llm.ContentPart{{
-			Kind: llm.ContentToolCall,
-			ToolCall: &llm.ToolCallData{
-				ID:        "call_read",
-				Name:      "read_file",
-				Arguments: json.RawMessage(`{"file_path":"/tmp/example.txt"}`),
-			},
-		}},
-	})); err != nil {
-		t.Fatalf("append tool call: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
-		t.Fatalf("append tool result: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	// The assistant call and its tool result are one logical turn with one
-	// merged command-execution item carrying the call and result fields.
-	if len(turns) != 1 || len(turns[0].Items) != 1 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	merged := turns[0].Items[0]
-	if merged.CallID != "call_read" || merged.ArgumentsJSON == "" || !strings.Contains(merged.ArgumentsJSON, "/tmp/example.txt") {
-		t.Fatalf("merged item=%+v", merged)
-	}
-	if merged.Output != "line 1\nline 2\n" {
-		t.Fatalf("merged item=%+v", merged)
-	}
-}
-
-func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID:    "th_1",
-		SystemPrompt: "You are Evener.",
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("append user: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 2 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	prelude := turns[0]
-	if prelude.ID != "turn_system" || len(prelude.Items) != 1 {
-		t.Fatalf("prelude=%+v", prelude)
-	}
-	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Evener." {
-		t.Fatalf("system item=%+v", got)
-	}
-	if got := turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {
-		t.Fatalf("first user item=%+v", got)
-	}
-}
-
-func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
-		t.Fatalf("append checkpoint: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
-		t.Fatalf("append summary: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 2 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	if got := turns[0].Items[0]; got.Type != "systemMessage" || got.Description != "Context checkpoint" || !strings.Contains(got.Text, "first compacted state") {
-		t.Fatalf("checkpoint item=%+v", got)
-	}
-	if got := turns[1].Items[0]; got.Type != "systemMessage" || got.Description != "Context summary" || !strings.Contains(got.Text, "second compacted state") {
-		t.Fatalf("summary item=%+v", got)
-	}
-}
-
 func TestServerAppWireThreadReadKeepsResumedHistoryAheadOfNewTurns(t *testing.T) {
 	st := newServedTranscript(t, NewServer(ServerConfig{AppReplaySize: 2}), "th_1",
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
@@ -2463,52 +2351,6 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	}
 	if len(gotImages) != 1 || gotImages[0].Name != "shot.png" || !bytes.Equal(gotImages[0].Data, []byte("png")) {
 		t.Fatalf("images=%+v", gotImages)
-	}
-}
-
-// TestAppTurnsFromTranscriptFileProjectsToolResultImages covers the daemon's
-// only cold read of its own history (kata 2fxm). The seed it installs is the
-// sole turn authority for the rest of the session, so an image it drops here
-// stays missing from every later read of that thread — including the reload a
-// reader does mid-session.
-func TestAppTurnsFromTranscriptFileProjectsToolResultImages(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 's', 'e', 'e', 'd'}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
-		Role: llm.RoleTool,
-		Content: []llm.ContentPart{{
-			Kind: llm.ContentToolResult,
-			ToolResult: &llm.ToolResultData{
-				ToolCallID: "call_shot", Name: "screenshot", Content: "captured",
-				ImageData: png, ImageMediaType: "image/png",
-			},
-		}},
-	})); err != nil {
-		t.Fatalf("append tool result: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 1 || len(turns[0].Items) != 1 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	images := turns[0].Items[0].OutputImages
-	if len(images) != 1 {
-		t.Fatalf("OutputImages=%+v, want the tool result's own image described", images)
-	}
-	sum := sha256.Sum256(png)
-	want := appwire.OutputImage{
-		Source: "tool-result", Name: "screenshot", MediaType: "image/png",
-		Size: int64(len(png)), SHA: hex.EncodeToString(sum[:]),
-	}
-	if images[0] != want {
-		t.Fatalf("OutputImages[0]=%+v, want %+v", images[0], want)
 	}
 }
 

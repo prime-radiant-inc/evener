@@ -7,7 +7,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/appserver"
 )
 
 // exerciseServerFuzzSurface replays the deterministic server plumbing scenarios
@@ -23,11 +22,6 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestAppStatusPreservesAttentionStates", TestAppStatusPreservesAttentionStates)
 	t.Run("TestAppThread_OverlaysPendingAskFunc", TestAppThread_OverlaysPendingAskFunc)
 	t.Run("TestAppThread_UsesGeneratedSessionNameFromMeta", TestAppThread_UsesGeneratedSessionNameFromMeta)
-	t.Run("TestAppTurnsFromNotificationsAccumulatesReasoningDeltas", TestAppTurnsFromNotificationsAccumulatesReasoningDeltas)
-	t.Run("TestAppTurnsFromNotificationsCarriesTurnTiming", TestAppTurnsFromNotificationsCarriesTurnTiming)
-	t.Run("TestAppTurnsFromTranscriptFileIncludesCompactionTurns", TestAppTurnsFromTranscriptFileIncludesCompactionTurns)
-	t.Run("TestAppTurnsFromTranscriptFileIncludesPrelude", TestAppTurnsFromTranscriptFileIncludesPrelude)
-	t.Run("TestAppTurnsFromTranscriptFilePreservesToolCallArguments", TestAppTurnsFromTranscriptFilePreservesToolCallArguments)
 	t.Run("TestBridgeWithObserver_InvokesObserverAndForwardsEvents", TestBridgeWithObserver_InvokesObserverAndForwardsEvents)
 	t.Run("TestBridge_ClosesOnSessionEnd", TestBridge_ClosesOnSessionEnd)
 	t.Run("TestBridge_ForwardsEvents", TestBridge_ForwardsEvents)
@@ -48,7 +42,6 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestHandleAppThreadReasoningEffortSet_UnavailableWhenFuncUnset", TestHandleAppThreadReasoningEffortSet_UnavailableWhenFuncUnset)
 	t.Run("TestAppThreadPendingAskTrueFalseTrueAfterRestart", TestAppThreadPendingAskTrueFalseTrueAfterRestart)
 	t.Run("TestIntegration_StatusUpdates", TestIntegration_StatusUpdates)
-	t.Run("TestMergeAppThreadItem", TestMergeAppThreadItem)
 	t.Run("TestReserveAppTurnIDForStartIsAtomic", TestReserveAppTurnIDForStartIsAtomic)
 	t.Run("TestServerAppWireErrorEventNotifiesSubscribers", TestServerAppWireErrorEventNotifiesSubscribers)
 	t.Run("TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc", TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc)
@@ -150,7 +143,6 @@ func exerciseServerFuzzResiduals(_ *testing.T) {
 		_, _ = s.handleAppSandboxEscalationResolve(context.Background(), appwire.SandboxEscalationResolveParams{EscalationID: tc.id, Approve: true})
 	}
 	exerciseAppWireResiduals()
-	exerciseProjectionResiduals()
 }
 
 func exerciseAppWireResiduals() {
@@ -262,36 +254,4 @@ func exerciseAppWireResiduals() {
 	s.ensureAppProjectorLocked("thread")
 	s.releaseAppTurnID("missing")
 	_, _ = inputFromItems("prompt", nil)
-}
-
-func exerciseProjectionResiduals() {
-	record := func(method, params string) appserver.SequencedNotification {
-		return appserver.SequencedNotification{Notification: appwire.Notification{Method: method, Params: []byte(params)}}
-	}
-	_ = appTurnsFromNotifications([]appserver.SequencedNotification{
-		record(appwire.NotifyTurnStarted, `{"turn":{"id":""}}`),
-		record(appwire.NotifyItemStarted, `{"turnId":"","item":{"id":""}}`),
-		record(appwire.NotifyAgentMessageDelta, `{"turnId":"","itemId":"x","delta":"x"}`),
-		record(appwire.NotifyReasoningSummaryDelta, `{"turnId":"t","itemId":"","delta":"x"}`),
-		record(appwire.NotifyReasoningSummaryDelta, `{`),
-		record(appwire.NotifyToolOutputDelta, `{"turnId":"t","callId":"call","delta":"x"}`),
-		record(appwire.NotifyToolOutputDelta, `{"turnId":"t","itemId":"call","callId":"call","delta":"y"}`),
-		record(appwire.NotifyTurnCompleted, `{"turn":{"id":"t","itemsView":"full","items":[{"id":"call"}]}}`),
-	})
-	appTurnsEnsureTurnHook = func(string) bool { return true }
-	_ = appTurnsFromNotifications([]appserver.SequencedNotification{record(appwire.NotifyTurnStarted, `{"turn":{"id":"t"}}`)})
-	_ = appTurnsFromNotifications([]appserver.SequencedNotification{record(appwire.NotifyItemStarted, `{"turnId":"t","item":{"id":"i"}}`)})
-	_ = appTurnsFromNotifications([]appserver.SequencedNotification{record(appwire.NotifyTurnCompleted, `{"turn":{"id":"t"}}`)})
-	appTurnsEnsureTurnHook = nil
-	appTurnsItemForDeltaHook = func(item *appwire.ThreadItem) { item.TurnID, item.Type = "", "" }
-	_ = appTurnsFromNotifications([]appserver.SequencedNotification{
-		record(appwire.NotifyTurnStarted, `{"turn":{"id":"t"}}`),
-		record(appwire.NotifyItemStarted, `{"turnId":"t","item":{"id":"i"}}`),
-		record(appwire.NotifyAgentMessageDelta, `{"turnId":"t","itemId":"i","delta":"x"}`),
-	})
-	appTurnsItemForDeltaHook = nil
-	ch := make(chan events.SessionEvent, 1)
-	ch <- events.SessionEvent{Kind: events.EventSessionEnd}
-	close(ch)
-	Bridge(NewServer(ServerConfig{}), ch)
 }
