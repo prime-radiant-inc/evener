@@ -315,6 +315,53 @@ func TestBrowserGateBuildFailureFailsOnlyTheSkillGuard(t *testing.T) {
 	}
 }
 
+func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startTestGate(t, launcher, len(browserGuards), true)
+	for _, g := range startAll(t, launcher) {
+		g.exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 || r.keep {
+		t.Fatalf("result = %+v, want status 0 and the scratch removed", r)
+	}
+	if !launcher.built {
+		t.Fatal("the gate did not build the missing frontend")
+	}
+	var want strings.Builder
+	want.WriteString("building the production frontend for web-skillguard…\n")
+	for _, guard := range browserGuards {
+		want.WriteString("PASS  web-" + guard + "\n")
+	}
+	if tg.stdout.String() != want.String() {
+		t.Fatalf("stdout = %q, want %q", tg.stdout.String(), want.String())
+	}
+}
+
+// Only a regular dist/index.html counts as a built frontend, as the shell's
+// -f test did: anything else there is rebuilt over.
+func TestFrontendBuiltNeedsARegularIndex(t *testing.T) {
+	frontend := t.TempDir()
+	index := filepath.Join(frontend, "dist", "index.html")
+	if frontendBuilt(frontend) {
+		t.Fatal("a frontend with no dist counts as built")
+	}
+	if err := os.MkdirAll(index, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if frontendBuilt(frontend) {
+		t.Fatal("a directory named index.html counts as a built frontend")
+	}
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, []byte("<html></html>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !frontendBuilt(frontend) {
+		t.Fatal("a regular dist/index.html does not count as built")
+	}
+}
+
 func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startTestGate(t, launcher, len(browserGuards), false)
@@ -370,9 +417,11 @@ func TestBrowserGateSecondInterruptStopsWaiting(t *testing.T) {
 		}
 	}
 	tg.assertRunning(t, "the skill guard was still running")
-	tg.signals <- syscall.SIGINT
-	if r := tg.await(t); r.status != 130 || !r.keep {
-		t.Fatalf("result = %+v, want 130 and the scratch kept for the skill guard's leftovers", r)
+	// The operator insisting with a different signal exits with that one's
+	// status, as the shell trap it replaces did.
+	tg.signals <- syscall.SIGTERM
+	if r := tg.await(t); r.status != 143 || !r.keep {
+		t.Fatalf("result = %+v, want the second signal's 143 and the scratch kept for the skill guard's leftovers", r)
 	}
 }
 
@@ -454,13 +503,13 @@ func TestBrowserGateInterruptDuringTheBuildWaitsForIt(t *testing.T) {
 	// A gate still waiting for the build takes a second signal; one that
 	// returned instead has nobody left to take it.
 	select {
-	case tg.signals <- syscall.SIGTERM:
+	case tg.signals <- syscall.SIGINT:
 	case r := <-tg.result:
 		t.Fatalf("the gate returned %+v while the build was still running", r)
 	}
 	close(launcher.hold)
-	if r := tg.await(t); r.status != 143 || !r.keep {
-		t.Fatalf("result = %+v, want 143 and the scratch kept", r)
+	if r := tg.await(t); r.status != 130 || !r.keep {
+		t.Fatalf("result = %+v, want the second signal's 130 and the scratch kept", r)
 	}
 	launcher.assertNoStart(t, "the gate was interrupted during the build")
 }

@@ -197,10 +197,10 @@ func (g *browserGate) run() (int, bool) {
 		case buildStatus = <-built:
 		case sig := <-g.signals:
 			// The build is waited for, as a foreground step would be, unless
-			// the operator insists with a second signal.
+			// the operator insists with a second signal, whose status wins.
 			select {
 			case <-built:
-			case <-g.signals:
+			case sig = <-g.signals:
 			}
 			return signalStatus(sig), true
 		}
@@ -304,7 +304,8 @@ func (g *browserGate) prepare(index int) (guardSpec, *os.File, error) {
 }
 
 // stop handles an interrupt: TERM every running guard but the skill guard,
-// then wait for them all, unless a second signal says to stop waiting.
+// then wait for them all, unless a second signal says to stop waiting; the
+// gate then exits with that signal's status.
 func (g *browserGate) stop(sig os.Signal, live []guardProcess, exits <-chan guardExit) int {
 	waiting := 0
 	for i, proc := range live {
@@ -321,8 +322,8 @@ func (g *browserGate) stop(sig os.Signal, live []guardProcess, exits <-chan guar
 		case exit := <-exits:
 			live[exit.index] = nil
 			waiting--
-		case <-g.signals:
-			return signalStatus(sig)
+		case again := <-g.signals:
+			return signalStatus(again)
 		}
 	}
 	return signalStatus(sig)
@@ -353,12 +354,11 @@ func runWebBrowserGuards(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "web-browser-guards: %v\n", err)
 		return 1
 	}
-	_, statErr := os.Stat(filepath.Join(browserFrontendDir, "dist", "index.html"))
 	gate := &browserGate{
 		launcher:      execGuardLauncher{},
 		slots:         browserGuardSlots(os.Getenv("BROWSER_GUARD_CONCURRENCY")),
 		scratch:       dir.Path(),
-		buildFrontend: statErr != nil,
+		buildFrontend: !frontendBuilt(browserFrontendDir),
 		signals:       signals,
 		stdout:        os.Stdout,
 		stderr:        os.Stderr,
@@ -369,6 +369,13 @@ func runWebBrowserGuards(args []string) int {
 	}
 	dir.Release()
 	return status
+}
+
+// frontendBuilt reports whether frontend holds a built dist/index.html: a
+// regular file, so nothing else at that path passes for a build.
+func frontendBuilt(frontend string) bool {
+	info, err := os.Stat(filepath.Join(frontend, "dist", "index.html"))
+	return err == nil && info.Mode().IsRegular()
 }
 
 // execGuardLauncher starts the real guards.
