@@ -23,8 +23,6 @@ import { create } from "zustand";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import type {
   MutationAttachmentRef,
-  MutationOptimisticRecord,
-  MutationOutboxRecord,
   MutationPersistenceSnapshot,
   PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
@@ -2061,8 +2059,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   let pendingUnsubscribe: (() => void) | null = null;
   let pendingGeneration = 0;
   let pendingSnapshot: {
-    outbox: MutationOutboxRecord<MutationAttachmentRef>[];
-    optimistic: MutationOptimisticRecord<MutationAttachmentRef>[];
+    outbox: MutationPersistenceSnapshot<MutationAttachmentRef>["outbox"];
+    optimistic: MutationPersistenceSnapshot<MutationAttachmentRef>["optimistic"];
   } | null = null;
   // Every durable record this client submitted, id -> createdAt, carried past
   // the record's own settle so the reconciliation's provenance rule can still
@@ -3740,7 +3738,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
         const read = () => {
           const request = ++latestRequest;
-          let pending: Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
+          let pending: ReturnType<ConversationMutationPendingPort["read"]>;
           try {
             pending = port.read();
           } catch {
@@ -3752,10 +3750,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             (snapshot) => {
               if (generation !== pendingGeneration || request !== latestRequest)
                 return;
-              pendingSnapshot = {
-                outbox: snapshot.outbox,
-                optimistic: snapshot.optimistic,
-              };
+              pendingSnapshot = snapshot;
               for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
                 if (port.isOwnMutationRecord(record)) {
                   pendingSubmittedHere.set(

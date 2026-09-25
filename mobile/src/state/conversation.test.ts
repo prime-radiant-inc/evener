@@ -1594,7 +1594,7 @@ describe("ConversationStore", () => {
       expect(store.getState().pendingMutations).toHaveLength(1);
 
       // Hold the next read open; a later read (the settlement) resolves first.
-      let releaseRead: (() => void) | null = null;
+      let releaseRead: (() => void) | null = null as (() => void) | null;
       const heldRead = new Promise<void>((resolve) => {
         releaseRead = resolve;
       });

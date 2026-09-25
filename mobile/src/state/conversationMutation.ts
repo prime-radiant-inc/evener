@@ -29,7 +29,12 @@ export interface ConversationMutationSubmitter {
 // whichever seam its host binds.
 export interface ConversationMutationPendingPort {
 	readonly targetRef: string;
-	read(): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
+	// The pending projection reads only the two record families it projects;
+	// the recovery family belongs to the recovery surface, so the seam stays
+	// the caller's view of the same read rather than the whole snapshot.
+	read(): Promise<
+		Pick<MutationPersistenceSnapshot<MutationAttachmentRef>, "outbox" | "optimistic">
+	>;
 	subscribe(listener: () => void): () => void;
 	isOwnMutationRecord(record: { originClientId?: string }): boolean;
 }
