@@ -166,8 +166,9 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   back is gone on the next read.
 - **Crash or power loss** can lose buffered entries whose notifications clients
   already have. Every daemon start mints a **boot generation**, which increases
-  monotonically: a per-session counter persisted in the session's own state,
-  and incremented under that session's ownership lock. Every read
+  monotonically. It is a per-session counter persisted in the session's own
+  state, incremented under that session's ownership lock, and fsynced before the
+  daemon serves any read or notification. Every read
   response and every `history/updated` carries it. A client that sees a boot
   generation higher than the one it holds marks that thread invalid. The client
   applies no update for that thread until a fresh latest-window read at the new
@@ -187,8 +188,21 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
     - Within the same `daemonless` token and incarnation, a daemonless response
       follows the scoped rules under Reads.
     - Updates carrying a lower numeric generation are ignored.
-  That rule takes precedence over the index incarnation, epoch
-  or recorded length say. So entries lost in a crash never survive on a client,
+  - **The state machine.** One state machine covers reads and updates alike.
+    - **Same token as held:** apply normally.
+    - **Lower numeric token:** ignore.
+    - **Any other token** (a higher number, or a switch between numeric and
+      `daemonless`):
+      1. Mark the thread invalid and issue a fresh subscribing latest-window
+         read.
+      2. Drop updates while invalid. This is safe because the replacing read is
+         taken under `CaptureSubscription`: every update after its cut is
+         delivered after its response, and every update before its cut is
+         already in it. No gap can form.
+      3. Replace the whole history with that read.
+
+    This takes precedence over the index incarnation, the epoch, and the
+    recorded length. So entries lost in a crash never survive on a client,
   even when the truncated file happens to match the index's covered length.
   Resync epochs are per boot generation. They start again at zero on each boot
   and are compared only within one.
@@ -369,8 +383,11 @@ The projector is one pure function over (entries, header). It has one
 **Incremental use.** For live notifications, the daemon keeps a projection state
 for each thread:
 - the open turn's accumulators (usage sums, earliest timestamp)
-- the open round's call records (names and arguments, needed to emit a full tool
-  item when TOOL_RESULTS lands, `apptranscript.go:598-603`)
+- the open round's call records, as call ID to the opener entry's offset and
+  length only. When TOOL_RESULTS lands, the drain goroutine reads the call's name
+  and arguments back from that entry, outside any lock
+  (`apptranscript.go:598-603`). Memory therefore stays bounded by the number of
+  calls, not their argument size.
 - the round's last assistant text, for communicate echo suppression
   (`apptranscript.go:564-565`)
 
@@ -415,7 +432,9 @@ that projection sees every ordinal in order.
 3. It rebuilds the projection state from the file, inside the thread's
    projection serialization, as follows:
    - **Boundary.** It first captures a boundary ordinal `B`: the last entry
-     recorded when the rebuild starts. It rebuilds through exactly `B`.
+     recorded when the rebuild starts. `B` is taken under the append lock, which
+     is also held for every enqueue. That makes `B` and the queue's contents an
+     atomic snapshot. It rebuilds through exactly `B`.
    - **Queued entries.** It discards queued entries whose ordinal is `B` or
      less, because the rebuild already covers them, and projects only the
      queued suffix after `B`, in order.
@@ -588,9 +607,10 @@ A writer is closed only when its session closes, and a closed session accepts no
 input, so a closed writer cannot lose history while input continues. A missing
 writer in a served session is the "cannot be created" case above.
 
-Any other append that is not recorded leaves the writer usable. For example, a
-cleanly rolled-back durable append of an entry that is neither COMMUNICATE nor a
-completion. The caller's existing error handling applies,
+The only unrecorded append that leaves the writer usable is a clean durable
+rollback of an entry that is neither COMMUNICATE nor a completion. A poisoned,
+missing or never-created writer always fails the session closed, whatever the
+entry kind. The caller's existing error handling applies,
 and nothing was announced, so no history is missing. Failing closed means:
 - a running execution is interrupted
 - `overlay/end` turns its streams and tool state into notices
@@ -634,8 +654,9 @@ open turn's page. A thread with no runtime has an empty overlay.
 the file. Every successful read response, live or daemonless, carries its
 **snapshot identity**: the index incarnation plus the recorded length it read.
 Error responses, including `ErrorTranscriptHistoryFailed`, carry the boot
-generation and epoch but no snapshot identity. They are never used for
-replacement. A daemonless
+generation and epoch but no snapshot identity. A client never adopts a
+generation or epoch from an error response, and never replaces anything with
+one. A thread's failed-history state lasts on the client until a read succeeds. A daemonless
 response is authoritative for the position range it returned:
 - The client replaces its items in that range and keeps pages outside it.
 - Pages from the same snapshot accumulate.
@@ -645,7 +666,9 @@ response is authoritative for the position range it returned:
 - **Later completions of held items.** A daemonless latest-window request
   carries the snapshot the client holds. The response also returns every item
   and turn outside the window whose version grew since that snapshot, found
-  through the index's update log (see Index). A tool call whose TOOL_RESULTS
+  through the index's update log (see Index). The lookup is scoped to the held
+  snapshot's incarnation. If the incarnation differs, the response is a full
+  latest-window replacement with no update-log deltas. A tool call whose TOOL_RESULTS
   lands after the client cached its page therefore reaches the client.
 
 **Index incarnation.** The index gets a new incarnation whenever the file is no
