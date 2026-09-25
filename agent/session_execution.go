@@ -293,7 +293,8 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // it as it always has.
 func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	rec := s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
-	if !rec.Recorded && s.attachedTranscript() != nil {
+	// A closed writer is a session shutting down, not a writer failure.
+	if writer := s.attachedTranscript(); !rec.Recorded && writer != nil && !writer.Closed() {
 		if refusal := s.failClosed(errors.New("a communicate message was not recorded")); refusal != nil {
 			s.announceFailClosed()
 			return refusal

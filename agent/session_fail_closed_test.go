@@ -1,13 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -98,16 +103,50 @@ func TestAServedSessionWithNoTranscriptFailsClosed(t *testing.T) {
 	}
 }
 
+// communicateRefusingFs is the real filesystem whose files refuse, writing
+// nothing, every write of a COMMUNICATE entry: that append records nothing and
+// leaves the writer usable, and every other entry records as usual.
+type communicateRefusingFs struct{ afero.Fs }
+
+func (fs communicateRefusingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return communicateRefusingFile{File: f}, nil
+}
+
+type communicateRefusingFile struct{ afero.File }
+
+func (f communicateRefusingFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"COMMUNICATE"`)) {
+		return 0, errors.New("injected write failure")
+	}
+	return f.File.Write(p)
+}
+
+// refuseCommunicateEntries swaps s's writer for one on the same file whose
+// COMMUNICATE appends fail.
+func refuseCommunicateEntries(t *testing.T, s *Session) {
+	t.Helper()
+	w, _, err := transcript.OpenWriterForSessionWithFS(communicateRefusingFs{Fs: afero.NewOsFs()}, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	previous := s.transcript
+	s.transcript = w
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = previous.Close() })
+}
+
 // A communicate message whose entry is not recorded is never announced: the
 // served session fails closed, and the running execution is interrupted.
 func TestAnUnrecordedCommunicateFailsAServedSessionClosed(t *testing.T) {
 	s, adapter := newFailClosedSession(t, nil)
 	served := serveFailClosedSession(s)
+	refuseCommunicateEntries(t, s)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		// The writer stops recording before the round's communicate runs.
-		if err := s.attachedTranscript().Close(); err != nil {
-			t.Error(err)
-		}
 		return communicateResponse(true, "never delivered"), nil
 	})
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err == nil {
@@ -151,15 +190,31 @@ func TestFailingClosedInterruptsTheRunningExecution(t *testing.T) {
 	}
 }
 
+// A communicate that lands after the session closed its transcript (a turn
+// finishing while the session shuts down) is not a writer failure: nothing
+// fails closed.
+func TestACommunicateAfterTheTranscriptClosedDoesNotFailClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		if err := s.attachedTranscript().Close(); err != nil {
+			t.Error(err)
+		}
+		return communicateResponse(true, "after close"), nil
+	})
+	_, _ = s.ProcessInput(context.Background(), "talk", nil)
+	if got := failClosedDiagnostics(served.settle(s)); got != 0 {
+		t.Fatalf("%d fail-closed diagnostics for a closed transcript, want 0", got)
+	}
+}
+
 // An unserved session keeps today's behavior: the message is announced and
 // no fail-closed diagnostic appears.
 func TestAnUnservedSessionDeliversAnUnrecordedCommunicate(t *testing.T) {
 	s, adapter := newFailClosedSession(t, nil)
 	evs := drainEvents(s)
+	refuseCommunicateEntries(t, s)
 	adapter.script(func(context.Context) (llm.Response, error) {
-		if err := s.attachedTranscript().Close(); err != nil {
-			t.Error(err)
-		}
 		return communicateResponse(true, "delivered anyway"), nil
 	})
 	_, _ = s.ProcessInput(context.Background(), "talk", nil)
