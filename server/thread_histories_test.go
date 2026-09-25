@@ -161,3 +161,22 @@ func TestThreadHistoriesEnsureStartsAtTheGivenEpoch(t *testing.T) {
 		t.Fatalf("epoch = %d, want 5", got)
 	}
 }
+
+// A descendant's history is ensured only for the tree the registry serves:
+// once detachExcept has handed the registry to a new root, a hook of the old
+// tree that already read the old root's identity creates nothing.
+func TestThreadHistoriesEnsureDescendantOnlyForTheServedTree(t *testing.T) {
+	r := newTestThreadHistories(t)
+	r.detachExcept("old-root")
+	path := writeDelegateTranscript(t, "child", "c")
+	if h := r.ensureDescendant("old-root", "child", "local:child", path, noopHistoryPublish, noopHistoryResync, nil); h == nil {
+		t.Fatal("the served tree's descendant got no history")
+	}
+	closeHistories(r.detachExcept("new-root"))
+	if h := r.ensureDescendant("old-root", "late-child", "local:late-child", path, noopHistoryPublish, noopHistoryResync, nil); h != nil {
+		t.Fatal("a replaced tree's descendant got a history")
+	}
+	if r.get("late-child") != nil {
+		t.Fatal("the registry holds a replaced tree's descendant")
+	}
+}

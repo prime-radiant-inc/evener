@@ -574,9 +574,6 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
 }
 
-// startedTurn builds an in-progress turn carrying its start time so the web UI
-// can report how long the active turn has been running. A zero timestamp leaves
-// StartedAt unset rather than reporting the Unix epoch.
 // threadStatus is a thread/status/changed carrying the running execution's
 // TurnID when the thread is active.
 func (p *AppEventProjector) threadStatus(status string) AppNotification {

@@ -143,8 +143,8 @@ type serveServer interface {
 	SetCancelFunc(context.CancelFunc)
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
 	RecordDescendantAppEvent(string, events.SessionEvent)
-	// WireTranscriptHistory installs a session's recorded-entry and
-	// execution-start hooks into the daemon's thread histories.
+	// WireTranscriptHistory installs a session's recorded-entry hooks into
+	// the daemon's thread histories.
 	WireTranscriptHistory(*agent.Session)
 	// Close stops the daemon's thread histories.
 	Close()

@@ -368,8 +368,12 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource         ThreadEnvelopeSource
-	appReservedTurnID         string
+	appEnvelopeSource ThreadEnvelopeSource
+	appReservedTurnID string
+	// appPushedFailedToolCalls is the failure count the root's last
+	// thread/status/changed carried, nil when none carried one: a running
+	// execution pushes the count when the envelope's moves past it.
+	appPushedFailedToolCalls  *int
 	beforeAppProjectionCommit func()
 	// appDescendantTranscriptPathFunc resolves a descendant thread ID to its
 	// backing transcript file path, when the caller has one: the descendant's

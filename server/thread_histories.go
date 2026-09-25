@@ -17,6 +17,9 @@ type threadHistories struct {
 	cache   *transcriptindex.Cache
 	budget  *appoverlay.Budget
 	threads map[string]*threadHistory
+	// root is the served root thread, the owner of every descendant history
+	// ensureDescendant admits; detachExcept sets it.
+	root string
 }
 
 // newThreadHistories returns an empty registry backed by a cache of the
@@ -51,6 +54,38 @@ func (r *threadHistories) ensure(
 ) *threadHistory {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.ensureLocked(threadID, ref, path, recordedLength, epoch, publish, resync, cost)
+}
+
+// ensureDescendant is ensure for a descendant of the tree rooted at owner,
+// with nothing recorded before its hook: it returns nil, creating nothing,
+// when owner is no longer the served root. The check and the creation share
+// the registry lock with detachExcept, so a hook of a replaced tree that read
+// its root's identity before the replacement cannot slip a history in after
+// it.
+func (r *threadHistories) ensureDescendant(
+	owner, threadID, ref, path string,
+	publish func(appwire.HistoryUpdatedParams) error,
+	resync func(epoch uint64),
+	cost func(model string) *registry.Cost,
+) *threadHistory {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if owner != r.root {
+		return nil
+	}
+	return r.ensureLocked(threadID, ref, path, 0, 0, publish, resync, cost)
+}
+
+// ensureLocked is ensure's body. Callers hold r.mu.
+func (r *threadHistories) ensureLocked(
+	threadID, ref, path string,
+	recordedLength int64,
+	epoch uint64,
+	publish func(appwire.HistoryUpdatedParams) error,
+	resync func(epoch uint64),
+	cost func(model string) *registry.Cost,
+) *threadHistory {
 	if h, ok := r.threads[threadID]; ok {
 		return h
 	}
@@ -82,24 +117,30 @@ func (r *threadHistories) get(threadID string) *threadHistory {
 // block on its projection goroutine, so it and the overlay close run after
 // the registry's own lock is released.
 func (r *threadHistories) drop(threadID string) {
-	r.mu.Lock()
-	h, ok := r.threads[threadID]
-	if ok {
-		delete(r.threads, threadID)
-	}
-	r.mu.Unlock()
-	if ok {
+	if h := r.detach(threadID); h != nil {
 		closeHistories([]*threadHistory{h})
 	}
 }
 
-// detachExcept removes every history but keep's from the registry and returns
-// them unclosed. Closing waits on each history's projection goroutine, which
-// may be waiting on a projection commit, so a caller inside a commit detaches
-// there and closes after the commit with closeHistories.
+// detach removes threadID's history from the registry and returns it
+// unclosed, or nil if none is registered (see detachExcept on why).
+func (r *threadHistories) detach(threadID string) *threadHistory {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := r.threads[threadID]
+	delete(r.threads, threadID)
+	return h
+}
+
+// detachExcept makes keep the served root and removes every other history
+// from the registry, returning them unclosed. Closing waits on each history's
+// projection goroutine, which may be waiting on a projection commit, so a
+// caller inside a commit detaches there and closes after the commit with
+// closeHistories.
 func (r *threadHistories) detachExcept(keep string) []*threadHistory {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.root = keep
 	var detached []*threadHistory
 	for threadID, h := range r.threads {
 		if threadID != keep {

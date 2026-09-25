@@ -158,9 +158,13 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		if old := s.appHistories.get(oldThreadID); old != nil && oldRef == newRef && oldThreadID != prepared.threadID {
 			epoch = old.Epoch() + 1
 		}
-		detached = s.appHistories.detachExcept(prepared.threadID)
 		s.appSourceID = prepared.sourceID
 		s.appThreadID = prepared.threadID
+		// The descendant hook's view of the served root moves before any
+		// history is detached, and the registry re-checks the owner when it
+		// creates one, so an old tree's hook cannot recreate a history for it.
+		s.storeDescendantHistorySourceLocked()
+		detached = s.appHistories.detachExcept(prepared.threadID)
 		s.appRef = newRef
 		s.appProjector = prepared.projector
 		var history *threadHistory
@@ -177,6 +181,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
 		s.appReservedTurnID = ""
+		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
 		// daemon's session, so it is replaced in the SAME commit as the identity
 		// it belongs to. Zeroing the whole struct rather than clearing named
@@ -186,7 +191,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		// the replacement session is the live one.
 		s.appEnvelope = threadEnvelope{}
 		s.status.SessionID = prepared.threadID
-		s.storeDescendantHistorySourceLocked()
 		s.mu.Unlock()
 
 		if oldThreadID == "" || oldThreadID == prepared.threadID {
@@ -419,6 +423,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params})
 			}
 		}
+		if s.failureCountMovedLocked() && !pendingRootStatus(pending, threadID) {
+			pending = append(pending, pendingAppNotification{
+				threadID: threadID,
+				ref:      ref,
+				method:   appwire.NotifyThreadStatusChanged,
+				params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+			})
+		}
 		history := s.appHistories.get(threadID)
 		s.mu.Unlock()
 		// The overlay's changes commit with the projector's, in the same
@@ -489,9 +501,12 @@ func (s *Server) stampActiveTurnOnStatusChange(method string, params any) any {
 
 // finishProcessing ends the running input and publishes the thread settled
 // (idle, or the awaiting or closed state already recorded), or the terminal
-// status its SESSION_END deferred, in one projection commit. A
-// thread whose processing already ended (its SESSION_END arrived first and
-// published its own status) publishes nothing.
+// status its SESSION_END deferred, in one projection commit. A thread whose
+// processing already ended publishes nothing: the bridge's status effect for
+// a SESSION_END (applySessionEventStatus) clears processing, except for an
+// interrupted one, so after any other its status was the last word. After an
+// interrupted SESSION_END processing is still set, and this publishes the
+// settled status.
 func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
@@ -529,6 +544,17 @@ func (s *Server) finishProcessing() {
 	})
 }
 
+// pendingRootStatus reports whether pending already holds a status change for
+// the root, which will carry the failure count anyway.
+func pendingRootStatus(pending []pendingAppNotification, rootThreadID string) bool {
+	for _, item := range pending {
+		if item.threadID == rootThreadID && item.method == appwire.NotifyThreadStatusChanged {
+			return true
+		}
+	}
+	return false
+}
+
 // isExecutionBoundary reports an event announcing an execution's start or end.
 func isExecutionBoundary(event events.SessionEvent) bool {
 	return event.Kind == events.EventExecutionStarted || event.Kind == events.EventExecutionEnded
@@ -549,6 +575,12 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 	if threadID == "" || ownerThreadID == "" || threadID == ownerThreadID {
 		return
 	}
+	var released *threadHistory
+	defer func() {
+		if released != nil {
+			closeHistories([]*threadHistory{released})
+		}
+	}()
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		if s.appThreadID != ownerThreadID {
@@ -650,6 +682,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		if history != nil {
 			for _, change := range history.overlay.Event(event) {
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: change.Method, params: change.Params})
+			}
+			// A delegate whose session closed releases its history: the
+			// projection goroutine and the overlay's notices go with its
+			// runtime. It is detached here and closed after the commit, which
+			// its goroutine may be waiting on; a later read projects the
+			// transcript again (appHistoryForID).
+			if sessionEventClosesSession(event) {
+				released = s.appHistories.detach(threadID)
 			}
 		}
 		return s.recordAppNotifications(ownerThreadID, pending)
@@ -900,7 +940,25 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 		return params
 	}
 	status.FailedToolCalls = &count
+	s.mu.Lock()
+	pushed := count
+	s.appPushedFailedToolCalls = &pushed
+	s.mu.Unlock()
 	return status
+}
+
+// failureCountMovedLocked reports that a running execution's failure count
+// moved past what the root's statuses last carried. The count otherwise
+// reaches clients only at a status transition, so a long execution with
+// failing tools would show none of them until it ended (kata 895d): while an
+// execution is published, the move is pushed as its own active status, which
+// carries the count. Callers hold s.mu.
+func (s *Server) failureCountMovedLocked() bool {
+	current := s.appEnvelope.FailedToolCalls
+	if !s.processing || s.appActiveTurnID == "" || current == nil {
+		return false
+	}
+	return s.appPushedFailedToolCalls == nil || *s.appPushedFailedToolCalls != *current
 }
 
 // stampAskPendingOnStatusChange rides the pending-ask flag along on every

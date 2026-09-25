@@ -1,6 +1,7 @@
 package appprojector
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -90,5 +91,51 @@ func TestProjectorEmitsNoHistory(t *testing.T) {
 		if out := p.Project(ev); len(out) != 0 {
 			t.Fatalf("%s projected %+v, want nothing", ev.Kind, out)
 		}
+	}
+}
+
+func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	projectEvent(p, events.ExecutionStartedData{TurnID: "t_retry"})
+
+	out := projectEvent(p, events.ModelRetryData{
+		Attempt:        9,
+		MaxAttempts:    11,
+		DelayMS:        60000,
+		ErrorClass:     "rate_limit",
+		StatusCode:     http.StatusTooManyRequests,
+		Message:        "rate limit exceeded",
+		Model:          "k3",
+		GroupElapsedMS: 840000,
+		AttemptCap:     4,
+	})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerThreadModelRetry {
+		t.Fatalf("model retry = %+v, want one %s", out, appwire.NotifyEvenerThreadModelRetry)
+	}
+	got, ok := out[0].Params.(appwire.ThreadModelRetryParams)
+	if !ok {
+		t.Fatalf("retry params=%T", out[0].Params)
+	}
+	if got.ThreadID != "th_1" || got.TurnID != "t_retry" {
+		t.Errorf("thread/turn = %q/%q, want th_1/t_retry", got.ThreadID, got.TurnID)
+	}
+	if got.Attempt != 9 || got.MaxAttempts != 11 {
+		t.Errorf("attempt = %d/%d, want 9/11", got.Attempt, got.MaxAttempts)
+	}
+	if got.DelayMS != 60000 {
+		t.Errorf("DelayMS = %d, want 60000", got.DelayMS)
+	}
+	if got.ErrorClass != "rate_limit" || got.StatusCode != http.StatusTooManyRequests || got.Message != "rate limit exceeded" || got.Model != "k3" {
+		t.Errorf("errorClass/status/message/model = %q/%d/%q/%q, want rate_limit/429/rate limit exceeded/k3", got.ErrorClass, got.StatusCode, got.Message, got.Model)
+	}
+	// The honest denominator (AttemptCap) and per-call elapsed time
+	// (GroupElapsedMS) must ride the wire unchanged — clients cannot render
+	// "9/11" against a budget the early-stop rule already cut to 4.
+	if got.GroupElapsedMS != 840000 {
+		t.Errorf("GroupElapsedMS = %d, want 840000", got.GroupElapsedMS)
+	}
+	if got.AttemptCap != 4 {
+		t.Errorf("AttemptCap = %d, want 4", got.AttemptCap)
 	}
 }

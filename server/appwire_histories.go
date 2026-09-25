@@ -92,7 +92,8 @@ func (s *Server) ensureDescendantHistory(ownerThreadID, threadID string) *thread
 		return nil
 	}
 	ref := appwire.Ref{SourceID: sourceIDForProjection(source.sourceID), ThreadID: threadID}.String()
-	return s.ensureHistory(threadID, ref, path, 0, 0)
+	publish, resync := s.historyPublishers(threadID, ref)
+	return s.appHistories.ensureDescendant(ownerThreadID, threadID, ref, path, publish, resync, s.historyCost)
 }
 
 // storeDescendantHistorySourceLocked republishes the descendant hook's view of
@@ -108,16 +109,21 @@ func (s *Server) storeDescendantHistorySourceLocked() {
 // ensureHistory returns threadID's history, creating it over path at epoch
 // with recordedLength already covered.
 func (s *Server) ensureHistory(threadID, ref, path string, recordedLength int64, epoch uint64) *threadHistory {
-	return s.appHistories.ensure(threadID, ref, path, recordedLength, epoch,
-		func(params appwire.HistoryUpdatedParams) error {
-			s.commitHistoryNotification(threadID, appwire.NotifyHistoryUpdated, params)
-			return nil
-		},
-		func(epoch uint64) {
-			s.commitHistoryNotification(threadID, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref, Epoch: epoch})
-		},
-		s.historyCost,
-	)
+	publish, resync := s.historyPublishers(threadID, ref)
+	return s.appHistories.ensure(threadID, ref, path, recordedLength, epoch, publish, resync, s.historyCost)
+}
+
+// historyPublishers are the publish and resync a history of threadID commits
+// through.
+func (s *Server) historyPublishers(threadID, ref string) (func(appwire.HistoryUpdatedParams) error, func(uint64)) {
+	publish := func(params appwire.HistoryUpdatedParams) error {
+		s.commitHistoryNotification(threadID, appwire.NotifyHistoryUpdated, params)
+		return nil
+	}
+	resync := func(epoch uint64) {
+		s.commitHistoryNotification(threadID, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref, Epoch: epoch})
+	}
+	return publish, resync
 }
 
 // commitHistoryNotification commits one notification from threadID's history
@@ -158,7 +164,19 @@ func (s *Server) historyCost(model string) *registry.Cost {
 }
 
 // appHistoryForID is threadID's history, or nil when the thread has none (no
-// transcript).
+// transcript). A served descendant whose history was released when its
+// session closed gets a fresh one over its transcript. It does no file I/O,
+// so it is safe inside a read's cut.
 func (s *Server) appHistoryForID(threadID string) *threadHistory {
-	return s.appHistories.get(threadID)
+	if h := s.appHistories.get(threadID); h != nil {
+		return h
+	}
+	s.mu.RLock()
+	owner := s.appThreadID
+	descendant := threadID != owner && s.appDescendants[threadID] != nil
+	s.mu.RUnlock()
+	if !descendant {
+		return nil
+	}
+	return s.ensureDescendantHistory(owner, threadID)
 }

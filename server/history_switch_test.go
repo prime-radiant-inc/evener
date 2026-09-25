@@ -585,3 +585,36 @@ func TestReplaceUnderTheSameRefResyncsPastTheOldEpoch(t *testing.T) {
 		t.Fatalf("read after the replacement = %q, want the new history alone", got)
 	}
 }
+
+// A delegate whose session closes releases its history: its projection
+// goroutine and overlay go with the closing SESSION_END. A later read of the
+// closed delegate projects its transcript again.
+func TestAClosedDelegateReleasesItsHistory(t *testing.T) {
+	root := newServedTranscript(t, NewServer(ServerConfig{}), "root")
+	srv := root.srv
+	childPath := writeDelegateTranscript(t, "child", "child history")
+	srv.SetDescendantTranscriptPathFunc(func(string) string { return childPath })
+	srv.RecordDescendantAppEvent("root", threadEvent("child", events.SessionStartData{}))
+	history := srv.appHistoryForID("child")
+	if history == nil {
+		t.Fatal("the delegate has no history")
+	}
+
+	srv.RecordDescendantAppEvent("root", threadEvent("child", events.SessionEndData{Reason: "shutdown", State: appwire.ThreadStatusClosed}))
+	select {
+	case <-history.done:
+	default:
+		t.Fatal("the closed delegate's history goroutine is still running")
+	}
+	if srv.appHistories.get("child") != nil {
+		t.Fatal("the registry still holds the closed delegate's history")
+	}
+
+	read, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{Ref: "local:child", IncludeTurns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readTexts(read); len(got) != 1 || got[0] != "child history" {
+		t.Fatalf("read of the closed delegate = %q, want its history", got)
+	}
+}
