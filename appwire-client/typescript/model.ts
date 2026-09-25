@@ -255,11 +255,17 @@ export interface HistoryState {
    * Never reset, not even when a read replaces the whole history. */
   issuedGeneration: number;
   /** Set while the thread is invalid (a higher boot generation, a newer epoch,
-   * another incarnation, or a resync push): the newest request generation issued
-   * when it was invalidated. Nothing merges until a latest-window response to a
-   * later generation replaces the whole history, so a store that sees this set
-   * issues that read at once. */
+   * another incarnation, a resync push, or invalidateHistory on reconnect): the
+   * newest request generation issued when it was last invalidated. Nothing
+   * merges until a latest-window response to a later generation replaces the
+   * whole history. A newer signal while invalid moves it again, so a store
+   * issues a latest-window read whenever this value changes (after the one in
+   * flight, if any, returns and is dropped). */
   invalidatedAtGeneration?: number;
+  /** While invalid: the newest boot generation and epoch that invalidated the
+   * thread. The replacing read must be no older, and only a newer signal
+   * re-arms the thread. */
+  awaited?: { bootGeneration: string; epoch: number };
   /** The incarnation an update or page announced while invalidating: backfill
    * pages from it wait in `deferredPages` until its latest window applied. */
   pendingIncarnation?: string;

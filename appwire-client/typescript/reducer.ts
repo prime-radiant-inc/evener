@@ -2365,12 +2365,15 @@ function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, heldOnly = 
   const ownedItems = new Set<string>();
   let changed = false;
   for (const incoming of fragment.turns) {
+    if (incoming.id === "") continue;
     const held = byId.get(incoming.id);
     if (held ? !supersedes(held.version, incoming.version) : heldOnly) continue;
     byId.set(incoming.id, { ...incoming, items: held?.items ?? [] });
     changed = true;
   }
   for (const incoming of fragment.items) {
+    // A recorded item always names its turn; one that does not has none to join.
+    if (incoming.turnId === "") continue;
     const held = byId.get(incoming.turnId);
     if (!held && heldOnly) continue;
     const turn = held ?? { id: incoming.turnId, status: "inProgress", items: [] };
@@ -2387,6 +2390,17 @@ function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, heldOnly = 
   }
   if (!changed) return turns;
   return [...byId.values()].sort((left, right) => comparePositions(turnPosition(left), turnPosition(right)));
+}
+
+// The earliest held item's position: turns are ordered by position, but a
+// turn without items can come first, so every turn's first item counts.
+function earliestPosition(turns: readonly TurnModel[]): ThreadItemPosition | undefined {
+  let earliest: ThreadItemPosition | undefined;
+  for (const turn of turns) {
+    const position = turn.items[0]?.position;
+    if (position && (!earliest || comparePositions(position, earliest) < 0)) earliest = position;
+  }
+  return earliest;
 }
 
 function fragmentRange(items: readonly ItemModel[]): [ThreadItemPosition, ThreadItemPosition] | undefined {
@@ -2527,9 +2541,14 @@ function noticeHistoryTurn(anchor: ThreadItemPosition, turns: readonly TurnModel
   return found;
 }
 
-// The display turn that shows an overlay item.
-function overlayTurnId(overlayItem: OverlayItem, turns: readonly TurnModel[]): string {
-  const fallback = overlayItem.turnId || overlayItem.item.turnId || "";
+// The display turn that shows an overlay item: "" when it names no turn and
+// none is running, and it is not shown.
+function overlayTurnId(
+  overlayItem: OverlayItem,
+  turns: readonly TurnModel[],
+  runningTurnId: string | undefined,
+): string {
+  const fallback = overlayItem.turnId || overlayItem.item.turnId || runningTurnId || "";
   if (overlayItem.kind === "tool" && overlayItem.historyKey) {
     return toolHistoryTurn(overlayItem, turns)?.id ?? fallback;
   }
@@ -2583,10 +2602,12 @@ function displayTurns(
   overlay: Record<string, OverlayItem>,
   previous: readonly TurnModel[],
   imageSessionRoute: string | undefined,
+  runningTurnId: string | undefined,
 ): TurnModel[] {
   const byTurn = new Map<string, OverlayItem[]>();
   for (const overlayItem of Object.values(overlay)) {
-    const id = overlayTurnId(overlayItem, recorded);
+    const id = overlayTurnId(overlayItem, recorded, runningTurnId);
+    if (id === "") continue;
     const list = byTurn.get(id);
     if (list) list.push(overlayItem);
     else byTurn.set(id, [overlayItem]);
@@ -2623,6 +2644,11 @@ function modelImageSessionRoute(model: ThreadModel): string | undefined {
 
 // Sets a model's history and overlay and derives its display turns. The
 // overlay first loses whatever the history now covers.
+//
+// Cost: coverage and placement scan every held item (and toolHistoryTurn once
+// per tool overlay not laid over a held item), so each history/updated, read
+// and overlay upsert is O(held items x tool overlays). Deltas skip this
+// (applyOverlayDelta). If long transcripts get sluggish, start here.
 function withDisplay<M extends ThreadModel>(
   model: M,
   history: HistoryState,
@@ -2633,18 +2659,65 @@ function withDisplay<M extends ThreadModel>(
     ...model,
     history,
     overlay: shown,
-    turns: displayTurns(history.turns, shown, model.turns, modelImageSessionRoute(model)),
+    turns: displayTurns(history.turns, shown, model.turns, modelImageSessionRoute(model), model.runningTurnId),
   };
 }
 
-// Marks a thread invalid: nothing merges until a latest-window response to a
-// generation issued after this point replaces its whole history.
-function invalidated(history: HistoryState, pendingIncarnation?: string): HistoryState {
+// The read identity a history update, resync push or page names. A resync the
+// hub pushes itself names no epoch.
+interface HistorySignal {
+  bootGeneration?: string;
+  epoch?: number;
+  incarnation?: string;
+}
+
+// What a signal does to held history. It compares against what an invalid
+// thread awaits (the newest generation and epoch that invalidated it), so a
+// signal re-arms an invalid thread only when it is newer still, and repeated
+// updates from the awaited generation do not. "apply" on an invalid thread
+// still means nothing merges.
+function classifySignal(held: HistoryState, signal: HistorySignal): "ignore" | "apply" | "invalidate" {
+  const awaited = held.awaited ?? { bootGeneration: held.bootGeneration, epoch: held.epoch };
+  const action =
+    signal.bootGeneration === undefined
+      ? "apply"
+      : compareBootGeneration(awaited.bootGeneration, signal.bootGeneration);
+  if (action === "ignore") return "ignore";
+  if (action === "replace" || signal.epoch === undefined || signal.epoch > awaited.epoch) return "invalidate";
+  if (signal.epoch < awaited.epoch) return "ignore";
+  // Another incarnation invalidates a live thread. An invalid thread already
+  // awaits a replacement, and pages from any incarnation but the pending one
+  // are discarded.
+  const live = held.invalidatedAtGeneration === undefined;
+  return live && signal.incarnation !== undefined && signal.incarnation !== held.incarnation ? "invalidate" : "apply";
+}
+
+// Marks a thread invalid, or re-arms an invalid one: nothing merges until a
+// latest-window response to a generation issued after this point replaces its
+// whole history. Every invalidation moves the threshold to the newest issued
+// generation, so a read in flight across a second resync is dropped too.
+function invalidated(history: HistoryState, signal: HistorySignal = {}): HistoryState {
+  const awaited = history.awaited ?? { bootGeneration: history.bootGeneration, epoch: history.epoch };
+  const bootGeneration = signal.bootGeneration ?? awaited.bootGeneration;
+  // Epochs count again from zero in each boot generation.
+  const sameBoot = compareBootGeneration(awaited.bootGeneration, bootGeneration) === "apply";
+  const newIncarnation = signal.incarnation !== undefined && signal.incarnation !== history.incarnation;
   return {
     ...history,
-    invalidatedAtGeneration: history.invalidatedAtGeneration ?? history.issuedGeneration,
-    ...(pendingIncarnation === undefined ? {} : { pendingIncarnation }),
+    invalidatedAtGeneration: history.issuedGeneration,
+    awaited: { bootGeneration, epoch: signal.epoch ?? (sameBoot ? awaited.epoch : 0) },
+    ...(newIncarnation ? { pendingIncarnation: signal.incarnation } : {}),
   };
+}
+
+/**
+ * Marks the thread invalid so the next latest-window response (one issued
+ * after this call) replaces its whole history instead of merging. A store
+ * calls it on reconnect, then issues that read. The model's own extras and any
+ * deferred pages are kept.
+ */
+export function invalidateHistory<M extends ThreadModel>(model: M): ThreadModel & ModelExtras<M> {
+  return publicModel<M>({ ...model, history: invalidated(model.history ?? EMPTY_HISTORY) });
 }
 
 function historyIsLive(history: HistoryState | undefined): history is HistoryState {
@@ -2696,10 +2769,12 @@ type ReadDisposition = "discard" | "replace" | "merge";
 function readDisposition(held: HistoryState, resp: ThreadReadResponse): ReadDisposition {
   const generation = resp.requestGeneration ?? 0;
   if (generation < held.issuedGeneration) return "discard";
-  if (held.invalidatedAtGeneration !== undefined) {
-    return generation > held.invalidatedAtGeneration ? "replace" : "discard";
-  }
   const identity = readIdentity(resp);
+  if (held.invalidatedAtGeneration !== undefined) {
+    if (generation <= held.invalidatedAtGeneration) return "discard";
+    const { bootGeneration, epoch } = identity;
+    return classifySignal(held, { bootGeneration, epoch }) === "ignore" ? "discard" : "replace";
+  }
   const action = compareBootGeneration(held.bootGeneration, identity.bootGeneration);
   if (action !== "apply") return action === "ignore" ? "discard" : "replace";
   if (identity.epoch < held.epoch) return "discard";
@@ -2744,8 +2819,8 @@ export function applyReadResponse<M extends ThreadModel>(
     const window = fragmentRange(fresh.items);
     turns = resp.authoritative ? dropItemsInRange(held.turns, window?.[0] ?? { entry: 0, item: 0 }) : held.turns;
     // Older pages the client holds keep their own cursor.
-    const oldest = turns[0]?.items[0]?.position;
-    if (window && oldest && comparePositions(oldest, window[0]) < 0) olderCursor = model.olderCursor;
+    const oldest = earliestPosition(turns);
+    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
     turns = mergeHistory(turns, fresh);
     if (resp.changes) {
       turns = mergeHistory(turns, wireFragment(resp.changes.turns, resp.changes.items, imageSessionRoute), true);
@@ -2773,7 +2848,7 @@ export function applyReadResponse<M extends ThreadModel>(
   return publicModel<M>(next);
 }
 
-type PageDisposition = "discard" | "defer" | "invalidate" | "newIncarnation" | "merge";
+type PageDisposition = "discard" | "defer" | "invalidate" | "merge";
 
 // What a backfill page does to held history. Pages carry no request
 // generation: they accumulate within their snapshot in any order, and never
@@ -2781,13 +2856,11 @@ type PageDisposition = "discard" | "defer" | "invalidate" | "newIncarnation" | "
 function pageDisposition(held: HistoryState, resp: ThreadTurnsListResponse): PageDisposition {
   if (held.failed !== undefined) return "discard";
   const identity = readIdentity(resp);
-  const action = compareBootGeneration(held.bootGeneration, identity.bootGeneration);
-  if (action === "ignore") return "discard";
-  if (held.pendingIncarnation !== undefined && identity.incarnation === held.pendingIncarnation) return "defer";
-  if (held.invalidatedAtGeneration !== undefined) return "discard";
-  if (action === "replace" || identity.epoch > held.epoch) return "invalidate";
-  if (identity.epoch < held.epoch) return "discard";
-  if (identity.incarnation !== held.incarnation) return "newIncarnation";
+  const signal = classifySignal(held, identity);
+  if (signal !== "apply") return signal === "ignore" ? "discard" : "invalidate";
+  if (held.invalidatedAtGeneration !== undefined) {
+    return identity.incarnation === held.pendingIncarnation ? "defer" : "discard";
+  }
   return identity.length < held.length ? "discard" : "merge";
 }
 
@@ -2802,13 +2875,16 @@ function mergeVersionedPage<M extends ThreadModel>(
       return model;
     case "defer":
       return { ...model, history: { ...held, deferredPages: [...held.deferredPages, resp] } };
-    case "invalidate":
-      return { ...model, history: invalidated(held) };
-    case "newIncarnation":
+    case "invalidate": {
+      // A page of the incarnation it just announced waits for that
+      // incarnation's latest window.
+      const history = invalidated(held, readIdentity(resp));
+      const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
       return {
         ...model,
-        history: { ...invalidated(held, resp.snapshot?.incarnation), deferredPages: [resp] },
+        history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
       };
+    }
     case "merge": {
       const fresh = splitWireTurns(resp.data ?? [], modelImageSessionRoute(model));
       const range = resp.authoritative ? fragmentRange(fresh.items) : undefined;
@@ -2824,13 +2900,15 @@ function mergeVersionedPage<M extends ThreadModel>(
 function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpdatedParams, now: number): M {
   const held = model.history ?? EMPTY_HISTORY;
   const live = { ...model, lastFrameAt: now };
-  if (held.failed !== undefined || held.invalidatedAtGeneration !== undefined) return live;
-  const action = compareBootGeneration(held.bootGeneration, params.bootGeneration);
-  if (action === "ignore" || (action === "apply" && params.epoch < held.epoch)) return live;
-  if (action === "replace" || params.epoch > held.epoch) return { ...live, history: invalidated(held) };
-  if (params.snapshot.incarnation !== held.incarnation) {
-    return { ...live, history: invalidated(held, params.snapshot.incarnation) };
-  }
+  if (held.failed !== undefined) return live;
+  const signal: HistorySignal = {
+    bootGeneration: params.bootGeneration,
+    epoch: params.epoch,
+    incarnation: params.snapshot.incarnation,
+  };
+  const action = classifySignal(held, signal);
+  if (action === "invalidate") return { ...live, history: invalidated(held, signal) };
+  if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
   const turns = mergeHistory(held.turns, wireFragment(params.turns, params.items, modelImageSessionRoute(model)));
   if (turns === held.turns) return live;
   return withDisplay(live, { ...held, turns }, model.overlay ?? {});
@@ -2843,12 +2921,8 @@ function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams
   const held = model.history;
   if (!held) return model;
   const live = { ...model, lastFrameAt: now };
-  const action = params.bootGeneration ? compareBootGeneration(held.bootGeneration, params.bootGeneration) : "apply";
-  if (action === "ignore") return live;
-  if (action === "replace" || params.epoch === undefined || params.epoch > held.epoch) {
-    return { ...live, history: invalidated(held) };
-  }
-  return live;
+  const signal: HistorySignal = { bootGeneration: params.bootGeneration || undefined, epoch: params.epoch };
+  return classifySignal(held, signal) === "invalidate" ? { ...live, history: invalidated(held, signal) } : live;
 }
 
 // overlay/delta appends to one stream, preview or tool item. Only the display
@@ -3460,7 +3534,9 @@ export function applyNotification<M extends ThreadModel>(
   const turnBoundary = n.method === "turn/completed" || n.method === "turn/started";
   const modelOutputCompleted =
     (n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type)) ||
-    (n.method === "history/updated" && (n.params.items ?? []).some((item) => MODEL_OUTPUT_ITEM_TYPES.has(item.type)));
+    (n.method === "history/updated" &&
+      next.history?.turns !== model.history?.turns &&
+      (n.params.items ?? []).some((item) => MODEL_OUTPUT_ITEM_TYPES.has(item.type)));
   if (!turnBoundary && !modelOutputCompleted) return publicModel<M>(next);
   const cleared = { ...next };
   delete cleared.modelRetry;
@@ -3942,7 +4018,11 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // persisted at all (internal/apptranscript has no warning-item
       // conversion), so the next snapshot would not carry it either. Drop
       // it client-side; only the liveness signal survives.
-      if (!activeTurnId) return { ...model, lastFrameAt: now };
+      // A v6 model shows warnings as overlay notices, and its display turns
+      // are derived, so a minted item would vanish at the next derivation. The
+      // hub's own relay-attach warning (cmd/evener-hub/app_rpc.go) still comes
+      // as this notification and needs a v6 home before Task 20 deletes it.
+      if (!activeTurnId || model.history) return { ...model, lastFrameAt: now };
       const params = n.params;
       const folded = foldWarningParams(params);
       return {

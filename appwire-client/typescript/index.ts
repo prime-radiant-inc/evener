@@ -349,6 +349,7 @@ export {
   hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  invalidateHistory,
   issueLatestWindowRead,
   isToolCallItemId,
   isToolResultItemId,

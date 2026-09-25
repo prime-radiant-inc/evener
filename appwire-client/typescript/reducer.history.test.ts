@@ -13,6 +13,7 @@ import {
   applyNotification,
   applyReadResponse,
   hydrateThread,
+  invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
 } from "./reducer";
@@ -773,5 +774,152 @@ describe("running state and the open-turn display rule", () => {
     expect(model.modelRetry).toBeDefined();
     const next = applyNotification(model, updated([item("t1", 1, { roundId: "r1" })]), NOW);
     expect(next.modelRetry).toBeUndefined();
+    const ignored = applyNotification(model, updated([item("t1", 1, { roundId: "r1" })], [], { epoch: -1 }), NOW);
+    expect(ignored.modelRetry).toBeDefined();
+  });
+
+  test("a v6 model mints no warning item: warnings arrive as overlay notices", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const next = applyNotification(
+      model,
+      { method: "warning", params: { threadId: THREAD_ID, ref: REF, message: "rate limit approaching" } },
+      NOW,
+    );
+    expect(next.turns).toBe(model.turns);
+  });
+});
+
+describe("re-invalidation and reconnect", () => {
+  function resync(epoch: number, bootGeneration = "1"): AnyNotification {
+    return { method: "evener/thread/resync", params: { threadId: THREAD_ID, ref: REF, bootGeneration, epoch } };
+  }
+
+  test("a second resync around an in-flight read re-arms the replacement threshold", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { epoch: 0 });
+    const first = applyNotification(model, resync(1), NOW);
+    const [reading, generation] = issue(first);
+    const second = applyNotification(reading, resync(2), NOW);
+    expect(second.history?.invalidatedAtGeneration).toBe(generation);
+    // Served at epoch 1, before the second resync: stale.
+    const stale = applyReadResponse(
+      second,
+      read([turn("t1", 2, [item("t1", 1)])], { epoch: 1, requestGeneration: generation }),
+      NOW,
+    );
+    expect(stale).toBe(second);
+    const [reissued, next] = issue(stale);
+    const replaced = applyReadResponse(
+      reissued,
+      read([turn("t1", 3, [item("t1", 2)])], { epoch: 2, requestGeneration: next }),
+      NOW,
+    );
+    expect(replaced.history?.epoch).toBe(2);
+    expect(replaced.history?.invalidatedAtGeneration).toBeUndefined();
+  });
+
+  test("a higher boot generation on an update re-arms an invalid thread", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { bootGeneration: "1" });
+    const invalid = applyNotification(model, updated([item("t1", 4)], [], { bootGeneration: "2" }), NOW);
+    const [reading, generation] = issue(invalid);
+    const rearmed = applyNotification(reading, updated([item("t1", 5)], [], { bootGeneration: "3" }), NOW);
+    expect(rearmed.history?.invalidatedAtGeneration).toBe(generation);
+  });
+
+  test("updates at the generation an invalid thread awaits do not re-arm it", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { bootGeneration: "1" });
+    const invalid = applyNotification(model, updated([item("t1", 4)], [], { bootGeneration: "2" }), NOW);
+    const [reading, generation] = issue(invalid);
+    const same = applyNotification(reading, updated([item("t1", 5)], [], { bootGeneration: "2" }), NOW);
+    const staleResync = applyNotification(same, resync(0, "1"), NOW);
+    expect(staleResync.history?.invalidatedAtGeneration).toBe(invalid.history?.invalidatedAtGeneration);
+    const replaced = applyReadResponse(
+      staleResync,
+      read([turn("t1", 6, [item("t1", 5)])], { bootGeneration: "2", requestGeneration: generation }),
+      NOW,
+    );
+    expect(shown(replaced)).toEqual([["t1", [itemKey("t1", 5)]]]);
+  });
+
+  test("an invalid thread ignores a latest window from a lower boot generation", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { bootGeneration: "3" });
+    const invalid = invalidateHistory(model);
+    const [issued, generation] = issue(invalid);
+    const next = applyReadResponse(issued, read([], { bootGeneration: "2", requestGeneration: generation }), NOW);
+    expect(next).toBe(issued);
+  });
+
+  test("invalidateHistory makes the next latest window replace, keeping extras and deferred pages", () => {
+    const base = mergeOlderItemPage(
+      applyNotification(
+        hydrate([turn("t2", 3, [item("t2", 2)])]),
+        updated([item("t2", 4)], [], { incarnation: "inc_b" }),
+        NOW,
+      ),
+      page([turn("t1", 1, [item("t1", 0)])], { incarnation: "inc_b" }),
+    );
+    const model = { ...base, extra: "kept" };
+    const invalid = invalidateHistory(model);
+    expect(invalid.extra).toBe("kept");
+    expect(invalid.history?.deferredPages).toHaveLength(1);
+    const { model: issued, requestGeneration: generation } = issueLatestWindowRead(invalid);
+    expect(invalid.history?.invalidatedAtGeneration).toBe(generation - 1);
+    const replaced = applyReadResponse(
+      issued,
+      read([turn("t5", 6, [item("t5", 5)])], { incarnation: "inc_b", requestGeneration: generation }),
+      NOW,
+    );
+    expect(replaced.extra).toBe("kept");
+    expect(shown(replaced)).toEqual([
+      ["t1", [itemKey("t1", 0)]],
+      ["t5", [itemKey("t5", 5)]],
+    ]);
+  });
+
+  test("a reconnect replaces a same-snapshot history instead of merging it", () => {
+    const model = hydrate([turn("t1", 2, [item("t1", 0), item("t1", 1)])]);
+    const [issued, generation] = issue(invalidateHistory(model));
+    const next = applyReadResponse(
+      issued,
+      read([turn("t1", 9, [item("t1", 8)])], { requestGeneration: generation }),
+      NOW,
+    );
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 8)]]]);
+  });
+});
+
+describe("display edges", () => {
+  test("a merge keeps the held older cursor when the earliest held item is older than the window", () => {
+    // The first held turn has no item; the earliest held item is in a later turn.
+    const model = mergeOlderItemPage(
+      hydrate([turn("t0", 1), turn("t2", 3, [item("t2", 2)])], { olderCursor: "window" }),
+      { ...page([turn("t1", 2, [item("t1", 1)])]), nextCursor: "older" },
+    );
+    expect(model.olderCursor).toBe("older");
+    const [issued, generation] = issue(model);
+    const merged = applyReadResponse(
+      issued,
+      read([turn("t2", 4, [item("t2", 2), item("t2", 3)])], { requestGeneration: generation, olderCursor: "window" }),
+      NOW,
+    );
+    expect(merged.olderCursor).toBe("older");
+    const [again, next] = issue(merged);
+    const empty = applyReadResponse(again, read([], { requestGeneration: next }), NOW);
+    expect(empty.olderCursor).toBe("older");
+  });
+
+  test("an overlay item without a turn goes to the running turn, never to a turn with no id", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const stream = streamOverlay("", "r1", 0, "hi");
+    const next = applyNotification(model, upserted(stream), NOW);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), stream.key]]]);
+    const idle = hydrate([turn("t1", 1, [item("t1", 0)])]);
+    const orphan = applyNotification(idle, upserted(stream), NOW);
+    expect(shown(orphan)).toEqual([["t1", [itemKey("t1", 0)]]]);
+  });
+
+  test("a recorded item without a turn id is not merged into a turn with no id", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])]);
+    const next = applyNotification(model, updated([item("", 4)]), NOW);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 0)]]]);
   });
 });
