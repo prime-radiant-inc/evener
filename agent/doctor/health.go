@@ -176,7 +176,7 @@ func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
 				name := part.ToolCall.Name
 				res.ToolCalls[name]++
 				occurrences = append(occurrences, toolCallOccurrence{
-					signature: toolCallSignature(name, part.ToolCall.Arguments),
+					signature: toolCallSignature(name, part.ToolCall),
 					tool:      name,
 					callID:    part.ToolCall.ID,
 				})
@@ -249,9 +249,10 @@ func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
 // call.Name+":"+shortHash(call.Arguments)). It reimplements the SHA256[:8]
 // -hex formula rather than importing the agent package: the doctor package
 // deliberately imports only durable-format packages, never the agent
-// session/runtime (see doctor.go's package doc).
-func toolCallSignature(name string, args json.RawMessage) string {
-	sum := sha256.Sum256(args)
+// session/runtime (see doctor.go's package doc). Hashes SentArguments so
+// distinct malformed calls get distinct signatures.
+func toolCallSignature(name string, tc *llm.ToolCallData) string {
+	sum := sha256.Sum256([]byte(tc.SentArguments()))
 	return name + ":" + hex.EncodeToString(sum[:8])
 }
 

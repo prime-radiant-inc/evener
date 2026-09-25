@@ -577,8 +577,17 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 			if got.start == nil || got.start.Description != "" {
 				t.Fatalf("start = %+v, want no description derived from raw-invalid arguments", got.start)
 			}
-			if got.end == nil || got.end.ArgumentsJSON != string(args) {
-				t.Fatalf("end = %+v, want original raw arguments", got.end)
+			// The end event's ArgumentsJSON matches the reload path: valid JSON
+			// is canonicalized (compacted + HTML-escaped) exactly as the transcript
+			// persistence path encodes it; invalid-JSON bytes are preserved raw.
+			expectedArgsJSON := string(args)
+			if json.Valid(args) {
+				if canonical, err := json.Marshal(json.RawMessage(args)); err == nil {
+					expectedArgsJSON = string(canonical)
+				}
+			}
+			if got.end == nil || got.end.ArgumentsJSON != expectedArgsJSON {
+				t.Fatalf("end = %+v, want ArgumentsJSON matching reload (canonical for valid JSON, raw for invalid)", got.end)
 			}
 		})
 	}
@@ -675,8 +684,13 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 			if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"end_turn":"not-a-bool"`) {
 				t.Fatalf("valid schema-invalid input did not reach hook: %q", boundedStringForIssue831(prompts))
 			}
-			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"end_turn":true`)) {
-				t.Fatalf("updated raw-valid call end = %+v, want hook update applied", end)
+			// The end event carries the model's original argument bytes (before
+			// hook updates) so live display matches reload, which uses
+			// SentArguments() = the original valid-JSON bytes. The hook update
+			// is applied to the call for dispatch but does not override the
+			// event's ArgumentsJSON.
+			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"end_turn":"not-a-bool"`)) {
+				t.Fatalf("updated raw-valid call end = %+v, want original model args (not hook-updated form)", end)
 			}
 		})
 	}
