@@ -94,8 +94,9 @@ later file projection"). Restarting a daemon already changes what clients see.
    higher version wins.
    - Applying a fact twice changes nothing.
    - A file read that is ahead of the live stream changes nothing.
-   - A merge never removes a history item. Only a replacement does: a new
-     incarnation, a resync epoch, or an authoritative daemonless read.
+   - A merge never removes a history item. Only a replacement does. Four things
+     trigger one: a higher boot generation, a new incarnation on a latest-window
+     read, a newer resync epoch, and an authoritative daemonless read.
 4. **Memory holds only the overlay and bounded per-thread state.** Memory per
    thread no longer depends on the size of its history.
 
@@ -128,6 +129,10 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   through any door, the writer publishes its recorded length under its lock. The
   entry is handed to the server only after that. The durable door rolls back
   before publishing, so the recorded length never includes rolled-back bytes.
+- **One process writes a transcript.** A session's transcript is written only by
+  the process that owns the session, and the per-session ownership lock enforces
+  it (`llm/apilog.go`, `ReserveSession`). The hub and the TUI never write
+  transcripts. So serializing appends within one process is sufficient.
 - **The per-process registry serializes appends.** Every writer in the process
   appends to a file through one registry entry for that file, cold writers and
   mid-session reopens included. The registry entry owns the append lock, the next
@@ -160,8 +165,47 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   identity, and incarnation handling. A record that another process later rolls
   back is gone on the next read.
 - **Crash or power loss** can lose buffered entries whose notifications clients
-  already have. The restarted daemon has a new incarnation, and clients replace
-  their history state when they reconnect to a new incarnation.
+  already have. Every daemon start mints a **boot generation**, which increases
+  monotonically. It is a per-session counter persisted in the session's own
+  state, incremented under that session's ownership lock, and fsynced before the
+  daemon serves any read or notification. Every read
+  response and every `history/updated` carries it. A client that sees a boot
+  generation higher than the one it holds marks that thread invalid. The client
+  applies no update for that thread until a fresh latest-window read at the new
+  generation replaces its whole history, and it issues that read at once. A read
+  still in flight from the old generation is ignored when it returns. Anything
+  carrying a lower generation is ignored.
+  - **Daemonless reads.** The hub has no running daemon for the session. It
+    stamps the distinguished generation `daemonless` instead of a number.
+  - **Which response wins.** Request generations decide which response applies.
+    A client has one latest-window read per thread in flight and applies only the
+    newest, so a delayed response from any generation cannot overtake a newer
+    one.
+  - **Replace or merge.** The generation token decides only that.
+    - A latest-window response whose token differs from the one the client holds
+      replaces the thread's whole history. That covers numeric to `daemonless`,
+      `daemonless` to numeric, and a higher number.
+    - Within the same `daemonless` token and incarnation, a daemonless response
+      follows the scoped rules under Reads.
+    - Updates carrying a lower numeric generation are ignored.
+  - **The state machine.** One state machine covers reads and updates alike.
+    - **Same token as held:** apply normally.
+    - **Lower numeric token:** ignore.
+    - **Any other token** (a higher number, or a switch between numeric and
+      `daemonless`):
+      1. Mark the thread invalid and issue a fresh subscribing latest-window
+         read.
+      2. Drop updates while invalid. This is safe because the replacing read is
+         taken under `CaptureSubscription`: every update after its cut is
+         delivered after its response, and every update before its cut is
+         already in it. No gap can form.
+      3. Replace the whole history with that read.
+
+    This takes precedence over the index incarnation, the epoch, and the
+    recorded length. So entries lost in a crash never survive on a client,
+  even when the truncated file happens to match the index's covered length.
+  Resync epochs are per boot generation. They start again at zero on each boot
+  and are compared only within one.
 
 ### Persisted identity
 
@@ -224,8 +268,11 @@ delivery and stop goroutines at any time: model-bound attention STEERING
   The open gap turn ID is held the same way: a standalone entry takes it, or
   mints one when none is open, and any execution, delivery or prelude entry
   closes it. An async write that loses the race to the completion therefore
-  takes a delivery turn. The append lock is a leaf: no other lock is taken while
-  it is held.
+  takes a delivery turn.
+- **Lock order.** The append lock is taken before exactly one other lock: the
+  per-thread projection queue's mutex, which is itself a leaf. That mutex is
+  taken only to enqueue a recorded entry, and is never held across blocking,
+  I/O, or another lock. No other lock is taken while the append lock is held.
 
 **Turn membership** comes from `TurnID`, not from entry-kind adjacency.
 
@@ -243,7 +290,9 @@ delivery and stop goroutines at any time: model-bound attention STEERING
 - Item `id` derives from the key and keeps today's kind prefixes.
 
 **Position.** Every entry, legacy and new, uses `{entry: ordinal + 1, item:
-part}`. Header-derived prelude items use `{entry: 0}`. A turn is displayed at the
+part}`. Header-derived prelude items use `{entry: 0, item: part}`, with key
+`apptranscript-item-v2:prelude:header:<part>` and version 0. The header never
+changes after creation, so their version never grows. A turn is displayed at the
 position of its first item.
 
 **Format marker.** Every new entry carries an explicit format version, so the
@@ -277,7 +326,7 @@ Status is derived from persisted facts:
   by the turn's completion entry, which records failed. Running the work again is a new admission and a
   new execution turn with its own ID. Model-call retries inside a round write no
   completion and stay in the running turn. Recovery re-running a reclaimed turn
-  is the only way a failed turn's ID runs again, and it writes a reopen marker.
+  is the only way an interrupted turn's ID runs again, and it writes a reopen marker.
 
 **On resume**, the session writes an interrupted completion for each new-format
 execution turn it finds open, except a turn it is about to reclaim and re-run.
@@ -313,8 +362,10 @@ The projector is one pure function over (entries, header). It has one
   emit (`agent/session_tools_communicate.go:73-77`). The entry is appended
   first, and the event is emitted only once the entry is recorded. Every
   failure path in `communicate` (missing `end_turn`, empty message, abort)
-  happens before that point, so a recorded COMMUNICATE entry means the message
-  was delivered.
+  happens before that point. A recorded COMMUNICATE entry is therefore a
+  message the user receives. It is live when the emit follows. If the daemon
+  crashes between recording and emitting, it appears on the client's next
+  read. It is never lost, and never shown for a failed call.
   - The communicate item is projected from the COMMUNICATE entry, so it is in
     history at delivery, whether or not the round's TOOL_RESULTS is ever written
     (`agent/session_tools.go:1021-1090`).
@@ -332,8 +383,11 @@ The projector is one pure function over (entries, header). It has one
 **Incremental use.** For live notifications, the daemon keeps a projection state
 for each thread:
 - the open turn's accumulators (usage sums, earliest timestamp)
-- the open round's call records (names and arguments, needed to emit a full tool
-  item when TOOL_RESULTS lands, `apptranscript.go:598-603`)
+- the open round's call records, as call ID to the opener entry's offset and
+  length only. When TOOL_RESULTS lands, the drain goroutine reads the call's name
+  and arguments back from that entry, outside any lock
+  (`apptranscript.go:598-603`). Memory therefore stays bounded by the number of
+  calls, not their argument size.
 - the round's last assistant text, for communicate echo suppression
   (`apptranscript.go:564-565`)
 
@@ -362,32 +416,58 @@ Projection is serialized per thread, in append order. The writer hands each
 recorded entry to that thread's projection queue while it still holds the append
 lock, so entries enter the queue in ordinal order no matter which goroutine
 appended them. That includes async attention writes. One goroutine per thread
-drains the queue. A boundary test appends from two goroutines at once and checks
+drains the queue.
+
+The queue is bounded to 4 MB of queued entries per thread. An enqueue that would
+exceed the bound does not block the append lock. It marks the thread for resync
+and drops the queue. The drain goroutine then rebuilds through a boundary
+ordinal, as described below, so a slow projector costs a resync, never unbounded
+memory. A boundary test appends from two goroutines at once and checks
 that projection sees every ordinal in order.
 
 **When projecting or publishing fails** after an append has recorded:
 1. The server bumps the thread's resync epoch.
 2. It pushes `evener/thread/resync`, which already exists
    (`appwire/types.go:213, 2697-2700`), with the new epoch.
-3. It rebuilds the projection state from the file, up to the recorded length,
-   inside the thread's projection serialization. Entries recorded meanwhile
-   are projected after the rebuild, in order.
+3. It rebuilds the projection state from the file, inside the thread's
+   projection serialization, as follows:
+   - **Boundary.** It first captures a boundary ordinal `B`: the last entry
+     recorded when the rebuild starts. `B` is taken under the append lock, which
+     is also held for every enqueue. That makes `B` and the queue's contents an
+     atomic snapshot. It rebuilds through exactly `B`.
+   - **Queued entries.** It discards queued entries whose ordinal is `B` or
+     less, because the rebuild already covers them, and projects only the
+     queued suffix after `B`, in order.
+   - **Result.** No entry is applied twice and none is skipped.
 
 Every read response and `history/updated` carries the epoch. A client that
 receives the resync, or that later reads and sees a newer epoch than it holds,
-replaces that thread's history instead of merging. A response or update with an
-older epoch than the client holds is discarded. The epoch never needs clearing.
+treats it the same way as a higher boot generation. It marks the thread invalid,
+issues a fresh latest-window read, and replaces the thread's whole history with
+that read, instead of merging. Until then it applies no updates for the thread.
+A response or update with an older epoch than the client holds is discarded. The
+rule that live responses merge applies only within one boot generation and
+epoch. The epoch never needs clearing.
 
 If a resync push cannot be delivered to a subscriber, the server ends that
 subscription. The client's reconnect then starts from a fresh read with the
 current epoch. Every subscriber recovers.
 
 If the rebuild itself fails three times in a row, the thread's history enters a
-failed state. The server stops projecting that thread and pushes a resync. Reads
-of the thread's history then return an error naming the entry ordinal that fails
-to project, and the thread shows it as one visible diagnostic. The session keeps
-running, and its entries keep being recorded. A daemon restart projects from the
-file again.
+failed state. The server stops projecting that thread, drops its queued
+entries, stops enqueueing new ones for it, and pushes a resync. Nothing
+accumulates for a failed thread. A restart rebuilds from the transcript.
+
+A history read of a failed thread returns the error
+`ErrorTranscriptHistoryFailed`, which names the entry ordinal that fails to
+project. The response carries no items and no snapshot identity. A client that
+receives it keeps the history it already holds unchanged, marks the thread's
+history as failed, and shows one visible diagnostic. It neither replaces nor
+merges anything until a later read succeeds. The overlay keeps updating live.
+
+The session keeps running, and its entries keep being recorded. A daemon
+restart projects from the file again, and the next successful read replaces
+history under the rules above.
 
 ### The live overlay
 
@@ -443,6 +523,11 @@ calls is recorded (`agent/session_model_call.go:994-996`).
   per-result image limits.
 - If TOOL_RESULTS is never recorded, `overlay/end` turns the execution state into
   an interrupted notice.
+- **Derived interrupted state.** The projector derives an interrupted state for
+  any tool call whose execution turn has a completion but no TOOL_RESULTS for
+  that call. That completion is the interrupted completion that resume writes
+  after a crash. So a reload, a restart and a daemonless read all show the call
+  as interrupted, not as running forever.
 
 **Running state.** The running turn ID and the thread status.
 
@@ -499,7 +584,11 @@ File consumers learn to skip them:
 
 ### Writer failure
 
-The writer API returns either `recorded (ordinal, Seq)` or `not recorded`. Today `Append`
+The writer API returns a record: either `recorded (ordinal, Seq)`, or `not
+recorded` together with the door's error. When a record is not recorded, the
+writer's `Poisoned()` and `Closed()` state tells the caller why: missing,
+closed, poisoned, or a clean durable rollback that leaves the writer usable.
+The fail-closed rule below branches on that state. Today `Append`
 and `AppendDurable` return nil with Seq 0 for both a missing and a closed writer
 (`agent/transcript/transcript.go:606-627`).
 
@@ -507,11 +596,21 @@ and `AppendDurable` return nil with Seq 0 for both a missing and a closed writer
 one rule for when a served session fails closed. It fails closed when:
 - its transcript cannot be created, or its writer is poisoned
   (`transcript.go:724-728`)
-- an append of a history entry that has already been announced to the user
-  outside history, namely COMMUNICATE, is not recorded
+- a COMMUNICATE append is not recorded. The message is emitted only after its
+  entry records (see The projector). An unrecorded COMMUNICATE therefore means
+  `communicate` cannot deliver it, and the session fails closed instead of
+  dropping the message silently or delivering it without history.
+- a completion entry is not recorded. A turn's terminal status must never be
+  lost.
 
-Any other append that is not recorded, for example a cleanly rolled-back durable
-append, leaves the writer usable. The caller's existing error handling applies,
+A writer is closed only when its session closes, and a closed session accepts no
+input, so a closed writer cannot lose history while input continues. A missing
+writer in a served session is the "cannot be created" case above.
+
+The only unrecorded append that leaves the writer usable is a clean durable
+rollback of an entry that is neither COMMUNICATE nor a completion. A poisoned,
+missing or never-created writer always fails the session closed, whatever the
+entry kind. The caller's existing error handling applies,
 and nothing was announced, so no history is missing. Failing closed means:
 - a running execution is interrupted
 - `overlay/end` turns its streams and tool state into notices
@@ -533,6 +632,11 @@ announced when they are recorded at attach.
    that this projected history covers. Tool execution state for a key is
    dropped when the projected item's version includes its TOOL_RESULTS entry,
    the same rule notifications use.
+3. Deliver the response. The subscription stays buffered until the response
+   enters the connection's send queue. This is today's `releaseHydration`
+   (`internal/appserver/server.go:1290-1310`), which releases only records past
+   the cut. No notification after the cut can reach the client before the
+   response.
 
 Notifications delivered after the response merge by the same rules. A later
 `history/updated` at a lower or equal version is ignored, and so are overlay
@@ -547,8 +651,12 @@ announced.
 open turn's page. A thread with no runtime has an empty overlay.
 
 **Authoritative replacement is scoped.** The hub serves a daemonless session from
-the file. Every read response, live or daemonless, carries its **snapshot
-identity**: the index incarnation plus the recorded length it read. A daemonless
+the file. Every successful read response, live or daemonless, carries its
+**snapshot identity**: the index incarnation plus the recorded length it read.
+Error responses, including `ErrorTranscriptHistoryFailed`, carry the boot
+generation and epoch but no snapshot identity. A client never adopts a
+generation or epoch from an error response, and never replaces anything with
+one. A thread's failed-history state lasts on the client until a read succeeds. A daemonless
 response is authoritative for the position range it returned:
 - The client replaces its items in that range and keeps pages outside it.
 - Pages from the same snapshot accumulate.
@@ -558,25 +666,34 @@ response is authoritative for the position range it returned:
 - **Later completions of held items.** A daemonless latest-window request
   carries the snapshot the client holds. The response also returns every item
   and turn outside the window whose version grew since that snapshot, found
-  through the index's update log (see Index). A tool call whose TOOL_RESULTS
+  through the index's update log (see Index). The lookup is scoped to the held
+  snapshot's incarnation. If the incarnation differs, the response is a full
+  latest-window replacement with no update-log deltas. A tool call whose TOOL_RESULTS
   lands after the client cached its page therefore reaches the client.
 
 **Index incarnation.** The index gets a new incarnation whenever the file is no
 longer an extension of what the index covers: shorter than its indexed length,
 or with different trailing bytes (see Validation). Within one incarnation the
 recorded length only grows, so snapshots of one incarnation order by length.
-Incarnations themselves are not ordered, so every read request carries a
-**request generation** that the client increments for each read it issues. A
-response echoes its request's generation. The client applies a response only if
-no response to a later generation has been applied, so a slow response from an
-old sidecar can never overwrite history from a newer one. Only the current
+Incarnations themselves are not ordered, so every **latest-window** read request
+carries a **request generation**. The client increments it for each latest-window
+read it issues, and the response echoes it.
+- **Ordering.** The client applies a latest-window response only if no response
+  to a later generation has been applied. So a slow response from an old sidecar
+  can never overwrite history from a newer one.
+- **Backfill pages** carry no generation. They accumulate within their snapshot,
+  in any arrival order. A page is dropped only when its snapshot is older than
+  the one the client holds: an older incarnation, or the same incarnation with a
+  shorter recorded length. Only the current
 incarnation is valid. Each rule applies on one side:
 - **The server rejects.** A backfill request whose cursor names an incarnation
   other than the current one gets `TranscriptItemCursorStale`, and the client
   re-reads the latest window.
-- **The client replaces.** A response always carries the current incarnation.
-  If it differs from the one the client holds, the client replaces the thread's
-  whole history with the response, as it does for a new daemon incarnation.
+- **The client replaces.** A successful response always carries the current
+  incarnation. If a *latest-window* response carries an incarnation different
+  from the one the client holds, the client replaces the thread's whole history
+  with it. A backfill page from a different incarnation never replaces anything.
+  The server rejects its stale cursor, and the client re-reads the latest window.
 - **The client discards.** A response from the client's incarnation with a
   shorter recorded length than the client already holds arrived out of order.
   The client discards it and re-reads the latest window.
@@ -711,6 +828,30 @@ hub along with the daemon.
 - the task store
 - the projector's small `delegates` map
 
+## Implementation decisions
+
+These came from the last spec review round and are pinned as tests in the
+phase 3 plan.
+
+- **Incarnations** compare by equality only. A client issues one latest-window
+  read per thread at a time and applies only the newest request generation.
+- **After an incarnation change**, the latest-window response replaces the whole
+  history. The client then backfills older pages again as it needs them.
+- **Queue overflow during a rebuild** restarts the rebuild through a new boundary
+  ordinal. It repeats until the queue is covered.
+- **Completion entries.** An unrecorded completion entry fails the session
+  closed, the same as COMMUNICATE. A turn's terminal status is never silently
+  lost.
+- **Tool items** carry the ordinal of their completing TOOL_RESULTS entry, as a
+  separate `completedAt` metadata field. Key and position stay tied to the
+  opener, so an item never moves when it completes. The field makes the rule for
+  dropping overlay execution state decidable from wire data.
+- **Backfill pages during an incarnation change.** A client that has seen a new
+  incarnation defers any backfill page from the new incarnation until the
+  latest-window replacement for it has applied. It discards backfill pages from
+  any other incarnation.
+- **The prelude** has its own `TurnKind` value, `prelude`.
+
 ## Acceptance criteria
 
 **Memory.** Measure on a long-lived daemon running a copy of the 260-delegate
@@ -720,6 +861,8 @@ restart:
   accumulators plus the open round's call records) and the index handle cache
   (64 handles).
 - Ephemeral notices stay within 64 KB per thread and 16 MB daemon-wide.
+- Running state (streams, running tool output, held images) is bounded per
+  response and per call. It is released at round end, so at idle it is zero.
 - For comparison, the same measurement is about 283 MB today.
 
 **Latency.** `thread/read` of the latest window at the default page size, on the
@@ -779,8 +922,8 @@ Each phase ships on its own and keeps main green.
      the 95 MB root transcript and on the 134 MB coordinator transcript, against
      the latency criteria. It has to build complete turns and items (status,
      usage, tool results) that equal the whole-file projection before any timing
-     counts. If the criteria are not met, stop and redesign the index before
-     phase 2.
+     counts. *Done in PR #2303. The results and the amended criterion are under
+     Acceptance criteria.*
 2. **Write the new fields.**
    - Writers write every new field and entry kind. The consumers listed above
      skip the new kinds, and the new kinds stay out of in-memory history. Every
@@ -819,6 +962,18 @@ Each phase ships on its own and keeps main green.
    - a read between the ASSISTANT and the COMMUNICATE entry
    - a paginated read that overlaps a cross-process rollback
    - a failed history publication, and a failed resync delivery
+   - a crash that loses buffered entries: clients replace on the higher boot
+     generation and never keep the lost entries, including when the truncated
+     file matches the index's covered length
+   - an unrecorded append on a poisoned writer and on a missing writer: the
+     session fails closed
+   - an index extension or rebuild killed between record writes and the header
+     commit, including while another process holds the shared lock: the next
+     read redoes it to a correct projection, with no duplicate or torn records
+   - a projection queue overflow: the thread resyncs and no entry is lost
+   - three consecutive rebuild failures: the thread enters the failed state,
+     recording continues, reads return `ErrorTranscriptHistoryFailed` while
+     clients keep their history, and a restart recovers
    - a read that overlaps a retry reset and the next attempt's deltas
    - a turn that recovery reclaims
    - a read whose cut is captured before a TOOL_RESULTS append and whose
