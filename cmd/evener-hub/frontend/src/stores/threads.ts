@@ -2748,7 +2748,7 @@ async function refreshTrackedThread(
       unwindStopCanceledRefresh(ref, pending.attempt);
       throw error;
     }
-    if (isDiscardedReadResult(pending, result.model)) return pending.baseModel;
+    if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
     return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId);
   });
   const completion = hydration.then(
@@ -2807,7 +2807,7 @@ async function refreshWatchedThread(
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
     isDiscardedReadResult(pending, model)
-      ? pending.baseModel
+      ? (pending.baseModel ?? null)
       : publishWatchedHydration(ref, pending, model, includeTurns, generation),
   );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
