@@ -288,6 +288,19 @@ func relayOnThreadRead(source appsource.Source) bool {
 	return true
 }
 
+// withReadHistoryIdentity gives response, packed by the hub, the history
+// identity of the read its items came from: what the client merges or
+// replaces by.
+func withReadHistoryIdentity(response, from appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	response.BootGeneration = from.BootGeneration
+	response.Epoch = from.Epoch
+	response.Snapshot = from.Snapshot
+	response.Overlay = from.Overlay
+	response.Authoritative = from.Authoritative
+	response.Changes = from.Changes
+	return response
+}
+
 // listItemTurns returns a packed item-mode page when the source has item
 // candidates or when its source page contains data. A legacy source with
 // no data or a ListTurns error is left for the caller's saved-transcript
@@ -351,7 +364,7 @@ func listItemTurns(
 	if packErr != nil {
 		return appwire.ThreadTurnsListResponse{}, true, packErr
 	}
-	return packed, true, nil
+	return candidates.History.StampPage(packed), true, nil
 }
 
 func blockedUnknownMutationError(clientMutationID string, err error) error {
@@ -1250,7 +1263,7 @@ func registerThreadHandlers(
 			past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
 			if pastErr != nil {
 				read.finish(false)
-				return appwire.ThreadReadResponse{}, pastErr
+				return appwire.ThreadReadResponse{}, daemonlessReadError(pastErr)
 			}
 			if ok {
 				pastPage = &past
@@ -1271,6 +1284,7 @@ func registerThreadHandlers(
 			if pastPage != nil {
 				resp.Thread.Turns = pastPage.Thread.Turns
 				resp.OlderCursor = pastPage.OlderCursor
+				resp = withReadHistoryIdentity(resp, *pastPage)
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 				annotateThreadProjects([]appwire.Thread{resp.Thread})
 			} else {
@@ -1296,7 +1310,7 @@ func registerThreadHandlers(
 					read.finish(false)
 					return appwire.ThreadReadResponse{}, packErr
 				}
-				resp = packed
+				resp = withReadHistoryIdentity(packed, read.response)
 			}
 		} else {
 			// A live daemon's turns carry sha-addressed tool-result descriptors with
@@ -1309,6 +1323,7 @@ func registerThreadHandlers(
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
 		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.RequestGeneration = params.RequestGeneration
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -1405,7 +1420,7 @@ func registerThreadHandlers(
 		}
 		saved, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
 		if pastErr != nil {
-			return appwire.ThreadTurnsListResponse{}, pastErr
+			return appwire.ThreadTurnsListResponse{}, daemonlessReadError(pastErr)
 		}
 		if ok {
 			return saved, nil
@@ -1425,23 +1440,23 @@ func registerThreadHandlers(
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
 			}
-			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			preview, ok, pastErr := pastSubagentPreview(ctx, cfg, ref, params.Limit)
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
-				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+				return preview, nil
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
-			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			preview, ok, pastErr := pastSubagentPreview(ctx, cfg, ref, params.Limit)
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
-				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+				return preview, nil
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}

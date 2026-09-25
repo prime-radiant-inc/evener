@@ -20,6 +20,7 @@ type transcriptItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
+	History    appsource.HistoryIdentity
 }
 
 func transcriptItemCandidateResultFromSource(result appsource.ItemCandidateResult) transcriptItemCandidateResult {
@@ -27,6 +28,7 @@ func transcriptItemCandidateResultFromSource(result appsource.ItemCandidateResul
 		Candidates: result.Candidates,
 		Identity:   result.Identity,
 		Exhausted:  result.Exhausted,
+		History:    result.History,
 	}
 }
 
@@ -67,7 +69,9 @@ func sourceItemCandidateResultForList(ctx context.Context, source appsource.Sour
 		}
 		return transcriptItemCandidateResultFromSource(result), nil
 	}
-	return itemCandidateResultFromTurns(response.Data, response.NextCursor)
+	result, err := itemCandidateResultFromTurns(response.Data, response.NextCursor)
+	result.History = appsource.PageHistoryIdentity(response)
+	return result, err
 }
 
 func threadWithPackedTurns(base appwire.Thread, turns []appwire.Turn) appwire.Thread {

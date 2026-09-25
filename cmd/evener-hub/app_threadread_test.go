@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
@@ -1349,18 +1348,13 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !ok || len(full.Turns) != 200 {
 		t.Fatalf("full saved thread found=%v turns=%d, want true/200", ok, len(full.Turns))
 	}
-	var projected []int
-	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
-	t.Cleanup(restore)
+	forbidWholeTranscriptProjection(t)
 	got, ok := requirePastThreadReadResponse(t, cfg, params)
 	if !ok {
 		t.Fatal("past thread not found")
 	}
 	if items := flattenTestItems(got.Thread.Turns); len(items) == 0 || len(items) > appwire.TranscriptItemPageLimit || got.OlderCursor == "" {
 		t.Fatalf("bounded saved read = %d items, cursor %q; want 1..%d items and continuation", len(items), got.OlderCursor, appwire.TranscriptItemPageLimit)
-	}
-	if len(projected) == 0 {
-		t.Fatalf("saved read did not report bounded projection: %v", projected)
 	}
 	// The newest logical turn is the user input plus its tool result; the
 	// command-execution item with the embedded image is the second item.
@@ -1435,9 +1429,7 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 
 func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
-	var projected []int
-	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
-	t.Cleanup(restore)
+	forbidWholeTranscriptProjection(t)
 	first, ok := requirePastThreadReadResponse(t, cfg, params)
 	if !ok || first.OlderCursor == "" {
 		t.Fatal("past thread initial item page missing continuation")
@@ -1449,9 +1441,18 @@ func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	if items := flattenTestItems(got.Data); len(items) == 0 || len(items) > 30 {
 		t.Fatalf("bounded saved page = %d items, want 1..30", len(items))
 	}
-	if len(projected) == 0 {
-		t.Fatalf("saved page did not report bounded projection: %v", projected)
+}
+
+// forbidWholeTranscriptProjection fails the test if anything projects a saved
+// session's whole transcript into turns: a bounded read pages the index.
+func forbidWholeTranscriptProjection(t *testing.T) {
+	t.Helper()
+	projection := pastEntryTurns
+	pastEntryTurns = func(hubcore.WebConfig, hubcore.PastEntry) ([]appwire.Turn, error) {
+		t.Fatal("a bounded read projected the whole saved transcript")
+		return nil, nil
 	}
+	t.Cleanup(func() { pastEntryTurns = projection })
 }
 
 func TestPastThreadItemReadPropagatesContextCancellation(t *testing.T) {

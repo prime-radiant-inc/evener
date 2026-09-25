@@ -88,10 +88,11 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 }
 
 // enrichOutputImageNotification completes a live tool call's output images on
-// their way to the browser: it adds the file-backed descriptors this hub can
-// resolve by re-reading the call's own file argument off disk, and it stamps
-// the sha-addressed route onto whatever descriptors the daemon minted without
-// one (see stampOutputImageURLs).
+// their way to the browser, in the call items a history/updated carries and
+// the tool item an overlay/upserted carries: it adds the file-backed
+// descriptors this hub can resolve by re-reading the call's own file argument
+// off disk, and it stamps the sha-addressed route onto whatever descriptors
+// the daemon minted without one (see stampOutputImageURLs).
 //
 // Only the sha stamp works without a cwd, so a session whose working directory
 // is unknown still gets its tool-result thumbnails.
@@ -101,25 +102,66 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 	if sessionID == "" {
 		return notification
 	}
-	if notification.Method != appwire.NotifyItemStarted && notification.Method != appwire.NotifyItemCompleted {
-		return notification
+	enrich := func(item *appwire.ThreadItem) bool {
+		return enrichOutputImageItem(sessionID, cwd, argsByCallID, item)
 	}
+	switch notification.Method {
+	case appwire.NotifyHistoryUpdated:
+		return rewriteNotificationField(notification, "items", func(items *[]appwire.ThreadItem) bool {
+			changed := false
+			for i := range *items {
+				changed = enrich(&(*items)[i]) || changed
+			}
+			return changed
+		})
+	case appwire.NotifyOverlayUpserted:
+		return rewriteNotificationField(notification, "item", func(item *appwire.OverlayItem) bool {
+			return enrich(&item.Item)
+		})
+	}
+	return notification
+}
+
+// rewriteNotificationField decodes one field of notification's params,
+// lets edit change it, and re-encodes the params only when edit reports a
+// change, so a frame the hub has nothing to add passes through byte for byte.
+func rewriteNotificationField[T any](notification appwire.Notification, field string, edit func(*T) bool) appwire.Notification {
 	var params map[string]json.RawMessage
 	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
 		return notification
 	}
-	var item appwire.ThreadItem
-	if raw := params["item"]; len(raw) == 0 || json.Unmarshal(raw, &item) != nil {
+	var value T
+	if raw := params[field]; len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
 		return notification
 	}
-	if item.Type != "commandExecution" {
+	if !edit(&value) {
 		return notification
+	}
+	encoded, err := outputImageMarshal(value)
+	if err != nil {
+		return notification
+	}
+	params[field] = encoded
+	data, err := outputImageMarshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = data
+	return notification
+}
+
+// enrichOutputImageItem completes one tool call item's output images once the
+// call has finished, remembering a running call's arguments for when it does.
+// It reports whether it changed the item.
+func enrichOutputImageItem(sessionID, cwd string, argsByCallID map[string]string, item *appwire.ThreadItem) bool {
+	if item.Type != "commandExecution" {
+		return false
 	}
 	if argsByCallID != nil && item.CallID != "" && item.ArgumentsJSON != "" {
 		argsByCallID[item.CallID] = item.ArgumentsJSON
 	}
-	if notification.Method != appwire.NotifyItemCompleted {
-		return notification
+	if item.Status == appwire.TurnStatusInProgress {
+		return false
 	}
 	var fileBacked []appwire.OutputImage
 	if cwd != "" {
@@ -135,20 +177,10 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 	images := appendOutputImagesUnique(item.OutputImages, fileBacked)
 	stamped := stampOutputImageURLs(sessionID, images)
 	if len(fileBacked) == 0 && !stamped {
-		return notification
+		return false
 	}
 	item.OutputImages = images
-	itemData, err := outputImageMarshal(item)
-	if err != nil {
-		return notification
-	}
-	params["item"] = itemData
-	data, err := outputImageMarshal(params)
-	if err != nil {
-		return notification
-	}
-	notification.Params = data
-	return notification
+	return true
 }
 
 // stampOutputImageURLs fills in the route this hub serves sha-addressed image
