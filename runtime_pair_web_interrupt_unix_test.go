@@ -496,6 +496,7 @@ func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
 
 			command := exec.Command("make", "test-web")
 			command.Dir = fixture.root
+			command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			command.Env = append(fixture.environment(""),
 				"BASH_ENV="+bashEnv,
 				"EVENER_TEST_WEB_CLEANUP_READY="+readyPath,
@@ -526,8 +527,11 @@ func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
 				_, _ = release.WriteString("cleanup\n")
 				_ = release.Close()
 				if command.ProcessState == nil {
+					_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 					_ = command.Process.Kill()
-					<-run.done
+					if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
+						t.Errorf("cleanup did not reap make test-web: %v", err)
+					}
 				}
 			})
 			if err := exec.Command("kill", "-"+signal, webPID).Run(); err != nil {
