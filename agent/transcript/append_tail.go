@@ -28,6 +28,11 @@ type appendTail struct {
 	mu sync.Mutex
 	// nextSeq is the sequence number the next appended entry takes.
 	nextSeq int
+	// nextOrdinal is the entry ordinal the next recorded entry takes, and
+	// recordedLength the length of the file's recorded prefix: the header and
+	// every recorded entry line.
+	nextOrdinal    uint64
+	recordedLength int64
 	// move counts the times a writer positioned its handle at the file's end
 	// to append (or opened the file). A writer whose last recorded move is
 	// not the current one may have a handle position behind the end.
