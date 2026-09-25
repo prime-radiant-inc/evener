@@ -344,6 +344,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Env = append(fixture.environment(""),
 		"BASH_ENV="+bashEnv,
 		"EVENER_TEST_NPM_HOLD_COMMAND=run typecheck",
@@ -376,6 +377,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 		_ = waitRelease.Close()
 		_ = waitReady.Close()
 		if command.ProcessState == nil {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 			_ = command.Process.Kill()
 			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
 				t.Errorf("cleanup did not reap make test-web: %v", err)
