@@ -1,9 +1,14 @@
 # Transcript as the Only History Read Model
 
-Status: proposed, revision 2 (2026-09-25). Supersedes the eviction approach in
-the closed PR #2251. Revision 2 replaces revision 1's sequence watermark with
-idempotent, monotonic merges after a design review showed the watermark could
-not give a gap-free, duplicate-free boundary.
+Status: proposed, revision 3 (2026-09-25). Supersedes the eviction approach in
+the closed PR #2251.
+
+- Revision 2 replaced revision 1's sequence watermark with idempotent merges.
+- Revision 3 stops minting history identity before an entry exists. History is
+  now only the projection of persisted entries, and everything not yet durable
+  is a separate live overlay. Design review showed pre-persist identity cannot
+  be minted reliably (no stream part identity, repeating round numbers,
+  two-stage tool completion, rolled-back writes).
 
 ## Problem
 
@@ -16,298 +21,347 @@ never released while the root identity lives. Measured on real sessions: 83 MB
 for a 75 MB root transcript, and 200 MB for 260 finished delegates.
 
 The copy exists because the live view and the transcript disagree about
-identity. A live item and its persisted form have different turn IDs, item
-IDs, positions and turn boundaries, so the transcript cannot answer a read for
-a live session. Attempts to bound the copy by evicting and rebuilding it from
-the transcript have to paper over that disagreement.
-
-The code also breaks the governing spec
+identity. A live item and its persisted form have different turn IDs, item IDs,
+positions and turn boundaries, so the transcript cannot answer a read for a live
+session. This also breaks the governing spec
 (`docs/superpowers/specs/2026-09-01-atomic-transcript-item-paging-design.md`:
 "Transcript key: stable item identity reproduced by live event projection and
 later file projection"). Restarting a daemon already changes what clients see.
 
 ## End state
 
-The transcript is the only history. The daemon keeps only state that is not yet
-durable.
+1. **History is the projection of persisted entries, and nothing else.** One
+   projector, shared by daemon and hub, turns transcript entries into turns and
+   items. Live history notifications are produced by running that projector on
+   each entry after it is written. A live history item and its reloaded form are
+   therefore the same by construction.
+2. **Everything not yet durable is a live overlay.** Streaming assistant text
+   and reasoning, running tool state, and ephemeral notices live in memory,
+   separate from history, and never claim history identity.
+3. **Merges are versioned.** Every history item and turn carries a version: the
+   highest `Seq` of the entries that contributed to it. A client or server keeps
+   the higher version. Applying the same fact twice, or a file read that is
+   ahead of the live stream, changes nothing.
+4. **Memory holds only the overlay.** An item leaves memory once the entry that
+   covers it is written. Memory per thread no longer depends on its history.
 
-1. **One identity.** Every history item has one key, fixed when the item is
-   first announced and persisted with it. Live notifications, a file
-   projection, and a restart all produce the same `id` and `transcriptKey` for
-   the same item.
-2. **Monotonic, idempotent merges.** Every history notification is an upsert by
-   key. An item moves one way, from streaming to completed; nothing regresses a
-   completed item. Applying the same fact twice, or applying a file read that
-   is ahead of the live stream, changes nothing.
-3. **One read path.** History is read from the transcript through the on-disk
-   item index, with one projector shared by daemon and hub.
-4. **Memory holds only non-durable state.** Per thread: items still streaming,
-   a bounded buffer of ephemeral items, and small metadata. An item leaves
-   memory as soon as its entry is persisted, even mid-turn.
-
-Consequences: memory per thread no longer depends on its history; restart
-changes nothing a client sees for sessions written in the new format; delegate
-snapshots, seeding, prelude shifting, incarnation rotation on prelude, and the
-"no file I/O inside the cut" rule all disappear.
+What is deleted: the per-thread turn snapshot's history, delegate snapshots and
+seeding, prelude shifting, incarnation rotation on prelude, the projector's ID
+counters, client-minted steering IDs, the server's separate prepared-transcript
+cache, and the "no file I/O inside the cut" rule.
 
 ## Design
 
-### Identity
+### Persisted identity
 
-Identity and ordering are separate.
-
-- **Turn IDs.** The session mints every turn ID and persists it in a new
-  dedicated `TurnID` field on every entry that belongs to a turn. The projector
-  adopts it and never mints one; `nextTurn`, `SeedPersistedTurns` and the
-  projector's reservation counter are deleted. `StableTurnID` keeps its current
-  meaning (on steering entries it is the steer mutation's own ID and must not be
-  adopted as a turn, `internal/appprojector/appwire_projection.go:972-979`).
-  - The server's early reservation in `SetProcessing(true)`
-    (`server/server.go:864-927`, used by notification wakes and continuations,
-    `cmd/evener/serve.go:1709, 1729`) is replaced by the session minting the
-    running turn ID and publishing it before the server marks the session
-    processing.
+- **Turn IDs.** A new dedicated `TurnID` field is written on every entry that
+  belongs to a turn. `StableTurnID` keeps its current meaning; on steering entries
+  it is the steer mutation's own ID and is never a turn ID
+  (`internal/appprojector/appwire_projection.go:972-979`).
+  - The session mints turn IDs as `t_<ulid>`, a namespace disjoint from legacy
+    `turn_<n>` IDs, so the two can never collide (the collision
+    `SeedPersistedTurns` guards against, `appwire_projection.go:177-197`).
+  - The session publishes the running turn ID before the server marks it
+    processing. This replaces the server's own reservation in
+    `SetProcessing(true)` (`server/server.go:864-927`; wakes and continuations
+    at `cmd/evener/serve.go:1709, 1729`).
   - **Gap turns.** Standalone entries recorded between real turns (hooks, model
-    switch, environment, persisted announcements) carry a shared gap-turn ID the
-    session mints for the run of entries between two real turns, preserving
-    today's "fold a burst of announcements into one turn" behavior
-    (`internal/appprojector/appwire_projection.go:2160-2198`). Startup entries
-    use the prelude turn ID.
-- **Turn membership is explicit.** `TurnID` on every in-turn entry replaces
-  grouping by entry-kind adjacency, so a mid-turn HOOK_COMPLETED, MODEL_SWITCH,
-  CHECKPOINT or SUMMARY no longer splits a turn in the file.
-- **Item keys.** `transcriptKey = apptranscript-item-v2:<turnID>:<itemID>`.
-  `itemID` is minted by the session when the item is first announced and is
-  persisted in the entry:
-  - assistant text and reasoning: `<round>.<part>` (round ordinal within the
-    turn, part index within the round), persisted on the ASSISTANT entry;
-  - tool call and its result: `tool.<callID>`, carried by both the ASSISTANT
-    entry and the TOOL_RESULTS entry, so the file projection merges them into
-    one item keyed by the call (fixing `mergeAppThreadItems` keeping the
-    incoming ID, `internal/apptranscript/logical_turn.go:314-316`);
-  - every other item: minted at announcement, persisted on its entry.
+    switch, environment, persisted notices) share one gap-turn ID, minted by the
+    session for that run of entries. This keeps today's grouping of a burst of
+    announcements into one turn (`appwire_projection.go:2160-2198`).
+  - **Cold writers** have no session: attention delivery, watch sends and shell
+    repair (`agent/session_attention.go:351-397`, `agent/delegate_delivery.go:106`,
+    `agent/delegate_tree_watch.go:478`, `agent/delegate_shell_repair.go:109`).
+    They mint a fresh turn ID per entry, so each cold write is its own turn,
+    which is how they project today.
+- **Turn membership** comes from `TurnID`, not from entry-kind adjacency. A
+  mid-turn HOOK_COMPLETED, MODEL_SWITCH, CHECKPOINT or SUMMARY no longer splits
+  a turn.
+- **Item key.** `transcriptKey = apptranscript-item-v2:<turnID>:<Seq>:<part>`,
+  where `Seq` is the entry that opens the item and `part` is the item's index in
+  that entry's projection. Items that span entries keep the opener's key: a tool
+  call and its result are keyed by the ASSISTANT entry that holds the call. This
+  also fixes `mergeAppThreadItems` keeping the incoming ID
+  (`internal/apptranscript/logical_turn.go:314-316`) and makes a reused provider
+  call ID harmless. Item `id` derives from the key and keeps today's kind
+  prefixes (`item_tool_`, `item_tool_result_`, …).
+- **Position.** `{entry: Seq + 1, item: part}` for every entry, legacy and new,
+  and `{entry: 0}` for header-derived prelude items. Positions are unique and
+  ordered, but not dense.
+- **Legacy entries.** Entries written before this change have no format marker
+  and no `TurnID`.
+  - Their turn IDs keep the current fallback (`turn_<entryIndex>`, adjacency
+    grouping).
+  - Their positions move to the `Seq` scheme. Cursors go stale once, at the
+    projection version bump.
+  - A resumed legacy session is self-consistent: new entries carry new identity.
+- **Format marker.** Every new entry carries an explicit format version, so the
+  projector never infers format from which fields are present. `StableTurnID`
+  and `OwningTurnID` already appear on legacy steering entries
+  (`agent/schema/turn.go:233-251`, `agent/session_queue.go:1267-1277`).
 
-  Item `id` derives from the key and keeps today's kind prefixes (`item_tool_`,
-  `item_tool_result_`, …) so client tool folding is unaffected.
-- **Ordering.** `position = {entry: Seq, item: part}` is assigned when the item's
-  entry is persisted, using the writer's own `Seq` (no reservation; the writer
-  keeps assigning `Seq` under its lock, `agent/transcript/transcript.go:635-664`).
-  A streaming item has no position; clients order it after all positioned items
-  of its turn, which is where it is. Positions are ordered and unique but not
-  dense.
-- **Per-part items.** Live emits one agentMessage per text part and
-  communicate call and one reasoning item per thinking part, matching the file.
-  Where live text and persisted text differ today (reasoning summaries vs
-  thinking parts, communicate echo suppression, private-evidence tool results
-  shown live but persisted as a placeholder, `agent/session_tools.go:1054-1057`)
-  the persisted form is authoritative, and the completion upsert replaces the
-  streamed text. A client therefore sees the persisted text once the item
-  completes, both live and on reload.
-- **Format marker.** Entries written in the new format carry an explicit format
-  version. The projection uses the new rules only for such entries and keeps the
-  current rules (`turn_<entryIndex>`, adjacency grouping, dense positions) for
-  older entries, so a resumed legacy session is self-consistent: its legacy
-  prefix is always read from the file with legacy identity, and new entries get
-  new identity.
+### The projector
 
-### Notifications and merge rules
+One pure function projects a prefix of entries (plus the header) into turns and
+items. It has one `ProjectionID` shared by daemon and hub. The hub-only
+post-stamps (`cmd/evener-hub/app_threadread.go:221-226`: image URLs, cost,
+file-backed output images, derived totals) move into it.
 
-- **Every history write is announced.** Every entry the session persists emits
-  a history notification after the write succeeds, including the writes that
-  today emit nothing: delegate attention and delivery steering to a live parent
-  (`agent/session_attention.go:482-560`), background-shell attention
-  (`agent/jobs.go:2155-2176`), watch sends (`agent/job_watch.go:4541`),
-  retained attention turns (`agent/session_attention.go:1184-1207`), and
-  NOTES_CONTEXT and TURN_FAILURE items that today exist only in the file.
-- **Steering gets server-side identity.** `evener/steering/injected` carries the
-  item's `id`, `transcriptKey` and turn ID. The client stops minting
-  `item_steering_live_*` IDs (`appwire-client/typescript/reducer.ts:3264-3267`).
-- **Upserts, not appends.** `item/started`, `item/completed` and steering are
-  upserts by key. Deltas apply only to an item in the streaming state.
-- **Monotonic.** A completed item is immutable: `item/started` for an existing
-  completed item and deltas for a completed item are ignored. A completion
-  replaces the streamed content with the persisted content. Turn status is
-  monotonic the same way (completed or interrupted beats in progress).
-- **Where emit precedes persist.** Streamed items (assistant text, reasoning,
-  tool output, and per-call tool completion) are announced before their entry
-  exists; they are streaming items held in memory. When the entry persists, a
-  completion upsert carries the final content and the position. Per-call tool
-  completion stays per call (TOOL_CALL_END), since TOOL_RESULTS is written once
-  per round after every call (`agent/session_tools.go:876`, `:1052-1071`); the
-  item stays in memory until TOOL_RESULTS persists.
-- **When an item leaves memory.** The server drops a streaming item from its
-  in-memory state when it commits that item's completion upsert (inside
-  `CommitProjection`), not when the agent writes the entry. At any cut, an item
-  is therefore either still in memory or its completion has already been
-  committed, which requires its entry to be on disk.
-- The three emit-before-persist sites for non-streamed history items flip to
-  persist first: goal continuation (`agent/session_lifecycle.go:2804/2808`),
-  HOOK_COMPLETED (`agent/session_events.go:329/346`), TURN_FAILURE
-  (`:266/313`).
+It also fixes the places where the file projection loses or mangles what live
+shows today:
+- It projects `Thinking.Summary` when `Thinking.Text` is empty. Otherwise OpenAI
+  reasoning summaries would disappear
+  (`llm/providers/responses/response.go:75-94`,
+  `internal/apptranscript/apptranscript.go:521-530`).
+- It hides a communicate call whose result failed, matching live's reset
+  (`internal/appprojector/appwire_projection.go:753-760` versus
+  `apptranscript.go:564-575, 606-609`).
+- It projects one agentMessage per assistant text run and one reasoning item per
+  entry, matching how live displays them today, instead of one item per content
+  part.
+- It skips fold copies. A fold re-appends entries after its markers
+  (`agent/session_compaction.go:146-154`); the copies now carry `OriginalSeq`.
+  They are neither projected nor announced.
+
+A turn's status comes only from persisted facts, never from the runtime:
+- A turn with a completion entry is completed, failed or interrupted, as
+  recorded.
+- Any other turn is open.
+- Gap and prelude turns are not executions and are always complete.
+- On resume, the session writes an interrupted completion for any turn it finds
+  open, so a crash cannot leave a turn open forever once the session runs again.
+- Whether an open turn is currently running is overlay state (below).
+
+### Live history notifications
+
+After every successful append, the session hands the entry to the server, which
+runs the projector on it and emits `history/updated` notifications. Each one
+carries the full current form of every affected item and turn, with its version.
+This covers every history write:
+- the writes that emit nothing today: delegate attention and delivery to a live
+  parent (`agent/session_attention.go:482-560`), shell attention
+  (`agent/jobs.go:2155-2176`), watch sends (`agent/job_watch.go:4541`), retained
+  attention turns (`agent/session_attention.go:1184-1207`);
+- file-only items: NOTES_CONTEXT and TURN_FAILURE.
+
+Items that span entries are re-emitted at the higher version when a later entry
+contributes. A tool item gets version `Seq(TOOL_RESULTS)` when its results land.
+
+Because notifications are derived from persisted entries, they can never run
+ahead of the file. There is no persist-before-emit ordering to maintain per item
+kind.
+
+### The live overlay
+
+The overlay is per thread and in memory. It holds:
+- **Streams.** A streaming assistant text or reasoning item has an overlay ID and
+  a `streamID`, one per model response, minted by the session. The ASSISTANT
+  entry written for that response records its `streamID`. When that entry's
+  history notification exists, whether live or in a file read, the overlay items
+  with that `streamID` are covered and dropped. Clients apply the same rule.
+- **Tool execution state.** Tools run after the ASSISTANT entry holding their
+  calls is written (`agent/session_model_call.go:994-996`), so running output,
+  per-call completion (TOOL_CALL_END, `agent/session_tools.go:876`) and held
+  images (`appwire_projection.go:847-868`) attach to the call's history key. The
+  history item wins once its version includes the TOOL_RESULTS entry.
+- **Running state.** The running turn ID and the thread status.
+- **Ephemeral notices.** `round_timings`, `prompt_loaded`, `plugin_loaded`,
+  `loop_detection`, `context_compaction`, `fork_summary` and `warning` are kept
+  in a per-thread ring bounded per kind: 50 `round_timings`, 50 of everything
+  else, and 64 KB total per thread.
+  - A daemon-wide cap of 16 MB evicts oldest-first across threads.
+  - Each notice has an anchor, `{entry: Seq + 1 of the preceding entry, item:
+    part count of that entry, sub: n}`. The new `sub` component, absent on
+    history items, orders a notice after the entry it followed.
+  - Notices survive a browser refresh while the daemon lives and vanish on
+    restart, as today.
+  - A released delegate's ring is dropped with its runtime. That is an accepted
+    loss: they are notices, not history.
+- **Content that never persists.** Streamed content from a round that is never
+  written (`agent/session_events.go:679-707`: closing session, content filter,
+  empty salvage) becomes an interrupted ephemeral notice. Salvage that is
+  written records the same `streamID`, so it covers its stream and is not shown
+  twice.
+
+`tool_repair`, `goal_ended`, `turn_limit` (unless an existing TURN_FAILURE
+covers it) and standalone `skill_activated` are persisted as presentational
+entries instead of being ephemeral. Turn timing (`CompletedAt`, `DurationMS`)
+and tool `DurationMS` are persisted in the completion entry and the TOOL_RESULTS
+entry. Cost is recomputed from persisted usage.
 
 ### Reads
 
-- `thread/read` captures, inside `CaptureSubscription`, the thread's in-memory
-  state (streaming items, ephemeral buffer, turn metadata) and the subscription
-  cut. After releasing the cut it reads history from the transcript to its
-  current end and merges the two with the monotonic rules.
-- Reading the file after the cut can see entries whose notifications are
-  delivered after the response. Because those notifications are idempotent
-  upserts and never regress a completed item, applying them again changes
-  nothing. Nothing announced before the cut is missing from the file, because
-  every non-streamed history item is persisted before it is announced, and
-  every streamed item is in the captured memory state until its entry persists.
-  This replaces the "no file I/O inside the cut" rule and the test that pins it
-  (`server/appwire_rejoin_test.go:309-418`), which guarded against duplicates
-  that non-idempotent live identity caused.
-- The projection stamps a turn completed only when its completion is persisted
-  (see Timing). A turn without one is in progress while the thread's runtime
-  runs it, and interrupted otherwise. Legacy groups keep today's completed
-  status.
-- `thread/turns/list` pages are read from the file; the same merge applies to
-  the open turn's page.
-- A thread with no runtime (a released delegate, a daemonless session) is read
-  the same way; its memory state is empty. Writes by cold writers are visible on
-  the next read. No attach/release signal is needed.
+`thread/read` works in two steps:
+1. Inside `CaptureSubscription`, capture the thread's overlay and the
+   subscription cut.
+2. After releasing the cut, project history from the transcript, then merge:
+   history by version, and overlay items minus those covered by a `streamID`
+   present in history.
 
-### Ephemeral items
+Notifications delivered after the response merge by the same rules, so reading
+the file ahead of the stream cannot cause a gap, a duplicate or a regression:
+- A later `history/updated` at a lower or equal version is ignored.
+- Overlay updates for a covered stream are ignored.
 
-Items that are not persisted (`round_timings`, `prompt_loaded`,
-`plugin_loaded`, `loop_detection`, `context_compaction`, `fork_summary`,
-`warning`) live in a per-thread ring buffer of the last 200 ephemeral items. Each
-carries an anchor position (`{entry: Seq of the preceding persisted entry, item:
-sub-index}`) so it keeps its place in the turn across a refresh or page merge
-instead of sorting to the end (`reducer.ts:969-984`). They survive a browser
-refresh while the daemon lives and disappear on restart, which is today's
-behavior. Streamed content from a round that never persists
-(`agent/session_events.go:679-707`: closing session, content filter, empty
-salvage) moves into this buffer marked interrupted; salvage that does persist
-keeps the item's minted ID, so it is not shown twice.
+**Bounded to durable data.** Reads use the durable length the writer publishes
+after each successful synced append, never raw end of file. So a write that is
+later rolled back (`agent/transcript/transcript.go:666-683, 888-911`) is never
+read. Every writer in the process publishes into one per-file registry, which
+covers cold writers too. With no writer in the process, a read goes to end of
+file and drops an incomplete last line, as today.
 
-Persisted as presentational entries instead: `tool_repair`, `goal_ended`,
-`turn_limit` (unless an existing TURN_FAILURE covers it), standalone
-`skill_activated`.
+`thread/turns/list` pages come from the file, with the same merge applied to the
+open turn's page. A thread with no runtime has an empty overlay and is read the
+same way.
 
-### Timing
-
-Turn `CompletedAt` and `DurationMS`, and tool `DurationMS`, are persisted: a
-turn completion is written as its own entry (carrying the turn ID and timing)
-when the turn ends. Cost is recomputed from persisted usage.
-
-### Persist failures
-
-If the transcript writer is missing or poisoned (`agent/session_init.go:607-614`,
-`agent/transcript/transcript.go:612-632`), history cannot be durable. Items that
-fail to persist are emitted into the ephemeral buffer, and the thread carries a
-visible "history not saved" diagnostic, so clients see the same thing live and
-on refresh while the daemon lives. Turns recorded before the writer attaches
-(`agent/session.go:2195-2200`) are announced when they persist at attach.
-
-### Compaction and fork
-
-- The file stays append-only. A fold's re-appended copies of entries
-  (`agent/session_compaction.go:146-154`) carry an `OriginalSeq` field; the
-  projection skips a copy whose original is present. `Seq` stays unique.
-- Fork's `sourceTurnId` (a 1-based entry index today, `appwire/types.go:1706-1715`,
-  parsed by the hub at `cmd/evener-hub/app_threadlifecycle.go:1558-1568`)
-  becomes a `Seq` resolved to the original entry. This is a protocol change,
-  made in the identity phase with its clients and docs.
+**Write results are explicit.** The writer API returns `recorded Seq` or
+`not recorded`. Today `Append`/`AppendDurable` return nil with Seq 0 for both a
+missing and a closed writer (`agent/transcript/transcript.go:606-627`).
+- A missing, closed or poisoned writer yields `not recorded`. The item stays in
+  the overlay as a notice, and the thread shows a visible "history not saved"
+  diagnostic. Persist-failure notices are never evicted.
+- Turns held before the writer attaches (`agent/session.go:2195-2200`) are
+  announced when they are written at attach.
 
 ### Index
 
-The on-disk item index is keyed by `(Seq, part)` and serves windows by
-searching positions, instead of today's per-group dense rank arithmetic
-(`internal/apptranscript/item_paging.go:176-234`). Append validation changes
-from a full prefix rehash on each read after an append
-(`internal/apptranscript/turn_index.go:571-584`) to the identity, size and
-trailing-bytes check proven by the attention fold cursor (PR #2254). Daemon and
-hub share one projector and `ProjectionID`, and the hub-only post-stamps
-(`cmd/evener-hub/app_threadread.go:221-226`) move into a shared read helper, so
-neither side's read rebuilds the other's index.
+The on-disk item index is keyed by position and serves windows by searching
+positions. This replaces today's per-group dense rank arithmetic
+(`internal/apptranscript/item_paging.go:176-234`).
+
+Append validation changes too. Today every read after an append rehashes the
+whole prefix (`internal/apptranscript/turn_index.go:571-584`). Instead, the
+index is checked by file identity, durable length and trailing bytes, the same
+check the attention fold cursor uses (PR #2254). The index is bounded by the
+same durable length as reads.
+
+### Fork
+
+`thread/fork` names its source by item `transcriptKey`, and the server resolves
+it to the entry. This works for legacy and new items alike. It replaces the
+1-based entry index in `sourceTurnId` (`appwire/types.go:1706-1715`; hub parser
+at `cmd/evener-hub/app_threadlifecycle.go:1558-1568`; fork lookup at
+`agent/fork.go:61-69`).
+
+### Protocol and clients
+
+The switch changes the protocol:
+- `history/updated`
+- versions on items and turns
+- overlay `streamID` and `sub`
+- server-side steering identity
+- fork by key
+
+So it bumps the AppWire protocol major version. A client that announces an
+older version gets an explicit "upgrade required" error instead of a degraded
+session. Its reducer could not apply versioned merges or stream coverage. The web
+client ships with the hub, so it is always current. The mobile app must update.
+The shared reducer (`appwire-client/typescript/reducer.ts`) implements:
+- merge by version
+- stream coverage
+- anchors with `sub`
+- no client-minted steering IDs
 
 ### Schema compatibility
 
-Transcript entries decode strictly (`agent/transcript/transcript.go:283-307`);
-an older hub cannot read a transcript containing new fields. All new entry
-fields (format marker, `TurnID`, item IDs, `OriginalSeq`, the turn completion
-entry, presentational entries) land in one release (phase 2), so the version
-skew happens once. The release notes tell users to restart the hub with the
-daemon.
+Transcript entries decode strictly (`agent/transcript/transcript.go:283-307`),
+so an older hub cannot read a transcript that contains new fields. All the new
+entry fields ship in one release (phase 2):
+- the format marker
+- `TurnID`
+- `streamID`
+- `OriginalSeq`
+- the completion entry
+- presentational entries
+- timing fields
 
-### What is deleted
-
-- `appTurnSnapshot`'s history: `Seed`, history turns, `itemPositions`,
-  `turnIndex`, `turnEntries`, the paging index, prelude insert and position
-  shifting, incarnation rotation on prelude (roughly 350–450 production lines).
-- `appDescendants[*].turns` and delegate seeding.
-- Projector counters, the `SetProcessing` reservation, and client-minted
-  steering IDs.
-- The server's separate prepared-transcript cache and projector.
+The version skew therefore happens once. The release notes say to restart the
+hub along with the daemon.
 
 ### Out of scope
 
-The client-mutation journal, the notifier replay ring (count-bounded, no
-production reader), the task store, and the projector's small `delegates` map.
+- the client-mutation journal
+- the notifier replay ring (count-bounded, with no production reader)
+- the task store
+- the projector's small `delegates` map
 
 ## Acceptance criteria
 
-- **Memory.** On a resumed copy of the 260-delegate coordinator session, the
-  daemon's retained turn-history memory (heap attributable to turn projection
-  after GC) is under 5 MB at idle, down from about 283 MB (root 83 MB plus
-  delegates 200 MB). During a long turn it is bounded by the items still
-  streaming plus the ephemeral buffer.
-- **Latency.** `thread/read` with turns on the 95 MB root, warm index: p99 no
-  worse than 2× today's in-memory read, and under 50 ms. Measured before phase
-  5 and after.
+- **Memory.** Measured on a long-lived daemon running a copy of the
+  260-delegate coordinator session after replaying its activity (not after a
+  cold restart):
+  - Retained memory for history (heap attributable to turn projection after GC)
+    is 0.
+  - Overlay memory is within its caps: 64 KB per thread and 16 MB daemon-wide.
+  - Today the same measurement is about 283 MB (root 83 MB plus delegates
+    200 MB).
+- **Latency.** `thread/read` of the latest window (the default page size) on the
+  95 MB root transcript with a warm index, on the dev machine's local SSD:
+  - 200 samples, idle writer: p99 under 50 ms and no worse than 2× today's
+    in-memory read.
+  - A second run while the session appends one entry per 100 ms: p99 under
+    100 ms.
 - **Parity.** The parity harness reports zero divergences for sessions written
-  in the new format, including across a daemon restart.
+  in the new format, live against reload, including across a daemon restart.
 
 ## Migration
 
 Each phase ships on its own and keeps main green.
 
-1. **Parity harness.** A differential test driving a scripted multi-round
-   session (user input, assistant text, reasoning, tool calls and results with
-   images, steering, hooks, model switch, compaction, failure and retry, goal
-   continuation, delegate attention, a restart) and comparing the live view with
-   the file projection item by item. It passes: known divergences are listed in
-   an explicit table, each tagged with the phase that removes it; the test fails
-   on a new divergence and on a listed divergence that no longer occurs, so
-   fixes must update the table.
-2. **Schema and writer (file side).** All new entry fields in one release:
-   format marker, `TurnID` (including gap and prelude turn IDs), item IDs,
-   `OriginalSeq`, the turn completion entry, presentational entries. Writers
-   write them; the file projection uses them for new-format entries. Flip the
-   three emit-before-persist sites. Announce every history write. Fixes today's
-   restart divergences for new sessions.
-3. **Live identity and merges.** The live projector adopts persisted identity;
-   notifications carry keys; steering identity; completion upserts carry
-   position and persisted content; monotonic merge rules in the shared client
-   reducer; the ephemeral buffer with anchors; the session mints the running
-   turn ID; fork by `Seq`; projection version 2 (old cursors go stale, clients
-   re-read).
-4. **Index and shared projection.** Position-keyed index, tail validation, one
-   projector for hub and daemon.
-5. **Read switch.** Reads as described; delete snapshot history, delegate
-   snapshots, the prepared cache, and the cut I/O rule.
-6. **Cleanup and docs.** Remove dead code and tests; amend the atomic paging
+1. **Parity harness.** A differential test drives a scripted multi-round session
+   and compares the live view with the file projection, item by item. The
+   session covers:
+   - user input, assistant text and reasoning
+   - tool calls and results with images
+   - steering and hooks
+   - model switch and compaction
+   - failure and retry, and goal continuation
+   - delegate attention
+   - a restart
+
+   It passes. Known divergences are listed in an explicit table, each tagged
+   with the phase that removes it. The test fails on a new divergence, and on a
+   listed divergence that no longer occurs.
+2. **Write the new fields (no behavior change).** Writers write every new field;
+   readers accept them and ignore them. This is split into small tasks: schema
+   and decoding; `TurnID`, gap and prelude turn IDs, and cold-writer turn IDs;
+   `streamID`; `OriginalSeq`; completion and timing entries; presentational
+   entries; the explicit write result; and the durable-length registry. Every
+   projection rule and every client-visible behavior stays as it is today.
+3. **Activation.** One PR, built as a stack of reviewable commits, that switches
+   everything together:
+   - the shared projector's new rules and positions
+   - the position-keyed index with tail validation
+   - live history from projected entries
+   - the overlay
+   - status from persisted facts, with interrupted completions written on resume
+   - `history/updated` with versions
+   - server-side steering identity
+   - fork by key
+   - the protocol major bump
+   - the reducer changes
+   - projection version 2
+
+   It ships as one unit because the file side and the live side must switch
+   together. Neither half is correct alone.
+4. **Read switch.** Reads work as described above. Delete snapshot history,
+   delegate snapshots, the prepared cache and the cut I/O rule. Measure the
+   acceptance criteria.
+5. **Cleanup and docs.** Remove dead code and tests. Amend the atomic paging
    spec and `docs/appwire-protocol.md`.
 
 Phases 1–2 are planned in detail in
 `docs/superpowers/plans/2026-09-25-transcript-read-model-phase1-2.md`. Phases
-3–6 each get their own plan when the previous phase has landed.
+3–5 each get their own plan once the previous phase has landed.
 
 ## Risks
 
-- **Old clients.** An old client does not apply the monotonic rules or
-  server-side steering identity. The protocol version bump in phase 3 makes old
-  clients re-read; the web and mobile clients ship the reducer change in the
-  same phase.
-- **Client-visible ID change.** Old cursors go stale once (clients re-read on
-  `TranscriptItemCursorStale`); a stored web "seen" watermark or mobile reader
-  anchor misses once and degrades to its fallback.
-- **Read latency moves to disk.** Bounded by the acceptance criteria.
-- **Legacy sessions** keep file-fallback identity for their old prefix.
-- **Completion replaces streamed text.** Where persisted text differs from what
-  streamed, the user sees it change once, at completion. Today they see it
-  change at restart instead.
+- **Mobile must update.** After phase 3 an old mobile build gets "upgrade
+  required".
+- **Old cursors and stored anchors.** Old cursors go stale once, and clients
+  re-read. A stored web "seen" watermark or mobile reader anchor misses once and
+  falls back.
+- **Read latency moves to disk.** The acceptance criteria bound it.
+- **Legacy sessions keep fallback turn IDs** for their old prefix.
+- **Phase 3 is large.** It is kept reviewable as a stack of commits, and the
+  parity harness gates it.
