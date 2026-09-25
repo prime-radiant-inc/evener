@@ -611,6 +611,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			// fired yet at this point in construction, and every other
 			// construction-time diagnostic already waits for it.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
+			// A served session fails closed on it at its first input
+			// (session_fail_closed.go); an unserved one runs without a
+			// transcript, as it always has.
+			s.transcriptCreateErr = twErr
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second

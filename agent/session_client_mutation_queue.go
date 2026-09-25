@@ -403,7 +403,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 			// claim commits against. Returning it from the mutation is what
 			// keeps the refusal from committing anything -- a nil return would
 			// save the generation the claim then declined to change.
-			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 				return refusal
 			}
 			snapshot.ActiveTurnID = turnID

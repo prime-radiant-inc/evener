@@ -70,11 +70,13 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 
-			deps.deliverCommunicate(events.CommunicateData{
+			if !deps.deliverCommunicate(events.CommunicateData{
 				CallID:  callIDFromContext(ctx),
 				EndTurn: endTurn,
 				Message: message,
-			})
+			}) {
+				return nil, errors.New("communicate was not delivered: the session's transcript did not record it")
+			}
 
 			inbox := []string{}
 			if endTurn {

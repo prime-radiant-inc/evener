@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -54,7 +55,7 @@ func (s *Session) beginExecution(name string) {
 	s.mu.Unlock()
 	s.attachedTranscript().BeginExecution(turnID, reopen)
 	if reopen {
-		s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
+		_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
 	}
 }
 
@@ -75,7 +76,7 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 		status = schema.TurnFailed
 	}
 	now := s.sclock().Now().UTC()
-	s.recordTranscriptOnlyAt(schema.Turn{
+	_ = s.recordTranscriptOnlyAt(schema.Turn{
 		Kind:       schema.TurnCompletion,
 		Timestamp:  now,
 		Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)},
@@ -208,35 +209,46 @@ type recordedOrdinal struct {
 
 // recordTranscriptOnlyAt records a transcript-only entry with the given
 // placement. It never enters history. A write that fails is reported as a
-// warning; nothing else depends on it.
-func (s *Session) recordTranscriptOnlyAt(turn schema.Turn, place transcript.Placement) {
+// warning.
+func (s *Session) recordTranscriptOnlyAt(turn schema.Turn, place transcript.Placement) transcript.Record {
 	if turn.Timestamp.IsZero() {
 		turn.Timestamp = s.sclock().Now().UTC()
 	}
-	err := func() error {
+	rec, err := func() (transcript.Record, error) {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
-		_, err := s.recordTranscriptLocked(turn, transcript.DoorBuffered, place)
-		return err
+		return s.recordTranscriptLocked(turn, transcript.DoorBuffered, place)
 	}()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
+	return rec
 }
 
 // recordNotice records a presentational notice, the history form of a live
 // notice a reader would otherwise lose on reload.
 func (s *Session) recordNotice(notice schema.NoticeInfo) {
-	s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
+	_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
 }
 
-// deliverCommunicate delivers a communicate message: it is recorded as a
-// COMMUNICATE entry first, and announced once the entry is recorded, so a
-// delivered message is never missing from history.
-func (s *Session) deliverCommunicate(data events.CommunicateData) {
-	s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
+// deliverCommunicate delivers a communicate message and reports whether it
+// did: the message is recorded as a COMMUNICATE entry first, and announced
+// only once the entry is recorded, so a delivered message is never missing
+// from history. A served session whose transcript does not record it fails
+// closed and delivers nothing; a session with no transcript, or one nobody
+// serves, announces it as it always has.
+func (s *Session) deliverCommunicate(data events.CommunicateData) bool {
+	rec := s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
+	if !rec.Recorded && s.attachedTranscript() != nil {
+		s.failClosed(errors.New("a communicate message was not recorded"))
+		if s.failedClosedRefusal() != nil {
+			s.announceFailClosed()
+			return false
+		}
+	}
 	s.emit(events.EventCommunicate, data)
+	return true
 }
 
 // highestClientMutationTurnSequence is the highest turn_m<N> sequence any of

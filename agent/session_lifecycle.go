@@ -1737,10 +1737,11 @@ func (s *Session) endInputAtTurnFailure() {
 // a write and an fsync), and neither fact is ever cleared, so a stale read costs
 // one turn that then meets the writer's own refusal.
 func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
-	refusal := refuseOnUnhealthyTranscript(s.attachedTranscript())
+	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 	if refusal == nil {
 		return nil
 	}
+	s.announceFailClosed()
 	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
 	return refusal
@@ -1760,7 +1761,7 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 // Its callers only reach it when they have work in hand, so an idle wake against
 // a dead transcript still stands down quietly.
 func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
-	return refuseOnUnhealthyTranscript(s.attachedTranscript())
+	return s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 }
 
 // refuseOnUnhealthyTranscript is refuseBeforeClaimingOnUnhealthyTranscript for a
@@ -1786,7 +1787,16 @@ func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
 // the claim guarantees is that the refusal and the claim decision see one
 // generation, and both claim callers give the claim back when the turn loop then
 // refuses it.
-func refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
+func (s *Session) refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
+	if s.transcriptCreateErr != nil {
+		s.failClosed(fmt.Errorf("create transcript: %w", s.transcriptCreateErr))
+	}
+	if writer.Poisoned() {
+		s.failClosed(errTranscriptRefusesRecords())
+	}
+	if refusal := s.failedClosedRefusal(); refusal != nil {
+		return refusal
+	}
 	if writer.Poisoned() {
 		return errTranscriptRefusesRecords()
 	}
@@ -1816,6 +1826,9 @@ func errTranscriptRefusesRecords() error {
 func transcriptRefusal(cause error) error {
 	if cause == nil {
 		return nil
+	}
+	if errors.Is(cause, errTranscriptFailedClosed) {
+		return cause
 	}
 	if errors.Is(cause, transcript.ErrWriterPoisoned) {
 		return errTranscriptRefusesRecords()
@@ -1862,7 +1875,7 @@ func (s *Session) transcriptRefusalForWrite(writeErr error) error {
 	if writeErr == nil {
 		return nil
 	}
-	return refuseOnUnhealthyTranscript(s.attachedTranscript())
+	return s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 }
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
@@ -1971,8 +1984,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	}
 
-	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
+	// Derive a context that cancels when either the caller's ctx or the session
+	// ctx cancels, or the session fails closed.
 	ctx, cancel := context.WithCancel(ctx)
+	defer s.trackExecutionCancel(cancel)()
 	go func() {
 		select {
 		case <-s.sessionCtx.Done():

@@ -32,8 +32,8 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// deliverCommunicate records a communicate message in the transcript and
-	// then announces it (Session.deliverCommunicate).
-	deliverCommunicate func(data events.CommunicateData)
+	// then announces it, reporting whether it did (Session.deliverCommunicate).
+	deliverCommunicate func(data events.CommunicateData) bool
 
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error
