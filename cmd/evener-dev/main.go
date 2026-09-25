@@ -14,14 +14,15 @@ import (
 )
 
 var subcommands = map[string]func(args []string) int{
-	"agent-shards":     runAgentShards,
-	"check-gate-flags": checkGateFlagsMain,
-	"cli-shards":       runCLIShards,
-	"covstmt":          covstmtMain,
-	"hub-shards":       runHubShards,
-	"list-build-flags": listBuildFlagsMain,
-	"module-lint":      lintMain,
-	"root-test-flags":  rootTestFlagsMain,
+	"agent-shards":       runAgentShards,
+	"check-gate-flags":   checkGateFlagsMain,
+	"cli-shards":         runCLIShards,
+	"covstmt":            covstmtMain,
+	"hub-shards":         runHubShards,
+	"list-build-flags":   listBuildFlagsMain,
+	"module-lint":        lintMain,
+	"root-test-flags":    rootTestFlagsMain,
+	"web-browser-guards": runWebBrowserGuards,
 }
 
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
@@ -38,11 +39,17 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return run(args[1:])
 }
 
-func usage(w io.Writer) {
+// Subcommands is every `evener dev` subcommand, sorted: the one list both
+// usage texts print, so neither can drift from what Run dispatches.
+func Subcommands() []string {
 	names := make([]string, 0, len(subcommands))
 	for name := range subcommands {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	_, _ = fmt.Fprintf(w, "usage: evener dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(names, " "))
+	return names
+}
+
+func usage(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "usage: evener dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(Subcommands(), " "))
 }

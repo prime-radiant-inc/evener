@@ -19,8 +19,10 @@ test-web: web-preflight
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
 # of test-web because jsdom cannot evaluate the CSS cascade or browser geometry.
-# The script runs every guard so one missing browser or failing case does not
-# hide the remaining guard's verdict; exit status is the first nonzero one.
+# The gate (`evener dev web-browser-guards`, run from the prebuilt evener-dev
+# binary so an interrupt reaches it) runs every guard so one missing browser or
+# failing case does not hide the remaining guard's verdict; exit status is the
+# first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
 ## shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
@@ -40,7 +42,7 @@ test-web: web-preflight
 ##   and the built frontend (built automatically when dist is missing).
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
-test-web-browser: web-preflight
+test-web-browser: web-preflight build-dev
 	@scripts/web/test-web-browser.sh
 
 # check:scripts is separate from check because they answer different questions

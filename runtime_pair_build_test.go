@@ -3,10 +3,8 @@ package evener_test
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,13 +102,6 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"EVENER_TEST_WEB_WAIT_REAPED",
 		"EVENER_TEST_WEB_STALE_JOB",
 		"EVENER_TEST_WEB_WAIT_USED",
-		"EVENER_TEST_NODE_HOLD_COMMAND",
-		"EVENER_TEST_NODE_FAIL_COMMAND",
-		"EVENER_TEST_NODE_PID",
-		"EVENER_TEST_NODE_READY",
-		"EVENER_TEST_NODE_TERM",
-		"EVENER_TEST_NODE_RELEASE",
-		"EVENER_TEST_NODE_READY_FD",
 		"EVENER_TEST_PROCESS_STATE_DIR",
 	}
 	for _, name := range controlNames {
@@ -400,7 +391,7 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
-	for _, target := range []string{"build-web", "test-web", "test-web-browser"} {
+	for _, target := range []string{"build-web", "test-web"} {
 		command := exec.Command("make", target)
 		command.Dir = fixture.root
 		command.Env = append(fixture.environment(""), "EVENER_TEST_PROCESS_STATE_DIR="+processStateDir)
@@ -422,19 +413,11 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 		logData = append(logData, data...)
 	}
 	wantNPMCommands := map[string]bool{
-		"ci":                  false,
-		"run build":           false,
-		"run typecheck":       false,
-		"run test":            false,
-		"run lint":            false,
-		"run retirementguard": false,
-	}
-	wantNodeCommands := map[string]bool{
-		"scripts/layoutguard/run.mjs":           false,
-		"scripts/overflowguard/run.mjs":         false,
-		"scripts/shellguard/run.mjs":            false,
-		"scripts/spawnguard/run.mjs":            false,
-		"scripts/transcriptscrollguard/run.mjs": false,
+		"ci":            false,
+		"run build":     false,
+		"run typecheck": false,
+		"run test":      false,
+		"run lint":      false,
 	}
 	assertProcessState := func(tool, command string, fields []string, wantPrivateRoots bool) {
 		t.Helper()
@@ -458,604 +441,21 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 			}
 		}
 	}
-	// Guards run side by side, and two Vite processes optimizing into one dep
-	// cache race (issue #1586): every Vite-backed guard gets its own.
-	viteCaches := map[string]string{}
-	assertOwnViteCache := func(tool, command string, fields []string) {
-		t.Helper()
-		if len(fields) != 9 {
-			t.Errorf("%s %s record has %d fields, want 9 (Vite cache dir last)", tool, command, len(fields))
-			return
-		}
-		cache := fields[8]
-		if !strings.HasPrefix(cache, fixture.root+string(os.PathSeparator)) {
-			t.Errorf("%s %s Vite cache dir = %q, want a guard-owned directory beneath %q", tool, command, cache, fixture.root)
-		} else if other, shared := viteCaches[cache]; shared {
-			t.Errorf("%s %s shares Vite cache dir %q with %s", tool, command, cache, other)
-		} else {
-			viteCaches[cache] = command
-		}
-	}
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(logData), "\n"), "\n") {
 		fields := strings.Split(line, "\t")
 		if len(fields) != 8 && len(fields) != 9 {
 			continue
 		}
 		command := fields[1]
-		switch fields[0] {
-		case "npm-env":
-			if _, expected := wantNPMCommands[command]; expected {
-				wantNPMCommands[command] = true
-				assertProcessState("npm", command, fields, strings.HasPrefix(command, "run ") && command != "run build")
-				if command == "run retirementguard" {
-					assertOwnViteCache("npm", command, fields)
-				}
-			}
-		case "node-env":
-			if _, expected := wantNodeCommands[command]; expected {
-				wantNodeCommands[command] = true
-				assertProcessState("node", command, fields, true)
-				assertOwnViteCache("node", command, fields)
-			}
+		if _, expected := wantNPMCommands[command]; fields[0] == "npm-env" && expected {
+			wantNPMCommands[command] = true
+			assertProcessState("npm", command, fields, strings.HasPrefix(command, "run ") && command != "run build")
 		}
 	}
 	for command, seen := range wantNPMCommands {
 		if !seen {
 			t.Errorf("npm %s was not observed; log = %q", command, logData)
 		}
-	}
-	for command, seen := range wantNodeCommands {
-		if !seen {
-			t.Errorf("node %s was not observed; log = %q", command, logData)
-		}
-	}
-}
-
-func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
-	const hangWatchdog = 30 * time.Second
-
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	heldCommand := "scripts/layoutguard/run.mjs"
-	readyPath := filepath.Join(fixture.root, "held-node.ready")
-	pidPath := filepath.Join(fixture.root, "held-node.pid")
-	termPath := filepath.Join(fixture.root, "held-node.term")
-	releasePath := filepath.Join(fixture.root, "held-node.release")
-
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"EVENER_TEST_NODE_HOLD_COMMAND="+heldCommand,
-		"EVENER_TEST_NODE_READY="+readyPath,
-		"EVENER_TEST_NODE_PID="+pidPath,
-		"EVENER_TEST_NODE_TERM="+termPath,
-		"EVENER_TEST_NODE_RELEASE="+releasePath,
-		"EVENER_TEST_NODE_READY_FD=3",
-	)
-	readyReader, readyWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create held Node readiness pipe: %v", err)
-	}
-	command.ExtraFiles = []*os.File{readyWriter}
-	var output syncBuffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		_ = readyReader.Close()
-		_ = readyWriter.Close()
-		t.Fatalf("start make test-web-browser: %v", err)
-	}
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
-	readyDone, lifecycleDone := observeHeldBrowserFixtureLifecycle(readyReader)
-	if err := readyWriter.Close(); err != nil {
-		_, cleanupErr := cleanupHeldBrowserFixture(command, waitDone, false, lifecycleDone, releasePath, hangWatchdog)
-		readerErr := readyReader.Close()
-		if cleanupErr != nil {
-			cleanupErr = errors.Join(cleanupErr, readerErr)
-			t.Fatalf("close parent held Node readiness writer: %v; cleanup: %v", err, cleanupErr)
-		}
-		if readerErr != nil {
-			t.Fatalf("close parent held Node readiness writer: %v; close readiness reader: %v", err, readerErr)
-		}
-		t.Fatalf("close parent held Node readiness writer: %v", err)
-	}
-	t.Cleanup(func() { _ = readyReader.Close() })
-	makeWaited := false
-	lifecycleObserved := false
-	t.Cleanup(func() {
-		if lifecycleObserved {
-			return
-		}
-		observed, err := cleanupHeldBrowserFixture(command, waitDone, makeWaited, lifecycleDone, releasePath, hangWatchdog)
-		lifecycleObserved = observed
-		if err != nil {
-			t.Errorf("clean held browser fixture: %v; output = %s", err, output.String())
-		}
-	})
-	select {
-	case err := <-readyDone:
-		if err != nil {
-			t.Fatalf("receive held browser Node readiness: %v; output = %s", err, output.String())
-		}
-	case waitErr := <-waitDone:
-		makeWaited = true
-		t.Fatalf("make test-web-browser returned before Node became ready: %v; output = %s", waitErr, output.String())
-	case <-time.After(hangWatchdog):
-		t.Fatalf("held browser Node readiness did not arrive within hang watchdog %s; output = %s", hangWatchdog, output.String())
-	}
-
-	browserRoot := browserEvidenceRoot(t, fixture, heldCommand)
-	if _, err := os.Stat(browserRoot); err != nil {
-		t.Fatalf("private browser root %q was absent while its Node owner was running: %v", browserRoot, err)
-	}
-
-	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
-		t.Fatalf("signal make test-web-browser: %v", err)
-	}
-	if !waitForPath(termPath, 5*time.Second) {
-		t.Fatalf("Make did not deliver TERM to the browser Node owner; output = %s", output.String())
-	}
-	select {
-	case waitErr := <-waitDone:
-		makeWaited = true
-		t.Fatalf("make test-web-browser returned before Node released cleanup: %v; output = %s", waitErr, output.String())
-	default:
-	}
-	writeTestFile(t, releasePath, nil, 0o644)
-
-	select {
-	case waitErr := <-waitDone:
-		makeWaited = true
-		if waitErr == nil {
-			t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
-		}
-	case <-time.After(hangWatchdog):
-		t.Fatalf("make test-web-browser did not return within hang watchdog %s after Node completed cleanup; output = %s", hangWatchdog, output.String())
-	}
-	observed, err := cleanupHeldBrowserFixture(command, waitDone, makeWaited, lifecycleDone, releasePath, hangWatchdog)
-	lifecycleObserved = observed
-	if err != nil {
-		t.Fatalf("finish held browser fixture cleanup: %v; output = %s", err, output.String())
-	}
-	if retained := fullLogsPath([]byte(output.String())); retained != browserRoot {
-		t.Errorf("interrupted browser logs = %q, want retained process-owned root %q; output = %s", retained, browserRoot, output.String())
-	}
-	if _, err := os.Stat(browserRoot); err != nil {
-		t.Errorf("interrupted browser root %q was not retained: %v", browserRoot, err)
-	}
-	pidData, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("read held Node pid: %v", err)
-	}
-	nodePID := strings.TrimSpace(string(pidData))
-	if exec.Command("kill", "-0", nodePID).Run() == nil {
-		t.Errorf("interrupted browser Node pid %s is still alive", nodePID)
-	}
-}
-
-func TestFrontendToolchainStubHeldNodeHonorsPreexistingRelease(t *testing.T) {
-	fixture := newBuildWebFixture(t)
-	heldCommand := "scripts/layoutguard/run.mjs"
-	readyPath := filepath.Join(fixture.root, "held-node.ready")
-	pidPath := filepath.Join(fixture.root, "held-node.pid")
-	termPath := filepath.Join(fixture.root, "held-node.term")
-	releasePath := filepath.Join(fixture.root, "held-node.release")
-	writeTestFile(t, releasePath, nil, 0o644)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, filepath.Join(fixture.fakeBin, "node"), heldCommand)
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"EVENER_TEST_NODE_HOLD_COMMAND="+heldCommand,
-		"EVENER_TEST_NODE_READY="+readyPath,
-		"EVENER_TEST_NODE_PID="+pidPath,
-		"EVENER_TEST_NODE_TERM="+termPath,
-		"EVENER_TEST_NODE_RELEASE="+releasePath,
-	)
-	output, err := command.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("held Node ignored a release that existed before startup; output = %s", output)
-	}
-	var exitError *exec.ExitError
-	if !errors.As(err, &exitError) || exitError.ExitCode() != 143 {
-		t.Fatalf("held Node exit = %v, want status 143 after preexisting release; output = %s", err, output)
-	}
-	if _, err := os.Stat(readyPath); err != nil {
-		t.Fatalf("held Node did not publish readiness before honoring release: %v", err)
-	}
-	if _, err := os.Stat(pidPath); err != nil {
-		t.Fatalf("held Node did not publish its pid before honoring release: %v", err)
-	}
-	if _, err := os.Stat(termPath); !os.IsNotExist(err) {
-		t.Fatalf("held Node recorded TERM without receiving it: stat err = %v", err)
-	}
-}
-
-func TestHeldBrowserFixtureLifecycleWithoutNode(t *testing.T) {
-	lifecycleReader, lifecycleWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create empty lifecycle pipe: %v", err)
-	}
-	t.Cleanup(func() { _ = lifecycleReader.Close() })
-	readyDone, lifecycleDone := observeHeldBrowserFixtureLifecycle(lifecycleReader)
-	if err := lifecycleWriter.Close(); err != nil {
-		t.Fatalf("close empty lifecycle writer: %v", err)
-	}
-	if err := <-readyDone; !errors.Is(err, io.EOF) {
-		t.Fatalf("readiness without Node = %v, want EOF", err)
-	}
-	if err := <-lifecycleDone; err != nil {
-		t.Fatalf("lifecycle without Node = %v, want nil", err)
-	}
-}
-
-func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	// The built frontend is the browser gate's documented prerequisite
-	// (the web CI job builds before the browser gate runs); a present dist
-	// also keeps a successful run's output to exactly the verdict lines.
-	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
-
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = fixture.environment("")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("make test-web-browser: %v\n%s", err, output)
-	}
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 7 {
-		t.Fatalf("successful browser output has %d nonempty lines, want 7 verdicts; output = %q", len(lines), output)
-	}
-	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "skillguard"} {
-		fields := strings.Fields(lines[index])
-		if len(fields) != 2 || fields[0] != "PASS" || fields[1] != "web-"+guard {
-			t.Errorf("browser verdict %d fields = %q, want PASS for %s", index, fields, guard)
-		}
-	}
-	browserRoot := browserEvidenceRoot(t, fixture, "scripts/layoutguard/run.mjs")
-	if _, err := os.Stat(browserRoot); !os.IsNotExist(err) {
-		t.Fatalf("successful browser evidence root %q survived: stat err = %v", browserRoot, err)
-	}
-}
-
-// TestMakeTestWebBrowserRunsTheGuardsAtOnce pins that the browser gate runs
-// guards side by side and hands a finished guard's slot to the next one: with
-// the first guard held, every later Node guard must still start, both when
-// every guard has a slot and when only two do (the later guards then take
-// turns in the one free slot). A gate that ran them one at a time would start
-// none of them until the first was released, and one that reaped guards in
-// order would start only the second.
-func TestMakeTestWebBrowserRunsTheGuardsAtOnce(t *testing.T) {
-	for _, slots := range []string{"7", "2"} {
-		t.Run(slots+" slots", func(t *testing.T) { testBrowserGuardsRunAtOnce(t, slots) })
-	}
-}
-
-func testBrowserGuardsRunAtOnce(t *testing.T, slots string) {
-	const tripwire = 30 * time.Second
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
-	processStateDir := filepath.Join(fixture.root, "process-state-records")
-	if err := os.Mkdir(processStateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	releasePath := filepath.Join(fixture.root, "held-node.release")
-
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		// A fixed slot count, whatever the host's load says.
-		"BROWSER_GUARD_CONCURRENCY="+slots,
-		"EVENER_TEST_PROCESS_STATE_DIR="+processStateDir,
-		"EVENER_TEST_NODE_HOLD_COMMAND=scripts/layoutguard/run.mjs",
-		"EVENER_TEST_NODE_READY="+filepath.Join(fixture.root, "held-node.ready"),
-		"EVENER_TEST_NODE_PID="+filepath.Join(fixture.root, "held-node.pid"),
-		"EVENER_TEST_NODE_TERM="+filepath.Join(fixture.root, "held-node.term"),
-		"EVENER_TEST_NODE_RELEASE="+releasePath,
-	)
-	var output syncBuffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		t.Fatalf("start make test-web-browser: %v", err)
-	}
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
-	released := false
-	release := func() {
-		if !released {
-			released = true
-			_ = os.WriteFile(releasePath, nil, 0o644)
-		}
-	}
-	t.Cleanup(func() {
-		release()
-		select {
-		case <-waitDone:
-		case <-time.After(tripwire): // TRIPWIRE: the released stub exits at once; this only bounds a hang.
-			_ = command.Process.Kill()
-		}
-	})
-
-	later := []string{"scripts/overflowguard/run.mjs", "scripts/shellguard/run.mjs", "scripts/spawnguard/run.mjs", "scripts/transcriptscrollguard/run.mjs"}
-	started := func() []string {
-		entries, _ := os.ReadDir(processStateDir)
-		var seen []string
-		for _, entry := range entries {
-			data, err := os.ReadFile(filepath.Join(processStateDir, entry.Name()))
-			if err != nil {
-				continue
-			}
-			for _, guard := range later {
-				if strings.Contains(string(data), "\t"+guard+"\t") {
-					seen = append(seen, guard)
-				}
-			}
-		}
-		return seen
-	}
-	// TRIPWIRE: the stubs start in milliseconds; the poll only bounds a gate
-	// that never starts them while the first guard is held.
-	deadline := time.Now().Add(tripwire)
-	for len(started()) < len(later) {
-		select {
-		case err := <-waitDone:
-			t.Fatalf("make test-web-browser returned while the first guard was held: %v; output = %s", err, output.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("with layoutguard held, only %q of the later guards started; want all of %q", started(), later)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	release()
-}
-
-// TestMakeTestWebBrowserZeroConcurrencyStillRunsEveryGuard pins that a slot
-// count of zero, however it is spelled, means one slot rather than none: "00"
-// once compared unequal to 0 as text yet never let a guard start, so the gate
-// slept forever.
-func TestMakeTestWebBrowserZeroConcurrencyStillRunsEveryGuard(t *testing.T) {
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: the stubbed guards finish in well under a second; this only bounds a hang.
-	defer cancel()
-	command := exec.CommandContext(ctx, "make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "BROWSER_GUARD_CONCURRENCY=00")
-	// A hung gate is killed by the context, but the guards it started still
-	// hold the output pipe; WaitDelay bounds the read so the test reports the
-	// hang instead of joining it.
-	command.WaitDelay = 5 * time.Second
-	output, err := command.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("make test-web-browser with BROWSER_GUARD_CONCURRENCY=00 hung; output = %s", output)
-	}
-	if err != nil {
-		t.Fatalf("make test-web-browser with BROWSER_GUARD_CONCURRENCY=00: %v\n%s", err, output)
-	}
-	if got := strings.Count(string(output), "PASS  web-"); got != 7 {
-		t.Fatalf("PASS verdicts = %d, want 7; output = %s", got, output)
-	}
-}
-
-// TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard pins that an
-// interrupted gate waits for the skill guard instead of signalling it: the
-// guard is a go test whose driver, Chrome and helper daemons are cleaned up by
-// the test binary's own t.Cleanup, which a TERM to go test would skip. A held
-// node guard shows when the gate's kill pass has run; the go test stub
-// records any TERM it gets.
-func TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard(t *testing.T) {
-	const tripwire = 30 * time.Second
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
-	nodeTerm := filepath.Join(fixture.root, "held-node.term")
-	nodeRelease := filepath.Join(fixture.root, "held-node.release")
-	goTerm := filepath.Join(fixture.root, "held-go.term")
-	goRelease := filepath.Join(fixture.root, "held-go.release")
-
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"BROWSER_GUARD_CONCURRENCY=7",
-		"EVENER_TEST_NODE_HOLD_COMMAND=scripts/layoutguard/run.mjs",
-		"EVENER_TEST_NODE_READY="+filepath.Join(fixture.root, "held-node.ready"),
-		"EVENER_TEST_NODE_PID="+filepath.Join(fixture.root, "held-node.pid"),
-		"EVENER_TEST_NODE_TERM="+nodeTerm,
-		"EVENER_TEST_NODE_RELEASE="+nodeRelease,
-		"EVENER_TEST_GO_TEST_READY="+filepath.Join(fixture.root, "held-go.ready"),
-		"EVENER_TEST_GO_TEST_TERM="+goTerm,
-		"EVENER_TEST_GO_TEST_RELEASE="+goRelease,
-	)
-	var output syncBuffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		t.Fatalf("start make test-web-browser: %v", err)
-	}
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
-	release := func() {
-		_ = os.WriteFile(nodeRelease, nil, 0o644)
-		_ = os.WriteFile(goRelease, nil, 0o644)
-	}
-	finished := false
-	t.Cleanup(func() {
-		release()
-		if finished {
-			return
-		}
-		select {
-		case <-waitDone:
-		case <-time.After(tripwire): // TRIPWIRE: released stubs exit at once; this only bounds a hang.
-			_ = command.Process.Kill()
-		}
-	})
-
-	// TRIPWIRE: the stubs start in milliseconds; the poll only bounds a gate
-	// that never reaches its held guards.
-	for _, ready := range []string{"held-node.ready", "held-go.ready"} {
-		if !waitForPath(filepath.Join(fixture.root, ready), tripwire) {
-			t.Fatalf("a held guard never became ready (%s); output = %s", ready, output.String())
-		}
-	}
-	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signal make test-web-browser: %v", err)
-	}
-	if !waitForPath(nodeTerm, tripwire) {
-		t.Fatalf("the interrupted gate never signalled the held node guard; output = %s", output.String())
-	}
-	release()
-	select {
-	case err := <-waitDone:
-		finished = true
-		if err == nil {
-			t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
-		}
-	case <-time.After(tripwire): // TRIPWIRE: see above.
-		t.Fatalf("make test-web-browser did not finish after its guards were released; output = %s", output.String())
-	}
-	if _, err := os.Stat(goTerm); !os.IsNotExist(err) {
-		t.Fatalf("the interrupted gate signalled the skill guard's go test (stat %s: %v); its cleanup would be skipped", goTerm, err)
-	}
-}
-
-// TestMakeTestWebBrowserInterruptWaitsForGuardSetup pins that an interrupt
-// landing while the retirement guard is still preparing its private Go home
-// waits for the setup step in flight, then stops before the guard starts. A
-// guard shell that died on the TERM left that step (here the copy of the
-// ambient go env) running with no one waiting for it, still writing into the
-// scratch after the gate, and the test's TempDir cleanup, had moved on.
-//
-// The held cp and a BASH_ENV wrapper around the gate's wait builtin append to
-// one log, so the order is the evidence: the gate's wait for the guard shell
-// must not return before the step that shell was running has finished. Each
-// also drops a marker file the test awaits: the cp names the guard shell, and
-// the wrapper marks each pid the gate starts waiting for.
-func TestMakeTestWebBrowserInterruptWaitsForGuardSetup(t *testing.T) {
-	const tripwire = 30 * time.Second
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
-	orderLog := filepath.Join(fixture.root, "setup-order.log")
-	release := filepath.Join(fixture.root, "setup.release")
-	heldPath := filepath.Join(fixture.root, "setup.held")
-	waitMarker := filepath.Join(fixture.root, "gate-waits-for.")
-	ambientGoEnv := filepath.Join(fixture.root, "ambient-go-env")
-	writeTestFile(t, ambientGoEnv, nil, 0o644)
-	// Only the private-home copy of this exact file is held; every other cp
-	// passes straight through.
-	writeTestFile(t, filepath.Join(fixture.fakeBin, "cp"), []byte(`#!/bin/sh
-if [ "$1" = "$EVENER_TEST_CP_HOLD" ]; then
-	printf 'cp-held %s\n' "$PPID" >> "$EVENER_TEST_SETUP_ORDER"
-	printf '%s\n' "$PPID" > "$EVENER_TEST_SETUP_HELD.tmp"
-	mv "$EVENER_TEST_SETUP_HELD.tmp" "$EVENER_TEST_SETUP_HELD"
-	while [ ! -f "$EVENER_TEST_SETUP_RELEASE" ]; do sleep 0.01; done
-	printf 'cp-done\n' >> "$EVENER_TEST_SETUP_ORDER"
-fi
-exec /bin/cp "$@"
-`), 0o755)
-	bashEnv := filepath.Join(fixture.root, "wait-order-shell")
-	writeTestFile(t, bashEnv, []byte(`wait() {
-	local status
-	printf 'wait %s\n' "$*" >> "$EVENER_TEST_SETUP_ORDER"
-	: > "$EVENER_TEST_WAIT_MARKER$1"
-	builtin wait "$@"; status=$?
-	printf 'waited %s\n' "$*" >> "$EVENER_TEST_SETUP_ORDER"
-	return "$status"
-}
-`), 0o644)
-
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"BROWSER_GUARD_CONCURRENCY=7",
-		"BASH_ENV="+bashEnv,
-		"GOENV="+ambientGoEnv,
-		"EVENER_TEST_CP_HOLD="+ambientGoEnv,
-		"EVENER_TEST_SETUP_ORDER="+orderLog,
-		"EVENER_TEST_SETUP_RELEASE="+release,
-		"EVENER_TEST_SETUP_HELD="+heldPath,
-		"EVENER_TEST_WAIT_MARKER="+waitMarker,
-	)
-	var output syncBuffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		t.Fatalf("start make test-web-browser: %v", err)
-	}
-	run := startChild(command)
-	t.Cleanup(func() {
-		_ = os.WriteFile(release, nil, 0o644)
-		if err := waitForChildExit(run, tripwire); errors.Is(err, errChildExitTimeout) {
-			_ = command.Process.Kill()
-		}
-	})
-	orderLines := func() []string {
-		data, _ := os.ReadFile(orderLog)
-		return strings.Split(strings.TrimSpace(string(data)), "\n")
-	}
-
-	if err := waitForPathOrExit(heldPath, run, readinessTripwire); err != nil {
-		t.Fatalf("the retirement guard's setup never reached the held cp: %v; output = %s", err, output.String())
-	}
-	heldData, err := os.ReadFile(heldPath)
-	if err != nil {
-		t.Fatalf("read held setup step's shell: %v", err)
-	}
-	guardShell := strings.TrimSpace(string(heldData))
-	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signal make test-web-browser: %v", err)
-	}
-	// The gate signals every running guard before it waits for any, so once it
-	// waits for the guard shell, that shell has been sent its TERM.
-	if err := waitForPathOrExit(waitMarker+guardShell, run, readinessTripwire); err != nil {
-		t.Fatalf("the interrupted gate never waited for the retirement guard's shell %s: %v; order = %q; output = %s", guardShell, err, orderLines(), output.String())
-	}
-	writeTestFile(t, release, nil, 0o644)
-	if err := waitForChildExit(run, tripwire); err == nil {
-		t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
-	} else if errors.Is(err, errChildExitTimeout) {
-		t.Fatalf("make test-web-browser did not finish after the setup step was released: %v; output = %s", err, output.String())
-	}
-
-	// The gate may wait for the shell more than once (a wait in a trap handler
-	// can return early), so the last wait is the one that let it move on.
-	order := orderLines()
-	done, waited := slices.Index(order, "cp-done"), -1
-	for index, line := range order {
-		if line == "waited "+guardShell {
-			waited = index
-		}
-	}
-	if done < 0 || waited < 0 || waited < done {
-		t.Fatalf("the gate stopped waiting for the retirement guard's shell before its setup step finished; order = %q", order)
-	}
-	logData, err := os.ReadFile(fixture.logPath)
-	if err != nil {
-		t.Fatalf("read fake toolchain log: %v", err)
-	}
-	if strings.Contains(string(logData), "npm run retirementguard") {
-		t.Fatalf("the retirement guard started after the gate was interrupted; log = %q", logData)
 	}
 }
 
@@ -1067,7 +467,7 @@ exec /bin/cp "$@"
 // holds the scripts to the form that has none.
 func TestWebGateScriptsHaveNoLoopJumps(t *testing.T) {
 	loopJump := regexp.MustCompile(`(^|[\s;&|({])(break|continue)($|[\s;&|)}])`)
-	for _, path := range []string{"scripts/web/test-web.sh", "scripts/web/test-web-browser.sh", "scripts/lib/owned-jobs.sh"} {
+	for _, path := range []string{"scripts/web/test-web.sh", "scripts/lib/owned-jobs.sh"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -1083,137 +483,6 @@ func TestWebGateScriptsHaveNoLoopJumps(t *testing.T) {
 			if loopJump.MatchString(code) {
 				t.Errorf("%s:%d uses a loop jump a trap can be lost behind: %s", path, number+1, strings.TrimSpace(line))
 			}
-		}
-	}
-}
-
-// TestMakeTestWebBrowserSecondInterruptStopsWaiting pins the escape hatch
-// from that wait: a second signal while the gate is waiting for a still-running
-// skill guard exits at once rather than waiting out its go test.
-func TestMakeTestWebBrowserSecondInterruptStopsWaiting(t *testing.T) {
-	const tripwire = 30 * time.Second
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
-	goRelease := filepath.Join(fixture.root, "held-go.release")
-	// Run the gate script directly: a signal to make would be relayed to its
-	// child with make's own timing, and this test needs the script itself to
-	// see both signals.
-	command := exec.Command("bash", filepath.Join(fixture.root, "scripts", "web", "test-web-browser.sh"))
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""),
-		"BROWSER_GUARD_CONCURRENCY=7",
-		"EVENER_TEST_GO_TEST_READY="+filepath.Join(fixture.root, "held-go.ready"),
-		"EVENER_TEST_GO_TEST_TERM="+filepath.Join(fixture.root, "held-go.term"),
-		"EVENER_TEST_GO_TEST_RELEASE="+goRelease,
-	)
-	var output syncBuffer
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
-		t.Fatalf("start test-web-browser.sh: %v", err)
-	}
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
-	finished := false
-	t.Cleanup(func() {
-		_ = os.WriteFile(goRelease, nil, 0o644)
-		if finished {
-			return
-		}
-		select {
-		case <-waitDone:
-		case <-time.After(tripwire): // TRIPWIRE: a released stub exits at once; this only bounds a hang.
-			_ = command.Process.Kill()
-		}
-	})
-	// TRIPWIRE: the stub starts in milliseconds.
-	if !waitForPath(filepath.Join(fixture.root, "held-go.ready"), tripwire) {
-		t.Fatalf("the held skill guard never became ready; output = %s", output.String())
-	}
-	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("first signal: %v", err)
-	}
-	// The first signal leaves the gate waiting on the held skill guard; keep
-	// signalling until it gives up. Each signal after the first must end it,
-	// so this loop exits on its first repeat.
-	deadline := time.After(tripwire) // TRIPWIRE: see above.
-	for {
-		select {
-		case err := <-waitDone:
-			finished = true
-			if err == nil {
-				t.Fatalf("interrupted test-web-browser.sh exited zero; output = %s", output.String())
-			}
-			if _, statErr := os.Stat(goRelease); statErr == nil {
-				t.Fatal("the gate only exited once the skill guard was released")
-			}
-			return
-		case <-time.After(200 * time.Millisecond): // Paces the repeat signal only; the exit is the observation.
-			_ = command.Process.Signal(syscall.SIGTERM)
-		case <-deadline:
-			t.Fatalf("a second signal did not end the gate while the skill guard was held; output = %s", output.String())
-		}
-	}
-}
-
-// TestMakeTestWebBrowserBuildFailureFailsOnlyTheSkillGuard pins that a
-// frontend build failure fails the one guard that needs the build, and every
-// other guard still runs to its own verdict.
-func TestMakeTestWebBrowserBuildFailureFailsOnlyTheSkillGuard(t *testing.T) {
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "BROWSER_GUARD_CONCURRENCY=7", "EVENER_TEST_NPM_FAIL_COMMAND=run build")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatalf("make test-web-browser with a failing build exited zero; output = %s", output)
-	}
-	for _, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard"} {
-		if !strings.Contains(string(output), "PASS  web-"+guard+"\n") {
-			t.Errorf("web-%s did not run to its verdict when the build failed; output = %s", guard, output)
-		}
-	}
-	if !strings.Contains(string(output), "FAIL  web-skillguard (frontend build, exit 17)") {
-		t.Errorf("the skill guard was not failed as a build failure; output = %s", output)
-	}
-}
-
-func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
-	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
-	failedCommand := "scripts/overflowguard/run.mjs"
-
-	command := exec.Command("make", "test-web-browser")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "EVENER_TEST_NODE_FAIL_COMMAND="+failedCommand)
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatalf("make test-web-browser succeeded despite injected guard failure; output = %s", output)
-	}
-	if !strings.Contains(string(output), "browser failure detail: "+failedCommand) {
-		t.Fatalf("failed guard log was not replayed; output = %s", output)
-	}
-	if strings.Contains(string(output), "browser chatter: scripts/layoutguard/run.mjs") {
-		t.Fatalf("successful guard chatter leaked into failure output; output = %s", output)
-	}
-	retained := fullLogsPath(output)
-	if retained == "" {
-		t.Fatalf("failed browser gate did not name retained evidence; output = %s", output)
-	}
-	if got := browserEvidenceRoot(t, fixture, failedCommand); got != retained {
-		t.Fatalf("named browser evidence root = %q, process-owned root = %q", retained, got)
-	}
-	for _, relative := range []string{"layoutguard.log", "overflowguard.log", "spawnguard.log", filepath.Join("overflowguard", "tmp")} {
-		if _, statErr := os.Stat(filepath.Join(retained, relative)); statErr != nil {
-			t.Errorf("retained browser evidence %s: %v", relative, statErr)
 		}
 	}
 }
@@ -1404,7 +673,6 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/owned-jobs.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/web-preflight.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web.sh", 0o755)
-	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web-browser.sh", 0o755)
 	return fixture
 }
 
@@ -1441,21 +709,6 @@ func newRuntimeBuildFixture(t *testing.T) runtimeBuildFixture {
 	writeTestFile(t, filepath.Join(fakeBin, "go"), []byte(`#!/bin/sh
 set -eu
 
-if [ "$1" = "test" ]; then
-	# A "go test" invocation (the browser gate's web-skillguard step) is not a
-	# build: record the command the same way the build arm records its argv,
-	# then report success so the script's verdict logic is exercised.
-	printf 'go-test\t%s\n' "$*" >> "$EVENER_TEST_GO_LOG"
-	if [ -n "${EVENER_TEST_GO_TEST_RELEASE:-}" ]; then
-		# Held like the node stub: record a TERM if one arrives, and finish
-		# only once the test releases it.
-		trap ': > "$EVENER_TEST_GO_TEST_TERM"' TERM
-		: > "$EVENER_TEST_GO_TEST_READY"
-		while [ ! -f "$EVENER_TEST_GO_TEST_RELEASE" ]; do :; done
-	fi
-	exit 0
-fi
-
 output=
 package=
 ldflags=
@@ -1483,7 +736,7 @@ printf '%s\n' "$package" > "$output"
 
 // installFrontendToolchainStubs equips the fixture for make targets that
 // reach build-web (make/building.mk:78): it creates the frontend directory the
-// recipe cd's into, and shadows npm, Node, and git on the fixture PATH so the REAL
+// recipe cd's into, and shadows npm and git on the fixture PATH so the REAL
 // build-web recipe runs end to end without touching the network or the
 // checkout's actual git state.
 func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
@@ -1525,33 +778,6 @@ fi
 [ "${EVENER_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
 exit 0
 `), 0o755)
-	writeTestFile(t, filepath.Join(fixture.fakeBin, "node"), []byte(`#!/bin/sh
-if [ -n "${EVENER_TEST_PROCESS_STATE_DIR:-}" ]; then
-  record=$(mktemp "$EVENER_TEST_PROCESS_STATE_DIR/node.XXXXXX")
-  printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${BROWSER_GUARD_VITE_CACHE_DIR:-}" > "$record"
-else
-  printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
-fi
-printf 'browser chatter: %s\n' "$*"
-[ "${EVENER_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
-  on_term() {
-    : > "$EVENER_TEST_NODE_TERM"
-    while [ ! -f "$EVENER_TEST_NODE_RELEASE" ]; do :; done
-    exit 143
-  }
-  trap on_term TERM
-  printf '%s\n' "$$" > "$EVENER_TEST_NODE_PID"
-  : > "$EVENER_TEST_NODE_READY"
-  [ "${EVENER_TEST_NODE_READY_FD:-}" != 3 ] || printf . >&3
-  while [ ! -f "$EVENER_TEST_NODE_RELEASE" ]; do :; done
-  exit 143
-}
-[ "${EVENER_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
-  printf 'browser failure detail: %s\n' "$*" >&2
-  exit 23
-}
-exit 0
-`), 0o755)
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "git"), []byte(`#!/bin/sh
 exit 0
 `), 0o755)
@@ -1565,17 +791,6 @@ func fullLogsPath(output []byte) string {
 		}
 	}
 	return ""
-}
-
-func waitForPath(path string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
 }
 
 // readinessTripwire bounds a wait for a child's readiness file. It is a
@@ -1771,51 +986,6 @@ func TestWaitForPathOrExitAcceptsFileWrittenAfterExit(t *testing.T) {
 	}
 }
 
-func observeHeldBrowserFixtureLifecycle(reader *os.File) (<-chan error, <-chan error) {
-	readyDone := make(chan error, 1)
-	lifecycleDone := make(chan error, 1)
-	go func() {
-		var signal [1]byte
-		_, err := io.ReadFull(reader, signal[:])
-		readyDone <- err
-		if err != nil {
-			lifecycleDone <- nil
-			return
-		}
-		_, err = io.Copy(io.Discard, reader)
-		lifecycleDone <- err
-	}()
-	return readyDone, lifecycleDone
-}
-
-func cleanupHeldBrowserFixture(command *exec.Cmd, waitDone <-chan error, makeWaited bool, lifecycleDone <-chan error, releasePath string, watchdog time.Duration) (bool, error) {
-	var cleanupErrors []error
-	lifecycleObserved := false
-	if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("create release: %w", err))
-	}
-	if !makeWaited {
-		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("kill Make: %w", err))
-		}
-		select {
-		case <-waitDone:
-		case <-time.After(watchdog):
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("Make did not exit within cleanup watchdog %s", watchdog))
-		}
-	}
-	select {
-	case err := <-lifecycleDone:
-		lifecycleObserved = true
-		if err != nil {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("observe held Node lifecycle: %w", err))
-		}
-	case <-time.After(watchdog):
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("held Node lifecycle did not finish within cleanup watchdog %s", watchdog))
-	}
-	return lifecycleObserved, errors.Join(cleanupErrors...)
-}
-
 func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byte, error) {
 	command := exec.Command("sh", filepath.Join(fixture.repoRoot, "scripts", "ops", "build-runtime-pair.sh"))
 	command.Dir = fixture.root
@@ -1856,7 +1026,6 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"EVENER_TEST_SHELL_WAIT_RELEASE",
 			"EVENER_TEST_WEB_CLEANUP_READY", "EVENER_TEST_WEB_CLEANUP_RELEASE", "EVENER_TEST_WEB_CLEANUP_PID",
 			"EVENER_TEST_WEB_WAIT_READY", "EVENER_TEST_WEB_WAIT_RELEASE", "EVENER_TEST_WEB_WAIT_REAPED", "EVENER_TEST_WEB_STALE_JOB", "EVENER_TEST_WEB_WAIT_USED",
-			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD",
 			"EVENER_TEST_PROCESS_STATE_DIR":
 			continue
 		}
@@ -1894,22 +1063,6 @@ func runFailedTestWeb(t *testing.T, fixture runtimeBuildFixture) string {
 		t.Fatalf("make test-web did not name retained evidence; output = %s", output)
 	}
 	return retained
-}
-
-func browserEvidenceRoot(t *testing.T, fixture runtimeBuildFixture, command string) string {
-	t.Helper()
-	logData, err := os.ReadFile(fixture.logPath)
-	if err != nil {
-		t.Fatalf("read browser process log: %v", err)
-	}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(logData)), "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) == 8 && fields[0] == "node-env" && fields[1] == command {
-			return filepath.Dir(filepath.Dir(fields[4]))
-		}
-	}
-	t.Fatalf("browser Node command %q was not recorded; log = %q", command, logData)
-	return ""
 }
 
 func copyRepositoryFile(t *testing.T, repoRoot, fixtureRoot, relativePath string, mode os.FileMode) {
