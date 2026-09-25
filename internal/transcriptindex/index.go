@@ -23,7 +23,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 2
+	formatVersion = 3
 	projectionID  = "apptranscript-items-v1/entry-ordinal-positions-v2"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -43,6 +43,7 @@ const (
 	metaFile        = "meta.json"
 	itemsFile       = "items"
 	turnsFile       = "turns"
+	updatesFile     = "updates"
 	stringsFile     = "strings"
 )
 
@@ -67,6 +68,7 @@ type meta struct {
 	HeaderLength int64  `json:"header_length"` // 0: no header yet
 	Items        uint64 `json:"items"`
 	Turns        uint64 `json:"turns"`
+	Updates      uint64 `json:"updates"`
 	// The open turn, for grouping the next entry. There is one once any
 	// entry is covered.
 	Open       bool   `json:"open"`
@@ -84,6 +86,7 @@ type Index struct {
 	build      string // the live build's directory name
 	items      table
 	turns      table
+	updates    table
 	strings    blob
 	meta       meta
 	prelude    *appwire.Turn
@@ -222,14 +225,18 @@ func (x *Index) adopt(m meta) error {
 	if err != nil {
 		return err
 	}
-	if m.Items > items || m.Turns > turns {
+	updates, err := x.updates.available()
+	if err != nil {
+		return err
+	}
+	if m.Items > items || m.Turns > turns || m.Updates > updates {
 		return fmt.Errorf("%w: meta counts records the tables lack", errCorrupt)
 	}
 	info, err := x.strings.file.Stat()
 	if err != nil {
 		return err
 	}
-	x.meta, x.items.n, x.turns.n, x.strings.n = m, m.Items, m.Turns, uint64(info.Size())
+	x.meta, x.items.n, x.turns.n, x.updates.n, x.strings.n = m, m.Items, m.Turns, m.Updates, uint64(info.Size())
 	x.builderStale = true
 	return x.readHeader()
 }
@@ -267,6 +274,13 @@ func (x *Index) extend(length int64) error {
 	}
 	if length <= x.meta.Length {
 		return nil
+	}
+	// Whatever an extension that did not finish left past the counts goes
+	// before this one appends.
+	for _, t := range []*table{&x.items, &x.turns, &x.updates} {
+		if err := t.truncate(t.n); err != nil {
+			return err
+		}
 	}
 	if x.builderStale {
 		if err := x.restoreBuilder(); err != nil {
@@ -471,7 +485,7 @@ func (x *Index) writeMeta() error {
 	}
 	b := &x.builder
 	x.meta.TailSHA256 = sum
-	x.meta.Items, x.meta.Turns = x.items.n, x.turns.n
+	x.meta.Items, x.meta.Turns, x.meta.Updates = x.items.n, x.turns.n, x.updates.n
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
 	data, err := json.Marshal(x.meta)
@@ -514,6 +528,10 @@ func (x *Index) openFiles(create bool) error {
 		return err
 	}
 	x.turns.size = turnRecordSize
+	if x.updates.file, err = open(updatesFile); err != nil {
+		return err
+	}
+	x.updates.size = updateRecordSize
 	x.strings.file, err = open(stringsFile)
 	return err
 }
@@ -521,7 +539,7 @@ func (x *Index) openFiles(create bool) error {
 // closeBuild drops the open build and its view of the transcript.
 func (x *Index) closeBuild() error {
 	var errs []error
-	for _, f := range []**os.File{&x.transcript, &x.items.file, &x.turns.file, &x.strings.file} {
+	for _, f := range []**os.File{&x.transcript, &x.items.file, &x.turns.file, &x.updates.file, &x.strings.file} {
 		if *f != nil {
 			errs = append(errs, (*f).Close())
 			*f = nil
@@ -530,7 +548,7 @@ func (x *Index) closeBuild() error {
 	x.build = ""
 	x.meta = meta{}
 	x.prelude = nil
-	x.items.n, x.turns.n, x.strings.n = 0, 0, 0
+	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0
 	return errors.Join(errs...)
 }
 

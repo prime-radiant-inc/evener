@@ -188,7 +188,17 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 	}
 	record.Completer = c
 	record.Version = version
-	return b.x.items.write(slot, encodeItem(record))
+	if err := b.x.items.write(slot, encodeItem(record)); err != nil {
+		return err
+	}
+	return b.logUpdate(updatedItem, slot, c.Offset)
+}
+
+// logUpdate records an in-place update, so a reader holding an older snapshot
+// can find what changed after it.
+func (b *builder) logUpdate(kind uint32, slot uint64, offset int64) error {
+	_, err := b.x.updates.append(encodeUpdate(updateRecord{Kind: kind, Slot: slot, Offset: offset}))
+	return err
 }
 
 // stampTurn folds the entry into the open turn's summary, the way
@@ -197,6 +207,12 @@ func (b *builder) stampTurn(entry *schema.Turn, version uint64, offset int64, le
 	r := &b.turn
 	if version <= r.Version {
 		return nil // already accounted before an interrupted catch-up
+	}
+	// The turn's first entry creates its summary; every later one rewrites it.
+	if r.Version != 0 {
+		if err := b.logUpdate(updatedTurn, b.turnSlot, offset); err != nil {
+			return err
+		}
 	}
 	if entry.Kind == schema.TurnFailure {
 		r.LifecycleOffset, r.LifecycleLength, r.Status = offset, length, statusFailed

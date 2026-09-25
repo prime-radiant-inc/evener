@@ -10,9 +10,10 @@ import (
 // Record sizes. Records are fixed-size so a record's slot names its offset,
 // and an append can rewrite one in place.
 const (
-	itemRecordSize  = 112
-	turnRecordSize  = 96
-	contributorSize = 32
+	itemRecordSize   = 112
+	turnRecordSize   = 96
+	contributorSize  = 32
+	updateRecordSize = 24
 )
 
 var errCorrupt = errors.New("transcript index is corrupt")
@@ -72,6 +73,40 @@ type turnRecord struct {
 	StartedAt       int64    // unix ms of the first entry with a timestamp
 	Usage           [4]int64 // input, output, cache read, total tokens
 	Version         uint64   // highest accounted entry ordinal + 1
+}
+
+// Update-log record kinds.
+const (
+	updatedItem uint32 = iota + 1
+	updatedTurn
+)
+
+// updateRecord logs one in-place update: the record it changed and the offset
+// of the entry that changed it. Records are in append order, so their offsets
+// never decrease.
+type updateRecord struct {
+	Kind   uint32
+	Slot   uint64
+	Offset int64
+}
+
+func encodeUpdate(r updateRecord) []byte {
+	c := codec{buf: make([]byte, updateRecordSize)}
+	c.putU32(r.Kind)
+	c.putU32(0)
+	c.putU64(r.Slot)
+	c.putI64(r.Offset)
+	return c.buf
+}
+
+func decodeUpdate(buf []byte) updateRecord {
+	var r updateRecord
+	c := codec{buf: buf}
+	c.u32(&r.Kind)
+	c.at += 4 // padding
+	c.u64(&r.Slot)
+	c.i64(&r.Offset)
+	return r
 }
 
 // codec reads and writes little-endian fields over a fixed buffer.
@@ -294,4 +329,34 @@ func (t *table) available() (uint64, error) {
 		return 0, err
 	}
 	return uint64(info.Size() / t.size), nil
+}
+
+// truncate drops records past n: whatever an extension that did not finish
+// left past the counts.
+func (t *table) truncate(n uint64) error {
+	if err := t.file.Truncate(int64(n) * t.size); err != nil {
+		return fmt.Errorf("truncate index records: %w", err)
+	}
+	t.n = n
+	return nil
+}
+
+// search returns the first slot whose record before rejects, as sort.Search
+// does, reading one record per probe. before must hold for a prefix of the
+// table and fail for the rest.
+func (t *table) search(before func(record []byte) bool) (uint64, error) {
+	lo, hi := uint64(0), t.n
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		buf, err := t.read(mid, 1)
+		if err != nil {
+			return 0, err
+		}
+		if before(buf) {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo, nil
 }

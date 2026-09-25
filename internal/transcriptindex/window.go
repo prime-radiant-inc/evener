@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -82,27 +84,20 @@ func (x *Index) rank(position appwire.ThreadItemPosition) (uint64, error) {
 		}
 		return 0, appwire.TranscriptItemCursorStale()
 	}
-	lo, hi := uint64(0), x.items.n
-	for lo < hi {
-		mid := lo + (hi-lo)/2
-		buf, err := x.items.read(mid, 1)
-		if err != nil {
-			return 0, x.fail(err)
-		}
+	slot, err := x.items.search(func(buf []byte) bool {
 		record := decodeItem(buf)
-		if record.Entry < position.Entry || (record.Entry == position.Entry && record.Part < position.Item) {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
+		return record.Entry < position.Entry || (record.Entry == position.Entry && record.Part < position.Item)
+	})
+	if err != nil {
+		return 0, x.fail(err)
 	}
-	if lo < x.items.n {
-		buf, err := x.items.read(lo, 1)
+	if slot < x.items.n {
+		buf, err := x.items.read(slot, 1)
 		if err != nil {
 			return 0, x.fail(err)
 		}
 		if record := decodeItem(buf); record.Entry == position.Entry && record.Part == position.Item {
-			return prelude + lo, nil
+			return prelude + slot, nil
 		}
 	}
 	return 0, appwire.TranscriptItemCursorStale()
@@ -119,30 +114,39 @@ func (x *Index) window(end uint64, limit int) (Window, error) {
 	if end <= prelude {
 		return window, nil
 	}
-	lo, hi := max(start, prelude)-prelude, end-prelude
+	candidates, err := x.span(newReader(x), max(start, prelude)-prelude, end-prelude)
+	if err != nil {
+		return Window{}, err
+	}
+	window.Candidates = append(window.Candidates, candidates...)
+	return window, nil
+}
+
+// span projects item records [lo, hi).
+func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCandidate, error) {
 	// One read covers the records plus a neighbour on each side, which say
-	// whether the edge items' turns continue past the window.
+	// whether the edge items' turns continue past the span.
 	first, last := lo-min(lo, 1), min(hi+1, x.items.n)
 	buf, err := x.items.read(first, int(last-first))
 	if err != nil {
-		return Window{}, x.fail(err)
+		return nil, x.fail(err)
 	}
 	records := make([]itemRecord, last-first)
 	for i := range records {
 		records[i] = decodeItem(buf[i*itemRecordSize:])
 	}
-	r := reader{x: x, entries: map[int64]*schema.Turn{}, projections: map[projectionKey]projection{}, turns: map[uint32]appwire.Turn{}}
+	candidates := make([]appitempaging.TranscriptItemCandidate, 0, hi-lo)
 	for slot := lo; slot < hi; slot++ {
 		record := records[slot-first]
 		turn, err := r.turn(record.Turn)
 		if err != nil {
-			return Window{}, x.fail(err)
+			return nil, x.fail(err)
 		}
 		item, err := r.item(record, turn.ID)
 		if err != nil {
-			return Window{}, x.fail(err)
+			return nil, x.fail(err)
 		}
-		window.Candidates = append(window.Candidates, appitempaging.TranscriptItemCandidate{
+		candidates = append(candidates, appitempaging.TranscriptItemCandidate{
 			TurnID:          turn.ID,
 			Turn:            turn,
 			Item:            item,
@@ -151,7 +155,73 @@ func (x *Index) window(end uint64, limit int) (Window, error) {
 			HasLaterItems:   slot+1 < x.items.n && records[slot+1-first].Turn == record.Turn,
 		})
 	}
-	return window, nil
+	return candidates, nil
+}
+
+// Changes is what in-place updates changed after a snapshot: the current form
+// of each item and turn they touched, in record order, each once.
+type Changes struct {
+	Items       []appitempaging.TranscriptItemCandidate
+	Turns       []appwire.Turn
+	Incarnation string
+	Length      int64
+}
+
+// ChangedSince returns the items and turns that entries at or past length
+// updated in place: a tool call a later TOOL_RESULTS completed, a turn a later
+// entry restamped. A reader holding a snapshot at length learns of changes to
+// what it holds without re-reading it.
+func (x *Index) ChangedSince(length int64) (Changes, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	var changes Changes
+	err := x.locked(false, func() error {
+		changes = Changes{Incarnation: x.meta.Incarnation, Length: x.meta.Length}
+		first, err := x.firstUpdateAt(length)
+		if err != nil {
+			return err
+		}
+		items, turns := map[uint64]bool{}, map[uint64]bool{}
+		buf, err := x.updates.read(first, int(x.updates.n-first))
+		if err != nil {
+			return x.fail(err)
+		}
+		for at := 0; at < len(buf); at += updateRecordSize {
+			switch update := decodeUpdate(buf[at:]); update.Kind {
+			case updatedItem:
+				items[update.Slot] = true
+			case updatedTurn:
+				turns[update.Slot] = true
+			}
+		}
+		r := newReader(x)
+		for _, slot := range slices.Sorted(maps.Keys(items)) {
+			candidates, err := x.span(r, slot, slot+1)
+			if err != nil {
+				return err
+			}
+			changes.Items = append(changes.Items, candidates...)
+		}
+		for _, slot := range slices.Sorted(maps.Keys(turns)) {
+			turn, err := r.turn(uint32(slot))
+			if err != nil {
+				return x.fail(err)
+			}
+			changes.Turns = append(changes.Turns, turn)
+		}
+		return nil
+	})
+	return changes, err
+}
+
+// firstUpdateAt binary-searches the update log for the first update an entry
+// at or past offset caused.
+func (x *Index) firstUpdateAt(offset int64) (uint64, error) {
+	slot, err := x.updates.search(func(buf []byte) bool { return decodeUpdate(buf).Offset < offset })
+	if err != nil {
+		return 0, x.fail(err)
+	}
+	return slot, nil
 }
 
 // fail marks the index for a rebuild when a read found it inconsistent.
@@ -179,7 +249,11 @@ func (x *Index) preludeCandidate(i int) appitempaging.TranscriptItemCandidate {
 	}
 }
 
-// reader projects one window's items, decoding each entry, projecting each
+func newReader(x *Index) *reader {
+	return &reader{x: x, entries: map[int64]*schema.Turn{}, projections: map[projectionKey]projection{}, turns: map[uint32]appwire.Turn{}}
+}
+
+// reader projects one read's items, decoding each entry, projecting each
 // contributor and stamping each turn once.
 type reader struct {
 	x           *Index
