@@ -542,12 +542,34 @@ func TestUnrecordedAppendFailsClosed(t *testing.T) {
 // dropped queue.
 func TestProjectionQueueOverflowResyncs(t *testing.T) {
 	hx := newHistoryHarnessWith(t, 8)
+	// Hold the goroutine's serial lock (the same lock its own step() takes,
+	// see threadHistory's doc comment) for every append: the recorded hook
+	// only takes the queue mutex, so this does not block the appends, but it
+	// keeps the goroutine from draining the queue between them, so every one
+	// of the 50 appends' drops is the SAME overflow the goroutine resolves
+	// in its one recover() call once released -- deterministically one
+	// resync, not a race between the appends and however fast the goroutine
+	// happens to drain.
+	hx.history.serial.Lock()
 	var recorded []transcript.Record
 	for range 50 {
 		recorded = append(recorded, hx.record(t, "x"))
 	}
+	hx.history.serial.Unlock()
 	last := recorded[len(recorded)-1]
+
+	// Exactly one resync for the whole overflow: recover() bumps the epoch
+	// once up front and retries through it, so every drop the 50 appends
+	// caused resolves under that same epoch.
+	epoch := hx.nextResync(t)
+	if epoch != 1 {
+		t.Fatalf("resync epoch = %d, want 1", epoch)
+	}
 	hx.awaitPublished(t, last.Offset+last.Length)
+	hx.expectQuiet(t)
+	if got := hx.history.Epoch(); got != 1 {
+		t.Fatalf("Epoch() = %d, want 1 after the one resync", got)
+	}
 
 	turns := hxReadWhole(t, hx)
 	count := 0
