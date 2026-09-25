@@ -566,7 +566,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 				// announced as a running turn, and one announced on a poisoned
 				// transcript is refused by the turn gate behind a phantom running
 				// notification.
-				if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+				if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 					return refusal
 				}
 				if pending.ExecutionState == "accepted" {
@@ -614,7 +614,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			}
 			// Same refusal as the start branch: this incorporated queued turn
 			// would be announced as running too.
-			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 				return refusal
 			}
 			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
@@ -636,7 +636,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			snapshot.ActiveTurnID != record.StableTurnID {
 			return nil
 		}
-		if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+		if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 			return refusal
 		}
 		record.ExecutionState = "claimed"

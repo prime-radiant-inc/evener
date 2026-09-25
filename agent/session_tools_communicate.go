@@ -70,11 +70,13 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 
-			deps.deliverCommunicate(events.CommunicateData{
+			if err := deps.deliverCommunicate(events.CommunicateData{
 				CallID:  callIDFromContext(ctx),
 				EndTurn: endTurn,
 				Message: message,
-			})
+			}); err != nil {
+				return nil, err
+			}
 
 			inbox := []string{}
 			if endTurn {

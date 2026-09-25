@@ -548,6 +548,12 @@ type Session struct {
 	recoveredTurnID string
 	// execution is the running execution's bookkeeping (session_execution.go).
 	execution executionState
+	// failedClosed is set when a served session fails closed
+	// (session_fail_closed.go).
+	failedClosed failClosedState
+	// transcriptCreateErr is why the session's transcript could not be
+	// created, nil when it was (or none was wanted). Set once at construction.
+	transcriptCreateErr error
 	// userInputEntry is the 1-based entry index of the latest USER_INPUT
 	// entry the session recorded, 0 before one is; guarded by mu.
 	userInputEntry int
@@ -2261,7 +2267,12 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	} else if s.holdTurnUntilTranscriptReady(t) {
 		return transcript.Record{}, nil
 	}
-	rec, err := s.attachedTranscript().Record(t, transcript.RecordOptions{Door: door, Place: place})
+	writer := s.attachedTranscript()
+	rec, err := writer.Record(t, transcript.RecordOptions{Door: door, Place: place})
+	if err != nil && writer.Poisoned() {
+		// The writer refuses everything from here: a served session stops.
+		_ = s.failClosed(errTranscriptRefusesRecords())
+	}
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
@@ -2342,6 +2353,7 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
 	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(events.EventWarning, w) })
+	s.announceFailClosed()
 }
 
 func (s *Session) closeAttachedTranscript() error {
