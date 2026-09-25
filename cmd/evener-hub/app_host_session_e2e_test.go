@@ -2,8 +2,10 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -14,18 +16,82 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
-// sessionCheckControllerProvider and sessionCheckControllerModel are the
-// provider instance and the model this check's own controller stack serves:
-// startHubStack writes a providers.toml with the single instance "fake" whose
-// base_url is the in-process fakellm, and callers address its model as
-// "fake/"+fakellm.ModelID. They are the values a session whose launch THIS
-// controller resolved would name, so the provenance assertion below compares the
-// host's session against them: a session that names either one was resolved by
-// this side's configuration, which is exactly what the check exists to rule out.
+// sessionCheckControllerProvider is the provider instance this check's own
+// controller stack serves: startHubStack writes a providers.toml with the single
+// instance "fake", whose base_url is the in-process fakellm and whose model is
+// fakellm.ModelID. With that model id it gives the three spellings a session
+// whose launch THIS controller resolved could carry into its record — the
+// provider id, the bare model id, and the qualified "fake/"+fakellm.ModelID —
+// which the provenance judgement below recognises as this side's: a session
+// recording one of them was resolved here, which the check exists to rule out.
+//
+// Mind the wire's naming: Thread.ModelProvider carries the session's MODEL, not
+// a provider. The daemon publishes the bare model of the ref it was launched
+// with (serve.go's rendezvous entry: Model: modelRef.Model) and the hub reads it
+// back through firstLocalNonEmpty(entry.Model, entry.Provider)
+// (cmd/evener-hub/internal/appsource/local_daemon.go). A live run against a host
+// recorded "glm-5.3-vision" for a "zai/glm-5.3-vision" launch — the bare model —
+// which is why the judgement compares bare model ids and treats the qualified
+// ref only as a spelling this controller could produce.
 const (
 	sessionCheckControllerProvider = "fake"
-	sessionCheckControllerModel    = "fake/" + fakellm.ModelID
+	// sessionCleanupBudget bounds the cleanup's in-band stop: long enough for a
+	// reconciliation to catch a session the host registers after a lost start
+	// response, short enough that a wedged host cannot park the run.
+	sessionCleanupBudget = 45 * time.Second
+	// sessionCleanupPollWait is the pause between the reconciliation's fleet
+	// reads while that budget lasts.
+	sessionCleanupPollWait = 2 * time.Second
 )
+
+// sessionModelShowsControllerResolution reports whether the model a session's
+// own record names is one THIS controller's configuration could have produced.
+// The wire's Thread.ModelProvider carries the session's MODEL (see the const
+// block above), and a launch resolved by this check's controller can carry any
+// of the spellings its single provider instance produces: the provider id, the
+// bare model id, or the qualified ref. All three are named, and the bare one is
+// load-bearing — it is what the record actually carries, so leaving it out made
+// this judgement degenerate to "the field is non-empty" and let a
+// controller-resolved launch pass green. A false here is the check accepting the
+// value as the host's own resolution, so a launch this controller resolved must
+// not answer false.
+//
+// An empty record answers false: it is no resolution at all, and the check
+// fails it separately as unproven rather than folding it into this question.
+func sessionModelShowsControllerResolution(recorded, controllerProvider, controllerModel string) bool {
+	recorded = strings.TrimSpace(recorded)
+	switch recorded {
+	case controllerProvider, controllerProvider + "/" + controllerModel, controllerModel:
+		return true
+	}
+	return false
+}
+
+// sessionModelMatchesHostResolution reports whether the model a session's own
+// record names is the model the HOST's own configuration resolved for the
+// directory it was spawned in — the positive form of the provenance claim.
+//
+// The two sides spell it differently, and deliberately not by hand: the record
+// carries the bare model the daemon published from the ref it was launched with
+// (modelRef.Model into serve.go's rendezvous entry), while the host's resolve
+// answer is the provider-qualified ref the spawn itself parsed and passed
+// verbatim to the daemon (hubThreadStart requires a non-empty Effective.Model,
+// hubParseModelRef parses it, and launchconfig.ToArgs writes --model <it>). So
+// this parses the host's value with the same parser the spawn applies
+// (hubParseModelRef, which is cmdutil.ParseModelRef) and compares its model
+// part. A host answer that is empty or unparseable matches nothing: the spawn
+// cannot have come from it, so the claim fails rather than passing quietly.
+func sessionModelMatchesHostResolution(recorded, hostResolvedModel string) bool {
+	recorded = strings.TrimSpace(recorded)
+	if recorded == "" {
+		return false
+	}
+	ref, err := hubParseModelRef(hostResolvedModel)
+	if err != nil {
+		return false
+	}
+	return recorded == ref.Model
+}
 
 // TestHostSpawnSessionE2E is the live check for the session half of the
 // multi-host contract: a session the CONTROLLER asks for, from a host attached
@@ -48,8 +114,10 @@ const (
 // The four claims, each its own assertion below:
 //
 //   - SPAWN: the returned ref parses and belongs to the host, not `local:`.
-//   - PROVENANCE: the session's own record names the host's model provider, not
-//     the provider or model this controller's configuration serves.
+//   - PROVENANCE: the session's own record names the model the HOST's own
+//     configuration resolves for the directory it was spawned in, asked of the
+//     host through the controller's own admin proxy — and never a spelling this
+//     controller's configuration serves.
 //   - FLEET VISIBILITY: the controller's thread/list carries the ref, which is
 //     the half a user sees.
 //   - STOP: thread/shutdown through the controller stops the session it did not
@@ -174,6 +242,29 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// own models, and that enumeration calls each configured provider's model
 	// endpoint (launchCheckModels). So a run needs the host's credentials, network,
 	// and quota to be healthy. What it never does is ask for a completion.
+	//
+	// The stop is registered BEFORE the call, over a ref the closure reads once it
+	// is known. That ordering is the point: a start whose response never arrives —
+	// a timeout, a dropped connection — still leaves a session running on the host,
+	// and from here on this run owns whatever is running in hostDir. The cleanup
+	// stops the session by ref when one came back, and when none did it reconciles
+	// instead: it looks the session up through the controller's own fleet view by
+	// the working directory this check made, and stops it in band. Either way it is
+	// best-effort — the body's own STOP assertion is the check — and no host-side
+	// kill, process listing, or pattern ever enters the picture.
+	var ref string
+	t.Cleanup(func() {
+		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionCleanupBudget)
+		defer cancelStop()
+		if ref != "" {
+			if _, err := clientRequest[appwire.EmptyResponse](stopCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+				t.Logf("thread/shutdown of %s did not report success on the way out (%v); the host's daemon idles out on its own when the stop cannot reach it", ref, err)
+			}
+			return
+		}
+		reconcileSessionInDir(stopCtx, t, client, hostDir)
+	})
+
 	started, err := clientRequest[appwire.ThreadStartResponse](startCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness: "evener",
 		Source:  hostE2EName,
@@ -182,25 +273,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step thread/start with source %q: %v (a host that cannot resolve a model from its own launch configuration refuses here)", hostE2EName, err)
 	}
-	ref := started.Thread.Evener.Ref
-
-	// The stop on the way out is in band too: the controller stops the session it
-	// did not host. Registered before the ref is judged, because a ref this test
-	// ends up rejecting still names a session it started, and a start whose
-	// response was lost still leaves one running. It is best-effort only because
-	// the body's own STOP assertion is the check; a request that fails here is
-	// logged, and a daemon the stop cannot reach exits on its own idle timeout.
-	t.Cleanup(func() {
-		if ref == "" {
-			t.Logf("thread/start returned no ref, so the session it started cannot be addressed here; any daemon it spawned idles out on its own")
-			return
-		}
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelShutdown()
-		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
-			t.Logf("thread/shutdown of %s did not report success on the way out (%v); the host's daemon idles out on its own when the stop cannot reach it", ref, err)
-		}
-	})
+	ref = started.Thread.Evener.Ref
 
 	// SPAWN. The ref says WHICH hub owns the session: a controller-local spawn
 	// would answer "local:<id>". ParseRef validates the grammar too, so a malformed
@@ -252,21 +325,43 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 
 	// PROVENANCE. The spawn carried no model, so nothing this controller holds was
 	// asked to resolve the launch: the model the session runs on was resolved by
-	// the HOST from its own configuration. The session's record is where that
-	// shows, because a daemon publishes the model ref it was launched with
-	// (serve.go's rendezvous entry) and the hub reads it back as the thread's model
-	// provider. A session naming THIS controller's provider or model was resolved
-	// here instead — the failure this check exists to catch — and one naming
-	// nothing at all leaves the claim unproven, so both fail rather than pass
-	// quietly.
-	modelProvider := strings.TrimSpace(read.Thread.ModelProvider)
-	switch modelProvider {
-	case "":
-		t.Fatalf("the session on host %q records no model provider, so where its launch was resolved cannot be seen from here; the host was supposed to resolve a model from its own configuration", hostE2EName)
-	case sessionCheckControllerProvider, sessionCheckControllerModel:
-		t.Fatalf("the session on host %q names model provider %q, which is THIS controller's own configuration; the launch was resolved here rather than by the host", hostE2EName, modelProvider)
+	// the HOST from its own configuration, and the check makes that a positive
+	// claim — the session's record must name the model the host's own
+	// configuration resolves for the directory the session was spawned in.
+	//
+	// The host's answer is read through the controller's own admin proxy
+	// (evener/host/request forwarding evener/launch/resolve), the same call the
+	// spawn form makes for a selected host, rather than by reading launch.toml
+	// over ssh: the resolution is layered (config root, project, env floor) and
+	// evener/launch/resolve is the product's own answer to "what would a session
+	// started now run with" — the answer hubThreadStart itself applies to the
+	// spawn. Comparing against it cannot be satisfied by a launch THIS controller
+	// resolved, which is the whole claim; the controller-spelling predicate below
+	// only sharpens the failure message when that is what happened.
+	resolveParams, err := json.Marshal(appwire.LaunchConfigResolveParams{CWD: hostDir})
+	if err != nil {
+		t.Fatalf("encode the evener/launch/resolve params for %s: %v", hostDir, err)
 	}
-	t.Logf("the host resolved the launch from its own configuration: %s runs on model provider %q", ref, modelProvider)
+	rawResolve, err := forwardHostMethod(ctx, client, hostE2EName, appwire.MethodEvenerLaunchResolve, resolveParams)
+	if err != nil {
+		t.Fatalf("step evener/host/request %s on %q for %s: %v (the provenance claim compares the session against the model the host itself resolves)", appwire.MethodEvenerLaunchResolve, hostE2EName, hostDir, err)
+	}
+	var hostLaunch appwire.LaunchConfigResolved
+	if err := json.Unmarshal(rawResolve, &hostLaunch); err != nil {
+		t.Fatalf("decode the host's %s answer for %s: %v (%s)", appwire.MethodEvenerLaunchResolve, hostDir, err, rawResolve)
+	}
+	hostModel := strings.TrimSpace(hostLaunch.Effective.Model)
+	recorded := strings.TrimSpace(read.Thread.ModelProvider)
+	if !sessionModelMatchesHostResolution(recorded, hostModel) {
+		if recorded == "" {
+			t.Fatalf("the session on host %q records no model at all, so where its launch was resolved cannot be seen from here; the host's own configuration resolves %q for %s", hostE2EName, hostModel, hostDir)
+		}
+		if sessionModelShowsControllerResolution(recorded, sessionCheckControllerProvider, fakellm.ModelID) {
+			t.Fatalf("the session on host %q records model %q, which is THIS controller's own configuration, while the host's own configuration resolves %q for %s: the launch was resolved here rather than by the host", hostE2EName, recorded, hostModel, hostDir)
+		}
+		t.Fatalf("the session on host %q records model %q, but the host's own configuration resolves %q for %s: the session is not running on the model the host's configuration chose", hostE2EName, recorded, hostModel, hostDir)
+	}
+	t.Logf("the host resolved the launch from its own configuration: %s records model %q, the model the host resolves for %s", ref, recorded, hostDir)
 
 	// STOP. thread/shutdown for a ref the controller does not host used to be
 	// refused locally while remote thread capabilities stayed masked, without the
@@ -281,4 +376,174 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		t.Fatalf("step thread/shutdown of %s through the controller: %v (the controller must be able to stop a session it did not host, in band)", ref, err)
 	}
 	t.Logf("the controller stopped %s in band", ref)
+}
+
+// reconcileSessionInDir stops a session this run started whose start response
+// never named it, so its ref was never known. The only handle on such a session
+// is the directory this check made and spawned in — the spawn carried
+// CWD: hostDir, a name unique to this run (pid + nanosecond timestamp) — so the
+// controller's own fleet view is searched for a session whose record places it
+// in that directory, and each match is stopped in band through the controller,
+// the same thread/shutdown a user's client would send.
+//
+// The search repeats while the budget lasts, because a response lost during the
+// start can arrive before the host registered the session: one list immediately
+// after the failure can legitimately be too early. It reports what it found
+// rather than passing quietly, and a stop that fails is an error, not a log
+// line — a session this run started must not be left behind.
+func reconcileSessionInDir(ctx context.Context, t *testing.T, client *appwire.Client, workingDir string) {
+	t.Helper()
+	deadline := time.Now().Add(sessionCleanupBudget)
+	for {
+		listed, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
+		if err != nil {
+			t.Logf("could not list sessions to reconcile the directory %s: %v", workingDir, err)
+			return
+		}
+		matches := 0
+		for _, thread := range listed.Data {
+			if !sessionInDirectory(thread, workingDir) {
+				continue
+			}
+			matches++
+			if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: thread.Evener.Ref}); err != nil {
+				t.Errorf("stop %s, the session the lost start response left under %s: %v", thread.Evener.Ref, workingDir, err)
+				continue
+			}
+			t.Logf("stopped %s, the session the lost start response left under %s", thread.Evener.Ref, workingDir)
+		}
+		if matches > 0 {
+			return
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			t.Logf("no session is registered under %s, so a lost start response left nothing to stop", workingDir)
+			return
+		}
+		time.Sleep(sessionCleanupPollWait)
+	}
+}
+
+// sessionInDirectory reports whether a listed session is the one a run working
+// in workingDir started. Its ref must belong to the host the run attached —
+// which is what keeps a local session with a coincidentally similar path out of
+// the match — and its record must place it in that directory.
+func sessionInDirectory(thread appwire.Thread, workingDir string) bool {
+	if !sameDirectory(thread.CWD, workingDir) {
+		return false
+	}
+	parsed, err := appwire.ParseRef(thread.Evener.Ref)
+	return err == nil && parsed.SourceID == hostE2EName
+}
+
+// sameDirectory compares a session's recorded working directory with the one
+// this check addressed: equal after trimming a trailing separator, or ending in
+// the same leaf name. The leaf is the fallback for a host that records the
+// canonical path of a directory this check addressed through a link (macOS
+// resolves $HOME through one), and it is a safe key for exactly one run because
+// it carries that run's pid and nanosecond timestamp.
+func sameDirectory(recorded, want string) bool {
+	recorded = strings.TrimRight(strings.TrimSpace(recorded), "/")
+	want = strings.TrimRight(strings.TrimSpace(want), "/")
+	if recorded == want {
+		return true
+	}
+	leaf := path.Base(want)
+	return leaf != "" && leaf != "." && leaf != "/" && strings.HasSuffix(recorded, "/"+leaf)
+}
+
+// TestSessionModelProvenance pins the provenance judgement the live check makes,
+// with no host and no ssh: the seam is the pair of pure predicates above.
+//
+// The controller these tables name is the one startHubStack builds — a single
+// provider instance "fake" serving the fakellm model — so its possible
+// spellings are known exactly. The bare model id is the case that matters: the
+// wire carries bare model ids (a live run recorded "glm-5.3-vision" for a
+// "zai/glm-5.3-vision" launch), so a judgement that recognised only "fake" and
+// "fake/fake-test-model" degenerated to "the field is non-empty", and a
+// regression to a controller-resolved launch would have passed green.
+func TestSessionModelProvenance(t *testing.T) {
+	controllerResolution := []struct {
+		recorded string
+		want     bool
+		why      string
+	}{
+		{fakellm.ModelID, true, "the bare model id — what a controller-resolved launch actually records"},
+		{"fake", true, "the provider instance id, the record's fallback when no model is named"},
+		{"fake/" + fakellm.ModelID, true, "the qualified ref this controller's configuration serves"},
+		{"", false, "no value at all: not a controller resolution; the check fails it separately as unproven"},
+		{"glm-5.3-vision", false, "a host-shaped model — the host's own resolution"},
+	}
+	for _, tc := range controllerResolution {
+		got := sessionModelShowsControllerResolution(tc.recorded, sessionCheckControllerProvider, fakellm.ModelID)
+		if got == tc.want {
+			continue
+		}
+		t.Errorf("sessionModelShowsControllerResolution(%q) = %v, want %v (%s); a false here means the check accepts this value as the HOST's resolution, so a launch this controller resolved would pass green", tc.recorded, got, tc.want, tc.why)
+	}
+
+	hostResolution := []struct {
+		recorded, hostResolvedModel string
+		want                        bool
+	}{
+		{"glm-5.3-vision", "zai/glm-5.3-vision", true},
+		{"claude-sonnet-4-5", "anthropic/claude-sonnet-4-5", true},
+		{fakellm.ModelID, "zai/glm-5.3-vision", false},
+		{"glm-5.3-vision", "anthropic/claude-sonnet-4-5", false},
+		{"", "zai/glm-5.3-vision", false},
+		{"glm-5.3-vision", "", false},
+		// A bare resolved value cannot have produced a spawn: hubThreadStart
+		// parses Effective.Model with ParseModelRef, which requires provider/model.
+		{"glm-5.3-vision", "glm-5.3-vision", false},
+	}
+	for _, tc := range hostResolution {
+		if got := sessionModelMatchesHostResolution(tc.recorded, tc.hostResolvedModel); got != tc.want {
+			t.Errorf("sessionModelMatchesHostResolution(%q, %q) = %v, want %v", tc.recorded, tc.hostResolvedModel, got, tc.want)
+		}
+	}
+}
+
+// TestSessionDirectoryMatch pins the reconciliation's matching rule: which
+// listed session the lost-response arm of the cleanup is allowed to stop. The
+// directory is unique to one run, so the rule must match that run's session and
+// nothing else — not a sibling directory whose name merely shares a prefix, and
+// not work the run did not start.
+func TestSessionDirectoryMatch(t *testing.T) {
+	const dir = "/Users/jesse/evener-session-e2e-123-456"
+	directories := []struct {
+		recorded string
+		want     bool
+	}{
+		{dir, true},
+		{dir + "/", true},
+		// A host can record the canonical path of a directory addressed through a
+		// link (macOS resolves $HOME through one); the leaf is what survives.
+		{"/System/Volumes/Data" + dir, true},
+		{"/Users/jesse/evener-session-e2e-123-457", false},
+		{dir + "/sub", false},
+		{"/Users/jesse", false},
+		{"", false},
+	}
+	for _, tc := range directories {
+		if got := sameDirectory(tc.recorded, dir); got != tc.want {
+			t.Errorf("sameDirectory(%q, %q) = %v, want %v", tc.recorded, dir, got, tc.want)
+		}
+	}
+
+	hostSession := appwire.Thread{CWD: dir, Evener: appwire.EvenerThread{Ref: hostE2EName + ":t1"}}
+	if !sessionInDirectory(hostSession, dir) {
+		t.Errorf("sessionInDirectory(%+v, %q) = false, want true: the host's own session in this run's directory is what the reconciliation must stop", hostSession, dir)
+	}
+	for _, tc := range []struct {
+		name   string
+		thread appwire.Thread
+	}{
+		{"another host's ref", appwire.Thread{CWD: dir, Evener: appwire.EvenerThread{Ref: "other:t1"}}},
+		{"a local ref", appwire.Thread{CWD: dir, Evener: appwire.EvenerThread{Ref: "local:t1"}}},
+		{"an unparseable ref", appwire.Thread{CWD: dir, Evener: appwire.EvenerThread{Ref: "t1"}}},
+		{"another directory", appwire.Thread{CWD: "/Users/jesse", Evener: appwire.EvenerThread{Ref: hostE2EName + ":t1"}}},
+	} {
+		if sessionInDirectory(tc.thread, dir) {
+			t.Errorf("sessionInDirectory(%+v, %q) = true (%s), want false: the reconciliation may only stop this run's own session", tc.thread, dir, tc.name)
+		}
+	}
 }

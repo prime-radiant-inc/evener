@@ -515,8 +515,14 @@ and **no model**. Four claims, each its own assertion:
 - **spawn** — the returned ref parses and belongs to the host, not `local:`;
 - **provenance** — the host resolved the launch from its OWN configuration, not
   this controller's: the spawn carries no model to inherit, and the session's own
-  record must name a model provider that is not the one this check's controller
-  serves (a session naming the controller's provider, or none at all, fails);
+  record must name the model the HOST's own configuration resolves for the
+  directory the session was spawned in. The check asks the host for that through
+  the controller's own admin proxy (`evener/host/request` forwarding
+  `evener/launch/resolve` — the call the spawn form makes), and compares it with
+  what the session records, which is the BARE model the daemon was launched with
+  (`Thread.ModelProvider` carries a model, not a provider). A session recording
+  this controller's own provider or model — bare or qualified — or nothing at
+  all, fails;
 - **fleet visibility** — the controller's own `thread/list` carries the ref, so a
   user sees their remote session beside the local ones;
 - **stop** — `thread/shutdown` through the controller stops the session it did not
@@ -536,11 +542,14 @@ What it creates and removes: its own directory on the host
 (`$HOME/evener-session-e2e-<pid>-<timestamp>`), used as the spawned session's
 working directory and removed when the check finishes. A name that already exists
 is refused before anything is created, so the cleanup cannot adopt a directory
-this run did not make. What it cannot remove is the session *record* the host
-keeps in its own state root — `thread/shutdown` stops the daemon, it does not
-delete the session — and the session runs against the host's real provider and
-credentials. Both are why this gate asks for a **disposable** host, the same
-contract the deploy check states.
+this run did not make. The stop is registered before the spawn is asked for, so a
+start whose response is lost is still cleaned up: with no ref to address, the
+check looks the session up in the controller's fleet view by that directory and
+stops it in band. What it cannot remove is the session *record* the host keeps in
+its own state root — `thread/shutdown` stops the daemon, it does not delete the
+session — and the session runs against the host's real provider and credentials.
+Both are why this gate asks for a **disposable** host, the same contract the
+deploy check states.
 
 It sends no input items, so **no turn runs and no completion is requested**. That
 is narrower than it sounds: resolving the spawn still makes the host enumerate its
