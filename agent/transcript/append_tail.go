@@ -76,6 +76,32 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	return tail, nil
 }
 
+// createMu makes creating a transcript one step in this process: the check
+// that no writer has the file open, the create that truncates it, and the
+// registration of its tail. Of two creates racing on one path exactly one
+// wins, and a file is never truncated under a writer this process has open.
+var createMu sync.Mutex
+
+// createAppendTail creates the transcript at path through create and registers
+// its tail, refusing if a writer in this process has the file open.
+func createAppendTail(path string, create func() (afero.File, error)) (afero.File, *appendTail, error) {
+	createMu.Lock()
+	defer createMu.Unlock()
+	if openInProcess(path) {
+		return nil, nil, fmt.Errorf("create transcript file: %s is open in this process", path)
+	}
+	f, err := create()
+	if err != nil {
+		return nil, nil, fmt.Errorf("create transcript file: %w", err)
+	}
+	tail, err := acquireAppendTail(f)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the stat error is what matters
+		return nil, nil, err
+	}
+	return f, tail, nil
+}
+
 // openInProcess reports whether a writer in this process has the file at path
 // open. Only a file the os package can name is ever registered (see pinFile),
 // so the lookup goes to the operating system whatever filesystem the caller

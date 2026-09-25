@@ -451,7 +451,7 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		return nil, fmt.Errorf("create transcript dir: %w", err)
 	}
 
-	f, tail, err := createTranscriptFile(fs, path)
+	f, tail, err := createAppendTail(path, func() (afero.File, error) { return fs.Create(path) })
 	if err != nil {
 		return nil, err
 	}
@@ -462,30 +462,6 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		return nil, err
 	}
 	return w, nil
-}
-
-// createMu makes creating a transcript one step in this process: the check
-// that no writer has the file open, the create that truncates it, and the
-// registration of its tail. Of two creates racing on one path exactly one
-// wins, and the file is never truncated under a writer this process has open.
-var createMu sync.Mutex
-
-func createTranscriptFile(fs afero.Fs, path string) (afero.File, *appendTail, error) {
-	createMu.Lock()
-	defer createMu.Unlock()
-	if openInProcess(path) {
-		return nil, nil, fmt.Errorf("create transcript file: %s is open in this process", path)
-	}
-	f, err := fs.Create(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create transcript file: %w", err)
-	}
-	tail, err := acquireAppendTail(f)
-	if err != nil {
-		_ = f.Close() // cleanup on error path; the stat error is what matters
-		return nil, nil, err
-	}
-	return f, tail, nil
 }
 
 // writeTranscriptHeader writes a created transcript's header. Its tail is

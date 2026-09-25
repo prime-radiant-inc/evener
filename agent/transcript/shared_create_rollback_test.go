@@ -2,7 +2,6 @@ package transcript
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -10,7 +9,7 @@ import (
 )
 
 // afterFirstWriteFs is the real filesystem with a callback after the first
-// write through any file it opens: for a new transcript, that write is the
+// write through each file it creates: for a new transcript, that write is the
 // header. It lets a test put another writer's step exactly between creating
 // a transcript's header and the creating writer becoming usable.
 type afterFirstWriteFs struct {
@@ -18,16 +17,12 @@ type afterFirstWriteFs struct {
 	afterFirstWrite func()
 }
 
-func (fs afterFirstWriteFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	f, err := fs.Fs.OpenFile(name, flag, perm)
+func (fs afterFirstWriteFs) Create(name string) (afero.File, error) {
+	f, err := fs.Fs.Create(name)
 	if err != nil {
 		return nil, err
 	}
 	return &afterFirstWriteFile{File: f, afterFirstWrite: fs.afterFirstWrite}, nil
-}
-
-func (fs afterFirstWriteFs) Create(name string) (afero.File, error) {
-	return fs.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 }
 
 type afterFirstWriteFile struct {
