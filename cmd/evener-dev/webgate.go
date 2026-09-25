@@ -270,9 +270,9 @@ func (g *webGate) prepare(index int) (guardSpec, *os.File, error) {
 	return spec, log, nil
 }
 
-// stop handles an interrupt: TERM every running guard but the skill guard,
-// then wait for them all, unless a second signal says to stop waiting; the
-// gate then exits with that signal's status.
+// stop handles an interrupt: TERM every running check the gate does not name
+// in unsignalled, then wait for them all, unless a second signal says to stop
+// waiting; the gate then exits with that signal's status.
 func (g *webGate) stop(sig os.Signal, live []guardProcess, exits <-chan guardExit) int {
 	waiting := 0
 	for i, proc := range live {
