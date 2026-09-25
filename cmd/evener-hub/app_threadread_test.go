@@ -1670,7 +1670,7 @@ func TestStampSessionImageURLsLeavesDescriptorsAloneWithoutASession(t *testing.T
 
 // TestStampSessionImageURLsCoversReplayedInputImages pins kata ck8z: a
 // replayed user-attached image reaches the wire with only metadata sha/size
-// (projectReplayInputImage strips the bytes), and handleSessionImage serves
+// (apptranscript.AddressedImageProjector strips the bytes), and handleSessionImage serves
 // exactly that sha back — so the stamping pass must put the fetchable route
 // on the item, not leave the client to reconstruct it from metadata.
 func TestStampSessionImageURLsCoversReplayedInputImages(t *testing.T) {

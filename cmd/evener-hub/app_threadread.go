@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -24,7 +23,6 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/transcriptindex"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -1259,18 +1257,7 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, apptranscript.ToolResultOutputImages)
-}
-
-// projectReplayInputImage stamps the sha and size the client needs to fetch an
-// inline image back out of the transcript over /s/<session>/images/<sha>.
-func projectReplayInputImage(image llm.ImageData) appwire.InputItem {
-	item := apptranscript.DefaultImageProjector(image)
-	if len(image.Data) == 0 {
-		return item
-	}
-	item.Metadata = map[string]string{"sha": imageSha(image.Data), "size": strconv.Itoa(len(image.Data))}
-	return item
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 }
 
 func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {

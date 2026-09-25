@@ -2,8 +2,6 @@ package hub
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -213,7 +211,7 @@ func stampOutputImageURLs(sessionID string, images []appwire.OutputImage) bool {
 }
 
 // stampSessionImageURLs is stampOutputImageURLs over every item of every turn,
-// plus the replayed user-input images: projectReplayInputImage strips their
+// plus the replayed user-input images: apptranscript.AddressedImageProjector strips their
 // bytes and records the sha in metadata, and handleSessionImage serves exactly
 // that sha back, so the fetchable route belongs on the item itself (kata ck8z)
 // rather than being left for the client to reconstruct from metadata.
@@ -333,7 +331,7 @@ func resolveOutputImageFile(sessionID, cwd, candidate, source string) (appwire.O
 		MediaType: mediaType,
 		Size:      info.Size(),
 		URL:       "/doc/image?session=" + url.QueryEscape(sessionID) + "&path=" + url.QueryEscape(rel),
-		SHA:       outputImageSHA(data),
+		SHA:       imageSha(data),
 		Path:      rel,
 	}, true
 }
@@ -348,11 +346,6 @@ func readOutputImageFile(abs string) ([]byte, os.FileInfo, bool) {
 		return nil, nil, false
 	}
 	return data, info, true
-}
-
-func outputImageSHA(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
 }
 
 func outputImageDisplayName(path string) string {

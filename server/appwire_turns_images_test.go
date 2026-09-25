@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -34,6 +36,10 @@ func TestAppThreadReadKeepsRecordedInputImages(t *testing.T) {
 		}
 		if images[0].MediaType != "image/png" {
 			t.Fatalf("Images[0] = %+v, want mediaType image/png", images[0])
+		}
+		// The content address the hub serves the bytes back by.
+		if want := map[string]string{"sha": events.ImageSHA([]byte{1, 2, 3}), "size": "3"}; !reflect.DeepEqual(images[0].Metadata, want) {
+			t.Fatalf("Images[0].Metadata = %v, want %v", images[0].Metadata, want)
 		}
 	}
 	assertInputImage()

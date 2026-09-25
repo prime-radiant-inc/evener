@@ -263,7 +263,7 @@ func TestEnrichThreadFileBackedOutputImagesDoesNotDuplicateAnAlreadyProjectedRea
 	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sha := outputImageSHA(png)
+	sha := imageSha(png)
 	thread := appwire.Thread{
 		ID:        "01DOC",
 		SessionID: "01DOC",

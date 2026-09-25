@@ -378,3 +378,24 @@ func TestDaemonlessSubagentPreviewReadsTheIndexNotTheWholeTranscript(t *testing.
 		t.Fatalf("preview = %+v, want the newest two items, truncated", preview)
 	}
 }
+
+// TestDaemonlessReadRoutesAPastedImage pins a pasted image on a daemonless
+// read: the item carries the sha route this hub serves the image's bytes on.
+func TestDaemonlessReadRoutesAPastedImage(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 's', 't', 'e'}
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "look at this"},
+			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: png, MediaType: "image/png"}},
+		}})),
+	)
+	response, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID, IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("daemonless thread/read: %v", err)
+	}
+	items := flattenTestItems(response.Thread.Turns)
+	want := "/s/" + entry.Meta.ID + "/images/" + imageSha(png)
+	if len(items) != 1 || len(items[0].Images) != 1 || items[0].Images[0].URL != want {
+		t.Fatalf("items = %+v, want the pasted image routed at %s", items, want)
+	}
+}

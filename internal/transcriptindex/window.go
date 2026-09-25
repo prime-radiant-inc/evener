@@ -602,7 +602,7 @@ func (r *reader) project(c contributor, callID, turnID string) ([]appwire.Thread
 		}
 		seed[callID] = string(name)
 	}
-	items, parts := apptranscript.ProjectEntryParts(turnID, int(c.Ordinal)+1, *entry, seed, nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectEntryParts(turnID, int(c.Ordinal)+1, *entry, seed, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	r.projections[key] = projection{items: items, parts: parts}
 	return items, parts, nil
 }
