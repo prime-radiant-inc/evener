@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -698,36 +699,61 @@ func TestExecGuardLauncherTerminateSendsTERM(t *testing.T) {
 
 // PrivateGoHome runs the real scripts/lib/private-go-home.sh from the
 // repository root: the guard gets private HOME and XDG roots under its own
-// directory, while the user's Go build cache is kept.
+// directory, while the user's Go build cache is kept, whether the gate
+// inherited GOCACHE (the helper then leaves it alone, as on CI) or the helper
+// resolved it.
 func TestExecGuardLauncherPreparesThePrivateGoHome(t *testing.T) {
-	t.Chdir(filepath.Join("..", ".."))
-	root := t.TempDir()
-	var log bytes.Buffer
-	env, err := execGuardLauncher{}.PrivateGoHome(root, &log)
+	userCache := strings.TrimSpace(string(must(exec.Command("go", "env", "GOCACHE").Output())))
+	for _, inherited := range []bool{true, false} {
+		t.Run(map[bool]string{true: "GOCACHE inherited", false: "GOCACHE resolved"}[inherited], func(t *testing.T) {
+			if inherited {
+				t.Setenv("GOCACHE", userCache)
+			} else {
+				t.Setenv("GOCACHE", "")
+				os.Unsetenv("GOCACHE") //nolint:errcheck // t.Setenv restores it
+			}
+			t.Chdir(filepath.Join("..", ".."))
+			root := t.TempDir()
+			var log bytes.Buffer
+			env, err := execGuardLauncher{}.PrivateGoHome(root, &log)
+			if err != nil {
+				t.Fatalf("PrivateGoHome: %v\n%s", err, log.String())
+			}
+			got := map[string]string{}
+			for _, entry := range env {
+				k, v, _ := strings.Cut(entry, "=")
+				got[k] = v
+			}
+			for name, want := range map[string]string{
+				"HOME":            filepath.Join(root, "home"),
+				"XDG_CONFIG_HOME": filepath.Join(root, "xdg-config"),
+				"XDG_CACHE_HOME":  filepath.Join(root, "xdg-cache"),
+				"XDG_STATE_HOME":  filepath.Join(root, "xdg-state"),
+			} {
+				if got[name] != want {
+					t.Errorf("%s = %q, want %q", name, got[name], want)
+				}
+				if info, err := os.Stat(want); err != nil || !info.IsDir() {
+					t.Errorf("%s %s was not created: %v", name, want, err)
+				}
+			}
+			// What the guard sees is the helper's value over the inherited one.
+			effective, set := got["GOCACHE"]
+			if !set {
+				effective = os.Getenv("GOCACHE")
+			}
+			if effective != userCache {
+				t.Errorf("the guard's GOCACHE = %q, want the user's own %q", effective, userCache)
+			}
+		})
+	}
+}
+
+func must[T any](v T, err error) T {
 	if err != nil {
-		t.Fatalf("PrivateGoHome: %v\n%s", err, log.String())
+		panic(err)
 	}
-	got := map[string]string{}
-	for _, entry := range env {
-		k, v, _ := strings.Cut(entry, "=")
-		got[k] = v
-	}
-	for name, want := range map[string]string{
-		"HOME":            filepath.Join(root, "home"),
-		"XDG_CONFIG_HOME": filepath.Join(root, "xdg-config"),
-		"XDG_CACHE_HOME":  filepath.Join(root, "xdg-cache"),
-		"XDG_STATE_HOME":  filepath.Join(root, "xdg-state"),
-	} {
-		if got[name] != want {
-			t.Errorf("%s = %q, want %q", name, got[name], want)
-		}
-		if info, err := os.Stat(want); err != nil || !info.IsDir() {
-			t.Errorf("%s %s was not created: %v", name, want, err)
-		}
-	}
-	if cache := got["GOCACHE"]; cache == "" || strings.HasPrefix(cache, root) {
-		t.Errorf("GOCACHE = %q, want the user's own build cache kept", cache)
-	}
+	return v
 }
 
 func TestExecGuardLauncherPrivateGoHomeFailureLeavesItsCauseInTheLog(t *testing.T) {
