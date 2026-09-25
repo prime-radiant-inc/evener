@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -807,6 +808,90 @@ func TestLoadSessionJobActivityTree_OversizedDelegateJournalLineDegradesWithDiag
 	}
 	if !found {
 		t.Fatalf("Root.Diagnostics = %v, want one identifying the oversized delegates.jsonl line, surfaced prominently rather than a silent empty delegate list", tree.Root.Diagnostics)
+	}
+}
+
+func TestLoadSessionJobActivityTree_ForwardedFallbackSurfacesAtRoot(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootforwarded"
+	childID := "childforwarded"
+	started := time.Unix(400, 0).UTC()
+	ended := started.Add(time.Second)
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "gone child"))
+	// The root journal forwarded the descendant's job at start and terminal
+	// time; the descendant's own jobs.jsonl never made it to this state dir, so
+	// the forwarded copy at the root is the only surviving record.
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_forwarded_shell", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: rootID, StartedAt: &started, Description: "forwarded"},
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_forwarded_shell", Status: jobstore.StatusCompleted, EndedAt: &ended},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMeta(t, stateDir, childID, "Child")
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches []appwire.JobActivityJob
+	for _, entry := range got.Root.Entries {
+		if entry.Job != nil && entry.Job.JobID == "job_forwarded_shell" {
+			matches = append(matches, *entry.Job)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("forwarded job appears %d times at root, want 1; entries=%+v", len(matches), got.Root.Entries)
+	}
+	job := matches[0]
+	if job.Authority != string(jobstore.AuthorityForwardedFallback) || !job.Incomplete {
+		t.Fatalf("job = %+v, want authority=%q incomplete=true", job, jobstore.AuthorityForwardedFallback)
+	}
+	if !slices.Contains(job.IntegrityReasons, "owner_unavailable") {
+		t.Fatalf("integrity reasons = %v, want owner_unavailable", job.IntegrityReasons)
+	}
+}
+
+// TestLoadSessionJobActivityTree_EqualStartedAtOrdersByJobID pins the
+// cross-journal ordering guarantee: once records are merged from more than
+// one owner journal, a per-journal append sequence is only meaningful within
+// a single journal, so equal-StartedAt records must tie-break on JobID. The
+// root owns "job_z_root" and holds the forwarded copy of the absent child's
+// "job_a_child"; both start at the same instant. A per-journal sequence
+// tie-break would order by the root journal's append position (job_z_root
+// before job_a_child, since the forwarded event is appended later); the
+// (StartedAt, JobID) tie-break renders job_a_child first.
+func TestLoadSessionJobActivityTree_EqualStartedAtOrdersByJobID(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "roottie"
+	childID := "childtie"
+	started := time.Unix(500, 0).UTC()
+	ended := started.Add(time.Second)
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "gone child"))
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_z_root", Type: jobstore.JobShell, OwnerSessionID: rootID, StartedAt: &started, Description: "root"},
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_z_root", Status: jobstore.StatusCompleted, EndedAt: &ended},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_a_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: rootID, StartedAt: &started, Description: "forwarded"},
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_a_child", Status: jobstore.StatusCompleted, EndedAt: &ended},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMeta(t, stateDir, childID, "Child")
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, entry := range got.Root.Entries {
+		if entry.Job != nil {
+			ids = append(ids, entry.Job.JobID)
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("root job entries = %v, want both jobs", ids)
+	}
+	if ids[0] != "job_a_child" || ids[1] != "job_z_root" {
+		t.Fatalf("entry order = %v, want [job_a_child job_z_root] (equal StartedAt ties break on JobID, not a per-journal sequence)", ids)
 	}
 }
 
