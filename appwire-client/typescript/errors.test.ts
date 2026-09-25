@@ -11,6 +11,8 @@ import {
   ErrorInstanceRenamePersisted,
   ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
+  ErrorTranscriptHistoryFailed,
+  ErrorUpgradeRequired,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -18,6 +20,8 @@ import {
   hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
+  isTranscriptHistoryFailedError,
+  isUpgradeRequiredError,
   sessionActionError,
   sessionActionHeadline,
   WireError,
@@ -133,6 +137,30 @@ describe("the marketplace remove-applied discriminator is bound to appwire/error
 describe("the endpoint-conflict discriminator is bound to appwire/errors.go", () => {
   test("the exported value is the hub's own constant", () => {
     expect(ErrorEndpointConflict).toBe(goErrorInfo("ErrorEndpointConflict"));
+  });
+});
+
+// A read of a thread whose history failed keeps the client's held history and
+// shows one diagnostic, and a daemon refusing an old client's protocol names the
+// fix. Both are recognized only by their discriminant, which must stay the hub's.
+describe("the history-failed and upgrade-required discriminators are bound to appwire/errors.go", () => {
+  test("the exported values are the hub's own constants", () => {
+    expect(ErrorTranscriptHistoryFailed).toBe(goErrorInfo("ErrorTranscriptHistoryFailed"));
+    expect(ErrorUpgradeRequired).toBe(goErrorInfo("ErrorUpgradeRequired"));
+  });
+
+  test("each predicate reads only its own discriminator", () => {
+    const historyFailed = new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+      bootGeneration: "4",
+      epoch: 2,
+    });
+    const upgradeRequired = new WireError("upgrade required", -32600, { evenerErrorInfo: ErrorUpgradeRequired });
+    expect(isTranscriptHistoryFailedError(historyFailed)).toBe(true);
+    expect(isTranscriptHistoryFailedError(upgradeRequired)).toBe(false);
+    expect(isUpgradeRequiredError(upgradeRequired)).toBe(true);
+    expect(isUpgradeRequiredError(historyFailed)).toBe(false);
+    expect(isTranscriptHistoryFailedError(new Error("thread history failed at entry 7"))).toBe(false);
   });
 });
 

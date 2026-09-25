@@ -46,7 +46,7 @@ const thread: Thread = {
 
 const initialize = {
 	serverInfo: { name: "scripted", version: "1" },
-	protocolVersion: "evener-appwire-v5" as const,
+	protocolVersion: "evener-appwire-v6" as const,
 	sourceId: "local",
 	features: Object.fromEntries(
 		[

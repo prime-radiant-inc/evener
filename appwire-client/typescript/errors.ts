@@ -80,6 +80,29 @@ export function wireRejectionPayload<T>(
   return decode((error.data as Record<string, unknown>)[key]);
 }
 
+// ErrorTranscriptHistoryFailed is the hub's discriminator for a history read of
+// a thread whose history failed (appwire.ErrorTranscriptHistoryFailed,
+// appwire/errors.go). Its data carries the boot generation and epoch the read
+// ran under, which a client never adopts: it keeps the history it holds, marks
+// the thread's history failed (reducer.ts's applyHistoryReadFailure) and shows
+// one diagnostic until a later read succeeds. The binding test (errors.test.ts)
+// reads the Go constant.
+export const ErrorTranscriptHistoryFailed = "transcriptHistoryFailed";
+
+export function isTranscriptHistoryFailedError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptHistoryFailed;
+}
+
+// ErrorUpgradeRequired is the hub's discriminator for initialize refusing a
+// client that announced an older AppWire protocol (appwire.ErrorUpgradeRequired,
+// appwire/errors.go). Retrying cannot help; the client itself must update. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorUpgradeRequired = "upgradeRequired";
+
+export function isUpgradeRequiredError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorUpgradeRequired;
+}
+
 // ErrorInstanceRenamePersisted is the hub's discriminator for a provider-instance
 // rename that APPLIED before its credential move or reload failed
 // (appwire.ErrorInstanceRenamePersisted, appwire/errors.go); the hub's message
