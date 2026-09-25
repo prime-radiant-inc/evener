@@ -1,13 +1,15 @@
 package evener_test
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // runWebPreflight runs the real scripts/web/web-preflight.sh against frontend,
@@ -80,31 +82,37 @@ func TestWebPreflightRefusesAnInstallWithNoRealTsc(t *testing.T) {
 	}
 }
 
-// make install must build the web frontend before the evener binary that embeds
-// it, or the installed hub serves a stale SPA. make -n only prints the plan (no
-// recipe on this path re-enters make, which -n would run).
-func TestMakeInstallBuildsTheWebBeforeTheHub(t *testing.T) {
-	output, err := exec.Command("make", "-n", "install").CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n install: %v\n%s", err, output)
-	}
-	lines := strings.Split(string(output), "\n")
-	webBuild, hubBuild := -1, -1
-	for i, line := range lines {
-		if webBuild == -1 && strings.Contains(line, "npm run build") {
-			webBuild = i
-		}
-		if hubBuild == -1 && strings.Contains(line, "./cmd/evener/") {
-			hubBuild = i
-		}
-	}
-	if webBuild == -1 || hubBuild == -1 || webBuild > hubBuild {
-		t.Fatalf("make -n install does not build the web (line %d) before the evener binary (line %d); output = %s", webBuild, hubBuild, output)
+// Every target that builds evener must build the web frontend first, or the
+// binary embeds a stale SPA (or the tracked placeholder): install, and the
+// default build through build-runtime and its build-hub alias. make -n only
+// prints the plan; no recipe on these paths re-enters make, which -n would run.
+// The hub build shows as the evener go build (install) or as the runtime-pair
+// script that performs it (build-runtime).
+func TestMakeBuildsTheWebBeforeTheHub(t *testing.T) {
+	for _, target := range []string{"install", "build", "build-runtime", "build-hub"} {
+		t.Run(target, func(t *testing.T) {
+			output, err := exec.Command("make", "-n", target).CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n %s: %v\n%s", target, err, output)
+			}
+			webBuild, hubBuild := -1, -1
+			for i, line := range strings.Split(string(output), "\n") {
+				if webBuild == -1 && strings.Contains(line, "npm run build") {
+					webBuild = i
+				}
+				if hubBuild == -1 && (strings.Contains(line, "./cmd/evener/") || strings.Contains(line, "build-runtime-pair.sh")) {
+					hubBuild = i
+				}
+			}
+			if webBuild == -1 || hubBuild == -1 || webBuild > hubBuild {
+				t.Fatalf("make -n %s does not build the web (line %d) before the evener binary (line %d); output = %s", target, webBuild, hubBuild, output)
+			}
+		})
 	}
 }
 
-// Releases build through goreleaser, whose before hook must build the web
-// frontend first for the same reason.
+// Releases build through goreleaser, whose before hooks must build the web
+// frontend, for the same reason: goreleaser runs them before any build.
 func TestReleaseBuildsTheWebFirst(t *testing.T) {
 	output, err := exec.Command("make", "-n", "dist").CombinedOutput()
 	if err != nil {
@@ -113,13 +121,19 @@ func TestReleaseBuildsTheWebFirst(t *testing.T) {
 	if !strings.Contains(string(output), "goreleaser release --snapshot --clean") {
 		t.Fatalf("make -n dist does not defer to a goreleaser snapshot build; output = %s", output)
 	}
-	cfg, err := os.ReadFile(".goreleaser.yml")
+	data, err := os.ReadFile(".goreleaser.yml")
 	if err != nil {
 		t.Fatalf("read .goreleaser.yml: %v", err)
 	}
-	hook := bytes.Index(cfg, []byte("before:"))
-	buildWeb := bytes.Index(cfg, []byte("make build-web"))
-	if hook == -1 || buildWeb == -1 || buildWeb < hook {
-		t.Fatalf(".goreleaser.yml does not run make build-web as a before hook; the hub binary would embed a stale SPA:\n%s", cfg)
+	var cfg struct {
+		Before struct {
+			Hooks []string `yaml:"hooks"`
+		} `yaml:"before"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yml: %v", err)
+	}
+	if !slices.Contains(cfg.Before.Hooks, "make build-web") {
+		t.Fatalf(".goreleaser.yml before.hooks = %q, want it to run make build-web so the hub binary embeds a fresh SPA", cfg.Before.Hooks)
 	}
 }
