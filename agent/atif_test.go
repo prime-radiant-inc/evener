@@ -89,7 +89,7 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 		t.Fatalf("ReadFile transcript: %v", err)
 	}
 	assertEndpointSentinelsAbsent(t, "transcript", transcriptBytes, credential)
-	_, entries, _, err := readTranscript(transcriptPath)
+	_, entries, _, err := readTranscript(transcriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

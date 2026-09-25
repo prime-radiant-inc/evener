@@ -1348,7 +1348,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "local:"+sessionID, "")
+	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
@@ -1357,7 +1357,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("raw transcript type = %T", rawValue)
 	}
 	pin := 1
-	expandedValue, err := readMarkdownPage(path, "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -1365,7 +1365,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if !ok || expanded.Expansion == nil {
 		t.Fatalf("expanded transcript = %#v", expandedValue)
 	}
-	outlineValue, err := readOutline(path, "local:"+sessionID, "")
+	outlineValue, err := readOutline(path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read transcript outline: %v", err)
 	}
@@ -1421,7 +1421,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("find_session_transcripts visible tool-result query = opened %v, snippets %#v", opened, visibleSnippets)
 	}
 
-	rawWindowValue, err := readRaw(path, "local:"+sessionID, "last:2")
+	rawWindowValue, err := readRaw(path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged raw transcript: %v", err)
 	}
@@ -1439,7 +1439,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged public JSONL kinds = %#v, want %#v", windowKinds, want)
 	}
 
-	markdownWindowValue, err := readMarkdownPage(path, "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
+	markdownWindowValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("read ranged markdown transcript: %v", err)
 	}
@@ -1448,7 +1448,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged markdown split the public tool round: %s", markdownWindow.Content)
 	}
 
-	outlineWindowValue, err := readOutline(path, "local:"+sessionID, "last:2")
+	outlineWindowValue, err := readOutline(path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged outline transcript: %v", err)
 	}
@@ -1484,7 +1484,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("public find sequence = opened %v snippets %#v, want public seq 1", opened, findSnippets)
 	}
 	findPin := findSnippets[0].Seq
-	findExpansionValue, err := readMarkdownPage(findPath, "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
+	findExpansionValue, err := readMarkdownPage(findPath, "", "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand public find sequence: %v", err)
 	}
@@ -1519,13 +1519,13 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "local:"+sessionID, "")
+	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
 	raw := rawValue.(readRawEnvelope)
 	pin := 0
-	expandedValue, err := readMarkdownPage(path, "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -2467,7 +2467,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 	if !ok {
 		t.Fatal("restored session emitted no SESSION_START")
 	}
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("read restored transcript: %v", err)
 	}

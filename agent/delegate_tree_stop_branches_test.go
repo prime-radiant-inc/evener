@@ -234,6 +234,9 @@ func TestSubtreeMembersLockedWithChildren(t *testing.T) {
 			"dlg_4": {Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_2"}},
 		},
 	}
+	// Hand-seeded durable state must derive its children index the way the
+	// constructor does for a folded journal.
+	c.delegateChildren = deriveDelegateChildrenIndex(c.durable)
 	members := c.subtreeMembersLocked("dlg_1")
 	if len(members) != 4 {
 		t.Fatalf("expected 4 members, got %d: %v", len(members), members)
@@ -247,6 +250,9 @@ func TestSubtreeMembersLockedNilAggregates(t *testing.T) {
 			"dlg_nil": nil,
 		},
 	}
+	// Hand-seeded durable state must derive its children index the way the
+	// constructor does for a folded journal.
+	c.delegateChildren = deriveDelegateChildrenIndex(c.durable)
 	members := c.subtreeMembersLocked("dlg_1")
 	if len(members) != 1 {
 		t.Fatalf("expected 1 member, got %d", len(members))

@@ -5,7 +5,7 @@ import {
 	MAX_ITEM_BYTES,
 	truncateText,
 	type MobileTimelineItem,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 import {
 	groupTimeline,
 	isInterruptedNotice,
@@ -203,7 +203,7 @@ it.each([
 );
 
 // The option rows TimelineItem renders come from the store's bounded publish
-// (state/conversation.ts's truncateItem over project.ts's boundQuestion), so
+// (state/conversation.ts's truncateItem over the row module's boundQuestion), so
 // their labels are cut copies — the same display bound
 // questionAnswers.ts's questionsIdentity works against. This pins the
 // option-row React key against that bounding collision: keyed on the label,

@@ -314,11 +314,11 @@ func TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability(t *testin
 func TestDelegateResourceBootstrap_TranscriptEIOPreservesResumability(t *testing.T) {
 	fixture := newIdleDelegateRestoreInputFixture(t)
 	previousOpen := openTranscriptFile
-	openTranscriptFile = func(path string) (io.ReadCloser, error) {
+	openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 		if filepath.Clean(path) == filepath.Clean(fixture.transcriptPath) {
 			return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EIO}
 		}
-		return previousOpen(path)
+		return previousOpen(path, root)
 	}
 	t.Cleanup(func() { openTranscriptFile = previousOpen })
 
