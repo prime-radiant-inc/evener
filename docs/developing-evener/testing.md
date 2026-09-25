@@ -503,6 +503,102 @@ real file being touched. Both the guard's default target and the gate's skip
 order are pinned without a host by `TestHostSettingsUIGateSkipsWithoutOptIn`,
 which runs in ordinary `go test`.
 
+### `EVENER_SSH_E2E_SESSION=1` — the live session spawned on a host
+
+The session half of the multi-host contract: a session the CONTROLLER asks for,
+from a host attached through `evener/host/attach`, is spawned and served by that
+host's own hub, shows up in the controller's fleet, and can be stopped again
+through the controller. It drives the same private loopback hub and add → attach
+wire path the checks above do, then starts a session with the host as its source
+and **no model**. Four claims, each its own assertion:
+
+- **spawn** — the returned ref parses and belongs to the host, not `local:`;
+- **provenance** — the host resolved the launch from its OWN configuration, not
+  this controller's: the spawn carries no model to inherit, and the session's own
+  record must name the model the HOST's own configuration resolves for the
+  directory the session was spawned in. The check asks the host for that through
+  the controller's own admin proxy (`evener/host/request` forwarding
+  `evener/launch/resolve` — the call the spawn form makes), and compares it with
+  what the session records, which is the BARE model the daemon was launched with
+  (`Thread.ModelProvider` carries a model, not a provider). A session recording
+  this controller's own provider or model — bare or qualified — or nothing at
+  all, fails. If the HOST's own model id is any spelling this controller would
+  record — its model id, its provider id, or the qualified ref's model part — the
+  record cannot tell a host-resolved launch from a controller-resolved one: the
+  check fails rather than claim provenance its evidence cannot support, and says
+  to configure the host with a different model;
+- **fleet visibility** — the controller's own `thread/list` carries the ref, so a
+  user sees their remote session beside the local ones;
+- **stop** — `thread/shutdown` through the controller stops the session it did not
+  host. The controller forwards it on the owning host's client (the remote
+  capability mask in `appsource` names `Shutdown`), so the stop is **in band**:
+  the check never reaches for a process table, a `pkill`, or a pattern on the
+  host, and cleanup needs no host-side kill. The assertion is judged on its own
+  two-minute clock, not on what the run's outer budget has already spent; the
+  reads around it take their own clocks too, so a slow attach or spawn cannot
+  starve them.
+
+**This gate writes to the host**, which is why it is a separate opt-in from the
+read-only `EVENER_SSH_E2E` check — a developer running that one is not signed up
+for a session start. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as
+well, and skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user,
+and `EVENER_SSH_E2E_EVENER_PATH` overrides the host's evener path (default
+`~/.local/bin/evener`), as in the sibling checks.
+
+What it creates and removes: its own directory on the host
+(`$HOME/evener-session-e2e-<pid>-<timestamp>`), used as the spawned session's
+working directory and removed when the check finishes — unless a session it
+started could not be stopped, in which case it stays. A name that already exists
+is refused before anything is created, so the cleanup cannot adopt a directory
+this run did not make. The removal is registered before that creation runs, and
+what it may do follows what the `mkdir` said: a directory this run watched itself
+create is taken with whatever the session left in it (`rm -rf`); one whose ssh
+response was lost is only reconciled with `rmdir`, so an unproven creation is never
+deleted with its contents; and when the `mkdir` itself refused because the path
+already existed, nothing is removed at all — that directory is not this run's, even
+if it is empty. The stop is registered before the spawn is asked for, so a
+session that came back with a ref this check may stop — one that parses as the
+host's own, never a controller-local or another host's ref — is stopped in band,
+retrying inside one bounded window, and a session that could not be stopped is left
+alone: the **directory
+stays too**, with a failure naming the ref, the directory, and the fact that
+nothing was cleaned up — a directory a running session still references is better
+left than deleted out from under it. When no ref came back the outcome decides: a
+start the host refused as a request — checked against the request this check
+actually sent, which carries no input — never started anything, so the directory
+is removed; anything else — a lost response, a timeout, a dropped connection, or
+any other answered frame — leaves it, and the check does not go looking for the
+session: it says plainly that one may be running under that directory that it
+cannot stop, points at the controller's own fleet view (where the session is
+visible by its working directory) as the place to stop it, and leaves the
+directory in place.
+What it cannot remove is the session *record* the host keeps in its own state
+root — `thread/shutdown` stops the daemon, it does not delete the session — and
+the session runs against the host's real provider and credentials. Both are why
+this gate asks for a **disposable** host, the same contract the deploy check
+states.
+
+It sends no input items, so **no turn runs and no completion is requested**. That
+is narrower than it sounds: resolving the spawn still makes the host enumerate its
+own models, and that enumeration calls each configured provider's model endpoint
+(`launchCheckModels`), so a run depends on the host's credentials, network, and
+quota being healthy.
+
+Prerequisites: the sibling checks' live-stack build prerequisites, and a
+disposable host reachable over non-interactive ssh that already carries a
+matching evener build at `EVENER_SSH_E2E_EVENER_PATH` (a test hub has no
+`BuildSource`, so the version-match ladder refuses a host it cannot bridge to)
+whose own launch configuration resolves a model — a `model` in its `launch.toml`,
+or its provider environment. A host that cannot resolve one refuses the spawn,
+which is the failure this check exists to surface. The controller side needs
+nothing: this check's own hub runs a fake provider that a remote session never
+reaches.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_SESSION=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostSpawnSessionE2E' -count=1 -v
+~~~
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
