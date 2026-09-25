@@ -21,8 +21,7 @@ import (
 // isTranscriptItemCursorStale reports whether err is the stale-cursor WireError
 // that cursorBoundaryRank returns for an out-of-bounds item position.
 func isTranscriptItemCursorStale(err error) bool {
-	var wireErr appwire.WireError
-	if errors.As(err, &wireErr) {
+	if wireErr, ok := errors.AsType[appwire.WireError](err); ok {
 		if data, ok := wireErr.Data.(appwire.ErrorData); ok {
 			return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 		}
