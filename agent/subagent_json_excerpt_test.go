@@ -150,7 +150,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, truncatedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath)
+	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, unquotedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath)
+	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
