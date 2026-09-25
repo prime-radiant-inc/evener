@@ -1035,10 +1035,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// bound shifts by where the retained history begins.
 	divergenceTurn := meta.DivergenceTurn
 	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
-		// The resumed history starts at the retained window, and repair
-		// insertions before the fork boundary shift it right by one each
-		// (mapDivergenceThroughResumedHistory carries the mechanism).
-		divergenceTurn = mapDivergenceThroughResumedHistory(divergenceTurn, retainedFrom(transcriptEntries), repairInsertions)
+		// The resumed history starts at the retained window, leaves out the
+		// transcript-only entries, and repair insertions before the fork
+		// boundary shift it right by one each (resumedDivergence carries the
+		// mechanism).
+		divergenceTurn = resumedDivergence(transcriptEntries, divergenceTurn, repairInsertions)
 	}
 	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)

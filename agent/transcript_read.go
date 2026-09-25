@@ -160,20 +160,14 @@ func retainedFrom(entries []transcript.Entry) int {
 // history can shift it per insertion at or before that position, exactly as
 // history_repair.go shifts the in-flight boundary.
 func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
-	compactionIdx := retainedFrom(entries)
-
-	var turns []schema.Turn
-	if compactionIdx == 0 {
-		// No compaction: the whole transcript.
-		turns = make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-		}
-	} else {
-		// The compaction turn + everything after it.
-		turns = make([]schema.Turn, 0, len(entries)-compactionIdx)
-		for i := compactionIdx; i < len(entries); i++ {
-			turns = append(turns, entries[i].Turn)
+	// The whole transcript when it never compacted, else the last compaction
+	// turn and everything after it. Transcript-only entries never enter
+	// history: they exist for the history projection alone.
+	retained := entries[retainedFrom(entries):]
+	turns := make([]schema.Turn, 0, len(retained))
+	for _, e := range retained {
+		if !e.Turn.Kind.TranscriptOnly() {
+			turns = append(turns, e.Turn)
 		}
 	}
 
@@ -408,4 +402,25 @@ func applySkillCompactionReceipt(snapshot *schema.SkillLifecycleSnapshot, receip
 		}
 	}
 	snapshot.PendingHandoffs = append(snapshot.PendingHandoffs, receipt)
+}
+
+// resumedDivergence maps a full-transcript divergence index into the
+// coordinates of the history resumeHistoryIndexed restores from entries,
+// whose insertions it reports: the retained window, the transcript-only
+// entries resume skips, and the repair insertions all move it.
+func resumedDivergence(entries []transcript.Entry, divergence int, insertions []int) int {
+	return mapDivergenceThroughResumedHistory(historyIndex(entries, divergence), historyIndex(entries, retainedFrom(entries)), insertions)
+}
+
+// historyIndex is the number of entries before index i that resume keeps in
+// history: i less the transcript-only entries before it.
+func historyIndex(entries []transcript.Entry, i int) int {
+	i = min(i, len(entries))
+	kept := i
+	for _, e := range entries[:max(i, 0)] {
+		if e.Turn.Kind.TranscriptOnly() {
+			kept--
+		}
+	}
+	return kept
 }
