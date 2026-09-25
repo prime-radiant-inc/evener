@@ -22,10 +22,12 @@ import (
 // whichever writer makes it. A real transcript carried seq 9390, 9391, 9390,
 // 9391 after a resumed session's writer appended behind two such cold writes.
 
+var sharedFileHeader = Header{SessionID: "shared-file", CreatedAt: time.Unix(0, 0).UTC()}
+
 func newSharedFileTranscript(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	w, err := NewWriterNoSync(path, Header{SessionID: "shared-file", CreatedAt: time.Unix(0, 0).UTC()})
+	w, err := NewWriterNoSync(path, sharedFileHeader)
 	if err != nil {
 		t.Fatalf("NewWriterNoSync: %v", err)
 	}
@@ -217,7 +219,7 @@ func TestNewTranscriptDoesNotInheritADroppedWritersTail(t *testing.T) {
 			}
 
 			fresh := filepath.Join(dir, freshName)
-			created, err := NewWriterNoSync(fresh, Header{SessionID: "shared-file", CreatedAt: time.Unix(0, 0).UTC()})
+			created, err := NewWriterNoSync(fresh, sharedFileHeader)
 			if err != nil {
 				t.Fatalf("NewWriterNoSync fresh: %v", err)
 			}
@@ -276,16 +278,18 @@ func TestDroppedWriterReleasesItsTail(t *testing.T) {
 			t.Fatalf("Append: %v", err)
 		}
 	}()
-	// A cleanup runs at some collection after the writer is unreachable, with
-	// no completion to await; the bound is a tripwire, not the mechanism.
-	for range 100 {
-		runtime.GC()
-		if !tailRegistered(path) {
-			return
+	// A cleanup runs on the runtime's cleanup goroutine some time after a
+	// collection finds the writer unreachable, and nothing signals that it
+	// ran, so this watches for its effect. The deadline is a tripwire for a
+	// cleanup that never runs, not the mechanism.
+	deadline := time.Now().Add(time.Minute)
+	for tailRegistered(path) {
+		if time.Now().After(deadline) {
+			t.Fatal("the dropped writer's tail is still registered a minute after it was dropped")
 		}
+		runtime.GC()
 		runtime.Gosched()
 	}
-	t.Fatal("the dropped writer's tail is still registered after 100 collections")
 }
 
 func tailRegistered(path string) bool {
@@ -296,4 +300,37 @@ func tailRegistered(path string) bool {
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
 	return slices.ContainsFunc(openTails.tails, func(tail *appendTail) bool { return os.SameFile(tail.info, info) })
+}
+
+// Creating a transcript over a file another writer still holds open shares
+// that writer's tail, so it must not rewind the sequence under it.
+func TestCreatingOverAnOpenTranscriptDoesNotRewindItsSequence(t *testing.T) {
+	path := newSharedFileTranscript(t)
+	open := openSharedFileWriter(t, path)
+	defer open.Close() //nolint:errcheck // assertion fixture
+	if err := open.Append(steeringTurn("open before create")); err != nil {
+		t.Fatalf("open Append: %v", err)
+	}
+	created, err := NewWriterNoSync(path, sharedFileHeader)
+	if err != nil {
+		t.Fatalf("NewWriterNoSync over open transcript: %v", err)
+	}
+	defer created.Close() //nolint:errcheck // assertion fixture
+	if err := created.Append(steeringTurn("created")); err != nil {
+		t.Fatalf("created Append: %v", err)
+	}
+	if err := open.Append(steeringTurn("open after create")); err != nil {
+		t.Fatalf("open Append after create: %v", err)
+	}
+	assertSeqsStrictlyIncreasing(t, path)
+	if seq := tailNextSeq(open); seq != 4 {
+		t.Fatalf("next sequence = %d, want 4: creating the file spent nothing and rewound nothing", seq)
+	}
+}
+
+// tailNextSeq reads the next sequence number under the tail's own lock.
+func tailNextSeq(w *Writer) int {
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	return w.tail.nextSeq
 }

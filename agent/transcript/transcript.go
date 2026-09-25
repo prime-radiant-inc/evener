@@ -481,8 +481,6 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 	}
 	tail.mu.Lock()
 	defer tail.mu.Unlock()
-	// The file was just created (or truncated) with no entries in it.
-	tail.nextSeq = 0
 	return newWriterOnTail(fs, f, tail, header), nil
 }
 
@@ -969,6 +967,7 @@ func (w *Writer) Close() error {
 			closeErr = fmt.Errorf("close transcript file: %w", err)
 		}
 		w.releaseTail.Stop()
+		runtime.KeepAlive(w) // Stop removes the cleanup only if w is reachable across it
 		w.tail.release()
 	})
 	return closeErr
