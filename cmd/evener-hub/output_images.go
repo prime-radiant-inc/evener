@@ -87,7 +87,8 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 
 // enrichOutputImageNotification completes a live tool call's output images on
 // their way to the browser, in the call items a history/updated carries and
-// the tool item an overlay/upserted carries: it adds the file-backed
+// the tool item an overlay/upserted carries, and routes the images a relayed
+// user message carries by their sha: it adds the file-backed
 // descriptors this hub can resolve by re-reading the call's own file argument
 // off disk, and it stamps the sha-addressed route onto whatever descriptors
 // the daemon minted without one (see stampOutputImageURLs).
@@ -108,7 +109,10 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 		return rewriteNotificationField(notification, "items", func(items *[]appwire.ThreadItem) bool {
 			changed := false
 			for i := range *items {
-				changed = enrich(&(*items)[i]) || changed
+				item := &(*items)[i]
+				changed = enrich(item) || changed
+				// A user message's images carry their sha, as on a read.
+				changed = stampInputImageURLs(sessionID, item.Images) || changed
 			}
 			return changed
 		})
@@ -228,8 +232,10 @@ func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
 }
 
 // stampInputImageURLs gives each sha-bearing input image its sha route,
-// leaving already-routed images and sha-less inline images alone.
-func stampInputImageURLs(sessionID string, images []appwire.InputItem) {
+// leaving already-routed images and sha-less inline images alone. It reports
+// whether it changed anything.
+func stampInputImageURLs(sessionID string, images []appwire.InputItem) bool {
+	stamped := false
 	for i := range images {
 		if images[i].URL != "" {
 			continue
@@ -239,7 +245,9 @@ func stampInputImageURLs(sessionID string, images []appwire.InputItem) {
 			continue
 		}
 		images[i].URL = sessionImageURL(sessionID, sha)
+		stamped = true
 	}
+	return stamped
 }
 
 // stampThreadImageURLs is stampSessionImageURLs over a whole thread, resolving

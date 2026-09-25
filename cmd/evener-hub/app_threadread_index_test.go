@@ -532,3 +532,25 @@ func TestDeletingASessionRemovesItsTranscriptIndex(t *testing.T) {
 		t.Fatal("the hub's cached handle on the deleted transcript is still open")
 	}
 }
+
+// TestEnrichOutputImageNotificationRoutesAUserImage pins a pasted image on a
+// relayed history/updated: the user message carries the image's sha, and the
+// relay stamps the route this hub serves its bytes on, as a read does.
+func TestEnrichOutputImageNotificationRoutesAUserImage(t *testing.T) {
+	sessionID := "01HISTORYIMG"
+	sha := strings.Repeat("f", 64)
+	enriched := enrichOutputImageNotification(sessionID, "", map[string]string{}, *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: sessionID,
+		Items: []appwire.ThreadItem{{
+			Type: "userMessage", ID: "item_user", Text: "look",
+			Images: []appwire.InputItem{{Type: "input_image", MediaType: "image/png", Metadata: map[string]string{"sha": sha, "size": "12"}}},
+		}},
+	}).Notification)
+	var updated appwire.HistoryUpdatedParams
+	if err := json.Unmarshal(enriched.Params, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/s/" + sessionID + "/images/" + sha; len(updated.Items) != 1 || len(updated.Items[0].Images) != 1 || updated.Items[0].Images[0].URL != want {
+		t.Fatalf("items = %+v, want the user image routed at %s", updated.Items, want)
+	}
+}
