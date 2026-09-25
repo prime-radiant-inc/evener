@@ -9,13 +9,14 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
-	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/llm"
 )
 
 // replayFuzzSeeds are real assistant/user/tool turns covering each content kind,
-// shared by the live-vs-reload fuzz targets. Each is the JSON of one transcript
+// shared by the live-vs-reload fuzz targets, which record each in the new
+// format. Each is the JSON of one transcript
 // Entry; the malformed inputs prove the no-panic floor.
 var replayFuzzSeeds = []string{
 	// Assistant turn: text + thinking + redacted_thinking + tool_call.
@@ -43,20 +44,6 @@ var replayFuzzSeeds = []string{
 	``,
 }
 
-// jsonEqItems reports whether two ThreadItem lists marshal identically.
-func jsonEqItems(t *testing.T, a, b any) (bool, []byte, []byte) {
-	t.Helper()
-	ab, err := json.Marshal(a)
-	if err != nil {
-		t.Fatalf("marshal lhs: %v", err)
-	}
-	bb, err := json.Marshal(b)
-	if err != nil {
-		t.Fatalf("marshal rhs: %v", err)
-	}
-	return bytes.Equal(ab, bb), ab, bb
-}
-
 // canonicalEntry returns the entry as it would exist on disk: transcript.Writer
 // marshals each entry, so the persisted bytes are the compact form of the
 // in-memory turn. Projecting from this canonical form (rather than the raw fuzz
@@ -76,15 +63,16 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 	return canon, b
 }
 
-// FuzzHubReplayLiveVsReload is the full live-vs-reload metamorphic: it compares
-// what the user sees LIVE -- the daemon's history, projected from the recorded
-// entry by the transcript index and published as history/updated -- against
-// what the hub renders on RELOAD (saved bytes → decodeTranscriptTurn →
-// ProjectTurn), for one turn.
-//
-// normalizeMetamorphic strips ONLY the documented, legitimate live/reload
-// differences before comparing; every strip is cited. Anything outside the
-// allow-list is a real reload divergence.
+// FuzzHubReplayLiveVsReload is the live-vs-reload differential of the history
+// every client renders. LIVE is the daemon's transcript index extended entry
+// by entry as each entry is recorded -- what history/updated publishes. RELOAD
+// is a fresh index built over the whole file in one pass -- what a read, or a
+// hub serving the session daemonless, answers from. The fuzzed entry is
+// recorded in the new format, inside an execution, and both indexes are walked
+// through every page: the two must hold the same items and turns, at the same
+// positions and versions. A projection rule that depends on how the index
+// got to an entry (its incremental state) rather than on the entries
+// themselves diverges here.
 func FuzzHubReplayLiveVsReload(f *testing.F) {
 	for _, s := range replayFuzzSeeds {
 		f.Add([]byte(s))
@@ -95,128 +83,96 @@ func FuzzHubReplayLiveVsReload(f *testing.F) {
 	})
 }
 
-// checkLiveVsReload runs the live-vs-reload metamorphic on one entry's JSON: a
-// content kind that survives one projection path but not the other (or shifts
-// position) makes the two item lists diverge. Shared by the raw-byte target
-// above and the structure-aware target below.
+// replayExecution is the execution the fuzzed entry is recorded in.
+const replayExecution = "turn_m1"
+
+// checkLiveVsReload runs the live-vs-reload differential on one entry's JSON.
+// Shared by the raw-byte target above and the structure-aware target below.
 func checkLiveVsReload(t *testing.T, raw []byte) {
 	t.Helper()
 	var e transcript.Entry
-	if json.Unmarshal(raw, &e) != nil {
+	if json.Unmarshal(raw, &e) != nil || e.Turn.Kind == "" {
 		return
 	}
-	canon, canonBytes := canonicalEntry(t, e)
-	if !replayedKind(canon.Turn.Kind) {
-		return // turn kind has no per-turn item rendering to compare
-	}
+	canon, _ := canonicalEntry(t, e)
+	fuzzed := inReplayExecution(canon.Turn)
+	fuzzed.TurnKind = ""
+	opener := inReplayExecution(schema.NewTurn(schema.TurnUserInput, llm.User("replay")))
+	opener.TurnKind = schema.TurnSpanExecution
+	completion := inReplayExecution(schema.Turn{
+		Kind:       schema.TurnCompletion,
+		Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted},
+	})
 
-	// Live side: the daemon's history of a transcript holding this entry.
 	path := filepath.Join(t.TempDir(), "thread.transcript.jsonl")
 	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: "thread"})
 	if err != nil {
 		t.Fatalf("new transcript: %v", err)
 	}
-	if err := writer.Append(canon.Turn); err != nil {
-		_ = writer.Close()
-		return // an entry no writer records has no live rendering
+	defer writer.Close() //nolint:errcheck // closed below; this covers the early returns
+	live, err := transcriptindex.Open(path, t.TempDir())
+	if err != nil {
+		t.Fatalf("index the header: %v", err)
+	}
+	defer live.Close() //nolint:errcheck // a read-only projection
+	for _, turn := range []schema.Turn{opener, fuzzed, completion} {
+		if err := writer.Append(turn); err != nil {
+			return // an entry no writer records has no rendering
+		}
+		if err := live.CatchUp(); err != nil {
+			t.Fatalf("extend the live index over %s: %v", turn.Kind, err)
+		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close transcript: %v", err)
 	}
-	idx, err := transcriptindex.Open(path, t.TempDir())
+	reload, err := transcriptindex.Open(path, t.TempDir())
 	if err != nil {
-		t.Fatalf("index the transcript: %v", err)
+		t.Fatalf("build the reload index: %v", err)
 	}
-	defer idx.Close() //nolint:errcheck // a read-only projection
-	window, err := idx.Latest(appwire.TranscriptItemPageLimit)
+	defer reload.Close() //nolint:errcheck // a read-only projection
+
+	liveHistory, reloadHistory := walkReplayHistory(t, live), walkReplayHistory(t, reload)
+	if !bytes.Equal(liveHistory, reloadHistory) {
+		t.Fatalf("live-vs-reload history diverged:\n live  =%s\n reload=%s\n entry=%s", liveHistory, reloadHistory, raw)
+	}
+}
+
+// inReplayExecution stamps turn as a new-format entry of replayExecution.
+func inReplayExecution(turn schema.Turn) schema.Turn {
+	turn.Format = schema.TurnFormatIdentity
+	turn.TurnID = replayExecution
+	return turn
+}
+
+// replayPage is small so the walk crosses page boundaries.
+const replayPage = 2
+
+// walkReplayHistory is every candidate of idx, oldest first, walked from the
+// latest page through every older one, encoded for comparison. The window's
+// incarnation is the index's own and is left out.
+func walkReplayHistory(t *testing.T, idx *transcriptindex.Index) []byte {
+	t.Helper()
+	window, err := idx.Latest(replayPage)
 	if err != nil {
-		t.Fatalf("latest window: %v", err)
+		t.Fatalf("latest page: %v", err)
 	}
-	var liveItems []appwire.ThreadItem
-	for _, candidate := range window.Candidates {
-		if candidate.TurnID != appwire.SystemPreludeTurnID {
-			liveItems = append(liveItems, candidate.Item)
+	candidates := window.Candidates
+	length := window.Length
+	for window.HasOlder {
+		if window, err = idx.Before(window.Candidates[0].Position, replayPage); err != nil {
+			t.Fatalf("older page: %v", err)
 		}
+		candidates = append(append([]appitempaging.TranscriptItemCandidate(nil), window.Candidates...), candidates...)
 	}
-	live := normalizeMetamorphic(liveItems)
-
-	// Reload side: the hub's own path off the saved bytes.
-	reconstructed, ok := decodeTranscriptTurn(canonBytes)
-	if !ok {
-		t.Fatalf("hub decode rejected the canonical entry: %s", canonBytes)
+	encoded, err := json.Marshal(struct {
+		Length     int64
+		Candidates []appitempaging.TranscriptItemCandidate
+	}{length, candidates})
+	if err != nil {
+		t.Fatalf("encode history: %v", err)
 	}
-	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil, apptranscript.ToolResultOutputImages))
-
-	if eq, a, b := jsonEqItems(t, live, reload); !eq {
-		t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
-	}
-}
-
-// replayedKind reports the turn kinds whose rendering is a per-turn item list
-// on both sides (steering and system turns are not).
-func replayedKind(kind schema.TurnKind) bool {
-	switch kind {
-	case schema.TurnUserInput, schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnCheckpoint, schema.TurnSummary:
-		return true
-	default:
-		return false
-	}
-}
-
-// normalizeMetamorphic strips the legitimate live/reload differences before
-// comparison. Each strip is load-bearing and justified; an over-broad entry
-// would mask a real reload carry-through bug.
-func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
-	out := make([]appwire.ThreadItem, 0, len(items))
-	for _, it := range items {
-		// ALLOW-LIST (reload-only renderings with no live event path):
-		//   - web_search: the live appprojector has no web_search event; the hub
-		//     renders web_search ONLY on reload (added in ec96619c). 4a covers its
-		//     carry-through fidelity.
-		if it.Type == "commandExecution" && it.ToolName == "web_search" {
-			continue
-		}
-		//   - redacted thinking: there is no live reasoning-summary delta for
-		//     redacted thinking, so nothing renders live; reload emits a
-		//     "[redacted thinking]" placeholder. 4a covers its carry-through.
-		if it.Type == "reasoning" && it.Text == "[redacted thinking]" {
-			continue
-		}
-
-		// Identity and per-turn status: the daemon's history keys, positions
-		// and versions each item by its entry (the reload side's ProjectTurn
-		// assigns none), and item IDs, turn IDs, call IDs, status and timing
-		// derive from the transcript's grouping, which a one-entry transcript
-		// does not share with the reload side's single synthetic turn. None of
-		// these are rendered content.
-		it.ID = ""
-		it.TurnID = ""
-		it.CallID = ""
-		it.Status = ""
-		it.StartedAt = nil
-		it.CompletedAt = nil
-		it.TranscriptEntryIndex = 0
-		it.TranscriptKey = ""
-		it.Position = nil
-		it.Version = 0
-
-		it.Images = normalizeMetamorphicImages(it.Images)
-		out = append(out, it)
-	}
-	return out
-}
-
-// normalizeMetamorphicImages reduces input attachments to their media type:
-// image enrichment (live "image" type + inline Data + Name vs reload's
-// "input_image" + empty Name) collapses to the shared media type. Nothing is
-// dropped - both sides carry pictures and only pictures, so any extra entry
-// on either side is a real divergence for the differential to report.
-func normalizeMetamorphicImages(images []appwire.InputItem) []appwire.InputItem {
-	var out []appwire.InputItem
-	for _, img := range images {
-		out = append(out, appwire.InputItem{MediaType: img.MediaType})
-	}
-	return out
+	return encoded
 }
 
 // FuzzHubReplayLiveVsReloadStructured drives the live-vs-reload differential with
