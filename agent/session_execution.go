@@ -254,23 +254,22 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 	_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
 }
 
-// deliverCommunicate delivers a communicate message and reports whether it
-// did: the message is recorded as a COMMUNICATE entry first, and announced
-// only once the entry is recorded, so a delivered message is never missing
-// from history. A served session whose transcript does not record it fails
-// closed and delivers nothing; a session with no transcript, or one nobody
-// serves, announces it as it always has.
-func (s *Session) deliverCommunicate(data events.CommunicateData) bool {
+// deliverCommunicate delivers a communicate message: it is recorded as a
+// COMMUNICATE entry first, and announced only once the entry is recorded, so a
+// delivered message is never missing from history. A served session whose
+// transcript does not record it fails closed and delivers nothing, returning
+// the refusal; a session with no transcript, or one nobody serves, announces
+// it as it always has.
+func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	rec := s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
 	if !rec.Recorded && s.attachedTranscript() != nil {
-		s.failClosed(errors.New("a communicate message was not recorded"))
-		if s.failedClosedRefusal() != nil {
+		if refusal := s.failClosed(errors.New("a communicate message was not recorded")); refusal != nil {
 			s.announceFailClosed()
-			return false
+			return refusal
 		}
 	}
 	s.emit(events.EventCommunicate, data)
-	return true
+	return nil
 }
 
 // highestClientMutationTurnSequence is the highest turn_m<N> sequence any of

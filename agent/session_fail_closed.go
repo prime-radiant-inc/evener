@@ -45,17 +45,33 @@ type failClosedState struct {
 // failClosed stops a served session for cause: the running execution is
 // cancelled and every later input is refused. The diagnostic is emitted by
 // announceFailClosed at the next point that holds no session lock. The first
-// cause wins; an unserved session is left running.
-func (s *Session) failClosed(cause error) {
+// cause wins; an unserved session is left running. It returns the refusal in
+// force, nil for an unserved session.
+func (s *Session) failClosed(cause error) error {
+	if refusal := s.failedClosedRefusal(); refusal != nil {
+		return refusal
+	}
 	if !s.servedByDaemon() {
-		return
+		return nil
 	}
 	refusal := fmt.Errorf("%w: %w", errTranscriptFailedClosed, cause)
-	if !s.failedClosed.cause.CompareAndSwap(nil, &refusal) {
-		return
+	if s.failedClosed.cause.CompareAndSwap(nil, &refusal) {
+		if cancel := s.failedClosed.cancelExecution.Load(); cancel != nil {
+			(*cancel)()
+		}
 	}
-	if cancel := s.failedClosed.cancelExecution.Load(); cancel != nil {
-		(*cancel)()
+	return s.failedClosedRefusal()
+}
+
+// failClosedOnUnhealthyTranscript fails a served session closed when its
+// transcript could not be created or its writer is poisoned. Callers hold no
+// session lock and no client-mutation store lock.
+func (s *Session) failClosedOnUnhealthyTranscript() {
+	if s.transcriptCreateErr != nil {
+		_ = s.failClosed(fmt.Errorf("create transcript: %w", s.transcriptCreateErr))
+	}
+	if s.attachedTranscript().Poisoned() {
+		_ = s.failClosed(errTranscriptRefusesRecords())
 	}
 }
 

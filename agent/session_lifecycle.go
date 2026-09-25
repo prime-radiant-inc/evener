@@ -1737,6 +1737,7 @@ func (s *Session) endInputAtTurnFailure() {
 // a write and an fsync), and neither fact is ever cleared, so a stale read costs
 // one turn that then meets the writer's own refusal.
 func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
+	s.failClosedOnUnhealthyTranscript()
 	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 	if refusal == nil {
 		return nil
@@ -1761,6 +1762,7 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 // Its callers only reach it when they have work in hand, so an idle wake against
 // a dead transcript still stands down quietly.
 func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
+	s.failClosedOnUnhealthyTranscript()
 	return s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 }
 
@@ -1787,13 +1789,11 @@ func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
 // the claim guarantees is that the refusal and the claim decision see one
 // generation, and both claim callers give the claim back when the turn loop then
 // refuses it.
+//
+// A session that failed closed refuses first, with its own reason. Deciding to
+// fail closed happens elsewhere (failClosedOnUnhealthyTranscript, the write
+// door): this read is lock-free, so it stays safe inside the serializer.
 func (s *Session) refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
-	if s.transcriptCreateErr != nil {
-		s.failClosed(fmt.Errorf("create transcript: %w", s.transcriptCreateErr))
-	}
-	if writer.Poisoned() {
-		s.failClosed(errTranscriptRefusesRecords())
-	}
 	if refusal := s.failedClosedRefusal(); refusal != nil {
 		return refusal
 	}

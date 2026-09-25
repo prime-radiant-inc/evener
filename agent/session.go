@@ -2272,7 +2272,7 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	rec, err := writer.Record(t, transcript.RecordOptions{Door: door, Place: place})
 	if err != nil && writer.Poisoned() {
 		// The writer refuses everything from here: a served session stops.
-		s.failClosed(errTranscriptRefusesRecords())
+		_ = s.failClosed(errTranscriptRefusesRecords())
 	}
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
