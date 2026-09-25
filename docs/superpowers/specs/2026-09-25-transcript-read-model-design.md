@@ -128,6 +128,10 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   through any door, the writer publishes its recorded length under its lock. The
   entry is handed to the server only after that. The durable door rolls back
   before publishing, so the recorded length never includes rolled-back bytes.
+- **One process writes a transcript.** A session's transcript is written only by
+  the process that owns the session, and the per-session ownership lock enforces
+  it (`llm/apilog.go`, `ReserveSession`). The hub and the TUI never write
+  transcripts. So serializing appends within one process is sufficient.
 - **The per-process registry serializes appends.** Every writer in the process
   appends to a file through one registry entry for that file, cold writers and
   mid-session reopens included. The registry entry owns the append lock, the next
@@ -160,10 +164,13 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   identity, and incarnation handling. A record that another process later rolls
   back is gone on the next read.
 - **Crash or power loss** can lose buffered entries whose notifications clients
-  already have. Every daemon start mints a **boot generation**. Every read
+  already have. Every daemon start mints a **boot generation**, which increases
+  monotonically: a counter persisted in the state directory and incremented
+  under the session ownership lock. Every read
   response and every `history/updated` carries it. A client that sees a boot
-  generation different from the one it holds replaces that thread's whole
-  history before applying anything else, whatever the index incarnation, epoch
+  generation higher than the one it holds replaces that thread's whole history
+  before applying anything else, and ignores anything carrying a lower one.
+  That rule takes precedence over the index incarnation, epoch
   or recorded length say. So entries lost in a crash never survive on a client,
   even when the truncated file happens to match the index's covered length.
   Resync epochs are per boot generation. They start again at zero on each boot
@@ -324,8 +331,10 @@ The projector is one pure function over (entries, header). It has one
   emit (`agent/session_tools_communicate.go:73-77`). The entry is appended
   first, and the event is emitted only once the entry is recorded. Every
   failure path in `communicate` (missing `end_turn`, empty message, abort)
-  happens before that point, so a recorded COMMUNICATE entry means the message
-  was delivered.
+  happens before that point. A recorded COMMUNICATE entry is therefore a
+  message the user receives. It is live when the emit follows. If the daemon
+  crashes between recording and emitting, it appears on the client's next
+  read. It is never lost, and never shown for a failed call.
   - The communicate item is projected from the COMMUNICATE entry, so it is in
     history at delivery, whether or not the round's TOOL_RESULTS is ever written
     (`agent/session_tools.go:1021-1090`).
@@ -399,7 +408,9 @@ subscription. The client's reconnect then starts from a fresh read with the
 current epoch. Every subscriber recovers.
 
 If the rebuild itself fails three times in a row, the thread's history enters a
-failed state. The server stops projecting that thread and pushes a resync.
+failed state. The server stops projecting that thread, drops its queued
+entries, stops enqueueing new ones for it, and pushes a resync. Nothing
+accumulates for a failed thread. A restart rebuilds from the transcript.
 
 A history read of a failed thread returns the error
 `ErrorTranscriptHistoryFailed`, which names the entry ordinal that fails to
@@ -522,7 +533,11 @@ File consumers learn to skip them:
 
 ### Writer failure
 
-The writer API returns either `recorded (ordinal, Seq)` or `not recorded`. Today `Append`
+The writer API returns a record: either `recorded (ordinal, Seq)`, or `not
+recorded` together with the door's error. When a record is not recorded, the
+writer's `Poisoned()` and `Closed()` state tells the caller why: missing,
+closed, poisoned, or a clean durable rollback that leaves the writer usable.
+The fail-closed rule below branches on that state. Today `Append`
 and `AppendDurable` return nil with Seq 0 for both a missing and a closed writer
 (`agent/transcript/transcript.go:606-627`).
 
@@ -613,9 +628,10 @@ incarnation is valid. Each rule applies on one side:
   other than the current one gets `TranscriptItemCursorStale`, and the client
   re-reads the latest window.
 - **The client replaces.** A successful response always carries the current
-  incarnation.
-  If it differs from the one the client holds, the client replaces the thread's
-  whole history with the response, as it does for a new daemon incarnation.
+  incarnation. If a *latest-window* response carries an incarnation different
+  from the one the client holds, the client replaces the thread's whole history
+  with it. A backfill page from a different incarnation never replaces anything.
+  The server rejects its stale cursor, and the client re-reads the latest window.
 - **The client discards.** A response from the client's incarnation with a
   shorter recorded length than the client already holds arrived out of order.
   The client discards it and re-reads the latest window.
