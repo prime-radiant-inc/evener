@@ -2362,6 +2362,9 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext:
 			continue
 		}
+		if t.Kind.TranscriptOnly() {
+			continue // never in history; counted as absent if one got there
+		}
 		historyTurns++
 	}
 	return historyTurns, s.modelResponses
