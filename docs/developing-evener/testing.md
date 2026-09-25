@@ -899,7 +899,7 @@ separately rather than as a sixth `scripts/<guard>/run.mjs` case:
   above test the frontend against scripted stores; this one is the only place
   the frontend's skill contract is tested against the daemons and hub that
   must honor it. It needs the BUILT frontend (the hub
-  serves the embedded dist), so the gate (`evener dev web-browser-guards`,
+  serves the embedded dist), so the gate (`evener-dev dev web-browser-guards`,
   cmd/evener-dev/webbrowser.go) builds it when missing rather than skipping.
 
 All six are owned by `make test-web-browser`, which is required by the CI web

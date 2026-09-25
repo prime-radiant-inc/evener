@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-web-browser.sh — make test-web-browser's entry point. The gate itself is
-# `evener dev web-browser-guards` (cmd/evener-dev/webbrowser.go): the real
+# `evener-dev dev web-browser-guards` (cmd/evener-dev/webbrowser.go): the real
 # browser-only frontend guards, their scheduling, verdicts and interrupt
 # handling. This script only supplies how many guards run at once: each is a
 # real browser (most with a Vite dev server) whose tripwires assume it gets
