@@ -76,6 +76,16 @@ type meta struct {
 	TurnSlot   uint64 `json:"turn_slot"`
 }
 
+// EntryError reports the entry the index could not apply: a decode failure or
+// a builder error, at scan or extension time.
+type EntryError struct {
+	Ordinal uint64
+	Err     error
+}
+
+func (e *EntryError) Error() string { return fmt.Sprintf("entry %d: %v", e.Ordinal, e.Err) }
+func (e *EntryError) Unwrap() error { return e.Err }
+
 // Index is an open transcript index. It is safe for concurrent use, and other
 // handles, in this process or another, may share its sidecar directory.
 type Index struct {
@@ -148,6 +158,18 @@ func (x *Index) CatchUpTo(length int64) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	return x.locked(true, func() error { return x.extend(length) })
+}
+
+// Rebuild discards the current build and indexes the transcript again, up to
+// length, under a new incarnation. Unlike the internal rebuild an extension
+// falls back to when it cannot apply an entry incrementally (errRebuild),
+// which keeps the incarnation because the transcript still extends the
+// covered prefix, Rebuild always mints a new one: a reader holding an older
+// snapshot must not mistake its items and turns for still-valid history.
+func (x *Index) Rebuild(length int64) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.locked(true, func() error { return x.rebuild(length, "") })
 }
 
 // locked runs fn holding the sidecar lock, shared or exclusive, after taking
@@ -524,10 +546,10 @@ func (x *Index) scan(length int64) error {
 		} else {
 			entry, err := transcript.DecodeEntry(trimmed)
 			if err != nil {
-				return fmt.Errorf("parse transcript entry: %w", err)
+				return &EntryError{Ordinal: x.meta.Entries, Err: fmt.Errorf("parse transcript entry: %w", err)}
 			}
 			if err := x.builder.apply(x.meta.Entries, start, uint32(len(line)), &entry.Turn); err != nil {
-				return err
+				return &EntryError{Ordinal: x.meta.Entries, Err: err}
 			}
 			x.meta.Entries++
 		}

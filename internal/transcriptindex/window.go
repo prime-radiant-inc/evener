@@ -169,8 +169,9 @@ func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCa
 	return candidates, nil
 }
 
-// Changes is what in-place updates changed after a snapshot: the current form
-// of each item and turn they touched, in record order, each once.
+// Changes is what changed after a snapshot: the current form of every item
+// and turn a later entry created or updated in place, in record order, each
+// once.
 type Changes struct {
 	Items       []appitempaging.TranscriptItemCandidate
 	Turns       []appwire.Turn
@@ -178,10 +179,12 @@ type Changes struct {
 	Length      int64
 }
 
-// ChangedSince returns the items and turns that entries at or past length
-// updated in place: a tool call a later TOOL_RESULTS completed, a turn a later
-// entry restamped. A reader holding a snapshot at length learns of changes to
-// what it holds without re-reading it.
+// ChangedSince returns the items and turns whose record an entry at or past
+// length created or touched: an item a later entry opened or a call a later
+// TOOL_RESULTS completed, a turn a later entry opened or restamped. A reader
+// holding a snapshot at length learns everything past it changed, without
+// re-reading what it already holds. Items are in position order, turns in
+// slot order (the order their first entry created them), each once.
 func (x *Index) ChangedSince(length int64) (Changes, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -204,6 +207,20 @@ func (x *Index) ChangedSince(length int64) (Changes, error) {
 			case updatedTurn:
 				turns[update.Slot] = true
 			}
+		}
+		firstItem, err := x.firstItemCreatedAt(length)
+		if err != nil {
+			return err
+		}
+		for slot := firstItem; slot < x.items.n; slot++ {
+			items[slot] = true
+		}
+		firstTurn, err := x.firstTurnCreatedAt(length)
+		if err != nil {
+			return err
+		}
+		for slot := firstTurn; slot < x.turns.n; slot++ {
+			turns[slot] = true
 		}
 		r := newReader(x)
 		for _, slot := range slices.Sorted(maps.Keys(items)) {
@@ -229,6 +246,28 @@ func (x *Index) ChangedSince(length int64) (Changes, error) {
 // at or past offset caused.
 func (x *Index) firstUpdateAt(offset int64) (uint64, error) {
 	slot, err := x.updates.search(func(buf []byte) bool { return decodeUpdate(buf).Offset < offset })
+	if err != nil {
+		return 0, x.fail(err)
+	}
+	return slot, nil
+}
+
+// firstItemCreatedAt binary-searches the item records, sorted by position and
+// so by their opener's offset, for the first one an entry at or past offset
+// opened.
+func (x *Index) firstItemCreatedAt(offset int64) (uint64, error) {
+	slot, err := x.items.search(func(buf []byte) bool { return decodeItem(buf).Opener.Offset < offset })
+	if err != nil {
+		return 0, x.fail(err)
+	}
+	return slot, nil
+}
+
+// firstTurnCreatedAt binary-searches the turn summaries, appended in the file
+// order their first entry created them, for the first one an entry at or past
+// offset opened.
+func (x *Index) firstTurnCreatedAt(offset int64) (uint64, error) {
+	slot, err := x.turns.search(func(buf []byte) bool { return decodeTurn(buf).FirstOffset < offset })
 	if err != nil {
 		return 0, x.fail(err)
 	}
