@@ -46,40 +46,8 @@ func shutdownInstalledServe(ctx context.Context, entry rendezvous.Entry) error {
 	})
 }
 
-func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
-	t.Parallel()
-
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	fixtureRoot := t.TempDir()
-	frontendDir := filepath.Join(fixtureRoot, "cmd", "evener-hub", "frontend")
-	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
-		t.Fatalf("mkdir frontend: %v", err)
-	}
-
-	copyMakefileSources(t, repoRoot, fixtureRoot)
-	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web/web-preflight.sh", 0o755)
-	if err := os.WriteFile(filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("write package-lock.json: %v", err)
-	}
-
-	env := installTestEnv(t, t.TempDir(), nil)
-	runCommand(t, fixtureRoot, npmShimEnv(t, env), "make", "web-preflight")
-
-	tscPath := filepath.Join(frontendDir, "node_modules", ".bin", "tsc")
-	tscInfo, err := os.Stat(tscPath)
-	if err != nil {
-		t.Fatalf("preflight did not install local tsc: %v", err)
-	}
-	if tscInfo.Mode().Perm()&0o111 == 0 {
-		t.Fatalf("local tsc is not executable: mode %s", tscInfo.Mode())
-	}
-}
-
 // TestNativePreflightRefusesUnreadyInstalls is the native counterpart of
-// TestWebPreflightBootstrapsMissingFrontendDependencies: it drives the real
+// TestWebPreflightRefusesNpmCiThroughASymlink (buildscripts_test.go): it drives the real
 // scripts/native/native-preflight.sh at fixture directories through
 // EVENER_NATIVE_DIR and pins what each state produces. The script never
 // installs, so no npm shim is needed — every branch is decided by what the
@@ -1566,7 +1534,7 @@ func isETXTBSYExecFailure(err error, out []byte) bool {
 // npm ci + vite build inside this test — slow, and it would fail entirely in
 // environments without node. This test's subject is install's layout/symlinks,
 // not web freshness; that is pinned separately by
-// TestMakeRuntimeAliasesBuildThePair in runtime_pair_build_test.go. The shim
+// TestMakeInstallBuildsTheWebBeforeTheHub in buildscripts_test.go. The shim
 // models only the local compiler contract that web-preflight checks: npm ci
 // creates an executable tsc stub, while npm run build remains a no-op and
 // leaves dist exactly as-is. The real go/git must still resolve from the rest
