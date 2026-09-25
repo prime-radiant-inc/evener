@@ -145,11 +145,13 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 	turnID := persistedTurnID(turn, entryIndex)
 	// A continuation joining an open group projects under the group's turn
 	// id (the opener's), matching appendEntry and the bounded read. An
-	// opener or standalone uses its own persistedTurnID.
+	// opener or standalone uses its own persistedTurnID. TurnSteering is a
+	// continuation (see continuesLogicalTurn), so it is covered by this
+	// branch when it joins an open group; the prior OwningTurnID-specific
+	// else-if was unreachable and a no-op (its guard required the open
+	// group's turn id to equal OwningTurnID already).
 	if continuesLogicalTurn(turn.Kind) && acc.open && len(acc.turns) > 0 {
 		turnID = acc.turns[len(acc.turns)-1].turnID
-	} else if turn.Kind == schema.TurnSteering && turn.OwningTurnID != "" && acc.open && len(acc.turns) > 0 && acc.turns[len(acc.turns)-1].turnID == turn.OwningTurnID {
-		turnID = turn.OwningTurnID
 	}
 	var items []appwire.ThreadItem
 	if project != nil {
