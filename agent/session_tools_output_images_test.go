@@ -172,7 +172,7 @@ func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
 	}
 
 	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
 	})
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)
