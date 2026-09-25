@@ -2,6 +2,7 @@ import type {
   AskQuestionRef,
   ItemImage,
   ItemModel,
+  ProjectedEntry,
   ThreadItemEventKind,
   ThreadModel,
   TranscriptDisplayConfigV1,
@@ -12,8 +13,10 @@ import type {
 // It shrinks as seam 2 lands (SDK migration plan, D21–D24): the conversation is
 // hydrated by reducer.hydrateThread (D22), every notification folds through
 // reducer.applyNotification and the rows are this file's projection of the
-// model it returns (D23c), and D24 replaces the display rows with
-// transcriptDisplay/projector.ts entries and deletes this file.
+// model it returns (D23c), and D24 retires this file: the shared projector
+// (transcriptProjector.ts's projectThread) now decides which entries exist at
+// which display config, and this file maps them onto the phone's rows until
+// D24-6 re-homes the row types into the adapter and deletes it.
 //
 // projectConversation folds a ThreadModel's turns into the display rows. No
 // DOM, no network, no clock — given the same model it produces the same rows.
@@ -27,12 +30,15 @@ import type {
 // is interpreted, and that runs downstream of this projection.
 
 import {
+  ACTION_SUMMARY_UNAVAILABLE,
+  configFingerprint,
   hasItemFailure,
   hasWarningText,
   isActiveItem,
   joinedReasoningParagraphs,
   joinWarningParts,
   liveAskQuestions,
+  makeTranscriptDisplayConfig,
   parseAskUserQuestions,
   pendingTextJoined,
   projectThread,
@@ -750,6 +756,116 @@ function clusterActivityRun(
   return { ...first, state, members };
 }
 
+// --- shared-projector entry mapping (the D24-3 swap) ---------------------------
+
+// The config the seam still projects under. Until D24-5 routes the user's
+// transcript display config into the projection, every item the private
+// projection produced must keep reaching the presentation layer, which filters
+// rows itself (mobile-native/src/transcriptPresentation.ts). Full content with
+// every row-relevant advanced gate open is exactly "the projector hides
+// nothing": prompt events, round timings, system events and every hook exit
+// all survive, so the delegation is invisible to the oracle suite and the
+// locked seam. tokenCounts and estimatedCost never gate a row (metadata only),
+// so they stay at their shipped defaults.
+const PROJECT_EVERYTHING_CONFIG: TranscriptDisplayConfigV1 = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "full" },
+  { roundTimings: true, systemEvents: true, promptEvents: true, hookExits: "all" },
+);
+
+// One ProjectedEntry onto the row the phone renders for its source item. This
+// is the temporary twin of mobile-native/src/projectedRows.ts's adapter:
+// mobile-native imports mobile, never the reverse, so the swap's
+// entry→row mapping lives here until D24-6 re-homes the row types into the
+// adapter and deletes this file. The adapter is the mapping's landed contract.
+// Its two robustness deltas from this file's own helpers (a blank tool label
+// falling back to "Tool", an unparseable duration dropped) apply to rows built
+// by the adapter, not to these — here the row builders are this file's own
+// pre-swap helpers, whose behavior the 2449-line oracle pins; D24-6's re-home
+// is where those two become the live behavior. The third delta, the trimmed
+// intent rationale, has no pre-swap counterpart and applies below.
+function rowForEntry(
+  entry: ProjectedEntry,
+  turn: TurnModel,
+  asks: ReadonlyMap<string, AskQuestionRef[]>,
+): PreResult | null {
+  switch (entry.kind) {
+    // "item" and "critical" both render through the pre-swap single-item
+    // projection: the projector's classification decides which items are
+    // attention-worthy (critical) or routine (item), but the row the phone
+    // renders for a given item is unchanged by that split — a critical failed
+    // tool is still the failed tool activity, a critical interaction is still
+    // the question card, a critical event-kind "error" system message is still
+    // its warning notice. The one carve-out is a redacted critical reasoning
+    // item, which must never render its thought: it becomes the adapter's
+    // neutral failure row. (A non-redacted critical reasoning cannot occur —
+    // the projector redacts every reasoning item it routes to critical — so
+    // the fallback for it is the pre-swap reasoning row, not the adapter's
+    // own defensive failed-activity branch.)
+    case "item":
+    case "critical": {
+      if (entry.kind === "critical" && entry.item.type === "reasoning" && entry.redacted) {
+        return {
+          kind: "final",
+          item: { kind: "failure", id: entry.item.id, title: entry.summary, detail: "" },
+        };
+      }
+      return projectItem(entry.item, turn, asks);
+    }
+    // A content-free placeholder for the turn's live current thought while
+    // the reasoning flag is off: the reader sees that the agent is thinking
+    // without the stream. The cluster family matches every other reasoning
+    // row (`unknown:reasoning`), so placeholders merge exactly where their
+    // full-level counterparts would.
+    case "thinking":
+      return {
+        kind: "activity",
+        pre: {
+          family: `unknown:${entry.item.type}`,
+          item: {
+            kind: "activity",
+            id: entry.item.id,
+            label: "Reasoning",
+            family: "reasoning",
+            state: "running",
+            detail: {},
+          },
+        },
+      };
+    // A summarized tool action: the same tool activity row, carrying the
+    // projector's trimmed rationale as its summary line and honoring the
+    // projector's own failed classification rather than re-deriving it. The
+    // intent-vs-full distinction is native presentation (the row carries no
+    // mode field), decided downstream.
+    case "intent": {
+      const base = projectItem(entry.item, turn, asks);
+      if (base === null) return null;
+      if (base.kind !== "activity") return base;
+      const row = base.pre.item;
+      return {
+        kind: "activity",
+        pre: {
+          family: entry.failed ? `failed:${entry.item.id}` : base.pre.family,
+          item: {
+            ...row,
+            state: entry.failed ? "failed" : row.state,
+            detail: {
+              ...row.detail,
+              // The projector's own placeholder means the source carried no
+              // description; leave the detail's (undefined) description alone
+              // so native's actionSummary derives its fallback.
+              description:
+                entry.rationale === ACTION_SUMMARY_UNAVAILABLE
+                  ? row.detail.description
+                  : entry.rationale,
+            },
+          },
+        },
+        attachments: base.attachments,
+      };
+    }
+  }
+}
+
 // --- timeline projection -----------------------------------------------------
 
 // One projected row before clustering, carrying whether it may still be merged
@@ -768,42 +884,65 @@ interface TurnRows {
   // call is still answerable is a whole-model question (a later turn's user
   // message answers an earlier ask — deriveAskQuestions.ts). Each entry records
   // the calls this turn consumed and whether they were answerable, so the rows
-  // are reused only while that still holds.
+  // are reused only while that still holds. The rows also depend on the config
+  // they were projected under — which items exist as entries at all is the
+  // projector's decision at that config — so it is keyed by the config's
+  // value (configFingerprint): a caller re-resolving an equal config per
+  // publish (resolveEffectiveConfig builds a fresh object every call) still
+  // hits the cache, and a config whose value changed re-derives every turn.
   askState: Array<[string, boolean]>;
+  configFingerprint: string;
 }
 
 // Per-turn rows, keyed on the TurnModel reference. The reducer hands a turn back
 // UNTOUCHED — by reference — when a frame did not change it (reducer.ts's mapTurn
 // and settleFirstMatchingTurn), so a delta into the newest turn leaves every older
 // turn's rows exactly as they were. Re-deriving them per frame is the transcript's
-// whole width of work, including a JSON parse per ask and two Date.parse calls per
-// timed tool call, for one item's text. A WeakMap so a dropped turn's rows go with
-// it.
+// whole width of work — the shared projector's classification scan for the turn
+// plus this file's row construction, which still pays a JSON parse per ask and
+// two Date.parse calls per timed tool call — for one item's text. A WeakMap so a
+// dropped turn's rows go with it. A cache hit skips BOTH halves for that turn:
+// the turn is projected alone (see rowsForProjectedTurn), so the projector's
+// whole-transcript bookkeeping — anchors, visibleItems, eligibleDisclosureIds —
+// is only ever allocated for turns whose rows are actually being re-derived.
+// That per-turn slicing is sound because the projector's decisions are
+// turn-local (decisionFor reads the item, its turn, and the config); if the
+// projector ever went cross-turn, this cache would need a whole-model call.
 const turnRowCache = new WeakMap<TurnModel, TurnRows>();
 
-function rowsForTurn(
+function rowsForProjectedTurn(
+  model: ThreadModel,
   turn: TurnModel,
   asks: ReadonlyMap<string, AskQuestionRef[]>,
+  config: TranscriptDisplayConfigV1,
+  fingerprint: string,
 ): Ordered[] {
   const cached = turnRowCache.get(turn);
   if (
     cached !== undefined &&
+    cached.configFingerprint === fingerprint &&
     cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
   ) {
     return cached.entries;
   }
+  // Project this turn alone. One turn in, one ProjectedTurn out, carrying the
+  // same entries a whole-model call yields for this turn (the decisions are
+  // turn-local). The slice's entry.sourceIndex restarts at 0 per turn where a
+  // whole-model call counts across turns — the row mapping never reads it.
+  const [projected] = projectThread({ ...model, turns: [turn] }, config).turns;
+  if (projected === undefined) return [];
   const entries: Ordered[] = [];
   const askState: Array<[string, boolean]> = [];
-  for (const item of turn.items) {
-    if (isAskUser(item)) {
-      const callId = item.callId ?? item.id;
+  for (const entry of projected.entries) {
+    if (isAskUser(entry.item)) {
+      const callId = entry.item.callId ?? entry.item.id;
       askState.push([callId, asks.has(callId)]);
     }
-    const result = projectItem(item, turn, asks);
+    const result = rowForEntry(entry, turn, asks);
     if (result === null) continue;
     const identity = {
-      ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
-      ...(item.position ? { position: item.position } : {}),
+      ...(entry.item.transcriptKey ? { transcriptKey: entry.item.transcriptKey } : {}),
+      ...(entry.item.position ? { position: entry.item.position } : {}),
     };
     if (result.kind === "final") {
       entries.push({
@@ -821,14 +960,14 @@ function rowsForTurn(
       });
     }
   }
-  // A turn error produces a failure item at the end of that turn's items.
+  // A turn error produces a failure item at the end of that turn's rows.
   if (turn.error) {
     entries.push({
       type: "final",
       item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
     });
   }
-  turnRowCache.set(turn, { entries, askState });
+  turnRowCache.set(turn, { entries, askState, configFingerprint: fingerprint });
   return entries;
 }
 
@@ -856,14 +995,25 @@ export function projectTimeline(
   model: ThreadModel,
   // The answerable asks, when the caller has already derived them.
   asks: ReadonlyMap<string, AskQuestionRef[]> = liveAsksFor(model),
+  // Which items exist as rows at all is the shared projector's decision at
+  // this config; the seam's config-less calls keep the show-everything
+  // default above until D24-5 routes the user's display config here.
+  config: TranscriptDisplayConfigV1 = PROJECT_EVERYTHING_CONFIG,
 ): MobileTimelineItem[] {
-  // Project every item in order, preserving whether it is a final item or a
-  // clusterable activity pre-item. Attachments emitted alongside an item
-  // follow that item in the timeline. Rows already derived for an unchanged turn
-  // come from the cache above; clustering then runs over the whole result,
-  // because a run of activities can span a turn boundary.
+  // The shared projector owns visibility and ordering — which entries exist
+  // at this config, in turn and item order — and rowForEntry maps each
+  // surviving entry onto the row the pre-swap projection built for the same
+  // item, preserving whether it is a final item or a clusterable activity
+  // pre-item. Attachments emitted alongside an item follow that item in the
+  // timeline. Rows already derived for an unchanged turn come from the cache
+  // above — and with them that turn's classification scan, which only a
+  // cache miss pays (see rowsForProjectedTurn); clustering then runs over the
+  // whole result, because a run of activities can span a turn boundary.
+  const fingerprint = configFingerprint(config);
   const ordered: Ordered[] = [];
-  for (const turn of model.turns) ordered.push(...rowsForTurn(turn, asks));
+  for (const turn of model.turns) {
+    ordered.push(...rowsForProjectedTurn(model, turn, asks, config, fingerprint));
+  }
 
   // Second pass: cluster consecutive activity rows that share a family, then
   // rebuild the timeline in original order.
