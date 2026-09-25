@@ -242,7 +242,7 @@ func covOutputImagesSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, _ = readOutputImageFile(large)
-	_ = outputImageSHA(png)
+	_ = imageSha(png)
 	_ = outputImageDisplayName("/")
 
 	base := appwire.Notification{}

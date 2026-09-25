@@ -4,27 +4,23 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
 
-// TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField pins kata wf7e's
-// established mechanism: transcript.DecodeEntry runs DisallowUnknownFields on
-// every record in a session's transcript before any of it is projected. So
-// one record this binary doesn't fully understand — the shape an older
-// evener-hub sees once a newer evener CLI has added a schema.Turn field — takes
-// the whole session down, not just the turn carrying the new field. The other
-// 199 turns in this fixture decode perfectly and are still not visible.
-//
-// This is deliberate, not a bug: see the design note beside
-// decoder.DisallowUnknownFields() in agent/transcript/transcript.go, and the
-// matching, independently-arrived-at posture in agent/transcript_read.go's
-// readSemanticTranscript ("corrupt complete lines... reject the whole
-// file") and agent/doctor/transcript.go's loadTranscriptWithMaxLineBytes. The
-// test exists so a future change to that posture is a decision, not an
-// accident.
-func TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField(t *testing.T) {
+// TestPastThreadReadQuarantinesOneUnknownTurnField pins what a daemonless
+// read does with a record this binary does not fully understand — the shape
+// an older evener-hub sees once a newer evener CLI has added a schema.Turn
+// field. transcript.DecodeEntry still rejects the record
+// (DisallowUnknownFields), but the transcript index quarantines it: it
+// projects as one visible "unreadable entry" item naming why, and the rest of
+// the session's history stays readable. A single entry that deterministically
+// fails to project is quarantined; the failed-history state is only for
+// rebuild and infrastructure failures (the transcript read model's final
+// contract decision 6).
+func TestPastThreadReadQuarantinesOneUnknownTurnField(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
@@ -34,16 +30,27 @@ func TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField(t *testing.T) {
 	appendUnknownTurnField(t, path)
 
 	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
-	if !found || err == nil {
-		t.Fatalf("past thread/read = (%+v, %v, %v), want found=true with a decode error", resp, found, err)
+	if !found || err != nil {
+		t.Fatalf("past thread/read = (%v, %v), want the session readable", found, err)
 	}
-	if resp.Thread.Turns != nil {
-		t.Fatalf("past thread/read returned %d turns despite the decode error; want none — a partial result here would mean the all-or-nothing failure this test pins had silently stopped being all-or-nothing", len(resp.Thread.Turns))
+	items := flattenTestItems(resp.Thread.Turns)
+	if len(items) < 2 {
+		t.Fatalf("past thread/read items = %d, want the saved history before the unreadable entry", len(items))
+	}
+	last := items[len(items)-1]
+	if last.Description != "Unreadable transcript entry" || !strings.Contains(last.Text, "future_field_an_old_binary_lacks") {
+		t.Fatalf("last item = %+v, want the unreadable entry naming the unknown field", last)
+	}
+	if items[len(items)-2].CallID != "call_img" {
+		t.Fatalf("item before the unreadable entry = %+v, want the saved screenshot call", items[len(items)-2])
 	}
 
 	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 1})
-	if !found || err == nil || page.Data != nil {
-		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found=true with a decode error and no data", page, found, err)
+	if !found || err != nil {
+		t.Fatalf("past thread/turns/list = (%v, %v), want the session readable", found, err)
+	}
+	if pageItems := flattenTestItems(page.Data); len(pageItems) != 1 || pageItems[0].Description != "Unreadable transcript entry" {
+		t.Fatalf("past thread/turns/list items = %+v, want the unreadable entry", pageItems)
 	}
 }
 

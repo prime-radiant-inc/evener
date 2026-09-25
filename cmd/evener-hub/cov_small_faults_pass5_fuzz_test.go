@@ -170,7 +170,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		_, _ = resolveOutputImageFile("s", cwd, ".", "x")
 		_, _, _ = readOutputImageFile(cwd)
 		_, _, _ = readOutputImageFile(filepath.Join(cwd, "missing"))
-		_ = outputImageSHA(png)
+		_ = imageSha(png)
 		_ = outputImageDisplayName("/")
 
 		args := map[string]string{}

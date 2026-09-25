@@ -242,13 +242,13 @@ func ToolResultOutputImage(name string, data []byte, mediaType string) (OutputIm
 		Name:      name,
 		MediaType: mediaType,
 		Size:      int64(len(data)),
-		SHA:       imageSHA(data),
+		SHA:       ImageSHA(data),
 	}, true
 }
 
-// imageSHA is the content address every sha-addressed image route in evener keys
+// ImageSHA is the content address every sha-addressed image route in evener keys
 // on: lowercase hex sha256 of the raw bytes.
-func imageSHA(data []byte) string {
+func ImageSHA(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -283,6 +284,18 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 		MediaType: image.MediaType,
 		Name:      "",
 	}
+}
+
+// AddressedImageProjector is DefaultImageProjector plus the image's content
+// address: the sha and size a reader fetches the bytes back by, from the
+// transcript, over the hub's /s/<session>/images/<sha> route.
+func AddressedImageProjector(image llm.ImageData) appwire.InputItem {
+	item := DefaultImageProjector(image)
+	if len(image.Data) == 0 {
+		return item
+	}
+	item.Metadata = map[string]string{"sha": events.ImageSHA(image.Data), "size": strconv.Itoa(len(image.Data))}
+	return item
 }
 
 // UserFacingText concatenates a message's text parts the way Message.Text
