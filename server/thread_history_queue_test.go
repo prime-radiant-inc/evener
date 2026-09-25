@@ -566,3 +566,29 @@ func TestThreadHistoryAReadRebuildsAFailedThread(t *testing.T) {
 	}
 	hx.expectQuiet(t)
 }
+
+// A read that recovers a failed thread adopts the boundary's last ordinal
+// with its length: entries recorded while the thread was failed reached no
+// hook, so the history would otherwise name a stale entry in its next
+// failure and number a later overlay gap from it.
+func TestThreadHistoryRecoveryAdoptsTheBoundarysOrdinal(t *testing.T) {
+	hx := newHistoryHarness(t)
+	first := hx.record(t, "first")
+	hx.updatesThrough(t, first.Offset+first.Length)
+	repair := breakProjection(t, nil)
+	hx.record(t, "fails to project")
+	hx.nextResync(t)
+	hx.nextResync(t)
+	var last transcript.Record
+	for i := range 3 {
+		last = hx.record(t, fmt.Sprintf("while failed %d", i))
+	}
+	repair()
+	hx.readKeys(t)
+	hx.history.mu.Lock()
+	ordinal := hx.history.ordinal
+	hx.history.mu.Unlock()
+	if ordinal != last.Ordinal {
+		t.Fatalf("history ordinal after recovery = %d, want the boundary's %d", ordinal, last.Ordinal)
+	}
+}

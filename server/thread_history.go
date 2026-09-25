@@ -613,18 +613,25 @@ func (h *threadHistory) rebuildThroughBoundary() error {
 // clears the overflow it covers and a failed state (the hook queues again),
 // and adopts the length: entries a failed history's hook passed over lie in
 // the overlay gap up to it. A transcript no writer in this process has open
-// cannot grow, and its size is the boundary.
+// cannot grow, and its size is the boundary. With an open writer it also
+// adopts the boundary's last ordinal, which no hook reported while the
+// thread was failed.
 func (h *threadHistory) captureBoundary() (int64, error) {
 	var boundary int64
 	adopt := func(recordedLength int64) {
-		h.mu.Lock()
-		defer h.mu.Unlock()
 		boundary = recordedLength
 		h.overflowed = false
 		h.failed = nil
 		h.recordedLength = max(h.recordedLength, recordedLength)
 	}
-	found, err := transcript.AtRecordedBoundary(h.path, adopt)
+	found, err := transcript.AtRecordedBoundary(h.path, func(recordedLength int64, nextOrdinal uint64) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		adopt(recordedLength)
+		if nextOrdinal > 0 {
+			h.ordinal, h.hooked = nextOrdinal-1, true
+		}
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -633,7 +640,9 @@ func (h *threadHistory) captureBoundary() (int64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("stat transcript: %w", err)
 		}
+		h.mu.Lock()
 		adopt(info.Size())
+		h.mu.Unlock()
 	}
 	return boundary, nil
 }

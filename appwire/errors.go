@@ -34,8 +34,12 @@ const (
 	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
 	ErrorInternal                  ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
-	// entered its failed state: an entry that fails to project, named in the
-	// message. Its data is HistoryReadErrorData.
+	// entered its failed state: its projection or rebuild failed for a reason
+	// outside the entries (I/O, a corrupt index) three times in a row, and a
+	// rebuild the read attempted failed too. The message names the last entry
+	// the history had recorded when it failed. An entry that does not decode
+	// is not a failure: the index shows it as one unreadable-entry item. Its
+	// data is HistoryReadErrorData.
 	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
 	// ErrorUpgradeRequired marks initialize refusing a client that announced
 	// an older AppWire protocol than the server speaks; the message names both
@@ -212,9 +216,10 @@ func InternalError(message string) WireError {
 	}
 }
 
-// TranscriptHistoryFailed reports a read of a thread whose history failed:
-// the transcript entry at ordinal cannot be projected, so no read can serve
-// it. The history read stamps it with WithHistoryReadIdentity.
+// TranscriptHistoryFailed reports a read of a thread whose history failed,
+// naming ordinal, the last entry it had recorded (see
+// ErrorTranscriptHistoryFailed). The history read stamps it with
+// WithHistoryReadIdentity.
 func TranscriptHistoryFailed(ordinal uint64) WireError {
 	return WireError{
 		Code:    CodeInternalError,
