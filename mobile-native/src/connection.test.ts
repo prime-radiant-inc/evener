@@ -247,7 +247,7 @@ describe("hub connections", () => {
 								id: frame.id,
 								result: {
 									serverInfo: { name: "test", version: "1" },
-									protocolVersion: "evener-appwire-v5",
+									protocolVersion: "evener-appwire-v6",
 									sourceId: "local",
 									features: Object.fromEntries(
 										[

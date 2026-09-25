@@ -214,23 +214,23 @@ var retiredHistoryMethods = []string{
 	appwire.NotifyAgentMessageDelta, appwire.NotifyEvenerSteeringInjected,
 }
 
-func TestHistorySwitchPublishesRecordedHistoryAndTheOverlay(t *testing.T) {
+// newScriptedSession is a session answered by a parityProvider script, with
+// its own state and work directories, ready for bridgeParitySession.
+func newScriptedSession(t *testing.T) (sess *agent.Session, script *parityProvider, workDir, stateDir string) {
+	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "state")
-	workDir := filepath.Join(root, "work")
+	stateDir = filepath.Join(root, "state")
+	workDir = filepath.Join(root, "work")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("hello"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	script := &parityProvider{childRelease: make(chan struct{})}
+	script = &parityProvider{childRelease: make(chan struct{})}
 	client := llm.NewClient()
 	client.Register(script)
-	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
+	sess, err = agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
 		StateDir:    stateDir,
 		VisionModel: "off",
 		LLMSleep:    noSleep,
@@ -239,6 +239,14 @@ func TestHistorySwitchPublishesRecordedHistoryAndTheOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess.SetClientMutationStartWakeFunc(func() {})
+	return sess, script, workDir, stateDir
+}
+
+func TestHistorySwitchPublishesRecordedHistoryAndTheOverlay(t *testing.T) {
+	sess, script, workDir, stateDir := newScriptedSession(t)
+	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	published := watchHistoryPublications(t)
 	ps := bridgeParitySession(t, sess, stateDir)
 	t.Cleanup(func() { ps.close(t) })

@@ -625,7 +625,6 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		// subscriber's read does not cover is announced to it.
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
 		projected := projection.projector.Project(event)
-		projection.activeTurnID = projection.projector.RunningTurnID()
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		for _, item := range projected {
@@ -1157,7 +1156,7 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 	for _, id := range ids {
 		projection := s.appDescendants[id]
 		thread := projection.thread
-		thread.Evener.ActiveTurnID = projection.activeTurnID
+		thread.Evener.ActiveTurnID = s.descendantRunningTurnID(id)
 		data = append(data, thread)
 	}
 	s.mu.RUnlock()
@@ -1409,9 +1408,20 @@ func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
 		return appwire.Thread{}, false
 	}
 	thread := projection.thread
-	thread.Evener.ActiveTurnID = projection.activeTurnID
 	s.mu.RUnlock()
+	thread.Evener.ActiveTurnID = s.descendantRunningTurnID(threadID)
 	return thread, true
+}
+
+// descendantRunningTurnID is a delegate's running execution. Nothing calls
+// SetProcessingTurn for a delegate, so its running state is its overlay's,
+// from EXECUTION_STARTED/ENDED. A delegate with no history (released) runs
+// nothing. The overlay mutex is a leaf, so this is cheap under the cut.
+func (s *Server) descendantRunningTurnID(threadID string) string {
+	if history := s.appHistories.get(threadID); history != nil {
+		return history.overlay.RunningTurnID()
+	}
+	return ""
 }
 
 func (s *Server) appProjectionThreadID() string {

@@ -316,9 +316,8 @@ type ServerConfig struct {
 // independent projector (and history, in appHistories) so their notification
 // streams and thread/read cuts remain isolated.
 type appDescendantProjection struct {
-	projector    *appprojector.AppEventProjector
-	thread       appwire.Thread
-	activeTurnID string
+	projector *appprojector.AppEventProjector
+	thread    appwire.Thread
 }
 
 type taskPublicationCursor struct {

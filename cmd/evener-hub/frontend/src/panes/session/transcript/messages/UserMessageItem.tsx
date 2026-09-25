@@ -62,12 +62,13 @@ function ForkGlyph() {
 
 export interface ForkFromHereButtonProps {
   sessionRef: string;
-  // The 1-based TRANSCRIPT ENTRY INDEX of the message being forked from, never
-  // a turn id - see UserMessageItem's own comment for why the two diverge.
-  transcriptEntryIndex: number;
+  // The transcriptKey of the message being forked from (transcriptindex.
+  // ItemKey), which the hub resolves back to this entry - see
+  // UserMessageItem's own comment for why a turn id cannot substitute.
+  transcriptKey: string;
 }
 
-function ForkFromHereButton({ sessionRef, transcriptEntryIndex }: ForkFromHereButtonProps) {
+function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonProps) {
   const toasts = useToasts();
   const [busy, setBusy] = useState(false);
 
@@ -76,7 +77,7 @@ function ForkFromHereButton({ sessionRef, transcriptEntryIndex }: ForkFromHereBu
     try {
       const resp = await threadsStore
         .getState()
-        .forkFromTurn(sessionRef, { sourceTurnId: String(transcriptEntryIndex), deferInput: true });
+        .forkFromTurn(sessionRef, { sourceItemKey: transcriptKey, deferInput: true });
       writeDraft(resp.thread.evener.ref, resp.originalInput ?? "");
       workspaceStore.getState().openPane("session", { ref: resp.thread.evener.ref });
     } catch (err) {
@@ -160,27 +161,27 @@ export function UserMessageView({
   );
 }
 
-// The fork affordance is driven by the item's TRANSCRIPT ENTRY INDEX, never by
-// the enclosing turn's id. thread/fork reads sourceTurnId as a 1-based index
-// into the parent transcript's entry list (cmd/evener-hub/app_threadlifecycle.go
-// parseSourceTurnID -> agent.ForkSessionAtUserTurn), and only a transcript
-// replayed from disk numbers turn_N off that same index. A live turn is
-// numbered off its minter's own counter - internal/appprojector's per-turn
-// counter, or the daemon's per-mutation counter (turn_m<seq>) - so past the
-// first turn or two a live turn id names a different entry than the message it
-// belongs to.
+// The fork affordance is driven by the item's own transcriptKey, never by the
+// enclosing turn's id. thread/fork reads sourceItemKey as an item key
+// (cmd/evener-hub/app_threadlifecycle.go parseSourceItemKey ->
+// agent.ForkSessionAtUserTurn) and resolves it to the entry that opened the
+// item; a live turn id names a different entry than the message it belongs to
+// past the first turn or two, because it is numbered off its minter's own
+// counter - internal/appprojector's per-turn counter, or the daemon's
+// per-mutation counter (turn_m<seq>) - not the transcript's entry ordinal.
 //
-// An item with no entry index has no persisted transcript position, so it names
-// no divergence point and the action is simply not offered - the same refusal
-// this component already makes for a read-only pane with no sessionRef, and the
-// same stance cmd/evener-tui/hub_browse.go's startForkDraft takes when
-// TurnIndexFromID yields 0 ("fork requires persisted transcript turn
-// identity"). Guessing an entry is the one outcome that must never happen.
+// An item with no transcriptKey has no persisted transcript position, so it
+// names no divergence point and the action is simply not offered - the same
+// refusal this component already makes for a read-only pane with no
+// sessionRef, and the same stance cmd/evener-tui/hub_browse.go's
+// startForkDraft takes when TurnIndexFromID yields 0 ("fork requires
+// persisted transcript turn identity"). Guessing an entry is the one outcome
+// that must never happen.
 export const UserMessageItem = memo(function UserMessageItem({ item, sessionRef }: ItemRenderProps) {
-  const entryIndex = item.transcriptEntryIndex;
+  const transcriptKey = item.transcriptKey;
   const actions =
-    sessionRef && entryIndex !== undefined && entryIndex > 0 ? (
-      <ForkFromHereButton sessionRef={sessionRef} transcriptEntryIndex={entryIndex} />
+    sessionRef && transcriptKey ? (
+      <ForkFromHereButton sessionRef={sessionRef} transcriptKey={transcriptKey} />
     ) : undefined;
   return <UserMessageView item={item} actions={actions} entityText />;
 }, ignoringTurn);

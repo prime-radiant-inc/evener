@@ -289,7 +289,6 @@ func TestThreadReadResponseHistoryVocabularyJSONRoundTrip(t *testing.T) {
 	}
 
 	// ThreadResyncParams.Epoch, ThreadStatusChangedParams.ActiveTurnID,
-	// ThreadForkParams.SourceItemKey.
 	resync := ThreadResyncParams{ThreadID: "thread", Ref: "local:thread", Epoch: 3}
 	raw, err = json.Marshal(resync)
 	if err != nil {
@@ -308,7 +307,7 @@ func TestThreadReadResponseHistoryVocabularyJSONRoundTrip(t *testing.T) {
 		t.Fatalf("ThreadStatusChangedParams JSON %s missing activeTurnId", raw)
 	}
 
-	fork := ThreadForkParams{Ref: "local:thread", SourceTurnID: "5", SourceItemKey: "item-key-1"}
+	fork := ThreadForkParams{Ref: "local:thread", SourceItemKey: "item-key-1"}
 	raw, err = json.Marshal(fork)
 	if err != nil {
 		t.Fatal(err)
