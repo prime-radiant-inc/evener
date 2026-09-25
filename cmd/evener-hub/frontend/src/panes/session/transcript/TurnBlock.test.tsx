@@ -72,6 +72,59 @@ test("tags the root with the turn id", () => {
   expect(container.querySelector('[data-turn-id="turn_42"]')).toBeTruthy();
 });
 
+// Spec "Turn status": running state lives in the overlay, never the wire's
+// own inProgress status. An open turn the thread does not name as its
+// running turn - a daemonless read of a turn a crash left open, or a turn
+// whose execution stood down - displays as interrupted, never as running
+// forever (displayTurnStatus, itemFailure.ts).
+test("an open turn with no running turn renders as interrupted", () => {
+  const { container } = render(
+    <TurnBlock
+      turn={turn([], { id: "turn_1", status: "inProgress" })}
+      thread={{ runningTurnId: undefined } as ThreadModel}
+    />,
+  );
+  expect(container.querySelector('[data-turn-id="turn_1"]')?.getAttribute("data-turn-status")).toBe("interrupted");
+});
+
+test("an open turn the thread names as its running turn renders as running", () => {
+  const { container } = render(
+    <TurnBlock
+      turn={turn([], { id: "turn_1", status: "inProgress" })}
+      thread={{ runningTurnId: "turn_1" } as ThreadModel}
+    />,
+  );
+  expect(container.querySelector('[data-turn-id="turn_1"]')?.getAttribute("data-turn-status")).toBe("inProgress");
+});
+
+test("a settled turn's status passes through untouched regardless of the running turn", () => {
+  const { container } = render(
+    <TurnBlock
+      turn={turn([], { id: "turn_1", status: "completed" })}
+      thread={{ runningTurnId: undefined } as ThreadModel}
+    />,
+  );
+  expect(container.querySelector('[data-turn-id="turn_1"]')?.getAttribute("data-turn-status")).toBe("completed");
+});
+
+// Spec "The live overlay": a notice is anchored at a position between two
+// recorded items, and reducer.ts's buildDisplayTurn already splices it into
+// turn.items at that position (task-15-report.md). TurnBlock's job is to
+// render whatever order turn.items presents, notices included, without
+// reordering, folding, or hiding a critical one (eventKind "error" is always
+// shown - decisionFor routes it to "critical" before any settings check).
+test("a notice item interleaved between two turn items renders at its position, not at the end", () => {
+  const before = item({ id: "before", type: "agentMessage", text: "before the notice" });
+  const notice = item({ id: "the-notice", type: "systemMessage", eventKind: "error", text: "history failed" });
+  const after = item({ id: "after", type: "agentMessage", text: "after the notice" });
+  const { container } = render(<TurnBlock turn={turn([before, notice, after])} viewAnchorIndex={0} />);
+  const ids = Array.from(container.querySelectorAll("[data-view-anchor-id]")).map((el) =>
+    el.getAttribute("data-view-anchor-id"),
+  );
+  expect(ids).toEqual(["before", "the-notice", "after"]);
+  expect(screen.getByText("history failed")).toBeTruthy();
+});
+
 test("wires a content-free thinking entry through TurnBlock to the placeholder (never the thought body)", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const projected = turn(
