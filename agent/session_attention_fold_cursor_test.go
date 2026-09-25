@@ -229,7 +229,7 @@ func TestDelegateAttentionFoldCursorIgnoresChangesToAReturnedFold(t *testing.T) 
 	_, _, elsewhere := newAttentionFoldTranscript(t)
 	var cursor delegateAttentionFoldCursor
 	fold := requireCursorMatchesFullFold(t, &cursor, path, sessionID, "steering a")
-	if err := appendDelegateAttentionResolutions(elsewhere, fold, []string{"delegate:a"}, delegateAttentionConsumed, 0); err != nil {
+	if err := appendDelegateAttentionResolutions(elsewhere, transcript.PlaceDelivery, fold, []string{"delegate:a"}, delegateAttentionConsumed, 0); err != nil {
 		t.Fatal(err)
 	}
 	verified := requireCursorMatchesFullFold(t, &cursor, path, sessionID, "resolution recorded elsewhere")
@@ -248,7 +248,7 @@ func TestAppendDelegateAttentionResolutionsAppendsARepeatedIDOnce(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := appendDelegateAttentionResolutions(writer, fold, []string{"delegate:a", "delegate:a"}, delegateAttentionConsumed, 0); err != nil {
+	if err := appendDelegateAttentionResolutions(writer, transcript.PlaceAsync, fold, []string{"delegate:a", "delegate:a"}, delegateAttentionConsumed, 0); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)

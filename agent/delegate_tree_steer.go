@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -511,7 +512,13 @@ func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnI
 	turn.StableTurnID = stableTurnID
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
-		func() error { return s.writeTranscriptSyncedLocked(turn) },
+		func() error {
+			// Delegate steering reaches this session from another session's
+			// goroutine, like attention: the running execution's, or a
+			// delivery turn of its own.
+			_, err := s.recordTranscriptLocked(turn, transcript.DoorSynced, transcript.PlaceAsync)
+			return err
+		},
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
 		return delegateTranscriptEntry{}, err

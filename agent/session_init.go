@@ -624,7 +624,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			return nil, errors.New("fork delegate context requires a writable child transcript")
 		}
 		for _, entry := range inheritedContext {
-			if err := tw.Append(entry.Turn); err != nil {
+			// The inherited context is conversation only, stripped of the
+			// parent's identity (delegateContextEntries): the fresh child
+			// records it as its prelude.
+			if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
 				_ = tw.Close()
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}

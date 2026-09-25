@@ -2193,10 +2193,42 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 // other writer's entry can interleave between the publish and the fold's
 // compaction markers.
 func (s *Session) writeTranscriptLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+	_, err := s.recordTranscriptLocked(t, transcript.DoorBuffered, transcript.PlaceSession)
+	return err
+}
+
+// recordTranscriptLocked is the one door every session write to its transcript
+// goes through, with attentionMu held: it stamps the entry with the session's
+// configured model, holds a buffered or durable write made before the writer
+// is attached (see holdTurnUntilTranscriptReady; the synced door refuses one
+// instead), and otherwise appends through door with the given placement,
+// reporting whether the entry was recorded. A held turn reports not recorded,
+// with no error.
+func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, place transcript.Placement) (transcript.Record, error) {
+	t = s.withEntryModel(t)
+	if door == transcript.DoorSynced {
+		s.mu.Lock()
+		ready := s.transcriptReady
+		s.mu.Unlock()
+		if !ready {
+			return transcript.Record{}, errors.New("transcript not ready: a synced write cannot be held before attach")
+		}
+	} else if s.holdTurnUntilTranscriptReady(t) {
+		return transcript.Record{}, nil
 	}
-	return s.attachedTranscript().Append(t)
+	return s.attachedTranscript().Record(t, transcript.RecordOptions{Door: door, Place: place})
+}
+
+// withEntryModel stamps t with the model the session is configured with, so
+// the entry's usage can be priced from the entry alone, unless t already
+// names one.
+func (s *Session) withEntryModel(t schema.Turn) schema.Turn {
+	if t.Model == "" {
+		if profile := s.currentProfile(); profile != nil {
+			t.Model = profile.Model()
+		}
+	}
+	return t
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
@@ -2214,10 +2246,8 @@ func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 // already holding attentionMu — an append/write pair
 // (appendTurnAfterTranscriptWrite) or the fold publication transaction.
 func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
-	}
-	return s.attachedTranscript().AppendDurable(t)
+	_, err := s.recordTranscriptLocked(t, transcript.DoorDurable, transcript.PlaceSession)
+	return err
 }
 
 // writeTranscriptSyncedLocked is the durability owner's write: it records AND
@@ -2235,13 +2265,8 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 // attach — the tracker guard and the delegate seed's read-back both preclude it
 // — so this is a fail-closed guard, not a live path.)
 func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
-	s.mu.Lock()
-	ready := s.transcriptReady
-	s.mu.Unlock()
-	if !ready {
-		return errors.New("transcript not ready: a synced write cannot be held before attach")
-	}
-	return s.attachedTranscript().AppendSynced(t)
+	_, err := s.recordTranscriptLocked(t, transcript.DoorSynced, transcript.PlaceSession)
+	return err
 }
 
 func (s *Session) attachedTranscript() *transcript.Writer {
@@ -2303,7 +2328,7 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, t := range held {
-		if err := w.Append(t); err != nil {
+		if _, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
