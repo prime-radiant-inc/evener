@@ -1994,7 +1994,7 @@ func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T)
 	if err != nil {
 		t.Fatalf("prepare replacement identity: %v", err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	defer httpServer.Close()
@@ -2557,7 +2557,7 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	serveRootWithoutHistory(t, srv, "root")
 	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
 		if threadID == "child" {
 			return path

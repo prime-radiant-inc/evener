@@ -1286,6 +1286,6 @@ func serveDaemonTranscript(t *testing.T, daemon *daemonserver.Server, sessionID,
 	if err != nil {
 		t.Fatal(err)
 	}
-	daemon.ReplaceAppIdentity(prepared, nil)
+	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	t.Cleanup(daemon.Close)
 }

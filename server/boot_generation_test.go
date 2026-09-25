@@ -122,3 +122,33 @@ func TestDescendantHistoryAndResyncCarryTheBootGeneration(t *testing.T) {
 		t.Fatal("no resync")
 	}
 }
+
+// serveRootWithoutHistory makes threadID the served root with no transcript
+// of its own, at boot generation 1: descendants' histories take their
+// generation from it.
+func serveRootWithoutHistory(t *testing.T, srv *Server, threadID string) {
+	t.Helper()
+	prepared, err := PrepareAppIdentity("local", threadID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+}
+
+// A thread history created without a boot generation fails loudly under
+// test (and under the fuzz build's invariants) instead of publishing
+// "bootGeneration":"".
+func TestAThreadHistoryWithNoBootGenerationFailsLoudly(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("a thread history with no boot generation was created")
+		}
+	}()
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	prepared, err := PrepareAppIdentity("local", "root", writeDelegateTranscript(t, "root", "r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
+}

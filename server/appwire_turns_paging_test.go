@@ -196,7 +196,7 @@ func installTranscriptIdentity(t testing.TB, srv *Server, threadID, path string)
 	if err != nil {
 		t.Fatalf("PrepareAppIdentity(%s): %v", path, err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 }
 
 func turnIDs(turns []appwire.Turn) []string {
@@ -655,7 +655,7 @@ func TestPreparedAppIdentityServesNoHistoryWithoutATranscript(t *testing.T) {
 			if err != nil {
 				t.Fatalf("PrepareAppIdentity: %v", err)
 			}
-			srv.ReplaceAppIdentity(prepared, nil)
+			srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 			if srv.appHistoryForID("th_1") != nil {
 				t.Fatal("a thread with no transcript has a history")
 			}

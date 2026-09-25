@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appoverlay"
 	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -171,7 +172,17 @@ type overlayGap struct {
 	offset  int64
 }
 
+// threadHistoryRequireBootGeneration makes a history created without a boot
+// generation panic, so a caller that forgot one fails loudly instead of
+// publishing "bootGeneration":"". The server's tests set it; fuzz builds
+// check the same invariant.
+var threadHistoryRequireBootGeneration bool
+
 func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
+	invariant.Hold(cfg.bootGeneration != "", "thread history %s created with no boot generation", cfg.threadID)
+	if threadHistoryRequireBootGeneration && cfg.bootGeneration == "" {
+		panic(fmt.Sprintf("thread history %s created with no boot generation", cfg.threadID))
+	}
 	maxQueuedBytes := cfg.maxQueuedBytes
 	if maxQueuedBytes == 0 {
 		maxQueuedBytes = threadHistoryMaxQueuedBytes

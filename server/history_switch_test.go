@@ -38,7 +38,7 @@ func wireTranscriptHistory(t *testing.T, sess *agent.Session, srv *Server) {
 	}
 	srv.WireTranscriptHistory(sess)
 	sess.SetExecutionStartedFunc(srv.SetProcessingTurn)
-	srv.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()), nil)
+	srv.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()).WithBootGeneration("1"), nil)
 }
 
 // historyPublications wakes waiters on a thread history's publication,
@@ -553,7 +553,7 @@ func TestReplaceUnderTheSameRefResyncsPastTheOldEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	old := srv.appHistoryForID("old")
 	childPath := writeDelegateTranscript(t, "child", "child history")
 	srv.SetDescendantTranscriptPathFunc(func(string) string { return childPath })
@@ -569,7 +569,7 @@ func TestReplaceUnderTheSameRefResyncsPastTheOldEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 
 	if !old.stopping() || !child.stopping() || srv.appHistoryForID("old") != nil || srv.appHistoryForID("child") != nil {
 		t.Fatal("the replaced root's and descendant's histories were not dropped")

@@ -1252,7 +1252,7 @@ func TestResumedThreadPublishesItsNextEntryWithTheReadsIdentity(t *testing.T) {
 func TestDescendantReadDoesNotClaimDurableMutationAuthority(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
-	srv.SetAppIdentity("local", "root")
+	serveRootWithoutHistory(t, srv, "root")
 	childPath := writeDelegateTranscript(t, "child", "child work")
 	srv.SetDescendantTranscriptPathFunc(func(string) string { return childPath })
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{

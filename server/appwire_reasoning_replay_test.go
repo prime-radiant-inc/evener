@@ -378,7 +378,7 @@ func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *
 			if err != nil {
 				t.Fatalf("PrepareAppIdentityForRef: %v", err)
 			}
-			srv.ReplaceAppIdentity(prepared, nil)
+			srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 			srv.SetState("awaiting")
 			srv.SetProcessing(false)
 

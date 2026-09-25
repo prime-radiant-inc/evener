@@ -86,11 +86,12 @@ func newHistoryHarnessWith(t *testing.T, maxQueuedBytes int64) *historyHarness {
 		resyncs:      make(chan uint64, 256),
 	}
 	hx.history = newThreadHistory(threadHistoryConfig{
-		threadID: "th_history",
-		ref:      "local:th_history",
-		path:     path,
-		cache:    cache,
-		overlay:  overlay,
+		threadID:       "th_history",
+		ref:            "local:th_history",
+		bootGeneration: "1",
+		path:           path,
+		cache:          cache,
+		overlay:        overlay,
 		publish: func(params appwire.HistoryUpdatedParams) error {
 			hx.updates <- params
 			return nil
