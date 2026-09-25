@@ -607,7 +607,7 @@ var parityBeforeRestart = parityTable(
 	parityRows(whyIdentity, "item-field", "systemMessage/environment", "id", "position", "transcriptEntryIndex", "transcriptKey"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage/model_switch", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyTiming, "item-field", "commandExecution", "durationMs"),
 	parityRows(whyTiming, "item-field", "steering", "startedAt"),
 	parityRows(whyTiming, "turn-field", "systemMessage/model_switch", "startedAt"),
@@ -630,7 +630,7 @@ var parityBeforeRestart = parityTable(
 var parityAfterRestart = parityTable(
 	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),
 	parityRows(whyNotices, "live-only-item", "systemMessage/plugin_loaded"),
 	parityRows(whyNotices, "live-only-item", "systemMessage/prompt_loaded"),
