@@ -8,11 +8,8 @@ import {
 import type {
 	MobileConversation,
 	MobileTimelineItem,
-} from "../../mobile/src/conversation/project";
-import {
-	projectConversation,
-	systemEventProbe,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
+import { projectConversation } from "./projectedRows";
 import type {
 	TranscriptDisplayAdvancedV1,
 	TranscriptDisplayConfigV1,
@@ -124,11 +121,27 @@ it("unrolls members, applies preset content, and keeps source-linked attachments
 	expect(result.activityPresentation.get("b")).toEqual({ mode: "full" });
 });
 
-it("projects intent and critical activity modes without dropping active or unknown context", () => {
+// D24-6: the presentation layer no longer decides which rows exist — the
+// shared projector does, once, inside the store's seam. What survives here is
+// the RENDERING mode of each row the seam produced: a summary-only row (the
+// projector's intent entry; the operator's summary-only ruling) renders its
+// summary line, a running or failed activity renders as attention, and every
+// other activity renders in full — whatever the config, because the level was
+// already applied upstream.
+it("renders summary-only rows as intent, active or failed as critical, and never drops a row the seam produced", () => {
 	const items: MobileTimelineItem[] = [
 		{
 			kind: "activity",
-			id: "tools",
+			id: "summarized",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			summaryOnly: true,
+			detail: { description: "Inspect source" },
+		},
+		{
+			kind: "activity",
+			id: "settled",
 			label: "shell",
 			family: "tool",
 			state: "completed",
@@ -164,15 +177,19 @@ it("projects intent and critical activity modes without dropping active or unkno
 		makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("chat") }),
 	);
 	expect(result.items.map((item) => item.id)).toEqual([
-		"tools",
+		"summarized",
+		"settled",
 		"failed",
 		"active",
 		"unknown",
 	]);
-	expect(result.activityPresentation.get("tools")).toEqual({
+	expect(result.activityPresentation.get("summarized")).toEqual({
 		mode: "intent",
 		summary: "Inspect source",
 	});
+	// A settled row without the summary-only marker renders in full whatever
+	// the config: the level was the projector's decision, not this layer's.
+	expect(result.activityPresentation.get("settled")).toEqual({ mode: "full" });
 	expect(result.activityPresentation.get("active")).toMatchObject({
 		mode: "critical",
 	});
@@ -199,11 +216,13 @@ it.each(["chat", "intent", "tools", "activity", "full"] as const)(
 			makeTranscriptDisplayConfig({ kind: "preset", level }),
 		);
 		expect(result.expandByDefault).toBe(presetContent(level).expandByDefault);
-		expect(result.items).toHaveLength(level === "full" ? 1 : 0);
+		// The reasoning row survives every level: whether it exists at all is
+		// the projector's decision at the seam (D24-6), never this layer's.
+		expect(result.items).toHaveLength(1);
 	},
 );
 
-it("applies typed system-event flags and masks usage fields independently", () => {
+it("keeps every system-event row the seam produced and masks usage fields independently", () => {
 	const items: MobileTimelineItem[] = [
 		{
 			kind: "notice",
@@ -253,6 +272,7 @@ it("applies typed system-event flags and masks usage fields independently", () =
 	expect(result.items.map((item) => item.id)).toEqual([
 		"prompt",
 		"hook",
+			"routine",
 		"error",
 	]);
 	expect(result.usage).toEqual({ usage: null, cost: null });
@@ -448,7 +468,13 @@ it("preserves canonical interleaving and defers source-linked attachments to mem
 	]);
 });
 
-it("keeps missing-description tool calls critical when full details are disabled", () => {
+it("renders a missing-description tool call in full rather than second-guessing the level", () => {
+	// D24-6 retired the presentation layer's own config-driven classification:
+	// which rows exist is the projector's decision at the seam. A row like
+	// this one — a completed call with no description — was re-classified
+	// critical here under the old rule; the projector now either summarizes it
+	// upstream (the row carries summaryOnly) or keeps it as an ordinary item,
+	// and this layer renders exactly what the marker says.
 	const item: MobileTimelineItem = {
 		kind: "activity",
 		id: "missing",
@@ -467,9 +493,7 @@ it("keeps missing-description tool calls critical when full details are disabled
 			expandByDefault: false,
 		}),
 	);
-	expect(result.activityPresentation.get("missing")).toMatchObject({
-		mode: "critical",
-	});
+	expect(result.activityPresentation.get("missing")).toEqual({ mode: "full" });
 });
 
 it.each([
@@ -487,6 +511,10 @@ it.each([
 					label: "write_file",
 					family: "tool",
 					state,
+					// A completed write_file at a compact level reaches the
+					// renderer as the projector's summarized row; a failed or
+					// running one is critical and keeps its full detail.
+					...(state === "completed" ? { summaryOnly: true } : {}),
 					detail: {
 						arguments: JSON.stringify({
 							file_path: "/tmp/request-16.txt",
@@ -573,10 +601,15 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 			expandByDefault: false,
 		}),
 	);
+	// D24-6: the members survive whatever the config — a custom vector that
+	// disables calls and intent would have the PROJECTOR drop these rows at
+	// the seam, and the presentation layer no longer re-decides it here.
 	expect(hidden.items.map((item) => item.id)).toEqual([
 		"user",
 		"warning",
+		"a",
 		"image-a",
+		"b",
 		"image-b",
 		"reply",
 	]);
@@ -600,6 +633,11 @@ it("falls back safely for malformed or empty write_file arguments", () => {
 					label: "write_file",
 					family: "tool",
 					state: "completed",
+					// The shape the seam produces for a summarized write_file
+					// at a compact level (the operator's summary-only ruling):
+					// the presentation derives the summary line this test
+					// exercises from exactly such a row.
+					summaryOnly: true,
 					detail: { arguments: argumentsValue },
 				},
 			]),
@@ -621,6 +659,7 @@ it("bounds a derived write_file target without exposing its content", () => {
 				label: "write_file",
 				family: "tool",
 				state: "completed",
+				summaryOnly: true,
 				detail: {
 					arguments: JSON.stringify({ file_path: target, content: "private" }),
 				},
@@ -643,6 +682,7 @@ it("keeps an authoritative write_file description ahead of derived details", () 
 				label: "write_file",
 				family: "tool",
 				state: "completed",
+				summaryOnly: true,
 				detail: {
 					description: "Save the fixture",
 					arguments: JSON.stringify({
@@ -775,23 +815,90 @@ const EVENT_KIND_CASES: { eventKind?: string; exitCode?: number }[] = [
 	{ eventKind: "hook_completed", exitCode: 3 },
 ];
 
-// One projector-parity check, shared by the derived-row sweep below and the
-// direct notice-row guard after it: did the presentation layer keep or drop an
-// event exactly as projectThread does? The probe thread ids every entry
-// "system-event-probe"; the native input names its own row.
-function expectVisibleLikeProjector(
+// One projector-parity check, over the SEAM's own projection (D24-6 moved the
+// visibility decision from this presentation layer into the store's seam): does
+// the seam's projectConversation keep or drop an event exactly as projectThread
+// does, at the same config? The probe thread ids every entry "system-event-probe"
+// and the seam's notice row carries the same id.
+function expectSeamVisibilityLikeProjector(
 	model: ThreadModel,
-	native: MobileConversation,
-	nativeId: string,
 	config: TranscriptDisplayConfigV1,
 ): void {
-	const nativeVisible = projectNativeTranscript(native, config).items.some(
-		(item) => item.id === nativeId,
+	const seamVisible = projectConversation(model, undefined, config).items.some(
+		(item) => item.id === "system-event-probe",
 	);
 	const sharedVisible = sharedProjectThread(model, config).turns.some((turn) =>
 		turn.entries.some((entry) => entry.id === "system-event-probe"),
 	);
-	expect(nativeVisible).toBe(sharedVisible);
+	expect(seamVisible).toBe(sharedVisible);
+}
+
+// A one-item thread for classifying a single system event (the deleted
+// project.ts's systemEventProbe, kept here as the sweep's local fixture):
+// projectThread reads only `turns`, so the rest of the shape is inert.
+function systemEventModel(
+	eventKind: string | undefined,
+	exitCode: number | undefined,
+): ThreadModel {
+	return {
+		ref: "system-event-probe",
+		threadId: "system-event-probe",
+		name: "system-event-probe",
+		status: { type: "idle" },
+		modelProvider: "",
+		model: "",
+		visionModel: "",
+		askPending: false,
+		pendingEscalations: [],
+		queue: null,
+		tasks: null,
+		jobsUpdatedAt: null,
+		jobsTreeRevision: null,
+		lastFrameAt: 0,
+		capabilities: {
+			send: false,
+			steer: false,
+			interrupt: false,
+			compact: false,
+			clear: false,
+			forkFromTurn: false,
+			shutdown: false,
+			changeModel: false,
+			changeVisionModel: false,
+			sharedNotes: false,
+			queue: false,
+			goal: false,
+			rename: false,
+		},
+		goal: null,
+		humanNote: "",
+		agentNote: "",
+		sessionUrls: [],
+		contextUsed: 0,
+		contextWindow: 0,
+		contextPressure: 0,
+		usage: null,
+		workMillis: 0,
+		reasoningEffortLevels: [],
+		supportsReasoning: false,
+		cwd: "",
+		turns: [
+			{
+				id: "system-event-probe",
+				status: "completed",
+				items: [
+					{
+						id: "system-event-probe",
+						turnId: "system-event-probe",
+						type: "systemMessage",
+						text: "",
+						eventKind,
+						exitCode,
+					},
+				],
+			},
+		],
+	};
 }
 
 it.each(
@@ -803,17 +910,16 @@ it.each(
 		})),
 	),
 )("gates $title the same as the shared projector", ({ eventKind, exitCode, config }) => {
-	const model = systemEventProbe(eventKind, exitCode);
-	expectVisibleLikeProjector(model, projectConversation(model), "system-event-probe", config);
+	expectSeamVisibilityLikeProjector(systemEventModel(eventKind, exitCode), config);
 });
 
-// --- D24-4: the presentation layer owns no event-kind vocabulary or gate row --
+// --- D24-6: the presentation layer owns no event-kind vocabulary or gate row --
 //
-// The sweep above drives a systemMessage-DERIVED row; the guard below drives a
-// notice ROW directly, at the one gate that decides each gated kind (every gate
-// off). A native table that disagreed - missing notes-context, or force-showing
-// a kind its own gate should hide - turns this red while the shared verdict
-// stays right. The whole gate matrix stays the sweep's job.
+// The sweep above drives the seam's own projection, which is where the gate
+// matrix lives now. The guard below pins the retirement itself at the layer
+// that no longer filters: a notice ROW the seam produced survives this layer
+// whatever its event kind, exit code or the gates — re-filtering here would
+// re-decide the projector's decision a second time.
 const NEVER_EVENTS_CONFIG = makeTranscriptDisplayConfig(
 	{ kind: "preset", level: "full" },
 	{ systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" },
@@ -829,7 +935,7 @@ it.each([
 	{ eventKind: "future-event" },
 	{},
 ] satisfies { eventKind?: string; exitCode?: number }[])(
-	"shows a notice row for $eventKind exit=$exitCode by the shared projector's verdict",
+	"keeps a notice row for $eventKind exit=$exitCode whatever the gates decide",
 	({ eventKind, exitCode }) => {
 		const notice: MobileTimelineItem = {
 			kind: "notice",
@@ -841,11 +947,10 @@ it.each([
 			...(eventKind ? { eventKind } : {}),
 			...(exitCode !== undefined ? { exitCode } : {}),
 		};
-		expectVisibleLikeProjector(
-			systemEventProbe(eventKind, exitCode),
+		const result = projectNativeTranscript(
 			conversation([notice]),
-			"notice",
 			NEVER_EVENTS_CONFIG,
 		);
+		expect(result.items.map((item) => item.id)).toEqual(["notice"]);
 	},
 );
