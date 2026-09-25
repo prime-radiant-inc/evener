@@ -239,8 +239,11 @@ function unhandledEntryKind(_entry: never): null {
 // (arguments, output, exit code, duration, call id) is dropped — it returns at
 // tools/activity/full, where the same call is an "item" entry. The
 // "unavailable" placeholder means the source carried no description, so the
-// detail is left empty and the presentation layer's own summary fallback (the
-// write_file path included) renders the line.
+// ruling still drops the output, exit code, duration and call id — but the
+// ARGUMENTS survive, because they are what the presentation layer's own
+// summary fallback parses to render the line a descriptionless write_file
+// call shows (RoboRev panel: with them dropped, "Write /tmp/x" degraded to
+// the literal placeholder).
 //
 // The native attention rule outranks the summarization (D24-4's disclosed
 // contract: a failed or running activity renders critical, with its full
@@ -258,7 +261,7 @@ function intentRow(
 	}
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? {}
+			? { arguments: row.detail.arguments }
 			: { description: entry.rationale };
 	return {
 		...row,

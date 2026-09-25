@@ -408,10 +408,14 @@ describe("projectedRow — intent entries", () => {
 		});
 	});
 
-	it("carries no detail at all when the projector's summary is unavailable", () => {
-		// ACTION_SUMMARY_UNAVAILABLE means the source carried no description;
-		// the row keeps nothing but the marker, and the presentation layer's
-		// own summary fallback (the write_file path) renders the line.
+	it("keeps the arguments the summary fallback parses when the projector's summary is unavailable", () => {
+		// RoboRev panel: replacing the detail wholesale left the
+		// presentation layer's write_file fallback nothing to parse, so a
+		// descriptionless write_file rendered the literal placeholder
+		// instead of its write line. ACTION_SUMMARY_UNAVAILABLE means the
+		// source carried no description; the ruling still drops the output,
+		// exit code, duration and call id, and only the arguments the derived
+		// summary reads survive.
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -425,7 +429,7 @@ describe("projectedRow — intent entries", () => {
 		expect(row).toMatchObject({
 			kind: "activity",
 			summaryOnly: true,
-			detail: {},
+			detail: { arguments: '{"cmd":"ls"}' },
 		});
 	});
 

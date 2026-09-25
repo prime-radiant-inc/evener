@@ -268,6 +268,35 @@ describe("the summary-only ruling at compact levels", () => {
 			expect(attachmentIdsAt(config)).toContain("f1:out:0");
 		}
 	});
+
+	it("a descriptionless write_file call renders its write line at the compact levels", () => {
+		// RoboRev panel: the write_file fallback is the summary line a
+		// descriptionless file-path call shows at chat/intent — end-to-end
+		// through the seam, not a hand-built row.
+		const writeThread = thread([
+			turn("t1", [
+				item({
+					id: "w1",
+					type: "commandExecution",
+					toolName: "write_file",
+					argumentsJson: JSON.stringify({ file_path: "/tmp/x", content: "y" }),
+					status: "completed",
+				}),
+			]),
+		]);
+		for (const config of [chat, intent]) {
+			const conversation = projectConversation(
+				hydrateThread({ thread: writeThread }, "ref-1", 0),
+				undefined,
+				config,
+			);
+			const presented = projectNativeTranscript(conversation, config);
+			const presentation = presented.activityPresentation.get("w1");
+			expect(presentation?.summary, `the ${config.content} level lost the write line`).toBe(
+				"Write /tmp/x",
+			);
+		}
+	});
 });
 
 describe("the presentation layer maps the level-correct rows without filtering", () => {

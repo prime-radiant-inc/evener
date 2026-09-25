@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdtempSync,
 	mkdirSync,
 	readdirSync,
@@ -39,7 +40,10 @@ import {
 // itself: the guard is a rule about every OTHER file, and a quoted literal
 // here would be the one quoted specifier in the tree naming the dead path.
 const self = path.resolve(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(path.dirname(self), "../../..");
+// RoboRev panel: two ups from this file reach the repo root (the file's own
+// "../../scripts/sdk/module-specifiers.mjs" import confirms the depth); three
+// overshot to the parent and left the sweep reading nothing.
+const repoRoot = path.resolve(path.dirname(self), "../..");
 const deletedDir = path.join(repoRoot, "mobile", "src", "conversation");
 const deletedSegment = ["conversation", "project"].join("/");
 const deletedRoot = ["mobile", "src", "conversation"].join("/");
@@ -94,6 +98,16 @@ function offendersIn(trees: readonly string[], deleted: string): string[] {
 }
 
 describe("the deleted private projection family is unreachable", () => {
+	it("the sweep reads the repository, not a directory above it", () => {
+		// RoboRev panel: repoRoot walked up one level too far, so the swept
+		// trees did not exist, sourceFiles swallowed the readdir error, and
+		// the headline assertion passed against nothing — the only guard on
+		// the deletion could never fail. The sweep must read the real trees.
+		for (const tree of APP_TREES) {
+			expect(existsSync(tree), `swept tree ${tree}`).toBe(true);
+		}
+	});
+
 	it("no source in either app tree names mobile/src/conversation/", () => {
 		expect(offendersIn(APP_TREES, deletedDir)).toEqual([]);
 	});
