@@ -575,6 +575,11 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	"fork_summary",
 	"tool_repair",
 	"model_switch",
+	// The deleted family classified this lifecycle (its map read
+	// "notes-context": "lifecycle"); the re-home dropped it and its pin with
+	// the oracle (RoboRev panel) — restored here so the canonical set is not
+	// narrower than the family it replaces.
+	"notes-context",
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {
@@ -711,12 +716,12 @@ interface TurnRows {
 	// the calls this turn consumed and whether they were answerable, so the rows
 	// are reused only while that still holds. The rows also depend on the config
 	// they were projected under — which items exist as entries at all is the
-	// projector's decision at that config — so it is keyed by the config's
-	// value (configFingerprint): a caller re-resolving an equal config per
-	// publish (resolveEffectiveConfig builds a fresh object every call) still
-	// hits the cache, and a config whose value changed re-derives every turn.
+	// projector's decision at that config — so the per-turn map below is
+	// keyed by the config's value (the fingerprint): a caller re-resolving an
+	// equal config per publish (resolveEffectiveConfig builds a fresh object
+	// every call) still hits the cache, and a config whose value changed
+	// re-derives the turn.
 	askState: Array<[string, boolean]>;
-	configFingerprint: string;
 }
 
 // The cluster family one projected row joins. Failed tools and failed unknown
@@ -778,7 +783,15 @@ function attachmentsFor(
 // That per-turn slicing is sound because the projector's decisions are
 // turn-local (decisionFor reads the item, its turn, and the config); if the
 // projector ever went cross-turn, this cache would need a whole-model call.
-const turnRowCache = new WeakMap<TurnModel, TurnRows>();
+// RoboRev panel: one row set PER LIVE FINGERPRINT, not one per turn — a
+// level-carrying publish alternates configs over every turn (the user's
+// level for the display rows, show-everything for the retention window,
+// retentionWindowItems), and a single slot would thrash: every publish
+// would re-derive the whole transcript's width. The live set a store
+// alternates is its display config plus the show-everything window, and a
+// recently-retired level still deserves its slot back on a switch-back —
+// only a fourth distinct fingerprint evicts, oldest first.
+const turnRowCache = new WeakMap<TurnModel, Map<string, TurnRows>>();
 
 function rowsForProjectedTurn(
 	model: ThreadModel,
@@ -787,10 +800,9 @@ function rowsForProjectedTurn(
 	config: TranscriptDisplayConfigV1,
 	fingerprint: string,
 ): Ordered[] {
-	const cached = turnRowCache.get(turn);
+	const cached = turnRowCache.get(turn)?.get(fingerprint);
 	if (
 		cached !== undefined &&
-		cached.configFingerprint === fingerprint &&
 		cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
 	) {
 		return cached.entries;
@@ -833,7 +845,16 @@ function rowsForProjectedTurn(
 			item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
 		});
 	}
-	turnRowCache.set(turn, { entries, askState, configFingerprint: fingerprint });
+	let slots = turnRowCache.get(turn);
+	if (slots === undefined) {
+		slots = new Map();
+		turnRowCache.set(turn, slots);
+	}
+	slots.set(fingerprint, { entries, askState });
+	if (slots.size > 3) {
+		const oldest = slots.keys().next().value;
+		if (oldest !== undefined) slots.delete(oldest);
+	}
 	return entries;
 }
 

@@ -254,6 +254,7 @@ describe("projectedRow — item entries", () => {
 		["round_timings", "diagnostic", "system"],
 		["plugin_loaded", "lifecycle", "system"],
 		["hook_completed", "lifecycle", "system"],
+		["notes-context", "lifecycle", "system"],
 		["unknown_future_kind", "unknown-system", "system"],
 	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
@@ -767,6 +768,26 @@ describe("rowsForProjectedTurn's per-turn cache", () => {
 			...config,
 		});
 		expect(secondPass[0]).toBe(firstPass[0]);
+	});
+
+	// RoboRev panel: a level-carrying publish alternates configs over every
+	// turn — the user's level for the display rows, show-everything for the
+	// retention window (retentionWindowItems) — so a single-fingerprint slot
+	// thrashes and every publish re-derives the whole transcript's width.
+	// Each live config keeps its own cached row set.
+	it("keeps each config's cached rows while the levels alternate", () => {
+		const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+		const asks = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+		const intent = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+		const firstIntent = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, intent);
+		// The retention window's show-everything pass.
+		const firstEverything = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks);
+		// The next publish's display pass must hit, not re-derive.
+		const secondIntent = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, intent);
+		expect(secondIntent[0]).toBe(firstIntent[0]);
+		// ...and so must the next window pass.
+		const secondEverything = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks);
+		expect(secondEverything[0]).toBe(firstEverything[0]);
 	});
 });
 
