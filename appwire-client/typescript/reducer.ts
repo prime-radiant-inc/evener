@@ -2293,8 +2293,10 @@ function itemIdentity(item: ItemModel): string {
 }
 
 // Orders by (entry, item, sub). An item with no position sorts after every
-// positioned one.
-function comparePositions(left: ThreadItemPosition | undefined, right: ThreadItemPosition | undefined): number {
+// positioned one. Exported for transcriptProjector.ts, which ranks items by
+// real document position rather than turn-then-item array order (turns can
+// interleave - see noticeHistoryTurn above).
+export function comparePositions(left: ThreadItemPosition | undefined, right: ThreadItemPosition | undefined): number {
   if (!left || !right) return left ? -1 : right ? 1 : 0;
   return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
 }

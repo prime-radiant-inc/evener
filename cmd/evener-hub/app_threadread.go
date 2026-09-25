@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -21,8 +20,9 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -74,7 +74,7 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	if response, ok, err := pastThreadReadResponse(ctx, cfg, params); ok || err != nil {
-		return response, ok, err
+		return response, ok, daemonlessReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
 		return appwire.ThreadReadResponse{}, false, err
@@ -100,6 +100,16 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 	return appwire.ThreadReadResponse{}, false, nil
 }
 
+// daemonlessReadError stamps a daemonless history read's error with the
+// generation and epoch it ran under, as a daemon stamps its own: the
+// daemonless token and epoch 0, with no snapshot.
+func daemonlessReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return appwire.WithHistoryReadIdentity(appserver.WireError(err), appwire.DaemonlessBootGeneration, 0)
+}
+
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	return pastThreadItemReadResponse(ctx, cfg, params)
 }
@@ -118,8 +128,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, true, err
 	}
-	result := page.candidateResult()
-	packed, packErr := packThreadTurnsItemCandidates(result, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+	packed, packErr := packThreadTurnsItemCandidates(page.candidateResult(), func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		thread := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: response.Data}
 		thread = stampItemPageTurns(cfg, entry, thread)
 		response.Data = thread.Turns
@@ -128,7 +137,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	if packErr != nil {
 		return appwire.ThreadTurnsListResponse{}, true, packErr
 	}
-	return packed, true, nil
+	return page.history().StampPage(packed), true, nil
 }
 
 func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -142,18 +151,21 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	}
 	thread = attachPastThreadSkillCatalog(entry, thread)
 	if !params.IncludeTurns {
-		return appwire.ThreadReadResponse{Thread: stampDerivedTotals(cfg, entry, thread)}, true, nil
+		return appwire.ThreadReadResponse{
+			Thread:            stampDerivedTotals(cfg, entry, thread),
+			RequestGeneration: params.RequestGeneration,
+			BootGeneration:    appwire.DaemonlessBootGeneration,
+		}, true, nil
 	}
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	page, err := pastEntryLatestItems(ctx, entry, itemLimit)
+	page, err := pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	result := page.candidateResult()
-	packed, packErr := packThreadReadItemCandidates(result, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+	packed, packErr := packThreadReadItemCandidates(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 		thread.Turns = response.Thread.Turns
 		thread = stampItemPageTurns(cfg, entry, thread)
 		response.Thread = thread
@@ -162,60 +174,167 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	if packErr != nil {
 		return appwire.ThreadReadResponse{}, true, packErr
 	}
+	packed.RequestGeneration = params.RequestGeneration
+	packed.BootGeneration = appwire.DaemonlessBootGeneration
+	packed.Snapshot = &page.Snapshot
+	packed.Authoritative = true
+	packed.Changes = pastHistoryChanges(cfg, entry, page.Changes, packed.Thread.Turns)
 	return packed, true, nil
 }
 
+// pastTranscriptIndexes holds the hub's open transcript indexes, one per
+// daemonless session read recently. They share each transcript's sidecar with
+// the daemon that wrote it (transcriptindex.DirFor).
+var pastTranscriptIndexes = transcriptindex.NewCache(transcriptindex.DefaultCacheCapacity)
+
+// pastItemPage is one window of a daemonless session's history, read from its
+// transcript index.
 type pastItemPage struct {
-	Candidates  []appitempaging.TranscriptItemCandidate
-	OlderCursor string
-	Identity    appitempaging.CursorIdentity
-	Exhausted   bool
+	Candidates []appitempaging.TranscriptItemCandidate
+	Identity   appitempaging.CursorIdentity
+	Exhausted  bool
+	Snapshot   appwire.SnapshotIdentity
+	// Changes is what changed since the client's held snapshot, when the
+	// index could answer for it; nil sends the window as a full replacement.
+	Changes *transcriptindex.Changes
 }
 
 func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
 	return transcriptItemCandidateResult{
-		Candidates: appitempaging.TranscriptItemWindow{
-			Candidates:  p.Candidates,
-			OlderCursor: p.OlderCursor,
-		},
-		Identity:  p.Identity,
-		Exhausted: p.Exhausted,
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: p.Candidates},
+		Identity:   p.Identity,
+		Exhausted:  p.Exhausted,
 	}
 }
 
-func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int) (pastItemPage, error) {
-	path := pastTranscriptPath(entry)
-	window, identity, err := pastTranscriptCache.LatestItemWindowFromFileContext(ctx, path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
-		ThreadRef: appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
-		Limit:     limit,
-	}, projectBoundedPastTranscriptTurn)
-	if err != nil {
-		return pastItemPage{}, err
-	}
+// history is what a daemonless page was read under: the daemonless
+// generation, epoch 0, and the index snapshot, authoritative for its range.
+func (p pastItemPage) history() appsource.HistoryIdentity {
+	return appsource.HistoryIdentity{BootGeneration: appwire.DaemonlessBootGeneration, Snapshot: &p.Snapshot, Authoritative: true}
+}
+
+func pastItemPageFromWindow(entry hubcore.PastEntry, window transcriptindex.Window) pastItemPage {
 	return pastItemPage{
-		Candidates:  window.Candidates,
-		OlderCursor: window.OlderCursor,
-		Identity:    identity,
-		Exhausted:   window.OlderCursor == "",
-	}, nil
+		Candidates: window.Candidates,
+		Identity:   pastCursorIdentity(entry, window.Incarnation),
+		Exhausted:  !window.HasOlder,
+		Snapshot:   appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length},
+	}
 }
 
+// pastCursorIdentity names a daemonless page's cursors by the index
+// incarnation they were read from, so a cursor from before a rebuild is stale.
+func pastCursorIdentity(entry hubcore.PastEntry, incarnation string) appitempaging.CursorIdentity {
+	return appitempaging.CursorIdentity{
+		ThreadRef:         appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
+		Incarnation:       incarnation,
+		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+}
+
+// withPastTranscriptIndex runs fn on the session's transcript index caught up
+// to the end of the file. With no daemon writing the session, the file is the
+// whole history: the index covers every complete line and drops an
+// incomplete last one.
+func withPastTranscriptIndex(ctx context.Context, entry hubcore.PastEntry, fn func(*transcriptindex.Index) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	index, err := pastTranscriptIndexes.Acquire(pastTranscriptPath(entry))
+	if err != nil {
+		return err
+	}
+	defer pastTranscriptIndexes.Release(index)
+	if err := index.CatchUp(); err != nil {
+		return err
+	}
+	return fn(index)
+}
+
+// pastEntryLatestItems reads the latest window and, when the client holds a
+// snapshot of the same incarnation, what changed since it.
+func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity) (pastItemPage, error) {
+	var page pastItemPage
+	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		if held == nil {
+			window, err := index.Latest(limit)
+			page = pastItemPageFromWindow(entry, window)
+			return err
+		}
+		window, changes, err := index.LatestSince(limit, *held)
+		page = pastItemPageFromWindow(entry, window)
+		page.Changes = changes
+		return err
+	})
+	return page, err
+}
+
+// pastEntryPageItems reads the page before cursor, or the latest window when
+// there is no cursor. A cursor from another incarnation is stale: the client
+// re-reads the latest window.
 func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
-	path := pastTranscriptPath(entry)
-	window, identity, err := pastTranscriptCache.PreviousItemWindowFromFileContext(ctx, path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
-		ThreadRef: appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
-		Cursor:    cursor,
-		Limit:     limit,
-	}, projectBoundedPastTranscriptTurn)
-	if err != nil {
-		return pastItemPage{}, err
+	if cursor == "" {
+		return pastEntryLatestItems(ctx, entry, limit, nil)
 	}
-	return pastItemPage{
-		Candidates:  window.Candidates,
-		OlderCursor: window.OlderCursor,
-		Identity:    identity,
-		Exhausted:   window.OlderCursor == "",
-	}, nil
+	var page pastItemPage
+	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		incarnation, err := index.Incarnation()
+		if err != nil {
+			return err
+		}
+		before, err := appitempaging.DecodeCursor(cursor, pastCursorIdentity(entry, incarnation))
+		if err != nil {
+			return err
+		}
+		window, err := index.Before(before, limit)
+		if err != nil {
+			return err
+		}
+		// Another handle may rebuild between the two reads.
+		if window.Incarnation != incarnation {
+			return appwire.TranscriptItemCursorStale()
+		}
+		page = pastItemPageFromWindow(entry, window)
+		return nil
+	})
+	return page, err
+}
+
+// pastHistoryChanges is the part of changes the returned window does not
+// already carry, stamped the way the window's own items and turns are.
+func pastHistoryChanges(cfg hubcore.WebConfig, entry hubcore.PastEntry, changes *transcriptindex.Changes, window []appwire.Turn) *appwire.HistoryChanges {
+	if changes == nil {
+		return nil
+	}
+	inWindow := map[string]bool{}
+	for _, turn := range window {
+		inWindow[turn.ID] = true
+		for _, item := range turn.Items {
+			inWindow[item.TranscriptKey] = true
+		}
+	}
+	var items []appwire.ThreadItem
+	for _, candidate := range changes.Items {
+		if !inWindow[candidate.Item.TranscriptKey] {
+			items = append(items, candidate.Item)
+		}
+	}
+	var turns []appwire.Turn
+	for _, turn := range changes.Turns {
+		if !inWindow[turn.ID] {
+			turns = append(turns, turn)
+		}
+	}
+	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
+	// The image passes work on a thread's turns; the changed items ride in
+	// one carrier turn through them.
+	carrier := appwire.Thread{
+		ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir,
+		Turns: []appwire.Turn{{Items: items}},
+	}
+	stampSessionImageURLs(entry.Meta.ID, carrier.Turns)
+	carrier = reconcileAndEnrichPastThread(entry, carrier)
+	return &appwire.HistoryChanges{Turns: turns, Items: carrier.Turns[0].Items}
 }
 
 func stampItemPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
@@ -1113,13 +1232,6 @@ func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]ap
 // absence of) the O(transcript) projection on read paths that must not pay it.
 var pastEntryTurns = computePastEntryTurns
 
-// projectBoundedPastTranscriptTurn projects an already-decoded transcript turn
-// (decoded once by apptranscript's own reader, not here — kata j13r) into
-// AppWire items.
-func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
-}
-
 // decodeTranscriptTurn reads one saved transcript line into the turn the daemon
 // wrote, using the daemon's own type. It is the hub's only entry point from
 // transcript bytes to a turn, so every field schema.Turn carries reaches the
@@ -1145,18 +1257,7 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, apptranscript.ToolResultOutputImages)
-}
-
-// projectReplayInputImage stamps the sha and size the client needs to fetch an
-// inline image back out of the transcript over /s/<session>/images/<sha>.
-func projectReplayInputImage(image llm.ImageData) appwire.InputItem {
-	item := apptranscript.DefaultImageProjector(image)
-	if len(image.Data) == 0 {
-		return item
-	}
-	item.Metadata = map[string]string{"sha": imageSha(image.Data), "size": strconv.Itoa(len(image.Data))}
-	return item
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 }
 
 func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {

@@ -232,7 +232,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodThreadTurnsList, `{"ref":"` + ref + `"}`},
 		{appwire.MethodThreadStart, `{"harness":"evener","cwd":"x","model":"openai/gpt-5.5"}`},
 		{appwire.MethodThreadResume, `{"session":"` + sandboxSessionID + `"}`},
-		{appwire.MethodThreadFork, `{"ref":"` + ref + `","sourceTurnId":"turn_1","editedInput":"hi"}`},
+		{appwire.MethodThreadFork, `{"ref":"` + ref + `","sourceItemKey":"apptranscript-item-v2:turn_1:0:0","editedInput":"hi"}`},
 		{appwire.MethodTurnStart, `{"ref":"` + ref + `","input":[]}`},
 		{appwire.MethodTurnSteer, `{"ref":"` + ref + `","text":"go"}`},
 		{appwire.MethodThreadClear, `{"ref":"` + ref + `","clientMutationId":"fuzz-clear","expectedInstanceId":"` + sandboxSessionID + `"}`},

@@ -1289,3 +1289,57 @@ func serveDaemonTranscript(t *testing.T, daemon *daemonserver.Server, sessionID,
 	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	t.Cleanup(daemon.Close)
 }
+
+// TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity pins what the hub
+// passes through from a v6 daemon's history reads: the boot generation,
+// epoch and snapshot identity the client merges or replaces by, on the
+// latest window and on every backfill page, and the read's request
+// generation.
+func TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity(t *testing.T) {
+	const sessionID = "daemon-history-identity"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	var inputs []string
+	for i := range 45 {
+		inputs = append(inputs, fmt.Sprintf("item-%02d", i))
+	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), inputs)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, Subscribe: true, ItemLimit: 40, RequestGeneration: 5,
+	})
+	if err != nil {
+		t.Fatalf("initial read: %v", err)
+	}
+	if initial.RequestGeneration != 5 {
+		t.Fatalf("requestGeneration = %d, want the request's 5", initial.RequestGeneration)
+	}
+	if initial.BootGeneration == "" || initial.BootGeneration == appwire.DaemonlessBootGeneration || initial.Snapshot == nil || initial.Authoritative {
+		t.Fatalf("live read identity = boot %q snapshot %+v authoritative %v, want the daemon's numeric generation and snapshot, not authoritative",
+			initial.BootGeneration, initial.Snapshot, initial.Authoritative)
+	}
+	page, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 40, Cursor: initial.OlderCursor})
+	if err != nil {
+		t.Fatalf("backfill page: %v", err)
+	}
+	if page.BootGeneration != initial.BootGeneration || page.Epoch != initial.Epoch || page.Snapshot == nil || page.Snapshot.Incarnation != initial.Snapshot.Incarnation {
+		t.Fatalf("backfill page identity = boot %q epoch %d snapshot %+v, want the daemon's %q %d %+v",
+			page.BootGeneration, page.Epoch, page.Snapshot, initial.BootGeneration, initial.Epoch, *initial.Snapshot)
+	}
+}

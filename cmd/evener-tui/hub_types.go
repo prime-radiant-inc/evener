@@ -154,9 +154,9 @@ type hubSpawnRequest struct {
 }
 
 type hubForkRequest struct {
-	// EntryIndex is the transcript entry index the child diverges at; it goes
-	// on the wire as ThreadForkParams.SourceTurnID, which the hub reads as
-	// exactly that index.
+	// EntryIndex is the transcript entry index the child diverges at.
+	// sendHubFork packs it into ThreadForkParams.SourceItemKey, which the hub
+	// parses back to that same entry index.
 	EntryIndex    int
 	EditedMessage string
 	Label         string

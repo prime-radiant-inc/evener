@@ -82,7 +82,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		hubResolveLaunch = oldResolve
 
 		hubForkSession = func(string, string, int, string, string) (string, error) { return "child", nil }
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{StateDir: t.TempDir(), Past: hubcore.NewPastIndex("")}, reg, appwire.ThreadForkParams{Ref: "local:r", SourceTurnID: "1", EditedInput: "edit"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{StateDir: t.TempDir(), Past: hubcore.NewPastIndex("")}, reg, appwire.ThreadForkParams{Ref: "local:r", SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "edit"})
 
 		now := time.Unix(1700000000, 0).UTC()
 		past := hubcore.NewPastIndex("")
