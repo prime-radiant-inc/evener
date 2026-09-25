@@ -3,7 +3,9 @@
 package dev
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -137,4 +139,34 @@ func TestGroupedGuardDrainTermsALeftoverFirst(t *testing.T) {
 	if _, err := os.Stat(pidFile + ".term"); err != nil {
 		t.Fatalf("the leftover never got a TERM: %v", err)
 	}
+}
+
+// A stoppable command, stopped, TERMs its whole process group, as npm's build
+// needs (npm exits on TERM without stopping its script's children), and returns
+// only once the tree has finished winding down.
+func TestRunStoppableTerminatesTheTreeAndWaits(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	cmd := exec.Command("sh", "-c", `sh -c 'trap "sleep 0.2; touch \"\$1.term\"; exit 0" TERM; echo $$ > "$1"; while :; do sleep 0.05; done' sh "$1" & wait`, "sh", pidFile)
+	done := make(chan error, 1)
+	go func() { done <- runStoppable(ctx, cmd, 2*time.Second) }()
+	grandchild := readPid(t, pidFile)
+	t.Cleanup(func() {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	})
+	stop()
+	select {
+	case <-done:
+	case <-time.After(tripwire):
+		t.Fatal("runStoppable never returned")
+	}
+	if _, err := os.Stat(pidFile + ".term"); err != nil {
+		t.Fatalf("the build's grandchild never got the TERM, or was killed before it finished: %v", err)
+	}
+	awaitGone(t, grandchild, "the build's grandchild")
 }

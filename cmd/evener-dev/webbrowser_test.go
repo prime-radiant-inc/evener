@@ -338,13 +338,16 @@ func TestBrowserGateBuildFailureFailsOnlyTheSkillGuard(t *testing.T) {
 type signalOnFirstWrite struct {
 	bytes.Buffer
 	signals chan os.Signal
+	queue   []os.Signal
 	sent    bool
 }
 
 func (w *signalOnFirstWrite) Write(p []byte) (int, error) {
 	if !w.sent {
 		w.sent = true
-		w.signals <- syscall.SIGTERM
+		for _, sig := range w.queue {
+			w.signals <- sig
+		}
 	}
 	return w.Buffer.Write(p)
 }
@@ -356,7 +359,7 @@ func TestBrowserGateHonorsAnInterruptDuringTheVerdicts(t *testing.T) {
 	launcher := newFakeLauncher()
 	signals := make(chan os.Signal, 4)
 	tg := &testGate{gate: newBrowserGate(len(browserGuards), false), signals: signals, result: make(chan gateResult, 1)}
-	stdout := &signalOnFirstWrite{signals: signals}
+	stdout := &signalOnFirstWrite{signals: signals, queue: []os.Signal{syscall.SIGINT, syscall.SIGTERM}}
 	tg.gate.launcher, tg.gate.scratch, tg.gate.signals = launcher, t.TempDir(), signals
 	tg.gate.stdout, tg.gate.stderr = stdout, &tg.stderr
 	go func() {
@@ -366,8 +369,9 @@ func TestBrowserGateHonorsAnInterruptDuringTheVerdicts(t *testing.T) {
 	for _, g := range startAll(t, launcher) {
 		g.exit <- 0
 	}
+	// Two interrupts landed; the second's status wins, as it does mid-run.
 	if r := tg.await(t); r.status != 143 || !r.keep {
-		t.Fatalf("result = %+v, want the interrupt's 143 and the evidence kept", r)
+		t.Fatalf("result = %+v, want the second interrupt's 143 and the evidence kept", r)
 	}
 }
 
@@ -883,38 +887,6 @@ func TestExecGuardLauncherPrivateGoHomeFailureLeavesItsCauseInTheLog(t *testing.
 	}
 	if !strings.Contains(log.String(), "not-a-directory") {
 		t.Fatalf("the setup's own error is not in the log: %q", log.String())
-	}
-}
-
-// A stoppable command, stopped, gets SIGTERM (so it can clean up) and is waited
-// for until it exits.
-func TestStoppableCommandTerminatesAndWaits(t *testing.T) {
-	dir := t.TempDir()
-	ready := filepath.Join(dir, "ready")
-	cleaned := filepath.Join(dir, "cleaned")
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-	cmd := stoppableCommand(ctx, "sh", "-c", `trap 'touch "$2"; exit 9' TERM; touch "$1"; while :; do sleep 0.05; done`, "sh", ready, cleaned)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(tripwire)
-	for {
-		if _, err := os.Stat(ready); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the command never became ready")
-		}
-		time.Sleep(10 * time.Millisecond) // TRIPWIRE-bounded wait for the command's own ready file
-	}
-	stop()
-	_ = cmd.Wait()
-	if code := cmd.ProcessState.ExitCode(); code != 9 {
-		t.Fatalf("exit = %d, want the TERM trap's 9 (a KILL would give -1)", code)
-	}
-	if _, err := os.Stat(cleaned); err != nil {
-		t.Fatalf("Wait returned before the command finished its cleanup: %v", err)
 	}
 }
 

@@ -238,7 +238,7 @@ func (g *webGate) run() (int, bool) {
 	// the evidence kept rather than removed.
 	select {
 	case sig := <-g.signals:
-		return signalStatus(sig), true
+		return signalStatus(latestSignal(sig, g.signals)), true
 	default:
 	}
 	return status, status != 0
@@ -352,23 +352,39 @@ const groupDrainGrace = 5 * time.Second
 type execGuardLauncher struct{ drainGrace time.Duration }
 
 func (execGuardLauncher) BuildFrontend(ctx context.Context, log io.Writer) int {
-	cmd := stoppableCommand(ctx, "npm", "run", "build")
+	// Not bound to ctx: exec would KILL it on cancel, where runStoppable TERMs
+	// the whole tree and lets it wind down.
+	cmd := exec.CommandContext(context.Background(), "npm", "run", "build")
 	cmd.Dir = frontendDir
 	cmd.Env = append(os.Environ(), "NODE_DISABLE_COMPILE_CACHE=1")
 	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Run(); err != nil && cmd.ProcessState == nil {
+	if err := runStoppable(ctx, cmd, groupDrainGrace); err != nil && cmd.ProcessState == nil {
 		_, _ = fmt.Fprintf(log, "npm run build: %v\n", err)
 		return 1
 	}
 	return procgroup.ExitCode(cmd.ProcessState)
 }
 
-// stoppableCommand is a command that ctx stops with SIGTERM rather than exec's
-// default SIGKILL, so it can clean up; Wait still returns only once it exits.
-func stoppableCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	return cmd
+// runStoppable runs cmd in its own process group until it exits. Cancelling
+// ctx TERMs the whole group, and once cmd exits whatever it left in the group
+// is drained (drainProcessGroup), so it returns only when the tree is gone:
+// npm, for one, exits on TERM without stopping its script's children.
+func runStoppable(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error {
+	if err := procgroup.Start(cmd); err != nil {
+		return err
+	}
+	pgid := cmd.Process.Pid
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		procgroup.Terminate(pgid)
+		err = <-done
+	}
+	drainProcessGroup(pgid, grace)
+	return err
 }
 
 // PrivateGoHome runs scripts/lib/private-go-home.sh, the one definition of the
@@ -444,18 +460,21 @@ func (p *execGuard) Wait() int {
 }
 
 // drainGroup stops whatever a grouped guard left behind once its leader has
-// exited: a TERM, then up to the grace for the group to empty, then a KILL for
-// anything still there. After an interrupt the group already has its TERM, and
-// this is what waits for the tree (vitest and its workers, say) to act on it
-// rather than killing it the moment npm exits. Nothing announces an empty
-// group, so it is polled.
-func (p *execGuard) drainGroup() {
-	pgid := p.cmd.Process.Pid
+// exited (drainProcessGroup).
+func (p *execGuard) drainGroup() { drainProcessGroup(p.cmd.Process.Pid, p.grace) }
+
+// drainProcessGroup stops whatever a process group's leader left behind once
+// the leader has exited: a TERM, then up to grace for the group to empty, then
+// a KILL for anything still there. After an interrupt the group already has
+// its TERM, and this is what waits for the tree (vitest and its workers, say)
+// to act on it rather than killing it the moment npm exits. Nothing announces
+// an empty group, so it is polled.
+func drainProcessGroup(pgid int, grace time.Duration) {
 	if !groupAlive(pgid) {
 		return
 	}
 	procgroup.Terminate(pgid)
-	deadline := time.Now().Add(p.grace)
+	deadline := time.Now().Add(grace)
 	for groupAlive(pgid) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
