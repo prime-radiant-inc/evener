@@ -522,14 +522,18 @@ and **no model**. Four claims, each its own assertion:
   what the session records, which is the BARE model the daemon was launched with
   (`Thread.ModelProvider` carries a model, not a provider). A session recording
   this controller's own provider or model — bare or qualified — or nothing at
-  all, fails;
+  all, fails. If the HOST resolves the same bare model id this controller would
+  record, the record cannot tell a host-resolved launch from a
+  controller-resolved one: the check fails rather than claim provenance its
+  evidence cannot support, and says to configure the host with a different model;
 - **fleet visibility** — the controller's own `thread/list` carries the ref, so a
   user sees their remote session beside the local ones;
 - **stop** — `thread/shutdown` through the controller stops the session it did not
   host. The controller forwards it on the owning host's client (the remote
   capability mask in `appsource` names `Shutdown`), so the stop is **in band**:
   the check never reaches for a process table, a `pkill`, or a pattern on the
-  host, and cleanup needs no host-side kill.
+  host, and cleanup needs no host-side kill. The assertion is judged on its own
+  two-minute clock, not on what the run's outer budget has already spent.
 
 **This gate writes to the host**, which is why it is a separate opt-in from the
 read-only `EVENER_SSH_E2E` check — a developer running that one is not signed up
@@ -545,11 +549,14 @@ is refused before anything is created, so the cleanup cannot adopt a directory
 this run did not make. The stop is registered before the spawn is asked for, so a
 start whose response is lost is still cleaned up: with no ref to address, the
 check looks the session up in the controller's fleet view by that directory and
-stops it in band. What it cannot remove is the session *record* the host keeps in
-its own state root — `thread/shutdown` stops the daemon, it does not delete the
-session — and the session runs against the host's real provider and credentials.
-Both are why this gate asks for a **disposable** host, the same contract the
-deploy check states.
+stops it in band. A session that still cannot be stopped is left alone and the
+**directory stays too**, with a failure naming the ref, the directory, and the
+fact that nothing was cleaned up — a directory a running session still references
+is better left than deleted out from under it. What it cannot remove is the
+session *record* the host keeps in its own state root — `thread/shutdown` stops
+the daemon, it does not delete the session — and the session runs against the
+host's real provider and credentials. Both are why this gate asks for a
+**disposable** host, the same contract the deploy check states.
 
 It sends no input items, so **no turn runs and no completion is requested**. That
 is narrower than it sounds: resolving the spawn still makes the host enumerate its

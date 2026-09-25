@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +41,14 @@ const (
 	// sessionCleanupPollWait is the pause between the reconciliation's fleet
 	// reads while that budget lasts.
 	sessionCleanupPollWait = 2 * time.Second
+	// sessionStopTimeout bounds the STOP assertion's own call. The assertion is
+	// judged on its own clock, not the run's: the outer context has already spent
+	// the attach (up to hostAttachTimeout) and up to three minutes of spawn budget,
+	// and a slow attach must not turn a stop that works into a failure. It is
+	// generous for the same reason the call is not instant — it is forwarded to the
+	// host's hub, and the host's daemon drains its session state on the way down
+	// (serve's own shutdown drain budget is 30s).
+	sessionStopTimeout = 2 * time.Minute
 )
 
 // sessionModelShowsControllerResolution reports whether the model a session's
@@ -93,6 +100,25 @@ func sessionModelMatchesHostResolution(recorded, hostResolvedModel string) bool 
 	return recorded == ref.Model
 }
 
+// sessionModelAmbiguousWithController reports whether the host's own resolved
+// model leaves the session's record unable to prove provenance: the record drops
+// the provider (see the const block), so a host that resolves the same bare model
+// id this controller's configuration would record produces the same value for a
+// host-resolved launch and a controller-resolved one, and no comparison of the
+// record can tell them apart.
+//
+// The check must fail on that rather than pass: passing would report provenance
+// on evidence that cannot distinguish the two, which is the false green this
+// judgement exists to close. It must not skip either — a skip reads as "not
+// applicable" when the truth is "this run cannot prove its claim".
+func sessionModelAmbiguousWithController(hostResolvedModel, controllerModel string) bool {
+	ref, err := hubParseModelRef(hostResolvedModel)
+	if err != nil {
+		return false
+	}
+	return ref.Model == strings.TrimSpace(controllerModel)
+}
+
 // TestHostSpawnSessionE2E is the live check for the session half of the
 // multi-host contract: a session the CONTROLLER asks for, from a host attached
 // through evener/host/attach, is spawned and served by that host's own hub,
@@ -117,13 +143,25 @@ func sessionModelMatchesHostResolution(recorded, hostResolvedModel string) bool 
 //   - PROVENANCE: the session's own record names the model the HOST's own
 //     configuration resolves for the directory it was spawned in, asked of the
 //     host through the controller's own admin proxy — and never a spelling this
-//     controller's configuration serves.
+//     controller's configuration serves. If the host resolves the same bare model
+//     id this controller would record, the record cannot tell a host-resolved
+//     launch from a controller-resolved one, and the check FAILS rather than
+//     claim provenance its evidence cannot support.
 //   - FLEET VISIBILITY: the controller's thread/list carries the ref, which is
 //     the half a user sees.
 //   - STOP: thread/shutdown through the controller stops the session it did not
 //     host. The controller forwards the call on the owning host's client
 //     (appsource's remote capability mask names Shutdown), so the stop is in
-//     band: the check never reaches for a process table on the host.
+//     band: the check never reaches for a process table on the host. The
+//     assertion is judged on its own clock, not the run's spent budget.
+//
+// Cleanup settles its own question in band: the session is stopped through the
+// controller (retried inside a cleanup budget) and, when that never takes,
+// reconciled by the unique directory this check made. A session that still cannot
+// be stopped leaves that directory in place, with a failure that names the ref,
+// the directory, and the fact that nothing was cleaned up — deleting a directory
+// a running session still references would be the leak this cleanup exists to
+// prevent, one step later.
 //
 // What the stop does not remove is the session RECORD the host keeps in its own
 // state root — thread/shutdown stops the daemon, it does not delete the session —
@@ -177,9 +215,16 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		t.Fatalf("host %s refused to create %s (%v: %s); this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
 	}
 	// Registered before anything is spawned, so a run that dies anywhere after the
-	// mkdir still removes the directory it made. The stop cleanup below runs first
-	// (cleanups are LIFO), so the session is stopped before its directory goes away.
+	// mkdir still removes the directory it made. The stop arm below runs first
+	// (cleanups are LIFO) and sets sessionLeftBehind when a session it could not
+	// stop may still be running here: a directory a running session still
+	// references is better left than deleted out from under it.
+	var sessionLeftBehind bool
 	t.Cleanup(func() {
+		if sessionLeftBehind {
+			t.Logf("leaving %s in place: a session this run started may still be running there (see the failure above); remove it once the session is gone", hostDir)
+			return
+		}
 		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
@@ -246,23 +291,49 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// The stop is registered BEFORE the call, over a ref the closure reads once it
 	// is known. That ordering is the point: a start whose response never arrives —
 	// a timeout, a dropped connection — still leaves a session running on the host,
-	// and from here on this run owns whatever is running in hostDir. The cleanup
-	// stops the session by ref when one came back, and when none did it reconciles
-	// instead: it looks the session up through the controller's own fleet view by
-	// the working directory this check made, and stops it in band. Either way it is
-	// best-effort — the body's own STOP assertion is the check — and no host-side
-	// kill, process listing, or pattern ever enters the picture.
+	// and from here on this run owns whatever is running in hostDir.
+	//
+	// It stops the session by ref when one came back, retrying inside the cleanup
+	// budget, and falls back to the reconciliation when that never takes: the
+	// session is looked up through the controller's own fleet view by the working
+	// directory this check made and stopped in band. If all of that still leaves a
+	// session running, the directory is left in place and the failure says so —
+	// cleanup that deleted the directory anyway would be the leak this exists to
+	// prevent, one step later. No host-side kill, process listing, or pattern ever
+	// enters the picture.
 	var ref string
 	t.Cleanup(func() {
 		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionCleanupBudget)
 		defer cancelStop()
+		// why is what the messages below report as the reason the direct stop did
+		// not settle the session; it names the ref whenever there was one.
+		why := "thread/start returned no ref"
+		refStopped := false
 		if ref != "" {
-			if _, err := clientRequest[appwire.EmptyResponse](stopCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
-				t.Logf("thread/shutdown of %s did not report success on the way out (%v); the host's daemon idles out on its own when the stop cannot reach it", ref, err)
+			if err := stopSessionInBand(stopCtx, client, ref); err == nil {
+				refStopped = true
+			} else {
+				why = fmt.Sprintf("thread/shutdown of %s kept failing (%v) through the cleanup budget", ref, err)
 			}
+		}
+		if refStopped {
 			return
 		}
-		reconcileSessionInDir(stopCtx, t, client, hostDir)
+		reconciled := reconcileSessionInDir(stopCtx, client, hostDir)
+		switch judgeSessionCleanup(refStopped, reconciled.looked, reconciled.matched, reconciled.stopped) {
+		case sessionCleanupSettled:
+			if reconciled.matched > 0 {
+				t.Logf("stopped %d session(s) under %s through the reconciliation (%s)", reconciled.stopped, hostDir, why)
+				return
+			}
+			t.Logf("nothing is registered under %s, so nothing was left running there (%s)", hostDir, why)
+		case sessionCleanupLeftBehind:
+			sessionLeftBehind = true
+			t.Errorf("left a session running on host %s: %s, and %d of %d session(s) under %s could not be stopped either; nothing was cleaned up — the directory is left in place, because a running session still references it", host.target, why, reconciled.matched-reconciled.stopped, reconciled.matched, hostDir)
+		case sessionCleanupUnreachable:
+			sessionLeftBehind = true
+			t.Errorf("left work behind on host %s: %s, and the controller could not be asked whether a session still runs under %s; nothing was cleaned up — the directory is left in place", host.target, why, hostDir)
+		}
 	})
 
 	started, err := clientRequest[appwire.ThreadStartResponse](startCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
@@ -336,8 +407,10 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// evener/launch/resolve is the product's own answer to "what would a session
 	// started now run with" — the answer hubThreadStart itself applies to the
 	// spawn. Comparing against it cannot be satisfied by a launch THIS controller
-	// resolved, which is the whole claim; the controller-spelling predicate below
-	// only sharpens the failure message when that is what happened.
+	// resolved, which is the whole claim — except when the host resolves the same
+	// model id this controller would record, which the ambiguity guard below
+	// refuses to pass. The controller-spelling predicate only sharpens the failure
+	// message when the launch was resolved here.
 	resolveParams, err := json.Marshal(appwire.LaunchConfigResolveParams{CWD: hostDir})
 	if err != nil {
 		t.Fatalf("encode the evener/launch/resolve params for %s: %v", hostDir, err)
@@ -352,6 +425,15 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	}
 	hostModel := strings.TrimSpace(hostLaunch.Effective.Model)
 	recorded := strings.TrimSpace(read.Thread.ModelProvider)
+	// Refuse to claim provenance when the evidence cannot support it: a host whose
+	// own configuration resolves the same bare model id this controller would
+	// record makes a host-resolved launch indistinguishable from a
+	// controller-resolved one, because the record drops the provider. That is a
+	// failure, not a skip — the run happened, and reporting "not applicable" would
+	// hide a check that could not prove its claim.
+	if sessionModelAmbiguousWithController(hostModel, fakellm.ModelID) {
+		t.Fatalf("cannot prove provenance for %s: the host's own configuration resolves %q, whose model id (%q) is the one THIS controller's configuration would record for a session it resolved, and the session's record drops the provider — so a host-resolved launch and a controller-resolved one are indistinguishable here. Nothing is wrong with the session itself; this run simply cannot show where it was resolved. Configure the host with a model this controller does not resolve (or run this check against a host whose model differs) and run it again", ref, hostModel, fakellm.ModelID)
+	}
 	if !sessionModelMatchesHostResolution(recorded, hostModel) {
 		if recorded == "" {
 			t.Fatalf("the session on host %q records no model at all, so where its launch was resolved cannot be seen from here; the host's own configuration resolves %q for %s", hostE2EName, hostModel, hostDir)
@@ -369,8 +451,10 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// forwards the call on the owning host's client, so this call is the
 	// assertion. A refusal here is "the controller cannot stop a session it did
 	// not host"; success is the capability. Nothing on the host is killed, listed,
-	// or matched by pattern.
-	shutdownCtx, cancelShutdown := context.WithTimeout(ctx, time.Minute)
+	// or matched by pattern. Its own clock (sessionStopTimeout, from
+	// context.Background) is deliberate: the outer context has already paid for the
+	// attach and the spawn, and this assertion must not fail because of them.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), sessionStopTimeout)
 	defer cancelShutdown()
 	if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatalf("step thread/shutdown of %s through the controller: %v (the controller must be able to stop a session it did not host, in band)", ref, err)
@@ -378,46 +462,118 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	t.Logf("the controller stopped %s in band", ref)
 }
 
-// reconcileSessionInDir stops a session this run started whose start response
-// never named it, so its ref was never known. The only handle on such a session
-// is the directory this check made and spawned in — the spawn carried
+// sessionCleanupVerdict is what the cleanup's stop attempts established about the
+// session this run started.
+type sessionCleanupVerdict int
+
+const (
+	// sessionCleanupSettled: nothing this run started is still running under the
+	// directory, so the directory may be removed.
+	sessionCleanupSettled sessionCleanupVerdict = iota
+	// sessionCleanupLeftBehind: a session this run started could not be stopped,
+	// so the directory must stay.
+	sessionCleanupLeftBehind
+	// sessionCleanupUnreachable: the controller could not be asked whether a
+	// session is still running, so nothing is known and the directory must stay.
+	sessionCleanupUnreachable
+)
+
+func (v sessionCleanupVerdict) String() string {
+	switch v {
+	case sessionCleanupSettled:
+		return "settled"
+	case sessionCleanupLeftBehind:
+		return "left-behind"
+	case sessionCleanupUnreachable:
+		return "unreachable"
+	}
+	return "unknown"
+}
+
+// judgeSessionCleanup decides what the cleanup established from its stop
+// attempts: whether the directory may be removed, or whether a session may still
+// be running under it and must be left alone.
+//
+//   - the known ref's own stop settling the session ends the question;
+//   - otherwise the reconciliation's answer is what counts: every matching session
+//     stopped, or none found, settles it; a match that would not stop is left
+//     behind; and a fleet view that could not be read leaves it unknown.
+func judgeSessionCleanup(refStopped, looked bool, matched, stopped int) sessionCleanupVerdict {
+	if refStopped {
+		return sessionCleanupSettled
+	}
+	if !looked {
+		return sessionCleanupUnreachable
+	}
+	if stopped < matched {
+		return sessionCleanupLeftBehind
+	}
+	return sessionCleanupSettled
+}
+
+// stopSessionInBand stops one session through the controller, retrying while the
+// context's budget lasts: one refusal can be a transient transport or an
+// unsettled daemon, and the cleanup's job is to settle the question rather than
+// to report the first failure. The last error is returned when the budget runs
+// out.
+func stopSessionInBand(ctx context.Context, client *appwire.Client, ref string) error {
+	var lastErr error
+	for {
+		if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return lastErr
+		}
+		time.Sleep(sessionCleanupPollWait)
+	}
+}
+
+// sessionReconciliation is what one reconciliation pass established. Looked is
+// false when the fleet view could not be read at all, so nothing about the
+// directory is known; Matched counts the sessions whose own records place them in
+// this run's directory, and Stopped counts those the controller stopped in band.
+type sessionReconciliation struct {
+	looked  bool
+	matched int
+	stopped int
+}
+
+// reconcileSessionInDir stops sessions this run started whose start response
+// never named them, so their refs were never known. The only handle on such a
+// session is the directory this check made and spawned in — the spawn carried
 // CWD: hostDir, a name unique to this run (pid + nanosecond timestamp) — so the
-// controller's own fleet view is searched for a session whose record places it
+// controller's own fleet view is searched for sessions whose records place them
 // in that directory, and each match is stopped in band through the controller,
 // the same thread/shutdown a user's client would send.
 //
 // The search repeats while the budget lasts, because a response lost during the
 // start can arrive before the host registered the session: one list immediately
-// after the failure can legitimately be too early. It reports what it found
-// rather than passing quietly, and a stop that fails is an error, not a log
-// line — a session this run started must not be left behind.
-func reconcileSessionInDir(ctx context.Context, t *testing.T, client *appwire.Client, workingDir string) {
-	t.Helper()
+// after the failure can legitimately be too early. The caller judges what it
+// established — a match that would not stop is not silently dropped here.
+func reconcileSessionInDir(ctx context.Context, client *appwire.Client, workingDir string) sessionReconciliation {
+	var out sessionReconciliation
 	deadline := time.Now().Add(sessionCleanupBudget)
 	for {
 		listed, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
 		if err != nil {
-			t.Logf("could not list sessions to reconcile the directory %s: %v", workingDir, err)
-			return
+			return out
 		}
-		matches := 0
+		out.looked = true
 		for _, thread := range listed.Data {
 			if !sessionInDirectory(thread, workingDir) {
 				continue
 			}
-			matches++
+			out.matched++
 			if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: thread.Evener.Ref}); err != nil {
-				t.Errorf("stop %s, the session the lost start response left under %s: %v", thread.Evener.Ref, workingDir, err)
 				continue
 			}
-			t.Logf("stopped %s, the session the lost start response left under %s", thread.Evener.Ref, workingDir)
+			out.stopped++
 		}
-		if matches > 0 {
-			return
-		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			t.Logf("no session is registered under %s, so a lost start response left nothing to stop", workingDir)
-			return
+		if out.matched > 0 || time.Now().After(deadline) || ctx.Err() != nil {
+			return out
 		}
 		time.Sleep(sessionCleanupPollWait)
 	}
@@ -436,19 +592,26 @@ func sessionInDirectory(thread appwire.Thread, workingDir string) bool {
 }
 
 // sameDirectory compares a session's recorded working directory with the one
-// this check addressed: equal after trimming a trailing separator, or ending in
-// the same leaf name. The leaf is the fallback for a host that records the
-// canonical path of a directory this check addressed through a link (macOS
-// resolves $HOME through one), and it is a safe key for exactly one run because
-// it carries that run's pid and nanosecond timestamp.
+// this check addressed. After trimming a trailing separator the two are equal,
+// or one is the other with a prefix in front: a host can record the canonical
+// path of a directory this check addressed through a link (macOS resolves $HOME
+// through one), and the canonical form is the check's path with a prefix ahead of
+// it — so in either direction the shorter path is the tail of the longer one.
+//
+// The comparison is the whole path, not its leaf: a different parent with an
+// equal leaf is no one's tail and does not match. Two different directories
+// sharing the tail this matches would have to share this run's pid and nanosecond
+// timestamp too, which is what makes the tail safe as the key.
 func sameDirectory(recorded, want string) bool {
 	recorded = strings.TrimRight(strings.TrimSpace(recorded), "/")
 	want = strings.TrimRight(strings.TrimSpace(want), "/")
+	if recorded == "" || want == "" {
+		return false
+	}
 	if recorded == want {
 		return true
 	}
-	leaf := path.Base(want)
-	return leaf != "" && leaf != "." && leaf != "/" && strings.HasSuffix(recorded, "/"+leaf)
+	return strings.HasSuffix(recorded, want) || strings.HasSuffix(want, recorded)
 }
 
 // TestSessionModelProvenance pins the provenance judgement the live check makes,
@@ -500,6 +663,55 @@ func TestSessionModelProvenance(t *testing.T) {
 			t.Errorf("sessionModelMatchesHostResolution(%q, %q) = %v, want %v", tc.recorded, tc.hostResolvedModel, got, tc.want)
 		}
 	}
+
+	// The shared-id case. The record drops the provider, so a host that resolves
+	// the same bare model id this controller would record yields the same value
+	// either way; the check must say the claim cannot be proven rather than pass on
+	// a comparison that cannot tell the two resolutions apart.
+	ambiguity := []struct {
+		hostResolvedModel string
+		want              bool
+	}{
+		{"zai/" + fakellm.ModelID, true},
+		{"fake/" + fakellm.ModelID, true},
+		{"zai/glm-5.3-vision", false},
+		{"", false},
+		// Not a value a spawn can resolve: ParseModelRef requires provider/model.
+		{fakellm.ModelID, false},
+	}
+	for _, tc := range ambiguity {
+		if got := sessionModelAmbiguousWithController(tc.hostResolvedModel, fakellm.ModelID); got != tc.want {
+			t.Errorf("sessionModelAmbiguousWithController(%q, %q) = %v, want %v: a false here means the check passes while the record cannot distinguish a host-resolved launch from a controller-resolved one", tc.hostResolvedModel, fakellm.ModelID, got, tc.want)
+		}
+	}
+}
+
+// TestSessionCleanupVerdict pins when the cleanup may remove the host directory
+// and when it must leave it: a session this run started that could not be stopped
+// must not have its directory deleted out from under it, and a controller that
+// could not be asked at all is not evidence that nothing is running.
+func TestSessionCleanupVerdict(t *testing.T) {
+	tests := []struct {
+		name       string
+		refStopped bool
+		looked     bool
+		matched    int
+		stopped    int
+		want       sessionCleanupVerdict
+	}{
+		{"the known ref stopped", true, false, 0, 0, sessionCleanupSettled},
+		{"no match found after the ref's stop failed", false, true, 0, 0, sessionCleanupSettled},
+		{"every match stopped", false, true, 1, 1, sessionCleanupSettled},
+		{"a match would not stop", false, true, 1, 0, sessionCleanupLeftBehind},
+		{"one of two matches would not stop", false, true, 2, 1, sessionCleanupLeftBehind},
+		{"the fleet view could not be read", false, false, 0, 0, sessionCleanupUnreachable},
+	}
+	for _, tc := range tests {
+		got := judgeSessionCleanup(tc.refStopped, tc.looked, tc.matched, tc.stopped)
+		if got != tc.want {
+			t.Errorf("judgeSessionCleanup(refStopped=%v, looked=%v, matched=%d, stopped=%d) = %v, want %v (%s)", tc.refStopped, tc.looked, tc.matched, tc.stopped, got, tc.want, tc.name)
+		}
+	}
 }
 
 // TestSessionDirectoryMatch pins the reconciliation's matching rule: which
@@ -509,23 +721,31 @@ func TestSessionModelProvenance(t *testing.T) {
 // not work the run did not start.
 func TestSessionDirectoryMatch(t *testing.T) {
 	const dir = "/Users/jesse/evener-session-e2e-123-456"
-	directories := []struct {
-		recorded string
-		want     bool
+	pairs := []struct {
+		recorded, wanted string
+		want             bool
 	}{
-		{dir, true},
-		{dir + "/", true},
-		// A host can record the canonical path of a directory addressed through a
-		// link (macOS resolves $HOME through one); the leaf is what survives.
-		{"/System/Volumes/Data" + dir, true},
-		{"/Users/jesse/evener-session-e2e-123-457", false},
-		{dir + "/sub", false},
-		{"/Users/jesse", false},
-		{"", false},
+		{dir, dir, true},
+		{dir + "/", dir, true},
+		// A host can record the canonical path of a directory this check addressed
+		// through a link (macOS resolves $HOME through one). The canonical form is
+		// the check's path with a prefix in front, so the shorter path is the tail
+		// of the longer one — in either direction.
+		{"/System/Volumes/Data" + dir, dir, true},
+		{dir, "/System/Volumes/Data" + dir, true},
+		{"/private" + dir, dir, true},
+		{dir, "/private" + dir, true},
+		// A different parent is not a tail, however equal the leaf looks.
+		{"/Users/other/evener-session-e2e-123-456", dir, false},
+		{dir, "/Users/other/evener-session-e2e-123-456", false},
+		{"/Users/jesse/evener-session-e2e-123-457", dir, false},
+		{dir + "/sub", dir, false},
+		{"/Users/jesse", dir, false},
+		{"", dir, false},
 	}
-	for _, tc := range directories {
-		if got := sameDirectory(tc.recorded, dir); got != tc.want {
-			t.Errorf("sameDirectory(%q, %q) = %v, want %v", tc.recorded, dir, got, tc.want)
+	for _, tc := range pairs {
+		if got := sameDirectory(tc.recorded, tc.wanted); got != tc.want {
+			t.Errorf("sameDirectory(%q, %q) = %v, want %v", tc.recorded, tc.wanted, got, tc.want)
 		}
 	}
 
