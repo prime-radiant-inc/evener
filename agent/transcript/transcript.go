@@ -478,6 +478,8 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 	}
 	tail.mu.Lock()
 	defer tail.mu.Unlock()
+	// The file was just created (or truncated) with no entries in it.
+	tail.nextSeq = 0
 	return &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}, nil
 }
 

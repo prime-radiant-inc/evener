@@ -185,3 +185,45 @@ func TestConcurrentWritersOnOneFileKeepOneSequence(t *testing.T) {
 	wg.Wait()
 	requireOneSequenceInFileOrder(t, path, texts)
 }
+
+// A writer that is dropped without Close — its handle closed by the runtime
+// instead — leaves its tail registered. Once its file is gone the filesystem
+// may hand the same inode to the next transcript created, and that transcript
+// must not inherit the dead file's sequence. The handle is closed directly
+// here, as the os.File finalizer would; on a filesystem that does not reuse
+// the inode the test passes without exercising the collision. The new
+// transcript is created both at the dropped file's path and at another.
+func TestNewTranscriptDoesNotInheritADroppedWritersTail(t *testing.T) {
+	for _, freshName := range []string{"dropped.jsonl", "fresh.jsonl"} {
+		t.Run(freshName, func(t *testing.T) {
+			dir := t.TempDir()
+			dropped := filepath.Join(dir, "dropped.jsonl")
+			w, err := NewWriterNoSync(dropped, Header{SessionID: "dropped", CreatedAt: time.Unix(0, 0).UTC()})
+			if err != nil {
+				t.Fatalf("NewWriterNoSync: %v", err)
+			}
+			for range 3 {
+				if err := w.Append(steeringTurn("dropped record")); err != nil {
+					t.Fatalf("Append: %v", err)
+				}
+			}
+			if err := w.file.Close(); err != nil {
+				t.Fatalf("close dropped handle: %v", err)
+			}
+			if err := os.Remove(dropped); err != nil {
+				t.Fatalf("remove dropped transcript: %v", err)
+			}
+
+			fresh := filepath.Join(dir, freshName)
+			created, err := NewWriterNoSync(fresh, Header{SessionID: "shared-file", CreatedAt: time.Unix(0, 0).UTC()})
+			if err != nil {
+				t.Fatalf("NewWriterNoSync fresh: %v", err)
+			}
+			defer created.Close() //nolint:errcheck // assertion fixture
+			if err := created.Append(steeringTurn("fresh record")); err != nil {
+				t.Fatalf("fresh Append: %v", err)
+			}
+			requireOneSequenceInFileOrder(t, fresh, []string{"fresh record"})
+		})
+	}
+}

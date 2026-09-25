@@ -3,6 +3,7 @@ package transcript
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 
@@ -33,22 +34,29 @@ type appendTail struct {
 	// not the current one may have a handle position behind the end.
 	move uint64
 
-	// info identifies the file (os.SameFile) and refs counts the open writers
-	// sharing this tail; both are guarded by openTails.mu.
+	// path and info identify the file and refs counts the open writers
+	// sharing this tail; all are guarded by openTails.mu.
+	path string
 	info os.FileInfo
 	refs int
 }
 
 // openTails holds the tail of every transcript file some writer in this
 // process has open. A process holds few transcripts open at once, so a linear
-// os.SameFile scan on open is cheap and follows the file however it was named.
+// scan on open is cheap.
+//
+// A tail matches on the path the file was opened by as well as os.SameFile. A
+// writer dropped without Close has its handle closed by the runtime and leaves
+// its tail behind; once its file is removed the filesystem can give the same
+// inode to a new transcript, which must not inherit the dead file's sequence.
+// Every writer on one transcript opens it by the same path.
 var openTails struct {
 	mu    sync.Mutex
 	tails []*appendTail
 }
 
 // acquireAppendTail returns the tail shared by every open writer on f's file,
-// creating it for the first. A file os.SameFile cannot identify — one on an
+// creating it for the first. f.Name() is the path f was opened by. A file os.SameFile cannot identify — one on an
 // in-memory test filesystem — gets a tail of its own.
 func acquireAppendTail(f afero.File) (*appendTail, error) {
 	info, err := f.Stat()
@@ -61,15 +69,16 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	if !os.SameFile(info, info) {
 		return &appendTail{}, nil
 	}
+	path := filepath.Clean(f.Name())
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
 	for _, tail := range openTails.tails {
-		if os.SameFile(tail.info, info) {
+		if tail.path == path && os.SameFile(tail.info, info) {
 			tail.refs++
 			return tail, nil
 		}
 	}
-	tail := &appendTail{info: info, refs: 1}
+	tail := &appendTail{path: path, info: info, refs: 1}
 	openTails.tails = append(openTails.tails, tail)
 	return tail, nil
 }
