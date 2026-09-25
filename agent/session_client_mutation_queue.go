@@ -1558,15 +1558,31 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 		}
 		// At restore no execution runs: the failed start's entries form its
 		// own execution, which ends failed. Inside a running turn they join it.
-		// A failure whose entries are all recorded already has nothing to add.
+		// A failure whose entries are all recorded has nothing to add, but a
+		// crash may have left its execution open without a completion: that is
+		// completed failed here, not left for a later restart to call
+		// interrupted.
 		items := s.clientMutationTranscriptItems(id, pending.TurnID)
-		own := s.attachedTranscript().RunningTurnID() == "" && (!items.User || !items.Failure)
+		idle := s.attachedTranscript().RunningTurnID() == ""
+		own := idle && (!items.User || !items.Failure)
+		wasOpen := idle && s.takeOpenPendingExecution(pending.TurnID)
 		if own {
 			s.beginExecution(pending.TurnID)
 		}
 		err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment)
-		if own {
+		switch {
+		case own:
 			s.completeExecution(schema.TurnFailed)
+		case wasOpen && err == nil:
+			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
+			if completeErr != nil {
+				err = fmt.Errorf("complete recovered failed turn: %w", completeErr)
+			}
+			if rec.Recorded {
+				s.mu.Lock()
+				s.clientMutationAppendedTurn = true // restore re-reads what it appended
+				s.mu.Unlock()
+			}
 		}
 		if err != nil {
 			return err
