@@ -47,7 +47,9 @@ jobs:
           cd cmd/evener-hub/frontend
           npm ci >/dev/null 2>&1
           for c in typecheck test lint; do
-            /usr/bin/time -f "TIMING $c %es %MKB user=%U sys=%S" npm run "$c" >/tmp/$c.log 2>&1 || { tail -20 /tmp/$c.log; exit 1; }
+            /usr/bin/time -o /tmp/$c.time -f "TIMING $c %es %MKB user=%U sys=%S" npm run "$c" >/tmp/$c.log 2>&1 || { tail -20 /tmp/$c.log; exit 1; }
+            cat /tmp/$c.time
+            grep -E 'Test Files|Tests |Duration' /tmp/$c.log || true
           done
           nproc
 
