@@ -347,9 +347,8 @@ func runWebGate(gate *webGate, scratchPrefix string) int {
 // has exited, to wind down on a TERM before they are KILLed.
 const groupDrainGrace = 5 * time.Second
 
-// execGuardLauncher starts the real guards. drainGrace, when set, replaces
-// groupDrainGrace.
-type execGuardLauncher struct{ drainGrace time.Duration }
+// execGuardLauncher starts the real guards.
+type execGuardLauncher struct{}
 
 func (execGuardLauncher) BuildFrontend(ctx context.Context, log io.Writer) int {
 	// Not bound to ctx: exec would KILL it on cancel, where runStoppable TERMs
@@ -424,7 +423,7 @@ func exportedBy(before, after []string) []string {
 	return changed
 }
 
-func (l execGuardLauncher) Start(spec guardSpec, log *os.File) (guardProcess, error) {
+func (execGuardLauncher) Start(spec guardSpec, log *os.File) (guardProcess, error) {
 	cmd := exec.CommandContext(context.Background(), spec.argv[0], spec.argv[1:]...)
 	cmd.Dir = spec.dir
 	cmd.Env = append(os.Environ(), spec.env...)
@@ -436,17 +435,12 @@ func (l execGuardLauncher) Start(spec guardSpec, log *os.File) (guardProcess, er
 	if err := start(); err != nil {
 		return nil, err
 	}
-	grace := l.drainGrace
-	if grace == 0 {
-		grace = groupDrainGrace
-	}
-	return &execGuard{cmd: cmd, group: spec.group, grace: grace, reaped: make(chan struct{})}, nil
+	return &execGuard{cmd: cmd, group: spec.group, reaped: make(chan struct{})}, nil
 }
 
 type execGuard struct {
 	cmd    *exec.Cmd
 	group  bool
-	grace  time.Duration
 	reaped chan struct{}
 }
 
@@ -461,7 +455,7 @@ func (p *execGuard) Wait() int {
 
 // drainGroup stops whatever a grouped guard left behind once its leader has
 // exited (drainProcessGroup).
-func (p *execGuard) drainGroup() { drainProcessGroup(p.cmd.Process.Pid, p.grace) }
+func (p *execGuard) drainGroup() { drainProcessGroup(p.cmd.Process.Pid, groupDrainGrace) }
 
 // drainProcessGroup stops whatever a process group's leader left behind once
 // the leader has exited: a TERM, then up to grace for the group to empty, then

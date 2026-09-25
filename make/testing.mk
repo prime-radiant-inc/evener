@@ -2,7 +2,7 @@
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
-# the gate (`evener dev web-checks`, run from the prebuilt evener-dev binary so
+# the gate (`evener-dev dev web-checks`, run from the prebuilt evener-dev binary so
 # an interrupt reaches it) runs them concurrently with per-check private
 # HOME/TMPDIR/XDG roots; wall time is the slowest one (vitest) instead of the
 # sum. A failure replays exactly the failing check's log.
@@ -21,7 +21,7 @@ test-web: web-preflight build-dev
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
 # of test-web because jsdom cannot evaluate the CSS cascade or browser geometry.
-# The gate (`evener dev web-browser-guards`, run from the prebuilt evener-dev
+# The gate (`evener-dev dev web-browser-guards`, run from the prebuilt evener-dev
 # binary so an interrupt reaches it) runs every guard so one missing browser or
 # failing case does not hide the remaining guard's verdict; exit status is the
 # first nonzero one.
