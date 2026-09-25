@@ -6,11 +6,13 @@ package dev
 // scripts/web/test-web-browser.sh keeps only the load-aware default for the
 // slot count and hands off here.
 //
-// The skill guard is the gate's never-signalled check: it is a go test whose
-// driver, Chrome and helper daemons are cleaned up by the test binary's own
-// t.Cleanup, which a TERM to go test would skip. It is also the check that
-// needs the built frontend (the hub serves the embedded dist), which the gate
-// builds first when it is missing.
+// The skill and retirement guards are the gate's never-signalled checks: each
+// is a go test (the retirement guard's behind `npm run`) whose driver, Chrome
+// and helper daemons are cleaned up by the test binary's own t.Cleanup, which a
+// TERM to go test would skip and a TERM to npm alone would orphan; an interrupt
+// waits for them instead. The skill guard is also the check that needs the
+// built frontend (the hub serves the embedded dist), which the gate builds
+// first when it is missing.
 
 import (
 	"fmt"
@@ -36,7 +38,7 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		checks:        browserGuards,
 		spec:          browserGuardSpec,
 		needsBuild:    skillGuard,
-		unsignalled:   skillGuard,
+		unsignalled:   []string{retirementGuard, skillGuard},
 		slots:         slots,
 		buildFrontend: buildFrontend,
 	}

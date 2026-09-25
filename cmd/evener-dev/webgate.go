@@ -6,7 +6,7 @@
 // clean run removes it.
 //
 // Interrupts (HUP/INT/TERM, exiting 129/130/143): the gate TERMs every running
-// check, except one a gate names as never signalled, and waits for each, so an
+// check, except those a gate names as never signalled, and waits for each, so an
 // interruption waits for the cleanup each check owns. A second signal exits at
 // once, with that signal's status, without waiting any further; the scratch is
 // then kept and named for whatever the unfinished checks left.
@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -90,8 +91,8 @@ type webGate struct {
 	// which runs first when buildFrontend is set; a failed build fails only
 	// that check. Empty for a gate with no build.
 	needsBuild string
-	// unsignalled is the check an interrupt waits for but never signals.
-	unsignalled string
+	// unsignalled are the checks an interrupt waits for but never signals.
+	unsignalled []string
 
 	launcher      guardLauncher
 	slots         int
@@ -231,6 +232,14 @@ func (g *webGate) run() (int, bool) {
 			status = statuses[i]
 		}
 	}
+	// An interrupt that landed after the last check finished, while the
+	// verdicts printed, still makes this an interrupted run: its status, and
+	// the evidence kept rather than removed.
+	select {
+	case sig := <-g.signals:
+		return signalStatus(sig), true
+	default:
+	}
 	return status, status != 0
 }
 
@@ -271,7 +280,7 @@ func (g *webGate) stop(sig os.Signal, live []guardProcess, exits <-chan guardExi
 			continue
 		}
 		waiting++
-		if g.checks[i] != g.unsignalled {
+		if !slices.Contains(g.unsignalled, g.checks[i]) {
 			proc.Terminate()
 		}
 	}
@@ -437,7 +446,11 @@ func (p *execGuard) drainGroup() {
 	for groupAlive(pgid) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	baseprocgroup.KillGroupAfterReap(pgid)
+	// Only a group still there is KILLed: once it has emptied, its id is free
+	// for another process group to take.
+	if groupAlive(pgid) {
+		baseprocgroup.KillGroupAfterReap(pgid)
+	}
 }
 
 // Terminate TERMs the guard: through its pidfd-backed process handle, which

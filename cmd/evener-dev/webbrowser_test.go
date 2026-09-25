@@ -333,6 +333,44 @@ func TestBrowserGateBuildFailureFailsOnlyTheSkillGuard(t *testing.T) {
 	}
 }
 
+// signalOnFirstWrite queues a signal the first time the gate writes, which is
+// when it starts printing verdicts: every guard has finished by then.
+type signalOnFirstWrite struct {
+	bytes.Buffer
+	signals chan os.Signal
+	sent    bool
+}
+
+func (w *signalOnFirstWrite) Write(p []byte) (int, error) {
+	if !w.sent {
+		w.sent = true
+		w.signals <- syscall.SIGTERM
+	}
+	return w.Buffer.Write(p)
+}
+
+// An interrupt that lands while the verdicts print, after every guard has
+// finished, still makes the run an interrupted one: its status, and the
+// evidence kept rather than removed.
+func TestBrowserGateHonorsAnInterruptDuringTheVerdicts(t *testing.T) {
+	launcher := newFakeLauncher()
+	signals := make(chan os.Signal, 4)
+	tg := &testGate{gate: newBrowserGate(len(browserGuards), false), signals: signals, result: make(chan gateResult, 1)}
+	stdout := &signalOnFirstWrite{signals: signals}
+	tg.gate.launcher, tg.gate.scratch, tg.gate.signals = launcher, t.TempDir(), signals
+	tg.gate.stdout, tg.gate.stderr = stdout, &tg.stderr
+	go func() {
+		status, keep := tg.gate.run()
+		tg.result <- gateResult{status, keep}
+	}()
+	for _, g := range startAll(t, launcher) {
+		g.exit <- 0
+	}
+	if r := tg.await(t); r.status != 143 || !r.keep {
+		t.Fatalf("result = %+v, want the interrupt's 143 and the evidence kept", r)
+	}
+}
+
 func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startTestGate(t, launcher, len(browserGuards), true)
@@ -445,13 +483,21 @@ func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 
 // An interrupt TERMs every running guard except the skill guard, and waits for
 // all of them, the skill guard included, before the gate exits.
-func TestBrowserGateInterruptTermsTheNodeGuardsAndWaitsForTheSkillGuard(t *testing.T) {
+// waitedNotSignalled are the guards an interrupt waits for but never TERMs:
+// each is a go test (the retirement guard's behind npm) whose driver, Chrome
+// and helper daemons are cleaned up by the test binary's own t.Cleanup, which
+// a TERM would skip, and a TERM to npm alone would orphan.
+var waitedNotSignalled = []string{retirementGuard, skillGuard}
+
+// An interrupt TERMs every running guard except the go-test guards, and waits
+// for all of them before the gate exits.
+func TestBrowserGateInterruptTermsTheNodeGuardsAndWaitsForTheGoTestGuards(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startTestGate(t, launcher, len(browserGuards), false)
 	guards := startAll(t, launcher)
 	tg.signals <- syscall.SIGTERM
 	for _, g := range guards {
-		if g.name == skillGuard {
+		if slices.Contains(waitedNotSignalled, g.name) {
 			continue
 		}
 		select {
@@ -461,16 +507,20 @@ func TestBrowserGateInterruptTermsTheNodeGuardsAndWaitsForTheSkillGuard(t *testi
 		}
 		g.exit <- 143
 	}
-	tg.assertRunning(t, "the skill guard was still running")
-	launcher.guard(skillGuard).exit <- 0
+	for _, name := range waitedNotSignalled {
+		tg.assertRunning(t, name+" was still running")
+		launcher.guard(name).exit <- 0
+	}
 	if r := tg.await(t); r.status != 143 || !r.keep {
 		t.Fatalf("result = %+v, want 143 and the scratch kept", r)
 	}
 	// Checked once the gate has returned, when its TERM pass has certainly run.
-	select {
-	case <-launcher.guard(skillGuard).terminated:
-		t.Fatal("the interrupted gate signalled the skill guard's go test; its t.Cleanup would be skipped")
-	default:
+	for _, name := range waitedNotSignalled {
+		select {
+		case <-launcher.guard(name).terminated:
+			t.Fatalf("the interrupted gate signalled %s; its go test's t.Cleanup would be skipped", name)
+		default:
+		}
 	}
 }
 
@@ -480,7 +530,7 @@ func TestBrowserGateSecondInterruptStopsWaiting(t *testing.T) {
 	guards := startAll(t, launcher)
 	tg.signals <- syscall.SIGINT
 	for _, g := range guards {
-		if g.name != skillGuard {
+		if !slices.Contains(waitedNotSignalled, g.name) {
 			<-g.terminated
 			g.exit <- 130
 		}
