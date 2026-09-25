@@ -66,46 +66,11 @@ func restoreFixtureEntries(t *testing.T, path, sessionID string) (transcript.Hea
 	return w.Header(), entries
 }
 
-// TestPrepareAppIdentityFromEntriesMatchesFileProjection is the differential
-// proof for the resume handoff: the entries form must produce the identical
-// PreparedAppIdentity the file form does, over the same transcript bytes.
-func TestPrepareAppIdentityFromEntriesMatchesFileProjection(t *testing.T) {
-	const sessionID = "th_diff"
-	path := writeDifferentialFixture(t, sessionID)
-	header, entries := restoreFixtureEntries(t, path, sessionID)
-	if len(entries) == 0 {
-		t.Fatal("fixture produced no entries")
-	}
-
-	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
-	fromFile, err := PrepareAppIdentityForRef("local", sessionID, ref, path)
-	if err != nil {
-		t.Fatalf("file form: %v", err)
-	}
-	fromEntries, err := PrepareAppIdentityFromEntries("local", sessionID, ref, header, entries)
-	if err != nil {
-		t.Fatalf("entries form: %v", err)
-	}
-
-	fileSnapshot := snapshotTurns(t, fromFile)
-	entriesSnapshot := snapshotTurns(t, fromEntries)
-	if !reflect.DeepEqual(fileSnapshot, entriesSnapshot) {
-		t.Fatalf("turn snapshots diverge:\nfile:    %#v\nentries: %#v", fileSnapshot, entriesSnapshot)
-	}
-	if fromFile.threadID != fromEntries.threadID || fromFile.ref != fromEntries.ref {
-		t.Fatalf("identity diverges: %#v vs %#v", fromFile, fromEntries)
-	}
-	if len(fileSnapshot) == 0 {
-		t.Fatal("fixture projected to zero turns; differential proof is vacuous")
-	}
-}
-
-// TestPrepareAppIdentityFromEntriesMatchesFileTurnIDs pins the persisted
-// turn ids specifically: every id the entries form yields must be the exact
-// id the file form yields, in order (turn_<1-based entry index> or a reserved
-// StableTurnID), so the daemon fences live turn ids above the same floor
-// however the resume projection ran.
-func TestPrepareAppIdentityFromEntriesMatchesFileTurnIDs(t *testing.T) {
+// TestAppTurnsFromEntriesMatchesFileTurnIDs pins the persisted turn ids of
+// the legacy entry projection: every id the entries form yields must be the
+// exact id the file form yields, in order (turn_<1-based entry index> or a
+// reserved StableTurnID).
+func TestAppTurnsFromEntriesMatchesFileTurnIDs(t *testing.T) {
 	const sessionID = "th_ids"
 	path := writeDifferentialFixture(t, sessionID)
 	header, entries := restoreFixtureEntries(t, path, sessionID)
@@ -131,8 +96,7 @@ func TestPrepareAppIdentityFromEntriesMatchesFileTurnIDs(t *testing.T) {
 	if !reflect.DeepEqual(fileIDs, entryIDs) {
 		t.Fatalf("turn ids diverge:\nfile:    %v\nentries: %v", fileIDs, entryIDs)
 	}
-	// The id floor both forms report must also agree: it is what
-	// SeedPersistedTurns fences live turn ids above.
+	// The entry count both forms report must also agree.
 	_, fileHighest, err := appTurnsFromTranscriptFile(path)
 	if err != nil {
 		t.Fatalf("file projection (floor): %v", err)
@@ -146,47 +110,22 @@ func TestPrepareAppIdentityFromEntriesMatchesFileTurnIDs(t *testing.T) {
 	}
 }
 
-// TestPrepareAppIdentityFromEntriesStillEmitsPrelude pins that the entries
-// form keeps the file form's prelude emission from the header.
-func TestPrepareAppIdentityFromEntriesStillEmitsPrelude(t *testing.T) {
+// TestServedTranscriptReadEmitsThePrelude pins that a thread served from a
+// transcript reads its header-derived prelude.
+func TestServedTranscriptReadEmitsThePrelude(t *testing.T) {
 	const sessionID = "th_prelude"
 	path := writeDifferentialFixture(t, sessionID)
-	header, entries := restoreFixtureEntries(t, path, sessionID)
-
-	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
-	fromEntries, err := PrepareAppIdentityFromEntries("local", sessionID, ref, header, entries)
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	installTranscriptIdentity(t, srv, sessionID, path)
+	read, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: sessionID, IncludeTurns: true})
 	if err != nil {
-		t.Fatalf("entries form: %v", err)
+		t.Fatal(err)
 	}
-	found := false
-	for _, turn := range snapshotTurns(t, fromEntries) {
+	for _, turn := range read.Thread.Turns {
 		if turn.ID == appwire.SystemPreludeTurnID {
-			found = true
+			return
 		}
 	}
-	if !found {
-		t.Fatalf("entries form dropped the prelude turn")
-	}
-}
-
-func snapshotTurns(t *testing.T, prepared PreparedAppIdentity) []appwire.Turn {
-	t.Helper()
-	if prepared.turns == nil {
-		t.Fatal("prepared identity carries no turn snapshot")
-	}
-	prepared.turns.mu.Lock()
-	defer prepared.turns.mu.Unlock()
-	return append([]appwire.Turn(nil), prepared.turns.turns...)
-}
-
-// TestPrepareAppIdentityFromEntriesRejectsForeignHeader keeps the file form's
-// session-identity error contract for the entries path.
-func TestPrepareAppIdentityFromEntriesRejectsForeignHeader(t *testing.T) {
-	const sessionID = "th_mismatch"
-	path := writeDifferentialFixture(t, sessionID)
-	header, entries := restoreFixtureEntries(t, path, sessionID)
-	header.SessionID = "th_other"
-	if _, err := PrepareAppIdentityFromEntries("local", sessionID, appwire.Ref{SourceID: "local", ThreadID: sessionID}.String(), header, entries); err == nil {
-		t.Fatal("entries form accepted a header naming a different session")
-	}
+	t.Fatalf("the read has no prelude turn: %+v", read.Thread.Turns)
 }

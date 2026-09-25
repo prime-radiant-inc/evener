@@ -3,16 +3,15 @@ package hub
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // replayFuzzSeeds are real assistant/user/tool turns covering each content kind,
@@ -78,13 +77,10 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 }
 
 // FuzzHubReplayLiveVsReload is the full live-vs-reload metamorphic: it compares
-// what the user saw LIVE (the appprojector stream) against what the hub renders
-// on RELOAD (saved bytes → decodeTranscriptTurn → ProjectTurn), for one
-// turn. The live side synthesizes the SessionEvent stream the turn would have
-// produced, feeds it through a fresh AppEventProjector, and folds the emitted
-// notifications back into final ThreadItems (the streaming projector emits
-// item/started + deltas + item/completed; reasoning completion supplies status
-// while its text is assembled from deltas — exactly as a client must).
+// what the user sees LIVE -- the daemon's history, projected from the recorded
+// entry by the transcript index and published as history/updated -- against
+// what the hub renders on RELOAD (saved bytes → decodeTranscriptTurn →
+// ProjectTurn), for one turn.
 //
 // normalizeMetamorphic strips ONLY the documented, legitimate live/reload
 // differences before comparing; every strip is cited. Anything outside the
@@ -110,19 +106,39 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 		return
 	}
 	canon, canonBytes := canonicalEntry(t, e)
-
-	liveEvents, supported := synthesizeLiveEvents(canon.Turn)
-	if !supported {
-		return // turn kind has no clean item-producing live path (see synthesizer)
+	if !replayedKind(canon.Turn.Kind) {
+		return // turn kind has no per-turn item rendering to compare
 	}
 
-	// Live side: drive a fresh projector and fold its notifications.
-	proj := appprojector.NewAppEventProjector("thread", "local:thread")
-	var notes []appprojector.AppNotification
-	for _, ev := range liveEvents {
-		notes = append(notes, proj.Project(ev)...)
+	// Live side: the daemon's history of a transcript holding this entry.
+	path := filepath.Join(t.TempDir(), "thread.transcript.jsonl")
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: "thread"})
+	if err != nil {
+		t.Fatalf("new transcript: %v", err)
 	}
-	live := normalizeMetamorphic(foldLiveItems(notes))
+	if err := writer.Append(canon.Turn); err != nil {
+		_ = writer.Close()
+		return // an entry no writer records has no live rendering
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+	idx, err := transcriptindex.Open(path, t.TempDir())
+	if err != nil {
+		t.Fatalf("index the transcript: %v", err)
+	}
+	defer idx.Close() //nolint:errcheck // a read-only projection
+	window, err := idx.Latest(appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatalf("latest window: %v", err)
+	}
+	var liveItems []appwire.ThreadItem
+	for _, candidate := range window.Candidates {
+		if candidate.TurnID != appwire.SystemPreludeTurnID {
+			liveItems = append(liveItems, candidate.Item)
+		}
+	}
+	live := normalizeMetamorphic(liveItems)
 
 	// Reload side: the hub's own path off the saved bytes.
 	reconstructed, ok := decodeTranscriptTurn(canonBytes)
@@ -136,176 +152,15 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	}
 }
 
-// synthesizeLiveEvents builds the SessionEvent stream the live path would have
-// emitted for turn, covering the content kinds that have a faithful live event
-// representation. It returns supported=false for turn kinds whose live rendering
-// is not a per-turn item stream (steering is a distinct notification, not an
-// item; system turns produce nothing), so the metamorphic skips them. Content
-// kinds with NO live event (web_search, redacted_thinking, and audio/document
-// user attachments) are intentionally not synthesized here and are dropped from
-// the reload side by normalizeMetamorphic's allow-list.
-func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
-	var out []events.SessionEvent
-	add := func(d events.EventData) { out = append(out, events.New(d)) }
-
-	switch turn.Kind {
-	case schema.TurnUserInput:
-		var imgs []events.UserInputImage
-		for _, p := range turn.Message.Content {
-			// Mirror ImagesFromContent: only inline-byte images render; a
-			// URL-only image has no bytes and is skipped on both sides.
-			if p.Kind == llm.ContentImage && p.Image != nil && len(p.Image.Data) > 0 {
-				imgs = append(imgs, events.UserInputImage{MediaType: p.Image.MediaType, Data: p.Image.Data})
-			}
-		}
-		add(events.UserInputData{Text: turn.Message.Text(), Images: imgs})
-		return out, true
-
-	case schema.TurnAssistant:
-		for _, p := range turn.Message.Content {
-			switch p.Kind {
-			case llm.ContentText:
-				// Emitted even when the text is empty, because that is what the
-				// live path really does: a round answering with tool calls alone
-				// still runs the text lifecycle, since ASSISTANT_TEXT_END carries
-				// the round's usage. Reload renders nothing for such a part, so
-				// this is exactly where an empty live agent message would diverge.
-				add(events.AssistantTextStartData{})
-				add(events.AssistantTextEndData{Text: p.Text})
-			case llm.ContentThinking:
-				if p.Thinking != nil && p.Thinking.Text != "" {
-					add(events.ReasoningSummaryDeltaData{Delta: p.Thinking.Text})
-				}
-			case llm.ContentToolCall:
-				if p.ToolCall == nil {
-					continue
-				}
-				// communicate surfaces live as EventCommunicate, not a tool item
-				// (the live ToolCallStart for communicate is suppressed). Reload
-				// maps the communicate tool_call to the same agentMessage.
-				if p.ToolCall.Name == "communicate" {
-					if msg := apptranscript.CommunicateMessageFromArguments(p.ToolCall.Arguments); msg != "" {
-						add(events.CommunicateData{Message: msg})
-					}
-					continue
-				}
-				add(events.ToolCallStartData{
-					ToolName:      p.ToolCall.Name,
-					CallID:        p.ToolCall.ID,
-					ArgumentsJSON: string(p.ToolCall.Arguments),
-					Description:   apptranscript.ToolIntentFromArguments(p.ToolCall.Arguments),
-				})
-			}
-		}
-		return out, true
-
-	case schema.TurnTool, schema.TurnToolResults:
-		// This entry IS a round: the daemon writes one of these once every call
-		// in the round has ended, and announces right afterwards which of those
-		// calls a reader can now fetch images for (kata v3dv). Both halves are
-		// synthesized here, in the same order, or the live side never catches up
-		// to the reload side it is being compared against.
-		var readableImageCallIDs []string
-		for _, p := range turn.Message.Content {
-			if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
-				continue
-			}
-			// communicate results are suppressed live (its start was suppressed)
-			// and skipped on reload; omit to match both.
-			if p.ToolResult.Name == "communicate" {
-				continue
-			}
-			end := events.ToolCallEndData{
-				ToolName:  p.ToolResult.Name,
-				CallID:    p.ToolResult.ToolCallID,
-				ToolState: p.ToolResult.ToolState,
-			}
-			// Mirror agent/session_tools.go: a result carrying image bytes
-			// describes them on the event, by the same rule the reload side
-			// projects them (kata 2fxm). Synthesizing this by hand instead
-			// would let the two descriptions drift apart unnoticed.
-			if img, ok := events.ToolResultOutputImage(p.ToolResult.Name, p.ToolResult.ImageData, p.ToolResult.ImageMediaType); ok {
-				end.OutputImages = []events.OutputImage{img}
-				readableImageCallIDs = append(readableImageCallIDs, p.ToolResult.ToolCallID)
-			}
-			content := apptranscript.StringifyToolContent(p.ToolResult.Content)
-			if p.ToolResult.IsError {
-				end.Error = content
-			} else {
-				end.Output = content
-			}
-			add(end)
-		}
-		if len(readableImageCallIDs) > 0 {
-			add(events.ToolResultImagesPersistedData{CallIDs: readableImageCallIDs})
-		}
-		return out, true
-
-	case schema.TurnCheckpoint, schema.TurnSummary:
-		add(events.CompactionTurnData{Kind: string(turn.Kind), Text: turn.Message.Text()})
-		return out, true
-
+// replayedKind reports the turn kinds whose rendering is a per-turn item list
+// on both sides (steering and system turns are not).
+func replayedKind(kind schema.TurnKind) bool {
+	switch kind {
+	case schema.TurnUserInput, schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnCheckpoint, schema.TurnSummary:
+		return true
 	default:
-		return nil, false
+		return false
 	}
-}
-
-// foldLiveItems reduces the projector's notification stream into the final
-// ordered ThreadItems a client would render: item/started seeds an item,
-// item/completed settles it, and reasoning/agentMessage deltas accumulate into
-// the item's text. Reasoning completion carries only terminal status, so its
-// accumulated text survives that frame. turn/completed carrying embedded
-// items (the no-active-turn systemAnnouncement path) contributes those items.
-func foldLiveItems(notes []appprojector.AppNotification) []appwire.ThreadItem {
-	items := map[string]*appwire.ThreadItem{}
-	var order []string
-	get := func(id string) *appwire.ThreadItem {
-		it := items[id]
-		if it == nil {
-			it = &appwire.ThreadItem{}
-			items[id] = it
-			order = append(order, id)
-		}
-		return it
-	}
-	put := func(it appwire.ThreadItem) { *get(it.ID) = it }
-
-	for _, n := range notes {
-		switch n.Method {
-		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
-			// appwire_projection.go's own item/started|completed sites now send
-			// appwire.ItemLifecycleParams (kcb5), not map[string]any.
-			if p, ok := n.Params.(appwire.ItemLifecycleParams); ok {
-				item := p.Item
-				if n.Method == appwire.NotifyItemCompleted && item.Type == "reasoning" && item.Text == "" {
-					item.Text = get(item.ID).Text
-				}
-				put(item)
-			}
-		case appwire.NotifyReasoningSummaryDelta:
-			if p, ok := n.Params.(appwire.ReasoningSummaryDeltaParams); ok {
-				get(p.ItemID).Text += p.Delta
-			}
-		case appwire.NotifyAgentMessageDelta:
-			if p, ok := n.Params.(appwire.AgentMessageDeltaParams); ok {
-				get(p.ItemID).Text += p.Delta
-			}
-		case appwire.NotifyTurnCompleted:
-			if m, ok := n.Params.(map[string]any); ok {
-				if turn, ok := m["turn"].(appwire.Turn); ok {
-					for _, it := range turn.Items {
-						put(it)
-					}
-				}
-			}
-		}
-	}
-
-	out := make([]appwire.ThreadItem, 0, len(order))
-	for _, id := range order {
-		out = append(out, *items[id])
-	}
-	return out
 }
 
 // normalizeMetamorphic strips the legitimate live/reload differences before
@@ -328,10 +183,12 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 			continue
 		}
 
-		// Synthetic / stream-derived identity and per-turn status: item IDs are
-		// index-derived on reload and counter-derived live; CallID is
-		// stream-derived; Status legitimately differs (live in-progress vs reload
-		// completed for the same item). None of these are rendered content.
+		// Identity and per-turn status: the daemon's history keys, positions
+		// and versions each item by its entry (the reload side's ProjectTurn
+		// assigns none), and item IDs, turn IDs, call IDs, status and timing
+		// derive from the transcript's grouping, which a one-entry transcript
+		// does not share with the reload side's single synthetic turn. None of
+		// these are rendered content.
 		it.ID = ""
 		it.TurnID = ""
 		it.CallID = ""
@@ -339,6 +196,9 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 		it.StartedAt = nil
 		it.CompletedAt = nil
 		it.TranscriptEntryIndex = 0
+		it.TranscriptKey = ""
+		it.Position = nil
+		it.Version = 0
 
 		it.Images = normalizeMetamorphicImages(it.Images)
 		out = append(out, it)

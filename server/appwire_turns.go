@@ -864,44 +864,6 @@ func appThreadItemIdentityMatches(existing, incoming appwire.ThreadItem) bool {
 	return existing.ID == incoming.ID
 }
 
-// applyLifecycleAndReturn reduces a lifecycle notification before it is
-// recorded, then returns the reduced item with the position and transcript key
-// allocated by the snapshot. This keeps the notification payload and the live
-// snapshot on the same identity, including when an incoming stable key names an
-// existing item whose display ID changed across resume.
-func (s *appTurnSnapshot) applyLifecycleAndReturn(method string, params any) (any, bool) {
-	if method != appwire.NotifyItemStarted && method != appwire.NotifyItemCompleted {
-		return params, false
-	}
-	lifecycle, ok := params.(appwire.ItemLifecycleParams)
-	if !ok {
-		return params, false
-	}
-	payload, err := json.Marshal(lifecycle)
-	if err != nil {
-		return params, false
-	}
-	s.Apply([]appserver.SequencedNotification{{Notification: appwire.Notification{Method: method, Params: payload}}})
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	authoritativeTurnID := strings.TrimSpace(lifecycle.Item.TurnID)
-	if authoritativeTurnID == "" {
-		authoritativeTurnID = strings.TrimSpace(lifecycle.TurnID)
-	}
-	for _, turn := range s.turns {
-		if authoritativeTurnID == "" || turn.ID != authoritativeTurnID {
-			continue
-		}
-		for _, item := range turn.Items {
-			if appThreadItemIdentityMatches(item, lifecycle.Item) {
-				lifecycle.Item = cloneAppThreadItem(item)
-				return lifecycle, true
-			}
-		}
-	}
-	return params, true
-}
-
 func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadItem {
 	if incoming.TranscriptKey == "" {
 		incoming.TranscriptKey = existing.TranscriptKey

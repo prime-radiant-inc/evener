@@ -17,6 +17,8 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
@@ -206,35 +208,19 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 	}
 }
 
-// SetProcessingTurn records the claim of a durable turn. It is the daemon's one
-// call that publishes a client-mutation turn's stable identity, so it is the
-// signal the processing gate below waits on.
+// SetProcessingTurn holds the daemon inside the claimed turn. It is the call
+// that publishes a running execution's stable identity -- the session makes it
+// once the claim committed, before the execution records anything -- so it is
+// the moment the processing gate waits on. Active state alone is not: the
+// serve loop publishes the live session's wire state at the tail of every
+// input pass, and that state reads active for a durable start the loop has
+// accepted but not yet claimed, whose stable identity nothing has published.
 func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
 	s.Server.SetProcessingTurn(turnID)
 	s.mu.Lock()
 	s.claimedTurnID = turnID
+	s.processing = true
 	s.mu.Unlock()
-}
-
-// SetState holds the daemon inside the claimed turn. Active state alone is not
-// that moment: the serve loop publishes the live session's wire state at the
-// tail of every input pass, and that state reads active for a durable start the
-// loop has accepted but not yet claimed, whose stable identity nothing has
-// published. Only a claim opens this gate.
-func (s *sessionControlIdentityServer) SetState(state string) {
-	s.Server.SetState(state)
-	if state != string(agent.SessionProcessing) {
-		return
-	}
-	s.mu.Lock()
-	claimed := s.claimedTurnID != ""
-	if claimed {
-		s.processing = true
-	}
-	s.mu.Unlock()
-	if !claimed {
-		return
-	}
 	s.processingStartOnce.Do(func() { close(s.processingStarted) })
 	<-s.releaseProcessing
 }
@@ -424,15 +410,6 @@ func readSessionControlThread(t *testing.T, lifecycle *sessionControlLifecycle, 
 func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) {
 	t.Run("steer and incorporate", func(t *testing.T) {
 		lifecycle := startSessionControlLifecycle(t, &closedStreamAdapter{})
-		lifecycle.server.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
-			Data:      events.UserInputData{Text: "stale projected turn"},
-		})
-		staleProjectedTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
-		if staleProjectedTurnID == "" {
-			t.Fatal("failed to prime a stale projected active turn")
-		}
 		start := startHeldClientMutationTurn(t, lifecycle, "stable-start", "pending user input")
 		thread := readSessionControlThread(t, lifecycle, false)
 		activeTurnID := thread.Evener.ActiveTurnID
@@ -904,13 +881,20 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
 		oldSess := state.session(0)
 		obs.oldSessionID = oldSess.ID()
-		// Put a turn on the OLD thread so a snapshot that survives replacement
-		// shows up as content rather than as an identifier mismatch.
-		state.srv.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: oldSess.ID(),
-			Data:      events.UserInputData{Text: oldClearInputMarker},
-		})
+		// Put a turn on the OLD thread's transcript so history that survives
+		// replacement shows up as content rather than as an identifier
+		// mismatch. A second writer on the file shares the session writer's
+		// append tail and recorded-entry hook.
+		writer, _, err := transcript.OpenWriterForSession(oldSess.TranscriptPath(), oldSess.ID())
+		if err != nil {
+			t.Fatalf("open the old transcript: %v", err)
+		}
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(oldClearInputMarker))); err != nil {
+			t.Fatalf("record the old thread's turn: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close the old transcript writer: %v", err)
+		}
 
 		before := len(state.recorded())
 		obs.clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{

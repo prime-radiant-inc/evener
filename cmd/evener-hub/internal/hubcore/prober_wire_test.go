@@ -166,19 +166,19 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	// descendants whose delegate jobs are owned by an intermediate child and are
 	// therefore absent from the root session's Detailed.Jobs.
 	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
-		Kind:      events.EventUserInput,
+		Kind:      events.EventExecutionStarted,
 		SessionID: "child-1",
-		Data:      events.UserInputData{Text: "legacy job duplicate"},
+		Data:      events.ExecutionStartedData{TurnID: "t_probe"},
 	})
 	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
-		Kind:      events.EventUserInput,
+		Kind:      events.EventExecutionStarted,
 		SessionID: "child-2",
-		Data:      events.UserInputData{Text: "direct child"},
+		Data:      events.ExecutionStartedData{TurnID: "t_probe"},
 	})
 	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
-		Kind:      events.EventUserInput,
+		Kind:      events.EventExecutionStarted,
 		SessionID: "grandchild-1",
-		Data:      events.UserInputData{Text: "nested child"},
+		Data:      events.ExecutionStartedData{TurnID: "t_probe"},
 	})
 	// A settled descendant ends its turn idle; its liveness (it stays in
 	// descendant_session_ids, resumable) must not read as activity.

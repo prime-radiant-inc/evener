@@ -21,17 +21,21 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
-// The transcript read model's phase 1 parity harness
+// The transcript read model's parity harness
 // (docs/superpowers/specs/2026-09-25-transcript-read-model-design.md,
 // "Migration"). It drives one scripted session through the real session and
-// server code, as `evener serve` wires them, and compares the server's live
-// view of the thread with the projection of its transcript file. Today they
-// disagree; each known disagreement is a row below, tagged with the phase
-// that removes it. The test fails on a disagreement no row lists, and on a row
-// that no longer happens.
+// server code, as `evener serve` wires them, and compares what a live client
+// holds -- the first read merged with every history/updated by version --
+// with a fresh index of the transcript file walked through every page. Both
+// project the same recorded entries, so they agree; a disagreement is a bug.
+// The tables below list the ones a scenario is known to produce, with the
+// spec rule that allows each. The test fails on a disagreement no row lists,
+// and on a row that no longer happens.
 
 // parityChildTask marks the delegate's prompt, so the scripted provider can
 // tell the child's requests from the root's.
@@ -150,6 +154,10 @@ type paritySession struct {
 	sess    *agent.Session
 	srv     *Server
 	drained chan struct{}
+	// initial is the first read of the thread, which history/updated
+	// extends.
+	initial   appwire.ThreadReadResponse
+	published *historyPublications
 
 	mu   sync.Mutex
 	cond *sync.Cond
@@ -157,11 +165,17 @@ type paritySession struct {
 	next int
 }
 
-func bridgeParitySession(t *testing.T, sess *agent.Session, prepared PreparedAppIdentity, stateDir string) *paritySession {
+// parityReplaySize retains every notification a parity scenario commits.
+const parityReplaySize = 1 << 20
+
+func bridgeParitySession(t *testing.T, sess *agent.Session, stateDir string) *paritySession {
 	t.Helper()
-	ps := &paritySession{sess: sess, srv: NewServer(ServerConfig{StateDir: stateDir}), drained: make(chan struct{})}
+	ps := &paritySession{sess: sess, srv: NewServer(ServerConfig{StateDir: stateDir, AppReplaySize: parityReplaySize}), drained: make(chan struct{})}
+	t.Cleanup(ps.srv.Close)
 	ps.cond = sync.NewCond(&ps.mu)
-	ps.srv.ReplaceAppIdentity(prepared, nil)
+	ps.published = watchHistoryPublications(t)
+	wireTranscriptHistory(t, sess, ps.srv)
+	ps.initial = readWholeThread(t, ps.srv, sess.ID())
 	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		BridgeEvent(ps.srv, ev, nil)
 		// Recorded after the projection commit: an event awaited below has
@@ -215,13 +229,76 @@ func (ps *paritySession) sawKind(kind events.EventKind) bool {
 	return false
 }
 
+// liveTurns is what a client holds once the history has published every
+// recorded entry: the first read merged with each history/updated.
 func (ps *paritySession) liveTurns(t *testing.T) []appwire.Turn {
 	t.Helper()
-	snapshot := ps.srv.appTurnSnapshotForID(ps.sess.ID())
-	if snapshot == nil {
-		t.Fatal("the server holds no turn snapshot for the session")
+	history := ps.srv.appHistoryForID(ps.sess.ID())
+	if history == nil {
+		t.Fatal("the server holds no history for the session")
 	}
-	return snapshot.Snapshot()
+	ps.published.await(t, history, ps.sess.TranscriptRecordedLength())
+	client := newHistoryClient(ps.initial)
+	for _, n := range ps.srv.appNotifier.ReplayAfter(0, "") {
+		if n.Notification.Method != appwire.NotifyHistoryUpdated {
+			continue
+		}
+		if update := notificationParams[appwire.HistoryUpdatedParams](t, n); update.ThreadID == ps.sess.ID() {
+			client.apply(t, update)
+		}
+	}
+	return client.turnsInOrder()
+}
+
+// readWholeThread is a read of threadID's latest window with every older
+// page a client would fetch through thread/turns/list prepended.
+func readWholeThread(t *testing.T, srv *Server, threadID string) appwire.ThreadReadResponse {
+	t.Helper()
+	read, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: threadID, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for cursor := read.OlderCursor; cursor != ""; {
+		page, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{ThreadID: threadID, Cursor: cursor, ItemLimit: appwire.TranscriptItemPageLimit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		read.Thread.Turns = append(page.Data, read.Thread.Turns...)
+		cursor = page.NextCursor
+	}
+	read.OlderCursor = ""
+	return read
+}
+
+// fileHistoryTurns is the transcript at path as a fresh index projects it,
+// walked from the latest page through every older one.
+func fileHistoryTurns(t *testing.T, path string) []appwire.Turn {
+	t.Helper()
+	idx, err := transcriptindex.Open(path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close() //nolint:errcheck // a read-only walk
+	if err := idx.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	window, err := idx.Latest(appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := window.Candidates
+	for window.HasOlder {
+		if window, err = idx.Before(window.Candidates[0].Position, appwire.TranscriptItemPageLimit); err != nil {
+			t.Fatal(err)
+		}
+		candidates = append(append([]appitempaging.TranscriptItemCandidate(nil), window.Candidates...), candidates...)
+	}
+	client := &historyClient{items: map[string]appwire.ThreadItem{}, turns: map[string]appwire.Turn{}}
+	for _, candidate := range candidates {
+		client.mergeItem(candidate.Item)
+		client.turns[candidate.TurnID] = candidate.Turn
+	}
+	return client.turnsInOrder()
 }
 
 func (ps *paritySession) close(t *testing.T) {
@@ -293,11 +370,7 @@ func transcriptTurns(t *testing.T, path string) []schema.Turn {
 
 func assertParity(t *testing.T, label string, ps *paritySession, table []knownDivergence) {
 	t.Helper()
-	file, _, err := appTurnsFromTranscriptFile(ps.sess.TranscriptPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	observed := diffParity(ps.liveTurns(t), file)
+	observed := diffParity(ps.liveTurns(t), fileHistoryTurns(t, ps.sess.TranscriptPath()))
 	t.Run(label, func(t *testing.T) { checkParity(t, observed, table) })
 }
 
@@ -335,11 +408,7 @@ func TestTranscriptParity(t *testing.T) {
 		default:
 		}
 	})
-	prepared, err := PrepareAppIdentity("local", sess.ID(), sess.TranscriptPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ps := bridgeParitySession(t, sess, prepared, stateDir)
+	ps := bridgeParitySession(t, sess, stateDir)
 	ctx := context.Background()
 	endOfInput := func() { ps.await(t, events.EventSessionEnd, nil) }
 	processInput := func(text string) {
@@ -488,25 +557,16 @@ func TestTranscriptParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var header transcript.Header
-	var entries []transcript.Entry
 	resumed, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(workDir), meta, agent.RestoreSessionConfig{
 		StateDir:       stateDir,
 		LLMRetryPolicy: retry,
 		LLMSleep:       noSleep,
-		OnRestoredTranscript: func(h transcript.Header, e []transcript.Entry, _ bool) {
-			header, entries = h, e
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resumed.SetClientMutationStartWakeFunc(func() {})
-	prepared, err = PrepareAppIdentityFromEntriesForPath("local", resumed.ID(), "local:"+resumed.ID(), resumed.TranscriptPath(), header, entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restarted := bridgeParitySession(t, resumed, prepared, stateDir)
+	restarted := bridgeParitySession(t, resumed, stateDir)
 	t.Cleanup(func() { restarted.close(t) })
 	script.script(step(parityCommunicate("comm-11", "Back after the restart.", true)))
 	if _, err := resumed.ProcessInput(ctx, "after the restart", nil); err != nil {
@@ -578,31 +638,6 @@ func assertParityScenarioCoverage(t *testing.T, turns []schema.Turn) {
 	}
 }
 
-// Reasons the rows below cite. Every row today is removed in phase 3, when
-// one projector turns recorded entries into both the live history and the
-// file projection; phase 2 only writes the fields phase 3 projects from.
-const (
-	whyIdentity = "live ids, positions, keys and turn ids come from the live projector's counters and the snapshot's allocation; the file's from entry indexes and grouping. Phase 3 projects live history from recorded entries with persisted TurnIDs and entry-ordinal keys."
-	whyGrouping = "live keeps Stop-hook and compaction notices, and the notification answer, in the running turn; the file makes each standalone entry its own turn and hangs attention steering on its owner. Phase 3 groups by persisted TurnID."
-	whyTurnID   = "live turn ids and file turn ids are minted differently for daemon turns. Phase 3 persists TurnID on every entry."
-	whyTiming   = "live stamps timings from events, the file from entries, and not for the same items. Phase 2 persists turn and tool timing; phase 3 projects it."
-	whyNotices  = "ephemeral live notices (prompt and plugin loads, round timings, compaction) have no entry. Phase 3 moves them to the overlay, out of history."
-	whyGoalEnd  = "goal_ended is a live-only notice today. Phase 2 records it as a presentational entry; phase 3 projects it."
-	whyFileOnly = "the file projects entries live never announces: TURN_FAILURE, delegate attention delivered as STEERING, and reasoning from a non-streamed response (live builds reasoning only from summary deltas). Phase 3 announces history from recorded entries."
-)
-
-// parityRows expands one reason over several fields of a subject.
-func parityRows(why, class, subject string, fields ...string) []knownDivergence {
-	if len(fields) == 0 {
-		fields = []string{""}
-	}
-	rows := make([]knownDivergence, 0, len(fields))
-	for _, field := range fields {
-		rows = append(rows, knownDivergence{Class: class, Subject: subject, Field: field, Phase: 3, Why: why})
-	}
-	return rows
-}
-
 func parityTable(groups ...[]knownDivergence) []knownDivergence {
 	var table []knownDivergence
 	for _, group := range groups {
@@ -611,43 +646,10 @@ func parityTable(groups ...[]knownDivergence) []knownDivergence {
 	return table
 }
 
-// parityBeforeRestart lists today's divergences between the live view and the
-// transcript projection of one session, each with the phase that removes it.
-var parityBeforeRestart = parityTable(
-	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "commandExecution", "id", "position", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "steering", "id", "position", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "systemMessage", "id", "position", "transcriptEntryIndex", "transcriptKey"),
-	parityRows(whyIdentity, "item-field", "systemMessage/compaction", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "systemMessage/environment", "id", "position", "transcriptEntryIndex", "transcriptKey"),
-	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "systemMessage/model_switch", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptKey", "turnId"),
-	parityRows(whyTiming, "item-field", "commandExecution", "durationMs"),
-	parityRows(whyTiming, "item-field", "steering", "startedAt"),
-	parityRows(whyTiming, "turn-field", "systemMessage/model_switch", "startedAt"),
-	parityRows(whyTurnID, "turn-field", "systemMessage/model_switch", "id"),
-	parityRows(whyTurnID, "turn-field", "userMessage", "id"),
-	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),
-	parityRows(whyFileOnly, "file-only-item", "reasoning"),
-	parityRows(whyFileOnly, "file-only-item", "steering"),
-	parityRows(whyFileOnly, "file-only-item", "systemMessage/error"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/context_compaction"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/plugin_loaded"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/prompt_loaded"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/round_timings"),
-	parityRows(whyGoalEnd, "live-only-item", "systemMessage/goal_ended"),
-)
+// parityBeforeRestart lists the divergences between a live client and the
+// transcript for one session. Live history is projected from the recorded
+// entries by the same index a fresh read uses, so there are none.
+var parityBeforeRestart = parityTable()
 
-// parityAfterRestart lists them for a daemon restarted over the transcript:
-// the restarted server seeds its snapshot from the file, so only the new
-// turn's live identity and the restart's own notices diverge.
-var parityAfterRestart = parityTable(
-	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
-	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptKey", "turnId"),
-	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/plugin_loaded"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/prompt_loaded"),
-	parityRows(whyNotices, "live-only-item", "systemMessage/round_timings"),
-)
+// parityAfterRestart lists them for a daemon restarted over the transcript.
+var parityAfterRestart = parityTable()

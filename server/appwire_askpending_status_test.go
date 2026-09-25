@@ -78,11 +78,7 @@ func TestRecordedStatusFrameCarriesAskPending(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "go"},
-	})
+	startExecution(srv, "th_1", "t_go")
 
 	statuses := statusNotifications(t, srv, "th_1")
 	if len(statuses) == 0 {

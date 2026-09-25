@@ -16,12 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
@@ -426,14 +428,11 @@ func TestHubRPCRealLocalBoundedItemReadContinuesNativeCursor(t *testing.T) {
 	const sessionID = "bounded-native-cursor"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	var inputs []string
 	for i := range 45 {
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: sessionID,
-			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d", i)},
-		})
+		inputs = append(inputs, fmt.Sprintf("item-%02d", i))
 	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), inputs)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 
@@ -488,20 +487,18 @@ func TestHubRPCRealLocalFreshReadRecoversHiddenNativeReset(t *testing.T) {
 	const sessionID = "hidden-native-reset"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	transcriptPath := filepath.Join(t.TempDir(), sessionID+".transcript.jsonl")
 	recordGeneration := func(prefix string) {
+		var texts []string
 		for i := range 45 {
 			text := fmt.Sprintf("shared-suffix-%02d", i)
 			if i < 5 {
 				text = fmt.Sprintf("%s-%02d", prefix, i)
 			}
-			daemon.RecordAppEvent(events.SessionEvent{
-				Kind:      events.EventUserInput,
-				SessionID: sessionID,
-				Data:      events.UserInputData{Text: text},
-			})
+			texts = append(texts, text)
 		}
+		serveDaemonTranscript(t, daemon, sessionID, transcriptPath, texts)
 	}
-	daemon.SetAppIdentity("local", sessionID)
 	recordGeneration("generation-one")
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
@@ -536,7 +533,6 @@ func TestHubRPCRealLocalFreshReadRecoversHiddenNativeReset(t *testing.T) {
 
 	// Resetting the real daemon rotates its native cursor identity, while the
 	// newest 40 visible items remain byte-identical to the first generation.
-	daemon.SetAppIdentity("local", sessionID)
 	recordGeneration("generation-two")
 	fresh := read(true)
 
@@ -580,14 +576,11 @@ func TestHubRPCRealLocalBoundedItemReadRebasesByteFitBoundary(t *testing.T) {
 	const sessionID = "bounded-byte-fit-cursor"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	var texts []string
 	for i := range 45 {
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: sessionID,
-			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", 30000))},
-		})
+		texts = append(texts, fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", 30000)))
 	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), texts)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -646,14 +639,11 @@ func TestHubRPCRealLocalExhaustedNativePageSplitsByteFit(t *testing.T) {
 	const itemBytes = 30000
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	var texts []string
 	for i := range itemCount {
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: sessionID,
-			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", itemBytes))},
-		})
+		texts = append(texts, fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", itemBytes)))
 	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), texts)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -1271,4 +1261,31 @@ func hasCrossBoundaryEntry(candidates []appitempaging.TranscriptItemCandidate, i
 		return false
 	}
 	return containsItem(flattenTestItems(initial), right.Item.ID) && containsItem(all, left.Item.ID)
+}
+
+// serveDaemonTranscript makes daemon serve sessionID from a transcript at path
+// holding texts as user inputs, replacing whatever the file held: a rewritten
+// transcript is a new history incarnation.
+func serveDaemonTranscript(t *testing.T, daemon *daemonserver.Server, sessionID, path string, texts []string) {
+	t.Helper()
+	_ = os.Remove(path)
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	for _, text := range texts {
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := daemonserver.PrepareAppIdentity("local", sessionID, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(prepared, nil)
+	t.Cleanup(daemon.Close)
 }

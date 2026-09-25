@@ -1371,12 +1371,10 @@ const SystemPreludeTurnID = "turn_system"
 // entry-index numbering owns. A session accumulates transcript entries
 // several times faster than it accumulates client mutations, so a reservation
 // numbered off the mutation counter always names a LOW number — one that an
-// unrelated early entry already owns once a restart reseeds the served
-// snapshot from the transcript. The reply then merges into that entry's turn,
-// taking the whole agent response with it (kata rk09).
+// unrelated early legacy entry already owns. The reply would then merge into
+// that entry's turn, taking the whole agent response with it (kata rk09).
 //
-// Raising the counter the way internal/appprojector fences its own live
-// counter (SeedPersistedTurns, kata eptj) cannot fix this: the entry index
+// Raising the counter above the entry count cannot fix this: the entry index
 // outgrows the mutation counter, so a fenced reservation falls behind and
 // collides again within a few turns. Only a disjoint namespace closes it.
 func ClientMutationTurnID(sequence uint64) string {

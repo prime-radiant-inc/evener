@@ -55,8 +55,9 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 //   - Taken on EVERY accepted event, not per facet: Server.mu (below, via
 //     acceptsSessionEvent and applySessionEventStatus) and appserver's
 //     projectionMu, deliveryMu and mu, plus Subscriptions.mu, Notifier.mu,
-//     Connection.sendMu and appTurnSnapshot.mu inside the commit. That is the
-//     bulk of the exposure, and it does not shrink by adding fewer facets.
+//     Connection.sendMu and the thread history's overlay mutex inside the
+//     commit. That is the bulk of the exposure, and it does not shrink by
+//     adding fewer facets.
 //   - Outside this package AND outside agent/: cmd/evener/serve.go's currentMu,
 //     which every facet sample passes through because the envelope source
 //     resolves the live session per call. Anyone auditing from here alone will

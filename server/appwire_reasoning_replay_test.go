@@ -8,22 +8,20 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
 )
 
-func TestServerAppWireReadReplaysProjectedReasoningWithTerminalIdentity(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_reasoning")
-	client := dialServerAppWire(t, srv)
-	ctx := context.Background()
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_reasoning", Data: events.UserInputData{Text: "question", StableTurnID: "turn_stable_reasoning"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning", Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "first "}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning", Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "thought"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_reasoning", Data: events.AssistantTextEndData{Text: "answer"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_reasoning", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
-	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_reasoning", IncludeTurns: true})
+func TestServerAppWireReadReplaysRecordedReasoningWithTerminalIdentity(t *testing.T) {
+	answer := llm.Assistant("answer")
+	answer.Content = append([]llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "first thought"}}}, answer.Content...)
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_reasoning",
+		schema.NewTurn(schema.TurnUserInput, llm.User("question")),
+		schema.NewTurn(schema.TurnAssistant, answer),
+	)
+	client := dialServerAppWire(t, st.srv)
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_reasoning", IncludeTurns: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +29,8 @@ func TestServerAppWireReadReplaysProjectedReasoningWithTerminalIdentity(t *testi
 		t.Fatalf("turns=%+v", read.Thread.Turns)
 	}
 	turn := read.Thread.Turns[0]
-	if turn.ID != "turn_stable_reasoning" || turn.Status != appwire.TurnStatusCompleted {
-		t.Fatalf("turn=(id %q, status %q), want stable identity and completed", turn.ID, turn.Status)
+	if turn.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("turn status %q, want completed", turn.Status)
 	}
 	if len(turn.Items) != 3 {
 		t.Fatalf("items=%+v", turn.Items)
@@ -57,136 +55,36 @@ func TestServerAppWireReadReplaysProjectedReasoningWithTerminalIdentity(t *testi
 	}
 }
 
-func TestServerAppWireFailedDurableReplacementReleasesOwnedGenericReservation(t *testing.T) {
-	t.Run("unconsumed reservation gets a fresh next turn", func(t *testing.T) {
-		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "th_reservation_cleanup")
-
-		srv.SetProcessing(true)
-		genericID := srv.appProjector.ReservedTurnID()
-		if genericID == "" {
-			t.Fatal("generic processing did not reserve a projector turn")
-		}
-		srv.SetProcessingTurn("durable-turn")
-		srv.SetProcessing(false)
-		srv.SetProcessing(true)
-
-		if got := srv.appProjector.ReservedTurnID(); got == genericID || got == "" {
-			t.Fatalf("next generic reservation=%q, want a fresh ID after releasing %q", got, genericID)
-		}
-	})
-
-	t.Run("consumed reservation remains available to the old projection", func(t *testing.T) {
-		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "th_reservation_consumed")
-
-		srv.SetProcessing(true)
-		genericID := srv.appProjector.ReservedTurnID()
-		srv.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventAssistantTextStart,
-			SessionID: "th_reservation_consumed",
-		})
-		srv.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventAssistantTextEnd,
-			SessionID: "th_reservation_consumed",
-			Data: events.AssistantTextEndData{
-				Text: "old turn",
-			},
-		})
-		if got := srv.appProjector.ActiveTurnID(); got != genericID {
-			t.Fatalf("consumed generic projection=%q, want %q", got, genericID)
-		}
-		srv.SetProcessingTurn("durable-turn")
-		srv.SetProcessing(false)
-		srv.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventGoalContinuation,
-			SessionID: "th_reservation_consumed",
-			Data: events.GoalContinuationData{
-				Text:         "new turn",
-				StableTurnID: "durable-turn",
-			},
-		})
-
-		read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{
-			Ref:          "local:th_reservation_consumed",
-			IncludeTurns: true,
-		}).Thread
-		if len(read.Turns) != 2 || read.Turns[0].ID != genericID || read.Turns[1].ID != "durable-turn" {
-			t.Fatalf("turns=%+v, want consumed %q followed by durable-turn", read.Turns, genericID)
-		}
-	})
-}
-
-func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testing.T) {
+func TestServerAppWireExecutionStartedConsumesPendingIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_steering_carrier")
+	srv.SetAppIdentity("local", "th_execution_carrier")
 	srv.SetProcessingTurn("turn_steer")
 	cursor := srv.appNotifier.CurrentSequence()
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_steering_carrier", Data: events.TurnStartedData{TurnID: "turn_steer"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSteeringInjected, SessionID: "th_steering_carrier", Data: events.SteeringInjectedData{Text: "steering payload", Source: events.SteeringSourceUser}})
+	srv.RecordAppEvent(threadEvent("th_execution_carrier", events.ExecutionStartedData{TurnID: "turn_steer"}))
+	srv.RecordAppEvent(threadEvent("th_execution_carrier", events.ExecutionEndedData{TurnID: "turn_steer", Status: "completed"}))
 	// The lossless consumer can project completion before the input runner
 	// returns and clears processing. Clients still need the terminal frame.
-	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_steering_carrier", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_execution_carrier", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
 
-	notifications := srv.AppNotificationsAfter(cursor, "th_steering_carrier")
-	var sawCompleted, sawIdle bool
+	notifications := srv.AppNotificationsAfter(cursor, "th_execution_carrier")
+	var sawIdle bool
 	for _, notification := range notifications {
-		switch notification.Notification.Method {
-		case appwire.NotifyTurnCompleted:
-			sawCompleted = true
-		case appwire.NotifyThreadStatusChanged:
+		if notification.Notification.Method == appwire.NotifyThreadStatusChanged {
 			var params appwire.ThreadStatusChangedParams
 			if err := json.Unmarshal(notification.Notification.Params, &params); err == nil && params.Status.Type == appwire.ThreadStatusIdle {
 				sawIdle = true
 			}
 		}
 	}
-	if !sawCompleted || !sawIdle {
-		t.Fatalf("carrier terminal notifications=%+v, want completed turn and idle status", notifications)
+	if !sawIdle {
+		t.Fatalf("terminal notifications=%+v, want idle status", notifications)
 	}
 
-	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_steering_carrier", IncludeTurns: true})
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_execution_carrier"})
 	if read.Thread.Evener.ActiveTurnID != "" || read.Thread.Status.Type != appwire.ThreadStatusIdle {
-		t.Fatalf("carrier read state=(active %q, status %q), want empty/idle", read.Thread.Evener.ActiveTurnID, read.Thread.Status.Type)
+		t.Fatalf("read state=(active %q, status %q), want empty/idle", read.Thread.Evener.ActiveTurnID, read.Thread.Status.Type)
 	}
-	if len(read.Thread.Turns) != 1 || read.Thread.Turns[0].ID != "turn_steer" || read.Thread.Turns[0].Status != appwire.TurnStatusCompleted {
-		t.Fatalf("carrier turns=%+v, want completed turn_steer", read.Thread.Turns)
-	}
-}
-
-func TestServerAppWireLateCarrierReconcilesCleanupStatus(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_late_carrier")
-	wireRetrySafeCapabilities(srv)
-	srv.SetState("idle")
-	srv.SetProcessingTurn("turn_late")
-	srv.SetProcessing(false)
-	cursor := srv.appNotifier.CurrentSequence()
-
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_late_carrier", Data: events.TurnStartedData{TurnID: "turn_late"}})
-
-	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_late_carrier"}).Thread
-	if read.Status.Type != appwire.ThreadStatusActive || read.Evener.ActiveTurnID != "turn_late" {
-		t.Fatalf("late carrier read=(status %q, active %q), want active/turn_late", read.Status.Type, read.Evener.ActiveTurnID)
-	}
-	for _, notification := range srv.AppNotificationsAfter(cursor, "th_late_carrier") {
-		if notification.Notification.Method != appwire.NotifyThreadStatusChanged {
-			continue
-		}
-		var params appwire.ThreadStatusChangedParams
-		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
-			t.Fatalf("decode status: %v", err)
-		}
-		if params.Status.Type != appwire.ThreadStatusActive {
-			t.Fatalf("late carrier status notification=%q, want active", params.Status.Type)
-		}
-		if params.Capabilities == nil || params.Capabilities.Send || !params.Capabilities.Steer {
-			t.Fatalf("late carrier capabilities=%+v, want active controls", params.Capabilities)
-		}
-		return
-	}
-	t.Fatal("late carrier emitted no active status notification")
 }
 
 func TestServerAppWireCleanupBeforeSessionEndDoesNotLeaveLateCarrier(t *testing.T) {
@@ -216,28 +114,19 @@ func TestServerAppWireCleanupBeforeSessionEndDoesNotLeaveLateCarrier(t *testing.
 	t.Fatal("cleanup-before-end emitted no idle status notification")
 }
 
-func TestServerAppWireCarrierAfterQueuedOldSessionEndReconcilesNewStatus(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_late_old_carrier")
-	srv.SetState("idle")
-	srv.SetProcessingTurn("turn_new")
-	srv.SetProcessing(false)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_late_old_carrier", Data: events.SessionEndData{State: "idle"}})
-
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_late_old_carrier", Data: events.TurnStartedData{TurnID: "turn_new"}})
-	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_late_old_carrier", IncludeTurns: true}).Thread
-	if read.Status.Type != appwire.ThreadStatusActive || read.Evener.ActiveTurnID != "turn_new" {
-		t.Fatalf("after new carrier read=(status %q, active %q), want active/turn_new", read.Status.Type, read.Evener.ActiveTurnID)
-	}
-}
-
 func TestServerAppWireOldCarrierDoesNotConsumeNewPendingIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_old_carrier")
 	srv.SetProcessingTurn("turn_old")
 	srv.SetProcessingTurn("turn_new")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_old_carrier", Data: events.TurnStartedData{TurnID: "turn_old"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_old_carrier", Data: events.TurnStartedData{TurnID: "turn_new"}})
+	srv.RecordAppEvent(threadEvent("th_old_carrier", events.ExecutionStartedData{TurnID: "turn_old"}))
+	srv.mu.RLock()
+	pending := srv.appPendingStableTurnID
+	srv.mu.RUnlock()
+	if pending != "turn_new" {
+		t.Fatalf("the old execution's start consumed the pending identity; pending = %q", pending)
+	}
+	srv.RecordAppEvent(threadEvent("th_old_carrier", events.ExecutionStartedData{TurnID: "turn_new"}))
 
 	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_old_carrier"}).Thread
 	if read.Status.Type != appwire.ThreadStatusActive || read.Evener.ActiveTurnID != "turn_new" {
@@ -252,7 +141,6 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_carrier", Subscribe: true}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_abandoned_carrier", Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
 	srv.SetProcessingTurn("abandoned-turn")
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_abandoned_carrier", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
 	srv.SetProcessing(false)
@@ -287,12 +175,10 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T
 func TestServerAppWireCarrierDiscardsDeferredPriorTerminalStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_carrier_wins")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_carrier_wins", Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
 	srv.SetProcessingTurn("new-turn")
 	cursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_carrier_wins", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_carrier_wins", Data: events.TurnStartedData{TurnID: "new-turn"}})
-	srv.SetProcessing(false)
+	srv.RecordAppEvent(threadEvent("th_carrier_wins", events.ExecutionStartedData{TurnID: "new-turn"}))
 
 	for _, notification := range srv.AppNotificationsAfter(cursor, "th_carrier_wins") {
 		if notification.Notification.Method == appwire.NotifyThreadClosed {
@@ -308,6 +194,20 @@ func TestServerAppWireCarrierDiscardsDeferredPriorTerminalStatus(t *testing.T) {
 		if params.Status.Type == appwire.ThreadStatusIdle {
 			t.Fatalf("deferred prior terminal idled the new carrier: %+v", params)
 		}
+	}
+
+	// Processing ending is the new execution's own end: exactly one idle.
+	cursor = srv.appNotifier.CurrentSequence()
+	srv.SetProcessing(false)
+	idles := 0
+	for _, notification := range srv.AppNotificationsAfter(cursor, "th_carrier_wins") {
+		var params appwire.ThreadStatusChangedParams
+		if notification.Notification.Method == appwire.NotifyThreadStatusChanged && json.Unmarshal(notification.Notification.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusIdle {
+			idles++
+		}
+	}
+	if idles != 1 {
+		t.Fatalf("processing end published %d idle statuses, want 1", idles)
 	}
 }
 
@@ -359,7 +259,6 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID, Subscribe: true}); err != nil {
 				t.Fatalf("subscribe: %v", err)
 			}
-			srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: threadID, Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
 			srv.SetProcessingTurn("abandoned-turn")
 			BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: threadID, Data: events.SessionEndData{Reason: "abandoned", State: tc.state}}, nil)
 			srv.SetProcessing(false)
@@ -397,17 +296,20 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 	}
 }
 
-func TestServerAppWireConcurrentCarrierAndCleanupKeepTerminalOrdering(t *testing.T) {
+// TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal races the
+// published execution's EXECUTION_STARTED against the end of processing while
+// the input before it has a deferred terminal status: whichever wins, the
+// thread ends with exactly one terminal status and no active turn.
+func TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal(t *testing.T) {
 	for _, state := range []string{"idle", "closed"} {
 		t.Run(state, func(t *testing.T) {
 			for attempt := range 1000 {
 				const threadID = "concurrent-carrier"
 				srv := NewServer(ServerConfig{})
 				srv.SetAppIdentity("local", threadID)
-				srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: threadID, Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
 				srv.SetProcessingTurn("new-turn")
-				BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: threadID, Data: events.SessionEndData{State: state}}, nil)
 				cursor := srv.appNotifier.CurrentSequence()
+				BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: threadID, Data: events.SessionEndData{State: state}}, nil)
 				start := make(chan struct{})
 				var finished sync.WaitGroup
 				finished.Add(2)
@@ -419,50 +321,23 @@ func TestServerAppWireConcurrentCarrierAndCleanupKeepTerminalOrdering(t *testing
 				go func() {
 					defer finished.Done()
 					<-start
-					srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: threadID, Data: events.TurnStartedData{TurnID: "new-turn"}})
+					srv.RecordAppEvent(threadEvent(threadID, events.ExecutionStartedData{TurnID: "new-turn"}))
 				}()
 				close(start)
 				finished.Wait()
-				if state == "closed" {
-					read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:" + threadID}).Thread
-					if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {
-						t.Fatalf("attempt %d: closed race read=(%q, %q), want closed/empty", attempt, read.Status.Type, read.Evener.ActiveTurnID)
-					}
-					for _, record := range srv.AppNotificationsAfter(cursor, threadID) {
-						if record.Notification.Method == appwire.NotifyTurnStarted {
-							t.Fatalf("attempt %d: closed race projected new carrier: %+v", attempt, record)
-						}
-					}
-					continue
+				read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:" + threadID}).Thread
+				if read.Evener.ActiveTurnID != "" {
+					t.Fatalf("attempt %d: read active turn %q after processing ended", attempt, read.Evener.ActiveTurnID)
 				}
-				sawCarrier := false
+				terminals := 0
 				for _, record := range srv.AppNotificationsAfter(cursor, threadID) {
-					notification := record.Notification
-					if notification.Method == appwire.NotifyTurnStarted {
-						var params appwire.TurnStartedParams
-						if err := json.Unmarshal(notification.Params, &params); err != nil {
-							t.Fatalf("decode turn: %v", err)
-						}
-						sawCarrier = params.Turn.ID == "new-turn"
-					}
-					if !sawCarrier {
-						continue
-					}
-					if notification.Method == appwire.NotifyThreadClosed {
-						t.Fatalf("attempt %d: prior terminal closed the new carrier", attempt)
-					}
-					if notification.Method == appwire.NotifyThreadStatusChanged {
-						var params appwire.ThreadStatusChangedParams
-						if err := json.Unmarshal(notification.Params, &params); err != nil {
-							t.Fatalf("decode status: %v", err)
-						}
-						if params.Status.Type == appwire.ThreadStatusIdle || params.Status.Type == appwire.ThreadStatusClosed {
-							t.Fatalf("attempt %d: prior terminal status %q followed the new carrier", attempt, params.Status.Type)
-						}
+					var params appwire.ThreadStatusChangedParams
+					if record.Notification.Method == appwire.NotifyThreadStatusChanged && json.Unmarshal(record.Notification.Params, &params) == nil && params.Status.Type == state {
+						terminals++
 					}
 				}
-				if !sawCarrier {
-					t.Fatal("new carrier was not projected")
+				if terminals != 1 {
+					t.Fatalf("attempt %d: %d %s statuses published, want 1", attempt, terminals, state)
 				}
 			}
 		})
@@ -470,29 +345,16 @@ func TestServerAppWireConcurrentCarrierAndCleanupKeepTerminalOrdering(t *testing
 }
 
 func TestServerAppWireClosedTerminalRejectsLateCarriers(t *testing.T) {
-	for _, kind := range []events.EventKind{events.EventTurnStarted, events.EventUserInput, events.EventGoalContinuation} {
-		t.Run(string(kind), func(t *testing.T) {
-			for _, turnID := range []string{"accepted-turn", "stale-turn"} {
-				srv := NewServer(ServerConfig{})
-				srv.SetAppIdentity("local", "closed-late-carrier")
-				srv.SetProcessingTurn("accepted-turn")
-				BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "closed-late-carrier", Data: events.SessionEndData{State: "closed"}}, nil)
-				var data events.EventData
-				switch kind {
-				case events.EventTurnStarted:
-					data = events.TurnStartedData{TurnID: turnID}
-				case events.EventUserInput:
-					data = events.UserInputData{Text: "late", StableTurnID: turnID}
-				case events.EventGoalContinuation:
-					data = events.GoalContinuationData{Text: "late", StableTurnID: turnID}
-				}
-				BridgeEvent(srv, events.SessionEvent{Kind: kind, SessionID: "closed-late-carrier", Data: data}, nil)
-				read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:closed-late-carrier"}).Thread
-				if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {
-					t.Fatalf("%s turn=%q read=(%q,%q), want closed/empty", kind, turnID, read.Status.Type, read.Evener.ActiveTurnID)
-				}
-			}
-		})
+	for _, turnID := range []string{"accepted-turn", "stale-turn"} {
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "closed-late-carrier")
+		srv.SetProcessingTurn("accepted-turn")
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "closed-late-carrier", Data: events.SessionEndData{State: "closed"}}, nil)
+		BridgeEvent(srv, threadEvent("closed-late-carrier", events.ExecutionStartedData{TurnID: turnID}), nil)
+		read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:closed-late-carrier"}).Thread
+		if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {
+			t.Fatalf("turn=%q read=(%q,%q), want closed/empty", turnID, read.Status.Type, read.Evener.ActiveTurnID)
+		}
 	}
 }
 
@@ -508,7 +370,6 @@ func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			srv.SetAppIdentity("local", "old")
-			srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "old", Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
 			srv.SetProcessingTurn("pending-old")
 			cursor := srv.appNotifier.CurrentSequence()
 			BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "old", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
@@ -526,7 +387,10 @@ func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *
 				t.Fatalf("replacement read=(status %q, active %q), want awaiting/empty", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID)
 			}
 			for _, notification := range srv.AppNotificationsAfter(cursor, tc.newRef) {
-				if notification.Notification.Method == appwire.NotifyThreadStatusChanged || notification.Notification.Method == appwire.NotifyThreadClosed {
+				var params appwire.ThreadStatusChangedParams
+				retiredStatus := notification.Notification.Method == appwire.NotifyThreadStatusChanged &&
+					(json.Unmarshal(notification.Notification.Params, &params) != nil || params.Status.Type != appwire.ThreadStatusAwaiting)
+				if retiredStatus || notification.Notification.Method == appwire.NotifyThreadClosed {
 					t.Fatalf("retired terminal notification crossed replacement boundary: %+v", notification)
 				}
 			}
@@ -534,49 +398,19 @@ func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *
 	}
 }
 
-func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T) {
+// A SESSION_END still queued from the input before a published execution
+// publishes no thread state over it; the execution's own EXECUTION_STARTED
+// and SESSION_END then carry the thread to active and back to idle.
+func TestServerAppWireQueuedSessionEndDoesNotEndThePublishedExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_reasoning_boundary")
-	srv.SetCostLookupFunc(func(string) *registry.Cost {
-		return &registry.Cost{Input: 5, Output: 25}
-	})
-	client := dialServerAppWire(t, srv)
-	ctx := context.Background()
-	oldStart := time.Unix(100, 0)
-	oldEnd := oldStart.Add(4200 * time.Millisecond)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_reasoning_boundary", Timestamp: oldStart, Data: events.UserInputData{Text: "question", StableTurnID: "turn_old"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldStart.Add(time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "old reasoning"}})
 	srv.SetProcessingTurn("turn_new")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_reasoning_boundary", Timestamp: oldStart.Add(2 * time.Second), Data: events.AssistantTextEndData{Text: "old answer", Usage: llm.Usage{InputTokens: 1000, OutputTokens: 500}}})
-	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"}).Thread.Evener.ActiveTurnID; got != "turn_new" {
-		t.Fatalf("durable active turn after queued assistant end = %q, want turn_new", got)
-	}
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldStart.Add(3 * time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "unfinished reasoning"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_reasoning_boundary", Timestamp: oldEnd, Data: events.TurnEndedData{TurnDurationMS: 4200}})
-	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"}).Thread.Evener.ActiveTurnID; got != "turn_new" {
-		t.Fatalf("durable active turn after queued turn end = %q, want turn_new", got)
-	}
 	queuedSessionEndCursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_reasoning_boundary", Data: events.SessionEndData{State: "idle"}}, nil)
-	queuedSessionEndNotifications := srv.AppNotificationsAfter(queuedSessionEndCursor, "th_reasoning_boundary")
-	var sawOldTurnCompleted, sawOldItemCompleted, sawStaleThreadStatus, sawStaleThreadClosed bool
-	for _, notification := range queuedSessionEndNotifications {
-		switch notification.Notification.Method {
-		case appwire.NotifyTurnCompleted:
-			sawOldTurnCompleted = true
-		case appwire.NotifyItemCompleted:
-			sawOldItemCompleted = true
-		case appwire.NotifyThreadStatusChanged:
-			sawStaleThreadStatus = true
-		case appwire.NotifyThreadClosed:
-			sawStaleThreadClosed = true
+	for _, notification := range srv.AppNotificationsAfter(queuedSessionEndCursor, "th_reasoning_boundary") {
+		if notification.Notification.Method == appwire.NotifyThreadStatusChanged || notification.Notification.Method == appwire.NotifyThreadClosed {
+			t.Fatalf("queued session end published stale thread state: %+v", notification)
 		}
-	}
-	if !sawOldTurnCompleted || !sawOldItemCompleted {
-		t.Fatalf("queued session end notifications=%+v, want old turn/item completion", queuedSessionEndNotifications)
-	}
-	if sawStaleThreadStatus || sawStaleThreadClosed {
-		t.Fatalf("queued session end published stale thread state: %+v", queuedSessionEndNotifications)
 	}
 	queuedSessionEndRead := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"})
 	if got := queuedSessionEndRead.Thread.Evener.ActiveTurnID; got != "turn_new" {
@@ -585,51 +419,9 @@ func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T)
 	if got := queuedSessionEndRead.Thread.Status.Type; got != appwire.ThreadStatusActive {
 		t.Fatalf("status after queued session end = %q, want active", got)
 	}
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(time.Millisecond), Data: events.GoalContinuationData{Text: "new question", StableTurnID: "turn_new"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(time.Second)})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning_boundary", Timestamp: oldEnd.Add(2 * time.Second), Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "new reasoning"}})
-
-	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary", IncludeTurns: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(read.Thread.Turns) != 2 {
-		t.Fatalf("turns=%+v, want completed old and in-progress new turn", read.Thread.Turns)
-	}
-	old, current := read.Thread.Turns[0], read.Thread.Turns[1]
-	if old.ID != "turn_old" || old.Status != appwire.TurnStatusCompleted {
-		t.Fatalf("old turn=(id %q, status %q), want completed turn_old", old.ID, old.Status)
-	}
-	if old.Usage == nil || old.Usage.InputTokens != 1000 || old.Usage.OutputTokens != 500 {
-		t.Fatalf("old usage=%+v, want input 1000/output 500", old.Usage)
-	}
-	if old.Cost != "~$0.02" {
-		t.Fatalf("old cost=%q, want ~$0.02", old.Cost)
-	}
-	if old.DurationMS == nil || *old.DurationMS != 4200 || old.CompletedAt == nil || *old.CompletedAt != oldEnd.UnixMilli() {
-		t.Fatalf("old timing=(duration %v, completed %v), want (4200, %d)", old.DurationMS, old.CompletedAt, oldEnd.UnixMilli())
-	}
-	reasoningTexts := make(map[string]bool)
-	for _, item := range old.Items {
-		if item.Type != "reasoning" {
-			continue
-		}
-		if item.TurnID != "turn_old" || item.Status != appwire.TurnStatusCompleted {
-			t.Fatalf("old reasoning=%+v, want completed item owned by turn_old", item)
-		}
-		reasoningTexts[item.Text] = true
-	}
-	if len(reasoningTexts) != 2 || !reasoningTexts["old reasoning"] || !reasoningTexts["unfinished reasoning"] {
-		t.Fatalf("old reasoning text=%v, want both retained reasoning rounds", reasoningTexts)
-	}
-	if current.ID != "turn_new" || current.Status != appwire.TurnStatusInProgress {
-		t.Fatalf("current turn=(id %q, status %q), want in-progress turn_new", current.ID, current.Status)
-	}
-	if got := read.Thread.Status.Type; got != appwire.ThreadStatusActive {
-		t.Fatalf("status after stable carrier = %q, want active", got)
-	}
-	if len(current.Items) != 2 || current.Items[1].Type != "reasoning" || current.Items[1].Text != "new reasoning" || current.Items[1].TurnID != "turn_new" {
-		t.Fatalf("current items=%+v, want new reasoning on turn_new", current.Items)
+	srv.RecordAppEvent(threadEvent("th_reasoning_boundary", events.ExecutionStartedData{TurnID: "turn_new"}))
+	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_reasoning_boundary"}).Thread.Status.Type; got != appwire.ThreadStatusActive {
+		t.Fatalf("status after the execution started = %q, want active", got)
 	}
 	completedCursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_reasoning_boundary", Data: events.SessionEndData{State: "idle"}}, nil)
@@ -653,86 +445,23 @@ func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T)
 	}
 }
 
-func TestServerAppWireQueuedEventsRetainOwnershipAfterFastProcessingClear(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_fast_clear")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_fast_clear", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_fast_clear", Data: events.ReasoningSummaryDeltaData{Delta: "old reasoning"}})
-	srv.SetProcessingTurn("turn_new")
-	srv.SetProcessing(false)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_fast_clear", Data: events.AssistantTextEndData{Text: "old answer"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_fast_clear", Data: events.TurnEndedData{TurnDurationMS: 1200}})
-	// Processing returns before this buffered event stream is consumed. Idle is
-	// now accurate, while the stable carrier still owns the queued new items.
-	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_fast_clear", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
-	settled := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_fast_clear"}).Thread
-	if settled.Status.Type != appwire.ThreadStatusIdle || settled.Evener.ActiveTurnID != "" {
-		t.Fatalf("settled state=(%q, %q), want idle/empty after processing returned", settled.Status.Type, settled.Evener.ActiveTurnID)
-	}
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_fast_clear", Data: events.GoalContinuationData{Text: "new", StableTurnID: "turn_new"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_fast_clear", Data: events.AssistantTextEndData{Text: "new answer"}})
-	srv.mu.RLock()
-	reserved := srv.appReservedTurnID
-	active := srv.appActiveTurnID
-	srv.mu.RUnlock()
-	if reserved != "" || active != "turn_new" {
-		t.Fatalf("after stable carrier reserved=%q active=%q, want empty/turn_new", reserved, active)
-	}
-	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_fast_clear", IncludeTurns: true})
-	if len(read.Thread.Turns) != 2 {
-		t.Fatalf("turns=%+v, want old and new turns", read.Thread.Turns)
-	}
-	old, current := read.Thread.Turns[0], read.Thread.Turns[1]
-	if old.ID != "turn_old" || len(old.Items) != 3 || old.Items[2].Text != "old answer" || old.Items[2].TurnID != "turn_old" {
-		t.Fatalf("old turn=%+v, want old answer retained on turn_old", old)
-	}
-	if current.ID != "turn_new" || len(current.Items) != 2 || current.Items[1].Text != "new answer" || current.Items[1].TurnID != "turn_new" {
-		t.Fatalf("new turn=%+v, want new answer on turn_new", current)
-	}
-	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_fast_clear", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}, nil)
-	completed := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_fast_clear", IncludeTurns: true}).Thread
-	if completed.Status.Type != appwire.ThreadStatusIdle || completed.Evener.ActiveTurnID != "" || completed.Turns[1].Status != appwire.TurnStatusCompleted {
-		t.Fatalf("completed buffered turn=%+v, want idle, no active identity, and completed new turn", completed)
-	}
-}
-
 func TestServerAppWireUnclaimedStableTurnDoesNotKeepSessionBusy(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_unclaimed")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_unclaimed", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_unclaimed", Data: events.ReasoningSummaryDeltaData{Delta: "old reasoning"}})
-	// The runnable callback precedes claiming the durable input. A failed claim
-	// clears processing without ever emitting the new turn's stable carrier.
+	// The execution is published before its claim; a failed claim clears
+	// processing without the execution ever starting.
 	srv.SetProcessingTurn("turn_unclaimed")
 	srv.SetProcessing(false)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_unclaimed", Data: events.AssistantTextEndData{Text: "old answer"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_unclaimed", Data: events.TurnEndedData{TurnDurationMS: 1200}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_unclaimed", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
-	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_unclaimed", IncludeTurns: true})
-	if read.Thread.Evener.ActiveTurnID != "" {
-		t.Fatalf("active turn=%q, want idle after failed claim and old completion", read.Thread.Evener.ActiveTurnID)
-	}
-	if len(read.Thread.Turns) != 1 || read.Thread.Turns[0].ID != "turn_old" || read.Thread.Turns[0].Status != appwire.TurnStatusCompleted {
-		t.Fatalf("turns=%+v, want only the completed old turn", read.Thread.Turns)
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_unclaimed"})
+	if read.Thread.Evener.ActiveTurnID != "" || read.Thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("read = (active %q, status %q), want idle after the failed claim", read.Thread.Evener.ActiveTurnID, read.Thread.Status.Type)
 	}
 	srv.mu.RLock()
 	reserved := srv.appReservedTurnID
 	srv.mu.RUnlock()
 	if reserved != "" {
 		t.Fatalf("admission reservation=%q, want empty after failed claim", reserved)
-	}
-}
-
-func TestServerAppWireNonstableGoalUpdatesActiveIdentity(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_nonstable_goal")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_nonstable_goal", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_nonstable_goal", Data: events.GoalContinuationData{Text: "new"}})
-	srv.mu.RLock()
-	active := srv.appActiveTurnID
-	srv.mu.RUnlock()
-	if active == "turn_old" || active == "" {
-		t.Fatalf("nonstable goal active turn=%q, want a new identity", active)
 	}
 }
 
@@ -748,31 +477,20 @@ func TestServerAppWireFailedClaimSessionEndClearsState(t *testing.T) {
 	}
 }
 
-func TestServerAppWireQueuedClosedSessionEndOmitsStaleThreadFrames(t *testing.T) {
+func TestServerAppWireQueuedClosedSessionEndClosesThePublishedExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_closed_boundary")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_closed_boundary", Data: events.UserInputData{Text: "old", StableTurnID: "turn_old"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_closed_boundary", Data: events.ReasoningSummaryDeltaData{Delta: "old reasoning"}})
 	srv.SetProcessingTurn("turn_new")
 	cursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_closed_boundary", Data: events.SessionEndData{State: "closed"}}, nil)
-	notifications := srv.AppNotificationsAfter(cursor, "th_closed_boundary")
-	var sawTurnCompleted, sawItemCompleted, sawThreadClosed bool
-	for _, notification := range notifications {
-		switch notification.Notification.Method {
-		case appwire.NotifyTurnCompleted:
-			sawTurnCompleted = true
-		case appwire.NotifyItemCompleted:
-			sawItemCompleted = true
-		case appwire.NotifyThreadClosed:
+	var sawThreadClosed bool
+	for _, notification := range srv.AppNotificationsAfter(cursor, "th_closed_boundary") {
+		if notification.Notification.Method == appwire.NotifyThreadClosed {
 			sawThreadClosed = true
 		}
 	}
-	if !sawTurnCompleted || !sawItemCompleted {
-		t.Fatalf("closed queued notifications=%+v, want turn/item completion", notifications)
-	}
 	if !sawThreadClosed {
-		t.Fatalf("closed queued notifications=%+v, want thread closed", notifications)
+		t.Fatal("a closing session end did not close the thread")
 	}
 	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_closed_boundary"}).Thread
 	if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {

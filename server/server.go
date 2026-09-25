@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
@@ -312,11 +313,10 @@ type ServerConfig struct {
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
 // descendant. Descendants share the root daemon's transport, but each keeps an
-// independent projector and turn snapshot so their notification streams and
-// thread/read cuts remain isolated.
+// independent projector (and history, in appHistories) so their notification
+// streams and thread/read cuts remain isolated.
 type appDescendantProjection struct {
 	projector    *appprojector.AppEventProjector
-	turns        *appTurnSnapshot
 	thread       appwire.Thread
 	activeTurnID string
 }
@@ -343,18 +343,23 @@ type Server struct {
 	// revision per owner for the current root identity. It is internal routing
 	// state and resets with that identity.
 	appTaskPublications map[string]taskPublicationCursor
-	// appTurns is the daemon's one materialized turn authority. Every turn read
-	// -- thread/read, the latest window, an older page -- clones or windows this
-	// and nothing else.
-	appTurns        *appTurnSnapshot
+	// appHistories holds the history of every thread served: the root's and
+	// each descendant's, projected from their transcripts.
+	appHistories *threadHistories
+	// appDescendantHistorySource is the descendants' recorded-entry hook's
+	// lock-free view of the served root (see descendantHistorySource).
+	appDescendantHistorySource atomic.Pointer[descendantHistorySource]
+	// appActiveTurnID is the running execution SetProcessingTurn published.
 	appActiveTurnID string
-	// appPendingStableTurnID publishes runnable identity while the ordered
-	// event consumer drains the previous turn. It is not an admission lock.
+	// appPendingStableTurnID is the execution SetProcessingTurn published
+	// until its EXECUTION_STARTED is projected, while the ordered event
+	// consumer may still drain the input before it. It is not an admission
+	// lock.
 	appPendingStableTurnID string
 	// appDeferredTerminalNotifications retains only the status/closed frames
-	// from a terminal event that raced a durable carrier. The projector has
-	// already applied the event; these frames are published if the carrier is
-	// abandoned, and discarded when its stable carrier arrives.
+	// from a terminal event that raced a published execution. They are
+	// published if the execution is abandoned, and discarded when its
+	// EXECUTION_STARTED arrives.
 	appDeferredTerminalNotifications []pendingAppNotification
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
@@ -363,32 +368,13 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource ThreadEnvelopeSource
-	appReservedTurnID string
-	// appProcessingReservedTurnID tracks a generic projector reservation that
-	// was superseded by a durable turn identity before its carrier arrived.
-	appProcessingReservedTurnID string
-	beforeAppProjectionCommit   func()
-	// appLastStampedFailedToolCalls is the failure count most recently
-	// stamped onto an item/completed notification (kata 895d) — nil means
-	// nothing has been stamped yet for the current identity. It exists so
-	// item/completed only carries the figure on the item whose completion
-	// actually moved it, not on every tool call: the running count already
-	// rides thread/status/changed unconditionally (every status change is a
-	// turn boundary, so it can only have moved there), but that leaves a live
-	// watcher unable to see a failure land partway through a long turn.
-	// Reset to nil on SetAppIdentity so a new session's first observation is
-	// never suppressed as "unchanged" by whatever the previous session on
-	// this server left behind.
-	appLastStampedFailedToolCalls *int
+	appEnvelopeSource         ThreadEnvelopeSource
+	appReservedTurnID         string
+	beforeAppProjectionCommit func()
 	// appDescendantTranscriptPathFunc resolves a descendant thread ID to its
-	// backing transcript file path, when the caller has one. RecordDescendantAppEvent
-	// consults it on a descendant's first observation to seed that descendant's
-	// turn snapshot from persisted history, mirroring PrepareAppIdentity's seed
-	// of the ROOT thread — without it, a restored descendant's thread/read would
-	// only ever show events recorded after the restore point (ledger #110/#111).
-	// Nil is a legitimate answer: a fresh (never-persisted) descendant has
-	// nothing to seed from.
+	// backing transcript file path, when the caller has one: the descendant's
+	// history is projected from it (ledger #110/#111). Nil, or "", gives the
+	// descendant no history.
 	appDescendantTranscriptPathFunc func(threadID string) string
 	// appDescendantLiveWatchesFunc resolves the row IDs of one thread LIST page
 	// to the live watch rows that belong on each of them, when the daemon can
@@ -532,7 +518,7 @@ func NewServer(cfg ServerConfig) *Server {
 		// deltas, never what the thread contains.
 		appNotifier:         appserver.NewNotifier(replaySize),
 		appSourceID:         "local",
-		appTurns:            &appTurnSnapshot{},
+		appHistories:        newAppHistories(),
 		appDescendants:      make(map[string]*appDescendantProjection),
 		appTaskPublications: make(map[string]taskPublicationCursor),
 		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
@@ -861,71 +847,54 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 	s.mu.Unlock()
 }
 
-// SetProcessing marks whether the session is currently processing input. A
-// generic processing transition reserves a projector turn ID so status and
-// ActiveTurnID change atomically. Durable client-mutation turns instead use
-// SetProcessingTurn because their stable identity is already authoritative.
+// SetProcessing marks whether the session is currently processing input. It
+// publishes nothing when processing starts: the running execution's TurnID is
+// published by SetProcessingTurn, which the session calls before recording the
+// execution's first entry. When processing ends, finishProcessing publishes the
+// thread idle.
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
 		s.finishProcessing()
 		return
 	}
 	s.mu.Lock()
-	s.setProcessingLocked(processing)
+	s.processing = true
 	s.mu.Unlock()
 }
 
-// SetProcessingTurn atomically publishes a durable turn's stable identity as
-// the active AppWire turn until its ordered stable carrier is projected.
+// SetProcessingTurn publishes turnID as the running execution: the thread is
+// active with activeTurnId turnID, in one projection commit. serve installs it
+// as the session's Session.SetExecutionStartedFunc, which runs before the
+// execution's first entry is recorded, so before any history/updated for it.
 func (s *Server) SetProcessingTurn(turnID string) {
-	// Serialize admission with deferred terminal publication so their
-	// notification order and authoritative processing identity agree.
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		s.processing = true
-		s.ensureAppProjectorLocked("")
-		s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
-		// The projector reservation is consumed by the ordered event stream. The
-		// callback can run ahead of that consumer, so mutating the projector here
-		// would let queued events from the previous turn use the new identity.
 		s.appActiveTurnID = turnID
+		// Until the execution's own EXECUTION_STARTED is projected, a
+		// terminal status still queued from the input before it must not be
+		// published over this one (RecordAppEvent defers it).
 		s.appPendingStableTurnID = turnID
 		s.appReservedTurnID = ""
+		threadID, ref := s.appRootIdentityLocked()
 		s.mu.Unlock()
-		return nil
+		return s.recordAppNotifications(threadID, []pendingAppNotification{{
+			threadID: threadID,
+			ref:      ref,
+			method:   appwire.NotifyThreadStatusChanged,
+			params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+		}})
 	})
 }
 
+// setProcessingLocked(false) ends the running input: nothing runs, so no turn
+// is active and no execution is pending its start. Callers hold s.mu.
 func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if !processing {
-		// The input runner has returned, including failed durable claims that
-		// emit no carrier. Buffered events retain their own ordered identity;
-		// keeping this reservation would advertise work that is no longer running.
-		if s.appPendingStableTurnID != "" {
-			if s.appActiveTurnID == s.appPendingStableTurnID {
-				s.appActiveTurnID = ""
-			}
-			s.appPendingStableTurnID = ""
-		}
-		if s.appProjector != nil && s.appProcessingReservedTurnID != "" {
-			s.appProjector.ReleaseReservedTurnID(s.appProcessingReservedTurnID)
-			s.appProcessingReservedTurnID = ""
-		}
-		if s.appProjector != nil && s.appReservedTurnID == "" {
-			reservedTurnID := s.appProjector.ReservedTurnID()
-			if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {
-				s.appProjector.ReleaseReservedTurnID(reservedTurnID)
-				s.appActiveTurnID = ""
-			}
-		}
-		return
+		s.appActiveTurnID = ""
+		s.appPendingStableTurnID = ""
 	}
-	if strings.TrimSpace(s.appActiveTurnID) == "" {
-		s.ensureAppProjectorLocked("")
-		s.appActiveTurnID = s.appProjector.ReserveTurnID()
-	}
-	s.appReservedTurnID = ""
 }
 
 // InputCh returns the channel that receives user input messages.

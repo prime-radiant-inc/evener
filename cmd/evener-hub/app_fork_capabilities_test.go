@@ -60,9 +60,7 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 			t.Errorf("includeTurns=%v: hub read did not advertise its fork operation", turns)
 		}
 	}
-	daemon.RecordAppEvent(events.SessionEvent{
-		Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: "fork status fixture"},
-	})
+	daemon.SetProcessingTurn("t_fork_status_fixture")
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
@@ -769,9 +767,7 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	}
 	relayedForkStamp := func(text string) bool {
 		t.Helper()
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: text},
-		})
+		daemon.SetProcessingTurn("t_" + text)
 		deadline := time.After(2 * time.Second)
 		for {
 			select {
@@ -2594,26 +2590,24 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 		}
 	}
 	// One status transition, which the relay does stamp: the projection runs.
-	daemon.RecordAppEvent(events.SessionEvent{
-		Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: "open a turn"},
-	})
+	daemon.SetProcessingTurn("t_open")
 	awaitMethod(appwire.NotifyThreadStatusChanged)
 	if listCalls.Load() == 0 {
 		t.Fatal("a relayed status notification did not project the fork capability; this test cannot detect the hot path")
 	}
 
-	// Now frames the stampers ignore. A tool call inside an open turn emits
-	// item/started and no status change.
+	// Now frames the stampers ignore: thread notifications that are not a
+	// status change.
 	settled := listCalls.Load()
 	for i := range 5 {
 		daemon.RecordAppEvent(events.SessionEvent{
-			Kind: events.EventToolCallStart, SessionID: sessionID,
-			Data: events.ToolCallStartData{ToolName: "bash", CallID: "call_" + strconv.Itoa(i)},
+			Kind: events.EventNotesUpdated, SessionID: sessionID,
+			Data: events.NotesUpdatedData{AgentNote: "note " + strconv.Itoa(i)},
 		})
-		awaitMethod(appwire.NotifyItemStarted)
+		awaitMethod(appwire.NotifyEvenerNotesUpdated)
 	}
 	if got := listCalls.Load(); got != settled {
-		t.Fatalf("relaying 5 item notifications projected the fork capability %d more times, want 0", got-settled)
+		t.Fatalf("relaying 5 notes notifications projected the fork capability %d more times, want 0", got-settled)
 	}
 }
 
