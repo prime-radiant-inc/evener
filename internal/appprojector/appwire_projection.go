@@ -874,7 +874,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// out-of-band, no-item-state events (hook end, plugin loaded, ...)
 		// are surfaced.
 		data := eventData[events.ToolCallRepairedData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindToolRepair, "Tool call repaired", toolCallRepairedAnnouncement(data))
+		return p.noticeAnnouncement(apptranscript.ToolRepairAnnouncement(schema.ToolRepairNotice(data)))
 	case events.EventWarning:
 		p.clearSkillCandidate()
 		data := eventData[events.WarningData](event.Data)
@@ -1015,7 +1015,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventTurnLimit:
 		p.clearSkillCandidate()
 		data := eventData[events.TurnLimitData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindTurnLimit, "Turn limit", turnLimitAnnouncement(data))
+		return p.noticeAnnouncement(apptranscript.TurnLimitAnnouncement(schema.TurnLimitNotice(data)))
 	case events.EventLoopDetection:
 		p.clearSkillCandidate()
 		data := eventData[events.LoopDetectionData](event.Data)
@@ -1023,7 +1023,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventGoalEnded:
 		p.clearSkillCandidate()
 		data := eventData[events.GoalEndedData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalEnded, "Goal", goalEndText(data))
+		return p.noticeAnnouncement(apptranscript.GoalEndedAnnouncement(schema.GoalEndedNotice(data)))
 	case events.EventSkillActivated:
 		data := eventData[events.SkillActivatedData](event.Data)
 		name := strings.TrimSpace(data.Name)
@@ -1051,7 +1051,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			})}
 		}
 		p.skillCandidate = skillActivationCandidate{}
-		return p.systemAnnouncement(appwire.ThreadItemEventKindSkillActivated, "Skill activated", "Activated skill: "+data.Name)
+		return p.noticeAnnouncement(apptranscript.SkillActivatedAnnouncement(schema.SkillActivatedNotice(data)))
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
@@ -1563,6 +1563,13 @@ func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEvent
 	return p.systemAnnouncementItem(eventKind, description, text, nil, nil)
 }
 
+// noticeAnnouncement announces one of the notices a new-format transcript
+// persists as a NOTICE entry, built by the same function the transcript
+// projects that entry with.
+func (p *AppEventProjector) noticeAnnouncement(announcement apptranscript.NoticeAnnouncement) []AppNotification {
+	return p.systemAnnouncement(announcement.EventKind, announcement.Description, announcement.Text)
+}
+
 // systemAnnouncementWithRaw renders a lifecycle system one-liner like
 // systemAnnouncement, additionally attaching structured detail to the item's
 // Raw field. The web can then surface that detail (e.g. a compaction
@@ -1682,38 +1689,6 @@ func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
 	return out
 }
 
-// goalEndText renders the terminal /goal report line from a GoalEnded payload.
-// A completed goal reads "✓ Goal achieved"; a blocked goal "⊘ Goal blocked"
-// (with the reason appended when present); any other terminal status falls back
-// to "⊘ Goal stopped".
-func goalEndText(data events.GoalEndedData) string {
-	switch data.Status {
-	case "complete":
-		return "✓ Goal achieved"
-	case "blocked":
-		if reason := strings.TrimSpace(data.Reason); reason != "" {
-			return "⊘ Goal blocked: " + reason
-		}
-		return "⊘ Goal blocked"
-	default:
-		return "⊘ Goal stopped"
-	}
-}
-
-func turnLimitAnnouncement(data events.TurnLimitData) string {
-	var lines []string
-	if data.MaxTurns > 0 {
-		lines = append(lines, fmt.Sprintf("Maximum turns reached: %d", data.MaxTurns))
-	}
-	if data.MaxToolRoundsPerInput > 0 {
-		lines = append(lines, fmt.Sprintf("Maximum tool rounds per input reached: %d", data.MaxToolRoundsPerInput))
-	}
-	if len(lines) == 0 {
-		return "Turn limit reached"
-	}
-	return strings.Join(lines, "\n")
-}
-
 // contextCompactionRaw marshals the structured compaction numbers under a
 // "compaction" key on the system item's Raw field. The web reads these to draw
 // an honest before→after expand (mockup #17 Alt A) from real numbers. Returns
@@ -1793,84 +1768,6 @@ func hookInfoFromEvent(data events.HookEndData) schema.HookInfo {
 		ExitCode:   data.ExitCode,
 		DurationMS: data.DurationMS,
 	}
-}
-
-// toolCallRepairedAnnouncement reports that a tool call needed a small,
-// automatic correction before it ran. The wire's Changes entries are the
-// repair engine's own machine format ("kind:field:detail", e.g.
-// "drop_unknown:artifacts:dropped artifacts") — telemetry for the CLI's raw
-// event trace, never meant for a reader parsing their transcript (kata k4v8).
-// This builds the reader-facing sentence instead: what changed, named by the
-// tool argument involved, with no internal enum or punctuation leaking through.
-func toolCallRepairedAnnouncement(data events.ToolCallRepairedData) string {
-	name := fallbackLabel(data.ToolName, "tool call")
-	if len(data.Changes) == 0 {
-		return "Repaired " + name
-	}
-	phrases := make([]string, 0, len(data.Changes))
-	for _, raw := range data.Changes {
-		phrases = append(phrases, repairChangePhrase(raw))
-	}
-	return fmt.Sprintf("Fixed the %s call: %s.", name, strings.Join(phrases, "; "))
-}
-
-// repairChangePhrase turns one "kind:field:detail" repair entry into a plain
-// sentence fragment. An unrecognized kind (e.g. a newer daemon's repair
-// category this build predates) falls back to naming just the field, never
-// the raw encoding.
-func repairChangePhrase(raw string) string {
-	parts := strings.SplitN(raw, ":", 3)
-	kind := parts[0]
-	var field string
-	if len(parts) > 1 {
-		field = parts[1]
-	}
-	switch kind {
-	case "alias":
-		if oldName, _, ok := strings.Cut(fieldDetail(parts), "→"); ok && oldName != "" {
-			return fmt.Sprintf("renamed %q to %q", oldName, field)
-		}
-		return fmt.Sprintf("renamed a field to %q", field)
-	case "coerce_type":
-		return fmt.Sprintf("adjusted the %q field's type", field)
-	case "drop_unknown":
-		return fmt.Sprintf("removed the unrecognized %q field", field)
-	case "unicode_repair":
-		return "fixed an invalid character in the arguments"
-	case "fill_required":
-		if fieldKey, ok := strings.CutPrefix(field, "output."); ok && fieldDetail(parts) == "filled default" && fieldKey != "" {
-			return fmt.Sprintf("filled the required %q key", fieldKey)
-		}
-		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
-			return fmt.Sprintf("filled the required %q key", key)
-		}
-		return fmt.Sprintf("filled a required key in the %q field", field)
-	case "synthesize":
-		if field == "output" && fieldDetail(parts) == "synthesized default envelope" {
-			return "created the required output object"
-		}
-	case "copy":
-		if field == "message" && fieldDetail(parts) == "copied output.message" {
-			return "copied nested output.message to the required message"
-		}
-	case "promote_json_object":
-		if field == "output" && fieldDetail(parts) == "promoted JSON object string" {
-			return "converted the output JSON string to an object"
-		}
-	}
-	if field == "" {
-		return "adjusted the arguments"
-	}
-	return fmt.Sprintf("adjusted the %q field", field)
-}
-
-// fieldDetail returns the third ("detail") segment of a split "kind:field:detail"
-// entry, or "" when the entry has fewer than three segments.
-func fieldDetail(parts []string) string {
-	if len(parts) < 3 {
-		return ""
-	}
-	return parts[2]
 }
 
 func forkSummaryAnnouncement(data events.ForkSummaryData) string {

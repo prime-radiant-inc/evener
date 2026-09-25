@@ -122,10 +122,20 @@ func TestFileProjectionPassesOverTranscriptOnlyEntries(t *testing.T) {
 	}
 }
 
-func TestProjectTurnPartsProjectsNothingForTranscriptOnlyKinds(t *testing.T) {
+// The status kinds project nothing; a delivered message and a notice each
+// project their one item.
+func TestProjectTurnPartsProjectsTranscriptOnlyKindsByTheirRules(t *testing.T) {
 	for _, sample := range schematest.TranscriptOnlySamples() {
-		if items, parts := ProjectTurnParts("turn_1", 1, sample, map[string]string{}, nil, nil); len(items) != 0 || len(parts) != 0 {
-			t.Errorf("%s projected %v", sample.Kind, items)
+		items, parts := ProjectTurnParts("turn_1", 1, sample, map[string]string{}, nil, nil)
+		switch sample.Kind {
+		case schema.TurnCommunicate, schema.TurnNotice:
+			if len(items) != 1 || !reflect.DeepEqual(parts, []int{0}) {
+				t.Errorf("%s projected %v / %v, want one item at part 0", sample.Kind, items, parts)
+			}
+		default:
+			if len(items) != 0 || len(parts) != 0 {
+				t.Errorf("%s projected %v", sample.Kind, items)
+			}
 		}
 	}
 }
