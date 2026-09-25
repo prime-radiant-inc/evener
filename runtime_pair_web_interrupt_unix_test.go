@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // webInterruptTripwire bounds the wait for an interrupted `make test-web` to
@@ -115,7 +117,9 @@ kill() {
 		// block even after make itself is gone.
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		_ = command.Process.Kill()
-		<-run.done
+		if err := waitForChildExit(run, tripwire); errors.Is(err, errChildExitTimeout) {
+			t.Errorf("cleanup did not reap make test-web: %v", err)
+		}
 	})
 	if err := waitForPathOrExit(heldReady, run, readinessTripwire); err != nil {
 		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
@@ -342,6 +346,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Env = append(fixture.environment(""),
 		"BASH_ENV="+bashEnv,
 		"EVENER_TEST_NPM_HOLD_COMMAND=run typecheck",
@@ -374,8 +379,13 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 		_ = waitRelease.Close()
 		_ = waitReady.Close()
 		if command.ProcessState == nil {
+			procgroup.Kill(command.Process.Pid)
 			_ = command.Process.Kill()
-			<-run.done
+			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
+				t.Errorf("cleanup did not reap make test-web: %v", err)
+			}
+		} else {
+			procgroup.KillGroupAfterReap(command.Process.Pid)
 		}
 	})
 
@@ -492,6 +502,7 @@ func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
 
 			command := exec.Command("make", "test-web")
 			command.Dir = fixture.root
+			command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			command.Env = append(fixture.environment(""),
 				"BASH_ENV="+bashEnv,
 				"EVENER_TEST_WEB_CLEANUP_READY="+readyPath,
@@ -522,8 +533,13 @@ func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
 				_, _ = release.WriteString("cleanup\n")
 				_ = release.Close()
 				if command.ProcessState == nil {
+					procgroup.Kill(command.Process.Pid)
 					_ = command.Process.Kill()
-					<-run.done
+					if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
+						t.Errorf("cleanup did not reap make test-web: %v", err)
+					}
+				} else {
+					procgroup.KillGroupAfterReap(command.Process.Pid)
 				}
 			})
 			if err := exec.Command("kill", "-"+signal, webPID).Run(); err != nil {

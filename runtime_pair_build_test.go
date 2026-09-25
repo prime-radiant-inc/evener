@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
@@ -1276,6 +1278,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
+	command.SysProcAttr = procgroup.SysProcAttr()
 	command.Env = append(fixture.environment(""),
 		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
 		"EVENER_TEST_NPM_READY="+readyPath,
@@ -1292,8 +1295,13 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	run := startChild(command)
 	t.Cleanup(func() {
 		if command.ProcessState == nil {
+			procgroup.Kill(command.Process.Pid)
 			_ = command.Process.Kill()
-			<-run.done
+			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
+				t.Errorf("cleanup did not reap make test-web: %v", err)
+			}
+		} else {
+			procgroup.KillGroupAfterReap(command.Process.Pid)
 		}
 	})
 	if err := waitForPathOrExit(readyPath, run, readinessTripwire); err != nil {
