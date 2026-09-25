@@ -599,3 +599,50 @@ func TestRecordedAndEventRunConcurrently(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+func TestARoundWhoseTextAPreviewResetDiscardedStillEndsInterrupted(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "partial reply"}))
+	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
+
+	// A cancelled input resets its previews before the round ends.
+	reset := one(t, o.Event(events.New(events.CommunicatePreviewResetData{CallID: "c_1"})))
+	if reset.Method != appwire.NotifyOverlayReset {
+		t.Fatalf("preview reset = %s, want overlay/reset", reset.Method)
+	}
+	changes := o.Event(events.New(events.RoundEndedData{RoundID: "r_1"}))
+	if len(changes) != 2 || upserted(t, changes[0]).Item.EventKind != appwire.ThreadItemEventKindInterrupted || changes[1].Method != appwire.NotifyOverlayEnd {
+		t.Fatalf("round end = %+v, want an interrupted notice then overlay/end", changes)
+	}
+}
+
+func TestARoundAFallbackRecordsAfterAPreviewResetEndsQuietly(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "primary"}))
+	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
+	one(t, o.Event(events.New(events.CommunicatePreviewResetData{CallID: "c_1"})))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "fallback"}))
+	o.Recorded(assistantRecord(0, "t_1", "r_1", textPart("fallback")))
+
+	change := one(t, o.Event(events.New(events.RoundEndedData{RoundID: "r_1"})))
+	if change.Method != appwire.NotifyOverlayEnd {
+		t.Fatalf("round end = %s, want only overlay/end", change.Method)
+	}
+}
+
+func TestTrimmedOutputDoesNotPinTheBufferItGrewIn(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_1"}))
+	o.Event(events.New(events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "c_1", Delta: strings.Repeat("x", 4<<20)}))
+	s := o.slots[o.calls["c_1"].toolKey]
+	if len(s.output) != trimmedRunningOutputBytes || cap(s.output) != len(s.output) {
+		t.Fatalf("running output holds %d bytes in a %d-byte buffer, want %d in a right-sized one", len(s.output), cap(s.output), trimmedRunningOutputBytes)
+	}
+	o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: strings.Repeat("y", 4<<20)}))
+	if len(s.output) != trimmedRunningOutputBytes || cap(s.output) != len(s.output) {
+		t.Fatalf("settled output holds %d bytes in a %d-byte buffer, want %d in a right-sized one", len(s.output), cap(s.output), trimmedRunningOutputBytes)
+	}
+}

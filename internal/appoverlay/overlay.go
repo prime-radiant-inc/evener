@@ -54,7 +54,11 @@ type Overlay struct {
 	// coveredRounds are the rounds whose ASSISTANT entry is recorded: their
 	// text and reasoning are history now, so later deltas are dropped.
 	coveredRounds map[string]struct{}
-	calls         map[string]*call
+	// discardedRounds are rounds whose uncovered streamed text a preview
+	// reset discarded; unless an ASSISTANT entry covers them after all, they
+	// still end interrupted.
+	discardedRounds map[string]struct{}
+	calls           map[string]*call
 	// slots holds the streams, previews and tool states by overlay key.
 	slots    map[string]*slot
 	nextSlot uint64
@@ -105,10 +109,11 @@ func (s *slot) view() appwire.OverlayItem {
 // New returns an empty overlay whose notices count against budget.
 func New(budget *Budget) *Overlay {
 	return &Overlay{
-		budget:        budget,
-		coveredRounds: map[string]struct{}{},
-		calls:         map[string]*call{},
-		slots:         map[string]*slot{},
+		budget:          budget,
+		coveredRounds:   map[string]struct{}{},
+		discardedRounds: map[string]struct{}{},
+		calls:           map[string]*call{},
+		slots:           map[string]*slot{},
 	}
 }
 
@@ -362,11 +367,21 @@ func (o *Overlay) startPreview(callID string) []Change {
 // salvage) nothing else would tell clients, so the preview's attempt is reset
 // here: its stream is being discarded too.
 func (o *Overlay) resetPreview(callID string) []Change {
-	s, ok := o.slots[previewKey(callID)]
+	preview, ok := o.slots[previewKey(callID)]
 	if !ok {
 		return nil
 	}
-	return o.resetStream(s.item.StreamID)
+	// A failed or cancelled input resets its previews before its round
+	// ends, so the text discarded here is the round's partial reply.
+	roundID := preview.item.RoundID
+	if _, covered := o.coveredRounds[roundID]; !covered {
+		for _, s := range o.slots {
+			if s.item.Kind == appwire.OverlayStream && s.item.StreamID == preview.item.StreamID && s.item.Item.Text != "" {
+				o.discardedRounds[roundID] = struct{}{}
+			}
+		}
+	}
+	return o.resetStream(preview.item.StreamID)
 }
 
 // appendText appends to the text of the stream or preview at key.
@@ -456,11 +471,10 @@ func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
 	item.PrevalOnly = data.PrevalOnly
 	item.Raw = data.ToolState
 	item.ExitCode = apptranscript.ExitCodeFromToolState(data.ToolState)
-	if data.Output != "" {
-		s.output = append(s.output[:0], data.Output...)
-		if len(s.output) > maxRunningOutputBytes {
-			s.output = keepTail(s.output, trimmedRunningOutputBytes)
-		}
+	if len(data.Output) > maxRunningOutputBytes {
+		s.output = keepTail([]byte(data.Output), trimmedRunningOutputBytes)
+	} else if data.Output != "" {
+		s.output = []byte(data.Output)
 	}
 	images := apptranscript.LiveOutputImages(data.OutputImages)
 	fetchable := slices.DeleteFunc(slices.Clone(images), apptranscript.UnfetchableUntilRecorded)
@@ -511,6 +525,12 @@ func (o *Overlay) endRound(roundID string) []Change {
 			delete(o.calls, callID)
 		}
 	}
+	if _, discarded := o.discardedRounds[roundID]; discarded {
+		if _, covered := o.coveredRounds[roundID]; !covered {
+			interrupted = true
+		}
+	}
+	delete(o.discardedRounds, roundID)
 	delete(o.coveredRounds, roundID)
 	if o.roundID == roundID {
 		o.roundID, o.attempt = "", 0
@@ -566,12 +586,15 @@ func (o *Overlay) upsert(s *slot) []Change {
 	return []Change{{Method: appwire.NotifyOverlayUpserted, Params: appwire.OverlayUpsertedParams{Item: s.view()}}}
 }
 
-// keepTail keeps at most limit trailing bytes of b, starting at a rune
-// boundary, moved to the front of b's storage.
+// keepTail returns at most limit trailing bytes of b, starting at a rune
+// boundary, in a buffer of exactly that size, so a huge delta or settled
+// output does not stay pinned by the capacity it arrived in.
 func keepTail(b []byte, limit int) []byte {
 	cut := len(b) - limit
 	for cut < len(b) && !utf8.RuneStart(b[cut]) {
 		cut++
 	}
-	return b[:copy(b, b[cut:])]
+	tail := make([]byte, len(b)-cut)
+	copy(tail, b[cut:])
+	return tail
 }
