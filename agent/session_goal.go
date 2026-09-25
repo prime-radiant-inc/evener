@@ -469,6 +469,7 @@ func goalRootShutdown(ctx context.Context, err error) bool {
 // emitGoalEnded emits the terminal goal report from a snapshot. Every goal stop
 // path routes through here so the "told why it stopped" promise holds on each one.
 func (s *Session) emitGoalEnded(snap goal.Snapshot) {
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: string(snap.Status), Reason: snap.StopReason, Iterations: snap.Iterations}})
 	s.emit(events.EventGoalEnded, events.GoalEndedData{
 		Status:     string(snap.Status),
 		Reason:     snap.StopReason,

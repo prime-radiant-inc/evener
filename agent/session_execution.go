@@ -215,3 +215,35 @@ type recordedOrdinal struct {
 	recorded bool
 	ordinal  uint64
 }
+
+// recordTranscriptOnly records a transcript-only entry in the running
+// execution, or the gap between executions. It never enters history.
+func (s *Session) recordTranscriptOnly(turn schema.Turn) (transcript.Record, error) {
+	if turn.Timestamp.IsZero() {
+		turn.Timestamp = s.sclock().Now().UTC()
+	}
+	rec, err := func() (transcript.Record, error) {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		return s.recordTranscriptLocked(turn, transcript.DoorBuffered, transcript.PlaceSession)
+	}()
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	s.surfaceTranscriptWarnings()
+	return rec, err
+}
+
+// recordNotice records a presentational notice, the history form of a live
+// notice a reader would otherwise lose on reload.
+func (s *Session) recordNotice(notice schema.NoticeInfo) {
+	_, _ = s.recordTranscriptOnly(schema.Turn{Kind: schema.TurnNotice, Notice: &notice})
+}
+
+// deliverCommunicate delivers a communicate message: it is recorded as a
+// COMMUNICATE entry first, and announced once the entry is recorded, so a
+// delivered message is never missing from history.
+func (s *Session) deliverCommunicate(data events.CommunicateData) {
+	_, _ = s.recordTranscriptOnly(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}})
+	s.emit(events.EventCommunicate, data)
+}

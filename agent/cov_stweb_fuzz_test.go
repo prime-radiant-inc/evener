@@ -114,11 +114,9 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	var emitted int
 	var deferred []steeringMessage
 	deps.emit = func(kind events.EventKind, data events.EventData) {
-		if kind != events.EventCommunicate {
-			t.Fatalf("communicate emitted unexpected event %q", kind)
-		}
-		emitted++
+		t.Fatalf("communicate emitted unexpected event %q", kind)
 	}
+	deps.deliverCommunicate = func(events.CommunicateData) { emitted++ }
 	deps.drainSteering = func() []steeringMessage {
 		return []steeringMessage{
 			{Text: "steer " + token},
@@ -216,6 +214,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 func stoolCommunicateDeps() *toolDeps {
 	return &toolDeps{
 		emit:                   func(events.EventKind, events.EventData) {},
+		deliverCommunicate:     func(events.CommunicateData) {},
 		abort:                  func(context.Context) error { return nil },
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},

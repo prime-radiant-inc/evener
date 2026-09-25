@@ -31,6 +31,10 @@ type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
 	emit func(kind events.EventKind, data events.EventData)
 
+	// deliverCommunicate records a communicate message in the transcript and
+	// then announces it (Session.deliverCommunicate).
+	deliverCommunicate func(data events.CommunicateData)
+
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error
 	steerTaskCompletion func(msg string, blockingDelegateIDs []string) error
@@ -262,6 +266,7 @@ func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
 		registerTool:        s.cfg.testOnly.registerTool,
 		emit:                s.emit,
+		deliverCommunicate:  s.deliverCommunicate,
 		steer:               s.SteerKind,
 		steerTaskCompletion: s.SteerTaskCompletion,
 		drainSteering:       s.drainSteeringForCommunicate,

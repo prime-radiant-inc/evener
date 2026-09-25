@@ -2493,6 +2493,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	}
 
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput}})
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
@@ -2625,6 +2626,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
+			s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxTurns: s.cfg.MaxTurns}})
 			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
