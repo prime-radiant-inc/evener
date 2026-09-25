@@ -114,3 +114,22 @@ func (w *Writer) RecordedLength() int64 {
 	defer w.tail.mu.Unlock()
 	return w.tail.recordedLength
 }
+
+// OnRecorded installs fn as the file's recorded-entry hook, replacing any
+// earlier one; nil removes it. The hook belongs to the file, so it sees every
+// writer's appends in this process, not only this writer's.
+//
+// fn is called once for each recorded entry, in ordinal order, while the
+// append lock is held and after the recorded length covers the entry. That
+// is what lets a consumer (phase 3's per-thread projection queue) see entries
+// in file order whichever goroutine appended them. The append lock is a leaf:
+// fn must not append, and must not take any lock an appender may hold. It
+// never sees an entry a rollback took back out. Nil-safe.
+func (w *Writer) OnRecorded(fn func(Record)) {
+	if w == nil || w.tail == nil {
+		return
+	}
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	w.tail.onRecorded = fn
+}

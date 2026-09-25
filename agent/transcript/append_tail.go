@@ -36,6 +36,9 @@ type appendTail struct {
 	// turns is the file's turn placement state: the running execution, the
 	// open gap turn and the prelude. See Placement.
 	turns turnPlacement
+	// onRecorded, when set, is called for each recorded entry; see
+	// Writer.OnRecorded.
+	onRecorded func(Record)
 	// move counts the times a writer positioned its handle at the file's end
 	// to append (or opened the file). A writer whose last recorded move is
 	// not the current one may have a handle position behind the end.

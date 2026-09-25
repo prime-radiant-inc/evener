@@ -802,6 +802,9 @@ func (w *Writer) commitBatchLocked(batch []Record, placed turnPlacement) {
 		w.tail.nextOrdinal++
 		w.tail.recordedLength += rec.Length
 		w.failures.Observe(rec.Turn)
+		if w.tail.onRecorded != nil {
+			w.tail.onRecorded(*rec)
+		}
 	}
 }
 
