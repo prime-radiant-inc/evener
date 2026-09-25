@@ -94,8 +94,9 @@ later file projection"). Restarting a daemon already changes what clients see.
    higher version wins.
    - Applying a fact twice changes nothing.
    - A file read that is ahead of the live stream changes nothing.
-   - A merge never removes a history item. Only a replacement does: a new
-     incarnation, a resync epoch, or an authoritative daemonless read.
+   - A merge never removes a history item. Only a replacement does. Four things
+     trigger one: a higher boot generation, a new incarnation on a latest-window
+     read, a newer resync epoch, and an authoritative daemonless read.
 4. **Memory holds only the overlay and bounded per-thread state.** Memory per
    thread no longer depends on the size of its history.
 
@@ -168,8 +169,15 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   monotonically: a counter persisted in the state directory and incremented
   under the session ownership lock. Every read
   response and every `history/updated` carries it. A client that sees a boot
-  generation higher than the one it holds replaces that thread's whole history
-  before applying anything else, and ignores anything carrying a lower one.
+  generation higher than the one it holds marks that thread invalid. The client
+  applies no update for that thread until a fresh latest-window read at the new
+  generation replaces its whole history, and it issues that read at once. A read
+  still in flight from the old generation is ignored when it returns. Anything
+  carrying a lower generation is ignored.
+  - **Daemonless reads.** The hub has no running daemon for the session. It
+    stamps boot generation 0, and daemonless replacement follows the incarnation
+    and authoritative-window rules instead. When a daemon later starts for that
+    session, its generation is always higher than 0.
   That rule takes precedence over the index incarnation, epoch
   or recorded length say. So entries lost in a crash never survive on a client,
   even when the truncated file happens to match the index's covered length.
@@ -382,7 +390,13 @@ Projection is serialized per thread, in append order. The writer hands each
 recorded entry to that thread's projection queue while it still holds the append
 lock, so entries enter the queue in ordinal order no matter which goroutine
 appended them. That includes async attention writes. One goroutine per thread
-drains the queue. A boundary test appends from two goroutines at once and checks
+drains the queue.
+
+The queue is bounded to 4 MB of queued entries per thread. An enqueue that would
+exceed the bound does not block the append lock. It marks the thread for resync
+and drops the queue. The drain goroutine then rebuilds through a boundary
+ordinal, as described below, so a slow projector costs a resync, never unbounded
+memory. A boundary test appends from two goroutines at once and checks
 that projection sees every ordinal in order.
 
 **When projecting or publishing fails** after an append has recorded:
@@ -400,8 +414,12 @@ that projection sees every ordinal in order.
 
 Every read response and `history/updated` carries the epoch. A client that
 receives the resync, or that later reads and sees a newer epoch than it holds,
-replaces that thread's history instead of merging. A response or update with an
-older epoch than the client holds is discarded. The epoch never needs clearing.
+treats it the same way as a higher boot generation. It marks the thread invalid,
+issues a fresh latest-window read, and replaces the thread's whole history with
+that read, instead of merging. Until then it applies no updates for the thread.
+A response or update with an older epoch than the client holds is discarded. The
+rule that live responses merge applies only within one boot generation and
+epoch. The epoch never needs clearing.
 
 If a resync push cannot be delivered to a subscriber, the server ends that
 subscription. The client's reconnect then starts from a fresh read with the
@@ -477,6 +495,11 @@ calls is recorded (`agent/session_model_call.go:994-996`).
   per-result image limits.
 - If TOOL_RESULTS is never recorded, `overlay/end` turns the execution state into
   an interrupted notice.
+- **Derived interrupted state.** The projector derives an interrupted state for
+  any tool call whose execution turn has a completion but no TOOL_RESULTS for
+  that call. That completion is the interrupted completion that resume writes
+  after a crash. So a reload, a restart and a daemonless read all show the call
+  as interrupted, not as running forever.
 
 **Running state.** The running turn ID and the thread status.
 
@@ -549,6 +572,10 @@ one rule for when a served session fails closed. It fails closed when:
   entry records (see The projector). An unrecorded COMMUNICATE therefore means
   `communicate` cannot deliver it, and the session fails closed instead of
   dropping the message silently or delivering it without history.
+
+A writer is closed only when its session closes, and a closed session accepts no
+input, so a closed writer cannot lose history while input continues. A missing
+writer in a served session is the "cannot be created" case above.
 
 Any other append that is not recorded, for example a cleanly rolled-back durable
 append, leaves the writer usable. The caller's existing error handling applies,
@@ -876,6 +903,15 @@ Each phase ships on its own and keeps main green.
    - a read between the ASSISTANT and the COMMUNICATE entry
    - a paginated read that overlaps a cross-process rollback
    - a failed history publication, and a failed resync delivery
+   - a crash that loses buffered entries: clients replace on the higher boot
+     generation and never keep the lost entries, including when the truncated
+     file matches the index's covered length
+   - an unrecorded append on a poisoned writer and on a missing writer: the
+     session fails closed
+   - an index extension or rebuild killed between record writes and the header
+     commit, including while another process holds the shared lock: the next
+     read redoes it to a correct projection, with no duplicate or torn records
+   - a projection queue overflow: the thread resyncs and no entry is lost
    - three consecutive rebuild failures: the thread enters the failed state,
      recording continues, reads return `ErrorTranscriptHistoryFailed` while
      clients keep their history, and a restart recovers
