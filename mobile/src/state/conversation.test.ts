@@ -1471,6 +1471,23 @@ describe("ConversationStore", () => {
       return store;
     }
 
+    // A model whose daemon projection still reports the mutation as pending —
+    // the source that carries a settled-out id, and so the one that needs the
+    // carried submitted-here provenance for `fromThisClient`/`createdAt`.
+    function authoritativeModel(id: string): MobileConversation {
+      return makeConversation({
+        pendingMutations: [
+          {
+            clientMutationId: id,
+            method: "turn/start",
+            input: textInput("carried"),
+            executionState: "accepted",
+            projectionState: "pending",
+          },
+        ],
+      });
+    }
+
     it("shows a durable in-flight row after a cold reopen", async () => {
       const port = fakePort({ outbox: [outbox()] });
       // First app run: the store follows the mutation's durable row.
@@ -1669,6 +1686,95 @@ describe("ConversationStore", () => {
 
       expect(port.listenerCount()).toBe(0);
       expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("reopening the same ref through a different target retires the prior seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+
+      // The same wire ref through a different hub/service: the durable target
+      // key differs, and the store cannot see the hub, so the seam retires.
+      const otherHub = new FakeConversationService();
+      otherHub.openConv = makeConversation({
+        ref: "ref-1",
+        threadId: "thread-1",
+      });
+      await store.getState().open(otherHub, "ref-1");
+
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a read a newer read superseded still records submitted-here provenance", async () => {
+      const port = fakePort({});
+      const store = await openStore(authoritativeModel("cmid-9"));
+      // The first read is held and observes the durable record; a newer read
+      // resolves first against storage where the record is already settled out.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let held = false;
+      port.read = async () => {
+        if (!held) {
+          held = true;
+          await heldRead;
+          return {
+            outbox: [outbox({ clientMutationId: "cmid-9" })],
+            optimistic: [],
+            recovery: [],
+          };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      store.getState().bindPendingMutations(port);
+      port.publish({}); // the newer read: the record is gone
+      await yieldMicrotask();
+      await yieldMicrotask();
+      releaseRead?.(); // the held, older read resolves late
+      await yieldMicrotask();
+      await yieldMicrotask();
+      port.publish({}); // a later reconcile observes the recorded provenance
+      await yieldMicrotask();
+      await yieldMicrotask();
+
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-9",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a same-target rebind keeps the client's submitted-here provenance", async () => {
+      const store = await openStore(authoritativeModel("cmid-7"));
+      const first = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-7" })],
+      });
+      store.getState().bindPendingMutations(first);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        // The daemon's own projection describes the same id, so the entry is
+        // authoritative from the start; the durable record supplies provenance.
+        source: "authoritative",
+        fromThisClient: true,
+      });
+
+      // A same-target rebind whose read shows the record settled out: the
+      // daemon still reports the id, and the carried provenance must survive
+      // the rebind to keep `fromThisClient`/`createdAt` honest.
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        source: "authoritative",
+        fromThisClient: true,
+        createdAt: 7,
+      });
     });
   });
 

@@ -2084,12 +2084,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // Stops following the bound seam and forgets its snapshot. Never sets state:
   // the callers that clear the published projection do so through their own
   // set (close/reset null it, the returned unbind publishes the clear).
+  // Provenance is deliberately NOT forgotten here: the id -> createdAt map is
+  // monotonic knowledge the package store treats as never pruned, so a
+  // same-target rebind keeps it and a still-authoritative entry stays honest.
   function detachPendingRows(): void {
     ++pendingGeneration;
     pendingUnsubscribe?.();
     pendingUnsubscribe = null;
     pendingPort = null;
     pendingSnapshot = null;
+  }
+
+  // Forgets the carried provenance. Only a true teardown (close/reset) or a
+  // thread open (a different durable target may be next) may call this; a
+  // rebind must not.
+  function forgetPendingProvenance(): void {
     pendingSubmittedHere.clear();
   }
 
@@ -2136,12 +2145,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
       async open(service, ref) {
         suspendedService = null;
-        // A different thread owns a different durable target: the prior seam's
-        // listener and its rows do not survive the open, exactly as close/reset
-        // retire them. A same-thread reopen keeps the binding (its records are
-        // still this target's).
-        const previousRef = get().ref;
-        if (previousRef !== ref) detachPendingRows();
+        // Any thread open retires the bound seam: the port is scoped by the
+        // durable target key (hub + ref) and the store cannot see the hub, so a
+        // same-ref open through a different hub must not inherit the prior
+        // target's rows. The host rebinds for the conversation it opens.
+        detachPendingRows();
+        forgetPendingProvenance();
         // Increment conversation generation so late frames from a previous
         // conversation are rejected.
         const gen = ++conversationGen;
@@ -2173,7 +2182,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
-          ...(previousRef !== ref ? { pendingMutations: null } : {}),
+          pendingMutations: null,
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
@@ -2206,10 +2215,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
       async openProjected(service, sink, ref, replacement) {
         suspendedService = null;
-        // Same rule as open(): a different thread retires the prior seam and
-        // its rows; a same-thread reopen keeps the binding.
-        const previousRef = get().ref;
-        if (previousRef !== ref) detachPendingRows();
+        // Same rule as open(): any thread open retires the prior seam and its
+        // rows (the durable target key is hub + ref, and the store cannot see
+        // the hub), and the host rebinds for the conversation it opens.
+        detachPendingRows();
+        forgetPendingProvenance();
         const gen = ++conversationGen;
         // I1: increment the binding epoch and bind service+sink so queued
         // requests from an older binding are suppressed at the boundary.
@@ -2241,7 +2251,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
-          ...(previousRef !== ref ? { pendingMutations: null } : {}),
+          pendingMutations: null,
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
@@ -3760,9 +3770,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           }
           void pending.then(
             (snapshot) => {
-              if (generation !== pendingGeneration || request !== latestRequest)
-                return;
-              pendingSnapshot = snapshot;
+              // A detached binding must not repopulate the provenance
+              // detachPendingRows/forgetPendingProvenance reset, so the
+              // generation fence comes first...
+              if (generation !== pendingGeneration) return;
+              // ...and the provenance scan is NOT behind the newest-request
+              // fence: a read a newer one superseded still observed durable
+              // records of this client's own, and the package store it mirrors
+              // records submitted-here before applying the same fence.
               for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
                 if (port.isOwnMutationRecord(record)) {
                   pendingSubmittedHere.set(
@@ -3771,6 +3786,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
                   );
                 }
               }
+              // Only the newest read publishes its snapshot.
+              if (request !== latestRequest) return;
+              pendingSnapshot = snapshot;
               set({ pendingMutations: reconcilePendingMutations() });
             },
             () => {
@@ -4155,6 +4173,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         transientWarnings.length = 0;
         releaseBoundedTextCache();
         detachPendingRows();
+        forgetPendingProvenance();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -4337,6 +4356,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         transientWarnings.length = 0;
         releaseBoundedTextCache();
         detachPendingRows();
+        forgetPendingProvenance();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
