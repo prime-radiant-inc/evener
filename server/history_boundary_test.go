@@ -1,14 +1,22 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -330,23 +338,201 @@ func (st *servedTranscript) readFrom(t *testing.T, srv *Server) appwire.ThreadRe
 	return response
 }
 
-// TestUnrecordedAppendFailsClosed reuses phase 2's fail-closed seams: an
-// append the writer never actually recorded (a poisoned writer, and a
-// session with no writer at all) must not let the served session go on as
-// if nothing happened -- reads of that thread fail rather than silently
-// omitting the entry.
+// boundaryTearingFs is the real filesystem whose files write only half of an
+// entry carrying marker and then fail, poisoning the writer: the same
+// mechanism agent/session_fail_closed_test.go's toolResultsTearingFs pins,
+// generalized to any marker so this package can reuse it on COMMUNICATE.
+type boundaryTearingFs struct {
+	afero.Fs
+	marker []byte
+}
+
+func (fs boundaryTearingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return boundaryTearingFile{File: f, marker: fs.marker}, nil
+}
+
+type boundaryTearingFile struct {
+	afero.File
+	marker []byte
+}
+
+func (f boundaryTearingFile) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), string(f.marker)) {
+		n, _ := f.File.Write(p[:len(p)/2])
+		return n, errors.New("injected torn write")
+	}
+	return f.File.Write(p)
+}
+
+// seenSnapshot is every event ps has seen so far, safe to read after close.
+func (ps *paritySession) seenSnapshot() []events.SessionEvent {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return append([]events.SessionEvent(nil), ps.seen...)
+}
+
+// visibleFailClosedDiagnostics counts the served events that are the one
+// diagnostic a session failing closed shows (agent/session_fail_closed.go's
+// announceFailClosed): an EventError whose Cause.Kind is
+// "transcript_failed_closed". That constant is unexported in package agent,
+// so this mirrors agent/session_fail_closed_test.go's failClosedDiagnostics
+// by the same literal rather than importing it.
+func visibleFailClosedDiagnostics(evs []events.SessionEvent) int {
+	count := 0
+	for _, ev := range evs {
+		if data, ok := ev.Data.(events.ErrorData); ok && ev.Kind == events.EventError && data.Cause != nil && data.Cause.Kind == "transcript_failed_closed" {
+			count++
+		}
+	}
+	return count
+}
+
+// isFailClosedRefusal reports whether err is the refusal a session that
+// failed closed gives every later input. agent.errTranscriptFailedClosed is
+// unexported, so this matches its stable message instead of errors.Is.
+func isFailClosedRefusal(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "cannot record what it shows")
+}
+
+// TestUnrecordedAppendFailsClosed drives a real served session (a scripted
+// provider, wired into its own server the way bridgeParitySession does)
+// through the two ways the spec's "Writer failure" section makes a served
+// session fail closed: a poisoned writer, and one that was never created.
+// agent/session_fail_closed_test.go's TestAServedSessionWithNoTranscriptFailsClosed
+// and TestAnUnrecordedCommunicateFailsAServedSessionClosed pin the same
+// seams from inside package agent, where a test can swap the session's
+// writer directly; this package cannot reach that unexported field, so a
+// poisoned writer is reached the same way OpenWriterForSessionWithFS's own
+// doc comment describes: a second *transcript.Writer opened on the real
+// filesystem shares the file's append tail with the session's own writer,
+// so poisoning it through a torn write poisons what the session sees too.
 func TestUnrecordedAppendFailsClosed(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	t.Cleanup(srv.Close)
-	if h := srv.appHistoryForID("nonexistent"); h != nil {
-		t.Fatal("a thread never served has a history")
-	}
-	// A missing writer: recording against a thread the server never wired
-	// (WireTranscriptHistory not called) must not create served state either.
-	srv.recordTranscriptEntry("nonexistent", transcript.Record{Recorded: true, Length: 1})
-	if h := srv.appHistoryForID("nonexistent"); h != nil {
-		t.Fatal("an unrecorded append against an unwired thread created a history")
-	}
+	t.Run("poisoned writer", func(t *testing.T) {
+		sess, script, _, stateDir := newScriptedSession(t)
+		ps := bridgeParitySession(t, sess, stateDir)
+		t.Cleanup(func() { ps.close(t) })
+
+		// The provider's step runs inside the round, before the session
+		// records anything for it: poisoning the shared tail here lands
+		// before the COMMUNICATE append that would otherwise announce
+		// "never delivered".
+		script.script(func(llm.Request) (llm.Response, error) {
+			w, _, err := transcript.OpenWriterForSessionWithFS(boundaryTearingFs{Fs: afero.NewOsFs(), marker: []byte(`"kind":"COMMUNICATE"`)}, sess.TranscriptPath(), sess.ID())
+			if err != nil {
+				return llm.Response{}, err
+			}
+			defer w.Close() //nolint:errcheck // fixture
+			if _, err := w.Record(schema.NewTurn(schema.TurnCommunicate, llm.Assistant("poison")), transcript.RecordOptions{}); err == nil {
+				return llm.Response{}, errors.New("setup: the torn write did not fail")
+			}
+			if !w.Poisoned() {
+				return llm.Response{}, errors.New("setup: the torn write did not poison the shared tail")
+			}
+			return parityCommunicate("poison-1", "never delivered", true), nil
+		})
+		if _, err := sess.ProcessInput(context.Background(), "talk", nil); err == nil {
+			t.Fatal("the input completed after its writer was poisoned")
+		}
+
+		// The running execution is interrupted: it does not end as completed
+		// once its terminal entries cannot be recorded.
+		ended := ps.await(t, events.EventExecutionEnded, nil)
+		if data, ok := ended.Data.(events.ExecutionEndedData); !ok || data.Status == string(schema.TurnCompleted) {
+			t.Fatalf("execution ended = %+v, want a status other than completed once its writer was poisoned", ended.Data)
+		}
+
+		// Further input is refused.
+		if _, err := sess.ProcessInput(context.Background(), "again", nil); !isFailClosedRefusal(err) {
+			t.Fatalf("input after failing closed = %v, want the fail-closed refusal", err)
+		}
+
+		// The overlay ended its round: no live stream or tool state is left
+		// for the client to hold once the execution stopped.
+		history := ps.srv.appHistoryForID(sess.ID())
+		if history == nil {
+			t.Fatal("the served session has no history")
+		}
+		for _, item := range history.overlay.Snapshot() {
+			if item.Kind == appwire.OverlayStream || item.Kind == appwire.OverlayTool {
+				t.Fatalf("overlay still holds %+v after the execution ended", item)
+			}
+		}
+
+		ps.close(t)
+		if got := visibleFailClosedDiagnostics(ps.seenSnapshot()); got != 1 {
+			t.Fatalf("%d visible fail-closed diagnostics, want 1", got)
+		}
+	})
+
+	// "missing writer": a transcript that was never created. package agent's
+	// own test reaches this with a construction-time fault hook
+	// (sessionInitFault) this package cannot call; the same effect is
+	// reachable here through public API: AcquireSessionOwnership hands this
+	// package the freshly generated session ID before any ID-specific state
+	// is persisted (agent/session_config.go), early enough to occupy the
+	// transcript's path with a directory before the writer tries to create
+	// it there -- the writer's create then fails at the real OS boundary,
+	// the same way it would on a full disk, and every other per-ID state
+	// (which lives elsewhere under "sessions") is unaffected.
+	t.Run("missing writer", func(t *testing.T) {
+		root := t.TempDir()
+		stateDir := filepath.Join(root, "state")
+		workDir := filepath.Join(root, "work")
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// "sessions": agent.sessionsSubdir, unexported; the literal names a
+		// stable on-disk path other tools resolve the same way.
+		if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := &parityProvider{childRelease: make(chan struct{})}
+		client := llm.NewClient()
+		client.Register(script)
+		sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
+			StateDir:    stateDir,
+			VisionModel: "off",
+			LLMSleep:    noSleep,
+			AcquireSessionOwnership: func(sessionID string) error {
+				return os.MkdirAll(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), 0o755)
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The writer's create already failed against the occupying
+		// directory; remove it so a fresh read of the path (PrepareAppIdentity,
+		// below) sees a plain absence rather than a directory where a file
+		// belongs.
+		if err := os.RemoveAll(sess.TranscriptPath()); err != nil {
+			t.Fatal(err)
+		}
+		sess.SetClientMutationStartWakeFunc(func() {})
+		ps := bridgeParitySession(t, sess, stateDir)
+		t.Cleanup(func() { ps.close(t) })
+
+		if h := ps.srv.appHistoryForID(sess.ID()); h != nil {
+			t.Fatal("a session whose transcript could not be created has a history")
+		}
+		// No execution ever starts: the refusal is at the claim, before any
+		// round begins (agent/session_lifecycle.go's
+		// refuseTurnOnUnhealthyTranscript runs first).
+		if _, err := sess.ProcessInput(context.Background(), "hello", nil); !isFailClosedRefusal(err) {
+			t.Fatalf("input on a session with no transcript = %v, want the fail-closed refusal", err)
+		}
+		if _, err := sess.ProcessInput(context.Background(), "again", nil); !isFailClosedRefusal(err) {
+			t.Fatalf("second input = %v, want the fail-closed refusal", err)
+		}
+
+		ps.close(t)
+		if got := visibleFailClosedDiagnostics(ps.seenSnapshot()); got != 1 {
+			t.Fatalf("%d visible fail-closed diagnostics, want 1", got)
+		}
+	})
 }
 
 // TestProjectionQueueOverflowResyncs overflows the projection queue (bound
