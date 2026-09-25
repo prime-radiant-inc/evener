@@ -152,3 +152,17 @@ func TestDirForIsTheTranscriptPathWithIndexSuffix(t *testing.T) {
 		t.Fatalf("DirFor = %q, want %q", got, want)
 	}
 }
+
+// An unreadable entry closes the legacy group before it: a legacy entry after
+// it opens a turn of its own rather than joining a turn whose items sit
+// before the unreadable entry's.
+func TestAnUnreadableEntryClosesTheLegacyGroup(t *testing.T) {
+	candidates := indexedCandidates(t, newFormatFixture(t, "unreadable entry"), -1)
+	turnOfText := map[string]string{}
+	for _, c := range candidates {
+		turnOfText[c.Item.Text] = c.TurnID
+	}
+	if before, after := turnOfText["legacy before"], turnOfText["legacy after"]; before == "" || after == "" || before == after {
+		t.Fatalf("legacy entries around the unreadable one in turns %q and %q, want two turns", before, after)
+	}
+}

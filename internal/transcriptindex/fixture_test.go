@@ -31,7 +31,12 @@ type fixtureLine struct {
 	turn  schema.Turn
 	seq   int
 	blank bool
+	// unreadable, when set, writes a user entry of that text in a form that
+	// does not decode (corruptEntryLine) in place of turn.
+	unreadable string
 }
+
+func unreadableLine(text string) fixtureLine { return fixtureLine{unreadable: text} }
 
 func entryLine(turn schema.Turn) fixtureLine { return fixtureLine{turn: turn} }
 
@@ -68,6 +73,10 @@ func (fx fixture) encode(t testing.TB) (header []byte, lines [][]byte) {
 		seq++
 		if line.seq != 0 {
 			seq = line.seq
+		}
+		if line.unreadable != "" {
+			lines = append(lines, corruptEntryLine(t, line.unreadable))
+			continue
 		}
 		lines = append(lines, encodeEntry(t, seq, line.turn))
 	}
@@ -252,6 +261,12 @@ func fixtures() []fixture {
 		{name: "steering", header: header, lines: steerings},
 		{name: "failures", header: header, lines: failures},
 		{name: "standalone kinds", header: header, lines: standalones},
+		{name: "unreadable entry", header: header, lines: []fixtureLine{
+			entryLine(user("legacy before")),
+			entryLine(assistant(text("legacy answer"))),
+			unreadableLine("bad"),
+			entryLine(assistant(text("legacy after"))),
+		}},
 		{name: "transcript only", header: header, lines: interleaveTranscriptOnly(append(append([]fixtureLine(nil), basic...), communicate...))},
 	}
 	sets = append(sets, newFormatFixtures(header, prelude)...)
@@ -474,7 +489,7 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 // legacy reports whether every entry of the fixture is a legacy entry.
 func (fx fixture) legacy() bool {
 	for _, line := range fx.lines {
-		if line.turn.Format != 0 {
+		if line.turn.Format != 0 || line.unreadable != "" {
 			return false
 		}
 	}

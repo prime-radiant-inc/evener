@@ -22,8 +22,10 @@ import (
 const testMaxLineBytes = 128 << 20
 
 // readFixtureFile strictly decodes a transcript the way the whole-file readers
-// do: blank lines are skipped, an unterminated tail is dropped.
-func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Turn) {
+// do: blank lines are skipped, an unterminated tail is dropped. An entry line
+// that does not decode takes its place as a zero turn, its decode error in
+// unreadable at the same index.
+func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Turn, map[int]error) {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
@@ -33,6 +35,7 @@ func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Tur
 	reader := bufio.NewReaderSize(f, 64<<10)
 	var header transcript.Header
 	var entries []schema.Turn
+	unreadable := map[int]error{}
 	headerRead := false
 	for {
 		line, complete, _, err := transcript.ReadLine(reader, testMaxLineBytes)
@@ -55,11 +58,11 @@ func readFixtureFile(t testing.TB, path string) (transcript.Header, []schema.Tur
 		}
 		entry, err := transcript.DecodeEntry(line)
 		if err != nil {
-			t.Fatal(err)
+			unreadable[len(entries)] = err
 		}
 		entries = append(entries, entry.Turn)
 	}
-	return header, entries
+	return header, entries, unreadable
 }
 
 // referenceTurn is one turn of the reference projection, with what the
@@ -82,7 +85,7 @@ type referenceTurn struct {
 // opened it and versioned by the latest entry that contributed to it.
 func referenceProjection(t testing.TB, path string) []referenceTurn {
 	t.Helper()
-	header, entries := readFixtureFile(t, path)
+	header, entries, unreadable := readFixtureFile(t, path)
 	type turnState struct {
 		id        string
 		legacy    bool
@@ -118,6 +121,22 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 	}
 	for i, entry := range entries {
 		entryIndex := i + 1
+		if decodeErr, ok := unreadable[i]; ok {
+			// A turn of its own holding one error notice; it closes the
+			// legacy group before it.
+			grouper = apptranscript.TurnGrouper{}
+			s := &turnState{id: fmt.Sprintf("turn_unreadable_%d", i), version: uint64(entryIndex)}
+			turns = append(turns, s)
+			add(s, appwire.ThreadItem{
+				Type:        "systemMessage",
+				ID:          fmt.Sprintf("item_unreadable_%d", i),
+				Description: "Unreadable transcript entry",
+				Text:        fmt.Sprintf("transcript entry %d could not be read: %s", i, decodeErr),
+				Status:      appwire.TurnStatusCompleted,
+				EventKind:   appwire.ThreadItemEventKindError,
+			}, entryIndex, 0)
+			continue
+		}
 		if entry.Format != schema.TurnFormatIdentity {
 			if entry.Kind.TranscriptOnly() {
 				continue // takes an entry index, and nothing else

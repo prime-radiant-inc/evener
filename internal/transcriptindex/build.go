@@ -78,8 +78,10 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 
 // quarantine indexes an entry line that does not decode as one unreadable
 // item in a completed turn of its own; the reader projects it from the line
-// alone (reader.unreadable). The legacy grouping state is left as it was.
+// alone (reader.unreadable). It closes the open legacy group, as a
+// new-format entry does, so a legacy entry after it starts a turn of its own.
 func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error {
+	b.grouper = apptranscript.TurnGrouper{}
 	slot, err := b.openTurn(unreadableTurnID(ordinal), turnKindUnreadable, ordinal, offset)
 	if err != nil {
 		return err
