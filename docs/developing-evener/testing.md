@@ -551,8 +551,10 @@ working directory and removed when the check finishes — unless a session it
 started could not be stopped, in which case it stays. A name that already exists
 is refused before anything is created, so the cleanup cannot adopt a directory
 this run did not make. The stop is registered before the spawn is asked for, so a
-session that came back with a ref is stopped in band, retrying inside one bounded
-window, and a session that could not be stopped is left alone: the **directory
+session that came back with a ref this check may stop — one that parses as the
+host's own, never a controller-local or another host's ref — is stopped in band,
+retrying inside one bounded window, and a session that could not be stopped is left
+alone: the **directory
 stays too**, with a failure naming the ref, the directory, and the fact that
 nothing was cleaned up — a directory a running session still references is better
 left than deleted out from under it. When no ref came back the outcome decides: a

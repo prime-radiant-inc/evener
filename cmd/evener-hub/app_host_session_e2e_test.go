@@ -44,6 +44,12 @@ const (
 	sessionCleanupStopTimeout = 30 * time.Second
 	// sessionCleanupRetryWait is the pause between the cleanup's stop attempts.
 	sessionCleanupRetryWait = 2 * time.Second
+	// sessionSpawnTimeout bounds the spawn: the host resolves the launch with
+	// several sequentially bounded shell-outs (two launch-checks and the daemon
+	// spawn), so the lease is generous for one spawn. It counts from
+	// context.Background, not from the run's outer budget, so a slow attach cannot
+	// shorten it — the attach bounds itself inside awaitHostAttached.
+	sessionSpawnTimeout = 3 * time.Minute
 	// sessionReadTimeout bounds each post-spawn read the check makes through the
 	// controller: the fleet list and the session read. Each is a forwarded call the
 	// host's hub answers from its own roster or daemon, neither starts a turn, and
@@ -177,19 +183,21 @@ func sessionModelAmbiguousWithController(hostResolvedModel, controllerProvider, 
 //     assertion is judged on its own clock, not the run's spent budget.
 //
 // Cleanup is band-only and says what it can and cannot do. The stop is registered
-// before the spawn is asked for, over a ref the closure reads once it is known: a
-// session that came back with a ref is stopped through the controller, retrying
-// inside one bounded window. A stop that never takes leaves the directory in
-// place, with a failure naming the ref, the directory, and the fact that nothing
-// was cleaned up — deleting a directory a running session still references would
-// be the leak this cleanup exists to prevent. When NO ref came back the outcome
-// decides: a start the host refused as a request (an answered request-refusal
-// frame) never started anything, so the directory goes; anything else — a lost
-// response, a timeout, a dropped connection, or any other answered frame — leaves
-// it, and the check does not hunt for the session: it says the truth plainly (the
-// host, the directory, the session that may be running there that this check
-// cannot stop, and where the operator can stop it). There is no fleet sweep, no
-// directory matcher, and no process table in any of this.
+// before the spawn is asked for, over a target the closure reads once the SPAWN
+// assertion has armed it: a session that came back with a ref this check may stop —
+// one that parses as the host's own, never the raw response — is stopped through
+// the controller, retrying inside one bounded window. A stop that never takes
+// leaves the directory in place, with a failure naming the ref, the directory, and
+// the fact that nothing was cleaned up — deleting a directory a running session
+// still references would be the leak this cleanup exists to prevent. When NO such
+// ref came back the outcome decides: a start the host refused as a request (an
+// answered request-refusal frame) never started anything, so the directory goes;
+// anything else — a lost response, a timeout, a dropped connection, a foreign ref,
+// or any other answered frame — leaves it, and the check does not hunt for the
+// session: it says the truth plainly (the host, the directory, the session that may
+// be running there that this check cannot stop, and where the operator can stop
+// it). There is no fleet sweep, no directory matcher, and no process table in any
+// of this.
 //
 // What the stop does not remove is the session RECORD the host keeps in its own
 // state root — thread/shutdown stops the daemon, it does not delete the session —
@@ -275,10 +283,13 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 
 	stack := startHubStack(t, provider)
 
-	// The attach inside awaitHostAttached bounds itself (hostAttachTimeout), so this
-	// outer budget covers one attach attempt. The spawn gets its own lease below, and
-	// the reads that follow the spawn take their own clocks as well: sharing this one
-	// would let a slow attach or spawn eat into theirs.
+	// This budget covers getting the host ready and nothing that happens after the
+	// host answers: the local dial, the evener/host/add that reaches it, and one
+	// attach attempt — which awaitHostAttached bounds internally at hostAttachTimeout
+	// (four minutes). Six minutes is that four plus room for the dial and the add.
+	// Everything after the attach counts from context.Background instead — the spawn,
+	// the reads, the resolve and the stop each take their own clock — so a slow attach
+	// can spend this budget but never theirs.
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
@@ -300,14 +311,14 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	attached := awaitHostAttached(ctx, t, client, hostE2EName)
 	t.Logf("attached %s: os=%s arch=%s hubVersion=%s", hostE2EName, attached.OS, attached.Arch, attached.HubVersion)
 
-	// The check (the premise is in the file comment): the controller spawns, the
-	// HOST resolves. This lease has to be generous, because the host runs several
-	// sequentially bounded shell-outs to resolve the launch (two launch-checks and
-	// the daemon spawn): a short one can expire during legitimate work and surface as
-	// "the host cannot resolve a model" — a misleading failure that reads like a
-	// product bug. The reads that follow take their own clocks (sessionReadTimeout,
-	// sessionResolveTimeout) rather than sharing this lease.
-	startCtx, cancelStart := context.WithTimeout(ctx, 3*time.Minute)
+	// The spawn's own lease, counted from context.Background: it must not be shortened
+	// by however long the attach took. It has to be generous on its own terms, because
+	// the host runs several sequentially bounded shell-outs to resolve the launch (two
+	// launch-checks and the daemon spawn): a short one can expire during legitimate
+	// work and surface as "the host cannot resolve a model" — a misleading failure
+	// that reads like a product bug. The reads that follow take their own clocks
+	// (sessionReadTimeout, sessionResolveTimeout) rather than sharing this lease.
+	startCtx, cancelStart := context.WithTimeout(context.Background(), sessionSpawnTimeout)
 	defer cancelStart()
 	// No Input is sent, and that is the boundary this check keeps: an input item
 	// starts a real TURN against the HOST's own provider and credentials — a live
@@ -322,15 +333,20 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// is known. That ordering is the point: a start whose response never arrives —
 	// a timeout, a dropped connection — still leaves a session running on the host.
 	//
-	// When a ref came back, the session is stopped through the controller in band,
-	// retrying inside one bounded window — unless the check's own STOP assertion
-	// already settled it (stopSettled below). When none came back, the cleanup does
-	// not hunt for it: it asks whether the host REFUSED the start — an answered
-	// request-refusal means nothing was started, so the directory goes — and
-	// otherwise treats the outcome as unknown, says the truth plainly, and leaves
-	// the directory. Nothing here reaches for a process table, a kill, a pattern, or
-	// a sweep of the fleet view.
+	// When a ref this check may touch came back, the session is stopped through the
+	// controller in band, retrying inside one bounded window — unless the check's own
+	// STOP assertion already settled it (stopSettled below). When none did, the
+	// cleanup does not hunt for it: it asks whether the host REFUSED the start — an
+	// answered request-refusal means nothing was started, so the directory goes — and
+	// otherwise treats the outcome as unknown, says the truth plainly, and leaves the
+	// directory. Nothing here reaches for a process table, a kill, a pattern, or a
+	// sweep of the fleet view.
 	var ref string
+	// stopRef is the cleanup's target, and it is NOT the raw response: it is armed
+	// only from sessionStopTarget, once the SPAWN assertion has judged the ref parses
+	// and belongs to the host that was asked. A `local:` ref or another host's ref
+	// leaves it empty, so a response this check must not act on is never shut down.
+	var stopRef string
 	// stopSettled records that the body's own STOP assertion already stopped this
 	// session, so the cleanup has no stop left to make. The remote handler tolerates
 	// an exited session today (shutdownThreadTolerateExited, which the forwarding
@@ -348,7 +364,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	}
 	var startErr error
 	t.Cleanup(func() {
-		if ref == "" {
+		if stopRef == "" {
 			if startErrorIsDefiniteRefusal(startErr, startParams) {
 				// The host answered and refused the request, so nothing was ever
 				// started: there is no session the directory could belong to. The run
@@ -357,11 +373,11 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 				return
 			}
 			// The run has already failed at this point (thread/start's error path, or
-			// the SPAWN assertion that refuses an empty ref), so this reports rather
-			// than adds a failure: the session the host may be running cannot be
-			// addressed from here, and the operator is told where it is.
+			// the SPAWN assertion that refuses a ref this check may not stop), so this
+			// reports rather than adds a failure: the session the host may be running
+			// cannot be addressed from here, and the operator is told where it is.
 			sessionLeftBehind = true
-			t.Logf("a session may be running on host %s under %s that this check cannot stop: thread/start never returned a ref — its response was lost, or its answer carried none — so there is nothing here to address it by. It is visible in the controller's own fleet view, as a session whose working directory is %s, and can be stopped from there. Nothing was cleaned up: the directory is left in place.", host.target, hostDir, hostDir)
+			t.Logf("a session may be running on host %s under %s that this check cannot stop: thread/start named no ref this check may stop — its response was lost, its answer carried none, or the ref it named was not this host's — so nothing here can address it. It is visible in the controller's own fleet view, as a session whose working directory is %s, and can be stopped from there. Nothing was cleaned up: the directory is left in place.", host.target, hostDir, hostDir)
 			return
 		}
 		if stopSettled {
@@ -369,9 +385,9 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		}
 		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionCleanupStopTimeout)
 		defer cancelStop()
-		if err := stopSessionInBand(stopCtx, client, ref); err != nil {
+		if err := stopSessionInBand(stopCtx, client, stopRef); err != nil {
 			sessionLeftBehind = true
-			t.Errorf("left a session running on host %s: thread/shutdown of %s kept failing (%v) for its %s window, so the session could not be stopped; nothing was cleaned up — the directory is left in place, because a running session still references it", host.target, ref, err, sessionCleanupStopTimeout)
+			t.Errorf("left a session running on host %s: thread/shutdown of %s kept failing (%v) for its %s window, so the session could not be stopped; nothing was cleaned up — the directory is left in place, because a running session still references it", host.target, stopRef, err, sessionCleanupStopTimeout)
 		}
 	})
 
@@ -382,18 +398,17 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	}
 	ref = started.Thread.Evener.Ref
 
-	// SPAWN. The ref says WHICH hub owns the session: a controller-local spawn
-	// would answer "local:<id>". ParseRef validates the grammar too, so a malformed
-	// ref fails here rather than reading as a foreign source.
+	// SPAWN. The ref says WHICH hub owns the session: a controller-local spawn would
+	// answer "local:<id>", and another host's ref names someone else's session —
+	// neither is a session this check may stop. sessionStopTarget is that judgement
+	// (it parses the ref and checks its source), and the cleanup's target is armed
+	// from the same call, so the cleanup can never stop a ref this assertion refuses.
 	if ref == "" {
 		t.Fatalf("thread/start on host %q returned no evener ref: %+v", hostE2EName, started.Thread)
 	}
-	parsed, err := appwire.ParseRef(ref)
+	stopRef, err = sessionStopTarget(ref)
 	if err != nil {
-		t.Fatalf("thread/start on host %q returned an unparseable ref %q: %v", hostE2EName, ref, err)
-	}
-	if parsed.SourceID != hostE2EName {
-		t.Fatalf("thread/start ref %q has source %q, want %q: the session must belong to the host it was spawned on", ref, parsed.SourceID, hostE2EName)
+		t.Fatalf("thread/start on host %q: %v — the session must belong to the host it was spawned on, and the cleanup must not stop a ref this assertion refuses", hostE2EName, err)
 	}
 	t.Logf("spawned %s on host %q", ref, hostE2EName)
 
@@ -500,13 +515,13 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// attach and the spawn, and this assertion must not fail because of them.
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), sessionStopTimeout)
 	defer cancelShutdown()
-	if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
-		t.Fatalf("step thread/shutdown of %s through the controller: %v (the controller must be able to stop a session it did not host, in band)", ref, err)
+	if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: stopRef}); err != nil {
+		t.Fatalf("step thread/shutdown of %s through the controller: %v (the controller must be able to stop a session it did not host, in band)", stopRef, err)
 	}
 	// The session is settled by the check's own stop, so the cleanup has no stop
 	// left to make — see stopSettled.
 	stopSettled = true
-	t.Logf("the controller stopped %s in band", ref)
+	t.Logf("the controller stopped %s in band", stopRef)
 }
 
 // stopSessionInBand stops one session through the controller, retrying while the
@@ -555,6 +570,24 @@ func stopFailureToReport(lastAttempt, lastSubstantive error) error {
 		return lastSubstantive
 	}
 	return lastAttempt
+}
+
+// sessionStopTarget returns the ref the cleanup may stop for a thread/start
+// response, or an error naming why the response's ref is not one this check may
+// touch. A ref that does not parse names nothing; a ref whose source is not the
+// host that was asked — a controller-local `local:` ref, or another host's — names
+// a session this check must not stop. The SPAWN assertion judges this rule and arms
+// the cleanup's target from it, so the cleanup can never stop a ref that assertion
+// would refuse.
+func sessionStopTarget(ref string) (string, error) {
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil {
+		return "", fmt.Errorf("ref %q does not parse: %w", ref, err)
+	}
+	if parsed.SourceID != hostE2EName {
+		return "", fmt.Errorf("ref %q names source %q, want %q", ref, parsed.SourceID, hostE2EName)
+	}
+	return ref, nil
 }
 
 // startErrorIsDefiniteRefusal reports whether a thread/start error is the HOST
@@ -695,6 +728,32 @@ func TestStopFailureToReport(t *testing.T) {
 	for _, tc := range tests {
 		if got := stopFailureToReport(tc.lastAttempt, tc.lastSubstantive); !errors.Is(got, tc.want) {
 			t.Errorf("stopFailureToReport(%v, %v) = %v, want %v (%s)", tc.lastAttempt, tc.lastSubstantive, got, tc.want, tc.name)
+		}
+	}
+}
+
+// TestSessionStopTarget pins which thread/start refs the cleanup may stop: only a
+// ref that parses and names the host that was asked. A controller-local ref,
+// another host's ref, a malformed ref and an empty one all leave the cleanup with
+// no target, so it can never shut down an unrelated session — and the run that drew
+// such a ref has already failed at the SPAWN assertion.
+func TestSessionStopTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		ref     string
+		want    string
+		wantErr bool
+	}{
+		{"the host's own ref", hostE2EName + ":t1", hostE2EName + ":t1", false},
+		{"a controller-local ref", "local:t1", "", true},
+		{"another host's ref", "other:t1", "", true},
+		{"a malformed ref", "t1", "", true},
+		{"an empty ref", "", "", true},
+	}
+	for _, tc := range tests {
+		got, err := sessionStopTarget(tc.ref)
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("sessionStopTarget(%q) = (%q, %v), want (%q, err=%v) (%s)", tc.ref, got, err, tc.want, tc.wantErr, tc.name)
 		}
 	}
 }
