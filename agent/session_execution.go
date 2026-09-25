@@ -89,8 +89,10 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 // execution, and a USER_INPUT entry's index, which its USER_INPUT event
 // reports. Callers hold s.mu.
 func (s *Session) noteRecordedLocked(rec transcript.Record) {
-	s.lastRecorded = recordedOrdinal{recorded: rec.Recorded, ordinal: rec.Ordinal}
-	if !rec.Recorded {
+	s.lastRecorded = recordedOrdinal{recorded: rec.Recorded, ordinal: rec.Ordinal, model: rec.Turn.Model}
+	if !rec.Recorded || rec.Turn.OriginalOrdinal != nil {
+		// A fold's copy of an entry recorded earlier says nothing about the
+		// execution running when the copy is written.
 		return
 	}
 	if rec.Turn.TurnKind == schema.TurnSpanExecution {
@@ -174,6 +176,33 @@ func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	return recorded
 }
 
+// closeAbandonedExecutions closes, interrupted, every execution restore left
+// open for pending work that recovery then retired without running it — a
+// turn an accepted Stop finalized. It runs after restore's recovery passes and
+// reports whether it recorded anything.
+func (s *Session) closeAbandonedExecutions() bool {
+	pending := s.turnsPendingWork()
+	s.mu.Lock()
+	var abandoned []string
+	for turnID := range s.openPendingExecutions {
+		if !pending[turnID] {
+			abandoned = append(abandoned, turnID)
+			delete(s.openPendingExecutions, turnID)
+		}
+	}
+	s.mu.Unlock()
+	slices.Sort(abandoned)
+	recorded := false
+	for _, turnID := range abandoned {
+		rec, err := s.completeTurn(turnID, schema.TurnInterrupted)
+		if err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
+		recorded = recorded || rec.Recorded
+	}
+	return recorded
+}
+
 // completeTurn records a completion of status for turnID, an execution no
 // running process owns any more.
 func (s *Session) completeTurn(turnID string, status schema.TurnCompletionStatus) (transcript.Record, error) {
@@ -223,10 +252,12 @@ func (s *Session) turnsPendingWork() map[string]bool {
 	return pending
 }
 
-// recordedOrdinal is whether a write was recorded, and at which entry ordinal.
+// recordedOrdinal is whether a write was recorded, at which entry ordinal,
+// and with which model.
 type recordedOrdinal struct {
 	recorded bool
 	ordinal  uint64
+	model    string
 }
 
 // recordTranscriptOnlyAt records a transcript-only entry with the given

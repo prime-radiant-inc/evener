@@ -182,3 +182,22 @@ func TestRecoveredFailedStartCompletesItsOpenExecution(t *testing.T) {
 		t.Fatalf("completions of the recovered turn = %v, want one failed", got)
 	}
 }
+
+// Restore leaves an open execution to the pending work that owns it. When
+// recovery then retires that work without running it (an accepted Stop
+// finalizes the turn interrupted), the execution is closed interrupted.
+func TestRestoreClosesAnOpenExecutionItsPendingWorkAbandoned(t *testing.T) {
+	s, _ := newExecutionSession(t)
+	s.mu.Lock()
+	s.openPendingExecutions = map[string]bool{"turn_m9": true}
+	s.mu.Unlock()
+	if !s.closeAbandonedExecutions() {
+		t.Fatal("nothing was recorded")
+	}
+	if got := completionsOf(transcriptTurnsOf(t, s), "turn_m9"); len(got) != 1 || got[0] != schema.TurnInterrupted {
+		t.Fatalf("completions = %v, want one interrupted", got)
+	}
+	if s.closeAbandonedExecutions() {
+		t.Fatal("a second pass closed the turn again")
+	}
+}
