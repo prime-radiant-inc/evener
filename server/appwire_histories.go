@@ -22,9 +22,10 @@ import (
 // transcript append lock, where only leaf locks may be taken. It is replaced
 // whole, under s.mu, whenever one of its fields changes.
 type descendantHistorySource struct {
-	ownerThreadID string
-	sourceID      string
-	pathFunc      func(threadID string) string
+	ownerThreadID  string
+	sourceID       string
+	bootGeneration string
+	pathFunc       func(threadID string) string
 }
 
 func newAppHistories() *threadHistories {
@@ -92,38 +93,46 @@ func (s *Server) ensureDescendantHistory(ownerThreadID, threadID string) *thread
 		return nil
 	}
 	ref := appwire.Ref{SourceID: sourceIDForProjection(source.sourceID), ThreadID: threadID}.String()
-	publish, resync := s.historyPublishers(threadID, ref)
-	return s.appHistories.ensureDescendant(ownerThreadID, threadID, ref, path, publish, resync, s.historyCost)
+	publish, resync := s.historyPublishers(threadID, ref, source.bootGeneration)
+	return s.appHistories.ensureDescendant(ownerThreadID, threadID, ref, path, source.bootGeneration, publish, resync, s.historyCost)
 }
 
 // storeDescendantHistorySourceLocked republishes the descendant hook's view of
 // the served root. Callers hold s.mu.
 func (s *Server) storeDescendantHistorySourceLocked() {
 	s.appDescendantHistorySource.Store(&descendantHistorySource{
-		ownerThreadID: s.appThreadID,
-		sourceID:      s.appSourceID,
-		pathFunc:      s.appDescendantTranscriptPathFunc,
+		ownerThreadID:  s.appThreadID,
+		sourceID:       s.appSourceID,
+		bootGeneration: s.appBootGeneration,
+		pathFunc:       s.appDescendantTranscriptPathFunc,
 	})
 }
 
 // ensureHistory returns threadID's history, creating it over path at epoch
-// with recordedLength already covered.
-func (s *Server) ensureHistory(threadID, ref, path string, recordedLength int64, epoch uint64) *threadHistory {
-	publish, resync := s.historyPublishers(threadID, ref)
-	return s.appHistories.ensure(threadID, ref, path, recordedLength, epoch, publish, resync, s.historyCost)
+// and bootGeneration with recordedLength already covered.
+func (s *Server) ensureHistory(threadID, ref, path string, recordedLength int64, epoch uint64, bootGeneration string) *threadHistory {
+	publish, resync := s.historyPublishers(threadID, ref, bootGeneration)
+	return s.appHistories.ensure(threadID, ref, path, recordedLength, epoch, bootGeneration, publish, resync, s.historyCost)
 }
 
 // historyPublishers are the publish and resync a history of threadID commits
-// through.
-func (s *Server) historyPublishers(threadID, ref string) (func(appwire.HistoryUpdatedParams) error, func(uint64)) {
+// through, at bootGeneration.
+func (s *Server) historyPublishers(threadID, ref, bootGeneration string) (func(appwire.HistoryUpdatedParams) error, func(uint64)) {
 	publish := func(params appwire.HistoryUpdatedParams) error {
 		s.commitHistoryNotification(threadID, appwire.NotifyHistoryUpdated, params)
 		return nil
 	}
 	resync := func(epoch uint64) {
-		s.commitHistoryNotification(threadID, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref, Epoch: epoch})
+		s.commitHistoryNotification(threadID, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref, BootGeneration: bootGeneration, Epoch: epoch})
 	}
 	return publish, resync
+}
+
+// currentBootGeneration is the served identity's boot generation.
+func (s *Server) currentBootGeneration() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appBootGeneration
 }
 
 // commitHistoryNotification commits one notification from threadID's history

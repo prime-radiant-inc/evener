@@ -61,6 +61,9 @@ type threadHistoryConfig struct {
 	recordedLength int64
 	// epoch is the resync epoch the history starts at.
 	epoch uint64
+	// bootGeneration is the daemon's boot generation, stamped on every
+	// history/updated.
+	bootGeneration string
 }
 
 // threadHistory is one thread's history projection: the recorded entries the
@@ -73,6 +76,7 @@ type threadHistory struct {
 	publish             func(appwire.HistoryUpdatedParams) error
 	resync              func(epoch uint64)
 	cost                func(model string) *registry.Cost
+	bootGeneration      string
 
 	mu sync.Mutex // leaf: taken by the append hook
 	// recordedLength is the latest recorded length the hook saw, 0 before
@@ -107,6 +111,7 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 		publish:        cfg.publish,
 		resync:         cfg.resync,
 		cost:           cfg.cost,
+		bootGeneration: cfg.bootGeneration,
 		recordedLength: cfg.recordedLength,
 		published:      cfg.recordedLength,
 		epoch:          cfg.epoch,
@@ -242,12 +247,13 @@ func (h *threadHistory) project(target, published int64, epoch uint64) error {
 	h.incarnation = changes.Incarnation
 	if len(changes.Items) > 0 || len(changes.Turns) > 0 {
 		params := appwire.HistoryUpdatedParams{
-			ThreadID: h.threadID,
-			Ref:      h.ref,
-			Epoch:    epoch,
-			Snapshot: appwire.SnapshotIdentity{Incarnation: changes.Incarnation, Length: changes.Length},
-			Turns:    changes.Turns,
-			Items:    make([]appwire.ThreadItem, 0, len(changes.Items)),
+			ThreadID:       h.threadID,
+			Ref:            h.ref,
+			BootGeneration: h.bootGeneration,
+			Epoch:          epoch,
+			Snapshot:       appwire.SnapshotIdentity{Incarnation: changes.Incarnation, Length: changes.Length},
+			Turns:          changes.Turns,
+			Items:          make([]appwire.ThreadItem, 0, len(changes.Items)),
 		}
 		for _, candidate := range changes.Items {
 			params.Items = append(params.Items, candidate.Item)

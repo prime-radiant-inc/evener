@@ -39,6 +39,16 @@ type PreparedAppIdentity struct {
 	projector      *appprojector.AppEventProjector
 	transcriptPath string
 	recordedLength int64
+	bootGeneration string
+}
+
+// WithBootGeneration returns the identity served at bootGeneration, the
+// daemon's boot counter for the session (schema.NextBootGeneration, as
+// appwire.BootGeneration spells it). Every history message about the thread
+// and its descendants carries it.
+func (p PreparedAppIdentity) WithBootGeneration(bootGeneration string) PreparedAppIdentity {
+	p.bootGeneration = bootGeneration
+	return p
 }
 
 // WithRecordedLength returns the identity with the length its session's
@@ -160,6 +170,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		}
 		s.appSourceID = prepared.sourceID
 		s.appThreadID = prepared.threadID
+		s.appBootGeneration = prepared.bootGeneration
 		// The descendant hook's view of the served root moves before any
 		// history is detached, and the registry re-checks the owner when it
 		// creates one, so an old tree's hook cannot recreate a history for it.
@@ -169,7 +180,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appProjector = prepared.projector
 		var history *threadHistory
 		if prepared.transcriptPath != "" {
-			history = s.ensureHistory(prepared.threadID, newRef, prepared.transcriptPath, prepared.recordedLength, epoch)
+			history = s.ensureHistory(prepared.threadID, newRef, prepared.transcriptPath, prepared.recordedLength, epoch, prepared.bootGeneration)
 		}
 		oldDescendantIDs := make([]string, 0, len(s.appDescendants))
 		for threadID := range s.appDescendants {
@@ -201,7 +212,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		}
 		var notifications []appserver.SequencedNotification
 		if oldRef == newRef {
-			resync := appwire.ThreadResyncParams{ThreadID: prepared.threadID, Ref: newRef}
+			resync := appwire.ThreadResyncParams{ThreadID: prepared.threadID, Ref: newRef, BootGeneration: prepared.bootGeneration}
 			if history != nil {
 				resync.Epoch = history.Epoch()
 			}
@@ -1251,13 +1262,14 @@ func (s *Server) appThreadReadCutForTarget(params appwire.ThreadReadParams, thre
 	// addressed child's durable queue and mutation receipts.
 	thread.Evener.MutationStateAuthoritative = threadID == s.appProjectionThreadID()
 	cut := appThreadReadCut{
-		response: appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration},
+		response: appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: s.currentBootGeneration()},
 		found:    true,
 		history:  s.appHistoryForID(threadID),
 	}
 	if cut.history != nil {
 		cut.capture = cut.history.capture()
 		cut.response.Epoch = cut.capture.epoch
+		cut.response.BootGeneration = cut.history.bootGeneration
 	}
 	return cut
 }
@@ -1273,7 +1285,7 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 	if params.IncludeTurns && cut.history != nil {
 		turns, olderCursor, snapshot, overlay, err := cut.history.latest(cut.capture, cut.history.ref, params.ItemLimit)
 		if err != nil {
-			return appwire.ThreadReadResponse{}, err
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)
 		}
 		response.Thread.Turns = turns
 		response.OlderCursor = olderCursor
@@ -1443,18 +1455,19 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	}
 	history := s.appHistoryForID(threadID)
 	if history == nil {
-		return appwire.ThreadTurnsListResponse{}, nil
+		return appwire.ThreadTurnsListResponse{BootGeneration: s.currentBootGeneration()}, nil
 	}
 	epoch := history.Epoch()
 	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
 	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
+		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}
 	response := appwire.ThreadTurnsListResponse{
-		Data:       turns,
-		NextCursor: olderCursor,
-		Epoch:      epoch,
-		Snapshot:   &snapshot,
+		Data:           turns,
+		NextCursor:     olderCursor,
+		BootGeneration: history.bootGeneration,
+		Epoch:          epoch,
+		Snapshot:       &snapshot,
 	}
 	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err

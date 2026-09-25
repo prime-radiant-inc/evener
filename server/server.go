@@ -343,6 +343,9 @@ type Server struct {
 	// revision per owner for the current root identity. It is internal routing
 	// state and resets with that identity.
 	appTaskPublications map[string]taskPublicationCursor
+	// appBootGeneration is the served identity's boot generation, stamped on
+	// every history message (appwire.CompareBootGeneration).
+	appBootGeneration string
 	// appHistories holds the history of every thread served: the root's and
 	// each descendant's, projected from their transcripts.
 	appHistories *threadHistories

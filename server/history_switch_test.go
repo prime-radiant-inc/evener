@@ -393,6 +393,13 @@ type servedTranscript struct {
 // newServedTranscript serves threadID from a fresh transcript holding turns.
 func newServedTranscript(t *testing.T, srv *Server, threadID string, turns ...schema.Turn) *servedTranscript {
 	t.Helper()
+	return newServedTranscriptAt(t, srv, threadID, "1", turns...)
+}
+
+// newServedTranscriptAt is newServedTranscript for a daemon at boot
+// generation bootGeneration.
+func newServedTranscriptAt(t *testing.T, srv *Server, threadID, bootGeneration string, turns ...schema.Turn) *servedTranscript {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), threadID+".transcript.jsonl")
 	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: threadID, CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-5.5"})
 	if err != nil {
@@ -410,7 +417,7 @@ func newServedTranscript(t *testing.T, srv *Server, threadID string, turns ...sc
 		t.Fatal(err)
 	}
 	writer.OnRecorded(func(rec transcript.Record) { srv.recordTranscriptEntry(threadID, rec) })
-	srv.ReplaceAppIdentity(prepared.WithRecordedLength(writer.RecordedLength()), nil)
+	srv.ReplaceAppIdentity(prepared.WithRecordedLength(writer.RecordedLength()).WithBootGeneration(bootGeneration), nil)
 	return st
 }
 

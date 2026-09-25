@@ -43,18 +43,20 @@ func newThreadHistories(cacheCapacity, budgetBytes int) *threadHistories {
 // republish; pass 0 when the history's hook is wired before anything is
 // recorded. ensure does no file I/O itself: the cache opens a handle lazily,
 // on the first projection or read, so it is safe to call inside a
-// projection commit. epoch is the resync epoch the new history starts at.
+// projection commit. epoch is the resync epoch the new history starts at,
+// and bootGeneration the daemon's boot generation it publishes under.
 func (r *threadHistories) ensure(
 	threadID, ref, path string,
 	recordedLength int64,
 	epoch uint64,
+	bootGeneration string,
 	publish func(appwire.HistoryUpdatedParams) error,
 	resync func(epoch uint64),
 	cost func(model string) *registry.Cost,
 ) *threadHistory {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.ensureLocked(threadID, ref, path, recordedLength, epoch, publish, resync, cost)
+	return r.ensureLocked(threadID, ref, path, recordedLength, epoch, bootGeneration, publish, resync, cost)
 }
 
 // ensureDescendant is ensure for a descendant of the tree rooted at owner,
@@ -64,7 +66,7 @@ func (r *threadHistories) ensure(
 // its root's identity before the replacement cannot slip a history in after
 // it.
 func (r *threadHistories) ensureDescendant(
-	owner, threadID, ref, path string,
+	owner, threadID, ref, path, bootGeneration string,
 	publish func(appwire.HistoryUpdatedParams) error,
 	resync func(epoch uint64),
 	cost func(model string) *registry.Cost,
@@ -74,7 +76,7 @@ func (r *threadHistories) ensureDescendant(
 	if owner != r.root {
 		return nil
 	}
-	return r.ensureLocked(threadID, ref, path, 0, 0, publish, resync, cost)
+	return r.ensureLocked(threadID, ref, path, 0, 0, bootGeneration, publish, resync, cost)
 }
 
 // ensureLocked is ensure's body. Callers hold r.mu.
@@ -82,6 +84,7 @@ func (r *threadHistories) ensureLocked(
 	threadID, ref, path string,
 	recordedLength int64,
 	epoch uint64,
+	bootGeneration string,
 	publish func(appwire.HistoryUpdatedParams) error,
 	resync func(epoch uint64),
 	cost func(model string) *registry.Cost,
@@ -100,6 +103,7 @@ func (r *threadHistories) ensureLocked(
 		cost:           cost,
 		recordedLength: recordedLength,
 		epoch:          epoch,
+		bootGeneration: bootGeneration,
 	})
 	r.threads[threadID] = h
 	return h

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -734,6 +735,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess.Close()
 		return err
 	}
+	// This start's boot generation: the session is owned by now (created
+	// under its ownership lock, or reserved before the resume), and the
+	// counter is durable before the daemon listens, so no read or
+	// notification of this boot can go out under an earlier generation.
+	startGeneration, err := schema.NextBootGeneration(sd, sess.ID(), 0)
+	if err != nil {
+		sess.Close()
+		return fmt.Errorf("boot generation: %w", err)
+	}
+	// servedBootGeneration is the generation of the served identity; a
+	// thread/clear replacement serves above it (see the clear func).
+	var servedBootGeneration atomic.Uint64
+	servedBootGeneration.Store(startGeneration)
 	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()
@@ -765,7 +779,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// The hooks first, then the recorded length: an entry recorded between the
 	// two is covered by the length or reaches the history through its hook.
 	srv.WireTranscriptHistory(sess)
-	srv.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()), nil)
+	srv.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(startGeneration)), nil)
 	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
@@ -1563,6 +1577,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("prepare app identity: %w", err)
 		}
+		// The replacement serves the same workspace ref, so it serves above
+		// the generation its clients hold, or they would ignore it.
+		clearGeneration, err := schema.NextBootGeneration(sd, newSess.ID(), servedBootGeneration.Load())
+		if err != nil {
+			newSess.Close() // disposes clearEnv
+			return fmt.Errorf("boot generation: %w", err)
+		}
 		// The rendezvous is the last fallible step and the daemon's public
 		// address for this thread. Moving it before the replacement means a
 		// client that discovers the new session id can always reach a daemon
@@ -1587,7 +1608,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// and the thread's history. The stable workspace ref remains subscribed
 		// while a resync tells every client to hydrate the new instance.
 		srv.WireTranscriptHistory(newSess)
-		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()), func() { setSession(newSess, clearEnv) })
+		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)), func() { setSession(newSess, clearEnv) })
+		servedBootGeneration.Store(clearGeneration)
 		// Re-root the retirement controller at the replacement. The lease held
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
