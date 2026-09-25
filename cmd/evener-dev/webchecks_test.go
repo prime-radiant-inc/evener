@@ -126,3 +126,14 @@ func TestWebChecksRunInTheirOwnProcessGroups(t *testing.T) {
 		}
 	}
 }
+
+func TestLatestSignalPrefersAWaitingSecondSignal(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	if got := latestSignal(syscall.SIGINT, signals); got != syscall.SIGINT {
+		t.Fatalf("with nothing waiting, latestSignal = %v, want the first signal", got)
+	}
+	signals <- syscall.SIGTERM
+	if got := latestSignal(syscall.SIGINT, signals); got != syscall.SIGTERM {
+		t.Fatalf("with a second signal waiting, latestSignal = %v, want it", got)
+	}
+}

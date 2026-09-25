@@ -148,6 +148,7 @@ func (g *webGate) run() (int, bool) {
 			// would keep writing after the gate had gone.
 			select {
 			case <-built:
+				sig = latestSignal(sig, g.signals)
 			case sig = <-g.signals:
 				stopBuild()
 				<-built
@@ -293,7 +294,19 @@ func (g *webGate) stop(sig os.Signal, live []guardProcess, exits <-chan guardExi
 			return signalStatus(again)
 		}
 	}
-	return signalStatus(sig)
+	return signalStatus(latestSignal(sig, g.signals))
+}
+
+// latestSignal is sig, or a second signal already waiting in signals: when a
+// wait's last event and a second interrupt are ready together, select may take
+// either, and the second interrupt's status must still win.
+func latestSignal(sig os.Signal, signals <-chan os.Signal) os.Signal {
+	select {
+	case again := <-signals:
+		return again
+	default:
+		return sig
+	}
 }
 
 func (g *webGate) replay(path string) {
