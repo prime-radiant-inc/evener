@@ -2,11 +2,15 @@ package tool
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/llm"
 )
 
@@ -955,12 +959,46 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 	desc, _ := mr["description"].(string)
 	// Pin the cap's contract the way TestDefGrepContextLinesParam pins its
 	// range and default: what the field limits, and the default the
-	// implementation falls back to (values <= 0 become 100).
+	// implementation falls back to. Deriving the pin from
+	// execenv.DefaultGrepMaxResults — the constant every implementation site
+	// shares — keeps the advertised prose from drifting off the enforced
+	// default.
 	if !strings.Contains(desc, "Maximum number") {
 		t.Errorf("max_results description should state the results cap, got: %q", desc)
 	}
-	if !strings.Contains(desc, "100") {
-		t.Errorf("max_results description should document the default of 100, got: %q", desc)
+	if !strings.Contains(desc, strconv.Itoa(execenv.DefaultGrepMaxResults)) {
+		t.Errorf("max_results description should document the default of %d, got: %q", execenv.DefaultGrepMaxResults, desc)
+	}
+}
+
+// TestDefModelListBoundsMatchContract pins model_list's advertised page
+// bounds to the named constants the enforcing handler reads
+// (modelavailability.DefaultInlineMaxCount/DefaultInlineMaxBytes), so the
+// schema, its prose, and the enforced bounds cannot drift apart silently.
+func TestDefModelListBoundsMatchContract(t *testing.T) {
+	def := DefModelList()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_list properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	for _, tc := range []struct {
+		param string
+		deflt int
+	}{
+		{"max_count", modelavailability.DefaultInlineMaxCount},
+		{"max_bytes", modelavailability.DefaultInlineMaxBytes},
+	} {
+		prop, ok := props[tc.param].(map[string]any)
+		if !ok {
+			t.Fatalf("model_list missing %s property; got properties: %v", tc.param, props)
+		}
+		if max, ok := prop["maximum"].(int); !ok || max != tc.deflt {
+			t.Errorf("model_list %s maximum = %v (%T), want the enforced bound %d", tc.param, prop["maximum"], prop["maximum"], tc.deflt)
+		}
+		desc, _ := prop["description"].(string)
+		if !strings.Contains(desc, strconv.Itoa(tc.deflt)) {
+			t.Errorf("model_list %s description should document the default of %d, got: %q", tc.param, tc.deflt, desc)
+		}
 	}
 }
 
@@ -968,6 +1006,11 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 // permanent gate: every property the model sees, nested object and array-item
 // properties included, must document itself. A bare parameter name banks on
 // the model's training prior naming it the way we do, and the harvested
+// FuzzToolArgsValidate corpus records where that fails (a real grep call
+// shaped like Claude Code's schema: -i, head_limit). The walk reads the raw
+// Def* schemas: the one property WithIntentParameter adds, intent, is
+// injected from the constant toolIntentDescription and pinned by the
+// read_file intent test, so it cannot lack a description.
 func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 	defs := []llm.ToolDefinition{
 		DefReadFile(), DefWriteFile(), DefListDir(), DefEditFile(), DefShell(),
@@ -987,12 +1030,7 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		if !ok {
 			return
 		}
-		names := make([]string, 0, len(props))
-		for name := range props {
-			names = append(names, name)
-		}
-		slices.Sort(names)
-		for _, name := range names {
+		for _, name := range slices.Sorted(maps.Keys(props)) {
 			pm, ok := props[name].(map[string]any)
 			if !ok {
 				continue
@@ -1008,7 +1046,7 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		}
 	}
 	for _, def := range defs {
-		walk("", WithIntentParameter(def).Parameters)
+		walk("", def.Parameters)
 	}
 	if len(missing) > 0 {
 		t.Errorf("%d parameters carry no description: %s", len(missing), strings.Join(missing, ", "))

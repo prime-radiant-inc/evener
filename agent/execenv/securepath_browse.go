@@ -70,7 +70,7 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 		return nil, fmt.Errorf("invalid regex: %w", err)
 	}
 	if maxResults <= 0 {
-		maxResults = 100
+		maxResults = DefaultGrepMaxResults
 	}
 	if contextLines < 0 {
 		contextLines = 0

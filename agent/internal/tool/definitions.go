@@ -120,6 +120,12 @@ type DelegateSandboxSchema struct {
 
 const delegateModelOverrideDescription = "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."
 
+// shortTaskTitleDescription is the shared "<10 words" contract for a task
+// item's short title, used by both task surfaces: the delegate brief's
+// seeded task_list items (field `title`) and the task_list tool's add items
+// (field `description`).
+const shortTaskTitleDescription = "Short task title, under 10 words."
+
 // DelegateModelDescriptionAdditionBudget reports how many bytes may be
 // appended to the model parameter's fixed description without exceeding the
 // caller's total schema-description budget.
@@ -186,7 +192,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
-							"title":            map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
 							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
 							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
@@ -462,7 +468,7 @@ func DefGrep() llm.ToolDefinition {
 			"properties": map[string]any{
 				"pattern":          map[string]any{"type": "string", "description": "Regex pattern to match in file contents."},
 				"path":             map[string]any{"type": "string", "description": "File or directory to search in. Blank searches from the working root; a relative path resolves under it."},
-				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter narrowing which files are searched: accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}. Dotfiles/dirs and gitignored paths are always excluded regardless."},
+				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter narrowing which files are searched, e.g. *.go or *.{go,md}. Dotfiles/dirs and gitignored paths are always excluded regardless of this filter."},
 				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
 				"max_results": map[string]any{
 					"type":        "integer",
@@ -491,7 +497,7 @@ func DefGlob() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern":         map[string]any{"type": "string", "description": "Glob pattern matched against file paths, e.g. **/*.go or *.{ts,tsx}. Accepts *, ?, [], **, and bounded brace alternatives; malformed braces are rejected."},
+				"pattern":         map[string]any{"type": "string", "description": "Glob pattern matched against file paths, e.g. **/*.go or *.{ts,tsx}."},
 				"path":            map[string]any{"type": "string", "description": "Base directory whose file paths the pattern is matched against. Blank starts at the working root; a relative path resolves under it."},
 				"include_ignored": map[string]any{"type": "boolean", "description": "Include dotfiles/dirs and gitignored paths in results (excluded by default)."},
 			},
@@ -684,7 +690,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 								"enum":        []string{"research", "implement", "verify", "fix"},
 								"description": "Task type. Use 'fix' for targeted remediation after a specific failure or review finding.",
 							},
-							"description": map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"description": map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":      map[string]any{"type": "string", "description": "Full, self-contained instruction for the task."},
 							"depends_on": map[string]any{
 								"type":        "array",
