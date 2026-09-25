@@ -313,7 +313,7 @@ type Writer struct {
 	fs        afero.Fs
 	file      afero.File
 	mu        sync.Mutex
-	seq       int
+	tail      *appendTail
 	closeOnce sync.Once
 	closed    atomic.Bool
 	// header is the validated header of the resumed transcript, retained
@@ -468,7 +468,16 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		}
 	}
 
-	return &Writer{fs: fs, file: f, lastSync: time.Now(), header: header}, nil
+	tail, err := acquireAppendTail(f)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the stat error is what matters
+		return nil, err
+	}
+	w := &Writer{fs: fs, file: f, tail: tail, lastSync: time.Now(), header: header}
+	tail.mu.Lock()
+	tail.lastWriter = w
+	tail.mu.Unlock()
+	return w, nil
 }
 
 // Header returns the transcript's validated header: the header this writer
@@ -636,9 +645,18 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 	if w.poisoned {
 		return 0, nil, ErrWriterPoisoned
 	}
-	firstSeq = w.seq
+	// The tail is held to the end of the append, rollback included; see
+	// appendTail.
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	firstSeq = w.tail.nextSeq
 	if len(turns) == 0 {
 		return firstSeq, nil, nil
+	}
+	if w.tail.lastWriter != w {
+		// Another writer on this file moved its end since this one last wrote,
+		// so this handle's position is behind it.
+		w.positionUnknown = true
 	}
 	if w.positionUnknown {
 		// Write nothing until the end is known again. A seek that fails here
@@ -649,6 +667,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 		}
 		w.positionUnknown = false
 	}
+	w.tail.lastWriter = w
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
@@ -855,7 +874,7 @@ func (w *Writer) queueWarningLocked(err error) {
 // which is why a rollback that could not take a written entry back out spends
 // them too, and a rollback that removed the entry does not.
 func (w *Writer) countAppendedEntryLocked(turn schema.Turn) {
-	w.seq++
+	w.tail.nextSeq++
 	w.failures.Observe(turn)
 }
 
@@ -935,6 +954,7 @@ func (w *Writer) Close() error {
 		if err := w.file.Close(); err != nil && closeErr == nil {
 			closeErr = fmt.Errorf("close transcript file: %w", err)
 		}
+		w.tail.release()
 	})
 	return closeErr
 }
@@ -987,6 +1007,32 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 }
 
 func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer, []Entry, error) {
+	tail, err := acquireAppendTail(f)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the stat error is what matters
+		return nil, nil, err
+	}
+	// Scan under the tail so another writer's append is either wholly before
+	// the scan or wholly after it: never a crash tail to truncate.
+	tail.mu.Lock()
+	defer tail.mu.Unlock()
+	header, entries, nextSeq, err := scanForResume(f, expectedSessionID)
+	if err != nil {
+		tail.release()
+		return nil, nil, err
+	}
+	// Another writer still open on the file may have used more of the sequence
+	// than the file shows; never go back below it.
+	tail.nextSeq = max(tail.nextSeq, nextSeq)
+	w := &Writer{fs: fs, file: f, tail: tail, lastSync: time.Now(), header: header}
+	tail.lastWriter = w
+	return w, entries, nil
+}
+
+// scanForResume validates the transcript, truncates any crash tail, positions
+// f at the end, and returns the header, the entries, and the next sequence
+// number. It closes f on every error.
+func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int, error) {
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
@@ -1004,7 +1050,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
 			_ = f.Close()
-			return nil, nil, fmt.Errorf("read transcript for resume: %w", readErr)
+			return Header{}, nil, 0, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
 			hasPartialTail = bytesRead > 0
@@ -1020,11 +1066,11 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 			header, err = DecodeHeader(line)
 			if err != nil {
 				_ = f.Close()
-				return nil, nil, fmt.Errorf("parse transcript header: %w", err)
+				return Header{}, nil, 0, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
 				_ = f.Close()
-				return nil, nil, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
+				return Header{}, nil, 0, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
 			}
 			headerRead = true
 			continue
@@ -1032,7 +1078,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		entry, err := DecodeEntry(line)
 		if err != nil {
 			_ = f.Close()
-			return nil, nil, fmt.Errorf("parse transcript entry: %w", err)
+			return Header{}, nil, 0, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		entries = append(entries, entry)
 		if entry.Seq > maxSeq {
@@ -1042,15 +1088,15 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	if !headerRead {
 		_ = f.Close()
 		if hasPartialTail && validLen == 0 {
-			return nil, nil, errors.New("transcript has no complete lines")
+			return Header{}, nil, 0, errors.New("transcript has no complete lines")
 		}
-		return nil, nil, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
+		return Header{}, nil, 0, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
 	}
 
 	if hasPartialTail {
 		if err := f.Truncate(validLen); err != nil {
 			_ = f.Close() // cleanup on error path; the truncate error is what matters
-			return nil, nil, fmt.Errorf("truncate partial line: %w", err)
+			return Header{}, nil, 0, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
 
@@ -1064,8 +1110,8 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		_ = f.Close() // cleanup on error path; the seek error is what matters
-		return nil, nil, fmt.Errorf("seek to end of transcript: %w", err)
+		return Header{}, nil, 0, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header}, entries, nil
+	return header, entries, nextSeq, nil
 }

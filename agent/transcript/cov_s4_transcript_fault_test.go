@@ -132,7 +132,7 @@ func TestAppendDurable_Success(t *testing.T) {
 	}
 	w.mu.Lock()
 	dirty := w.dirty
-	seq := w.seq
+	seq := w.tail.nextSeq
 	w.mu.Unlock()
 	if dirty {
 		t.Fatal("dirty = true after durable append, want false")
@@ -181,7 +181,7 @@ func TestAppendDurable_WriteFailsRollback(t *testing.T) {
 	}
 	// seq must not advance on a failed append.
 	w.mu.Lock()
-	seq := w.seq
+	seq := w.tail.nextSeq
 	w.mu.Unlock()
 	if seq != 0 {
 		t.Fatalf("seq = %d after failed durable append, want 0", seq)
@@ -705,7 +705,7 @@ func TestOpenWriterFS_HappyReopen(t *testing.T) {
 	}
 	// Two entries at seq 0 and 1 => next seq is 2.
 	w.mu.Lock()
-	seq := w.seq
+	seq := w.tail.nextSeq
 	w.mu.Unlock()
 	if seq != 2 {
 		t.Fatalf("resumed seq = %d, want 2 (maxSeq+1)", seq)
@@ -795,7 +795,7 @@ func TestOpenWriterFS_PartialLineTruncated(t *testing.T) {
 	}
 	// Resume still counts the two entries: next seq is 2.
 	w.mu.Lock()
-	seq := w.seq
+	seq := w.tail.nextSeq
 	w.mu.Unlock()
 	if seq != 2 {
 		t.Fatalf("resumed seq = %d, want 2", seq)

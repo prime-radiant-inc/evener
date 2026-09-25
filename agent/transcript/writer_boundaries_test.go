@@ -57,8 +57,8 @@ func TestWriterZeroProgressReturnsErrShortWrite(t *testing.T) {
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("Append error = %v, want io.ErrShortWrite", err)
 	}
-	if w.seq != 0 {
-		t.Fatalf("next sequence = %d, want 0 after failed append", w.seq)
+	if w.tail.nextSeq != 0 {
+		t.Fatalf("next sequence = %d, want 0 after failed append", w.tail.nextSeq)
 	}
 
 	data, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -202,8 +202,8 @@ func TestAppendDurable_PartialLineRollbackFailurePoisonsWriter(t *testing.T) {
 	if !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("append error = %v, want a rollback failure over the partial line", err)
 	}
-	if w.seq != 0 {
-		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", w.seq)
+	if w.tail.nextSeq != 0 {
+		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", w.tail.nextSeq)
 	}
 
 	before, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -240,8 +240,8 @@ func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the retained write surfaced no warning")
 	}
-	if w.seq != 1 {
-		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.seq)
+	if w.tail.nextSeq != 1 {
+		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.tail.nextSeq)
 	}
 	if count, ok := w.FailedToolCalls(); !ok || count != 1 {
 		t.Fatalf("failure count = %d (counted=%v), want the 1 a reader of the transcript counts", count, ok)
@@ -280,8 +280,8 @@ func TestAppend_PartialLineFailurePoisonsWriter(t *testing.T) {
 	if err == nil || errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("buffered append error = %v, want the write failure itself", err)
 	}
-	if w.seq != 0 {
-		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", w.seq)
+	if w.tail.nextSeq != 0 {
+		t.Fatalf("next sequence = %d, want 0: a partial line is no entry", w.tail.nextSeq)
 	}
 
 	before, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -317,8 +317,8 @@ func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
 	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the retained buffered write surfaced no warning")
 	}
-	if w.seq != 1 {
-		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.seq)
+	if w.tail.nextSeq != 1 {
+		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.tail.nextSeq)
 	}
 	if count, ok := w.FailedToolCalls(); !ok || count != 1 {
 		t.Fatalf("failure count = %d (counted=%v), want the 1 a reader of the transcript counts", count, ok)
