@@ -22,6 +22,7 @@ var subcommands = map[string]func(args []string) int{
 	"list-build-flags":   listBuildFlagsMain,
 	"module-lint":        lintMain,
 	"root-test-flags":    rootTestFlagsMain,
+	"web-checks":         runWebChecks,
 	"web-browser-guards": runWebBrowserGuards,
 }
 

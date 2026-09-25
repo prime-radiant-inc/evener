@@ -2,19 +2,21 @@
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
-# the script runs them concurrently with per-check private HOME/TMPDIR/XDG
-# roots; wall time is the slowest one (vitest) instead of the sum. A failure
-# replays exactly the failing check's log.
+# the gate (`evener dev web-checks`, run from the prebuilt evener-dev binary so
+# an interrupt reaches it) runs them concurrently with per-check private
+# HOME/TMPDIR/XDG roots; wall time is the slowest one (vitest) instead of the
+# sum. A failure replays exactly the failing check's log.
 ## The frontend's single gate entry point: typecheck, unit tests, then lint,
 ## run concurrently.
 ## proves: jsdom/unit-level frontend behavior, type safety, and source lint.
 ## trigger: Local pre-merge; required CI web job.
-## requires: Deterministic after Node dependencies are installed; each check
-##   owns a private process home plus temporary/XDG roots and disables
-##   Node's compile cache; no real browser, provider, or network service.
+## requires: The Go toolchain (the gate is the prebuilt evener-dev) and the
+##   installed Node dependencies; deterministic after those. Each check owns a
+##   private process home plus temporary/XDG roots and disables Node's compile
+##   cache; no real browser, provider, or network service.
 ## fails-when: Any of the three streams is nonzero; a missing or unhealthy
 ##   frontend install fails preflight.
-test-web: web-preflight
+test-web: web-preflight build-dev
 	@scripts/web/test-web.sh
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
@@ -34,7 +36,8 @@ test-web: web-preflight
 ##   drives the production composer through a REAL hub and two REAL
 ##   `evener serve` daemons with only the LLM provider scripted.
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
-## requires: Chrome/Chromium; each guard gets a private process home,
+## requires: Chrome/Chromium and the Go toolchain (the gate is the prebuilt
+##   evener-dev); each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
