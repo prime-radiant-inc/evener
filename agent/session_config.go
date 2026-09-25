@@ -515,6 +515,20 @@ type testConfig struct {
 	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
 
+	// idleTeardownConcurrency overrides the idle-release member teardown's
+	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
+	// keeps the production default. Inherited by child configs like every
+	// testOnly field.
+	idleTeardownConcurrency *int
+
+	// idleTeardownMemberStarted and idleTeardownMemberSettled observe one
+	// idle-release member teardown's boundaries, fired with the member
+	// session immediately before its teardown body runs and immediately
+	// after it returns. Nil in production. Inherited by child configs like
+	// every testOnly field.
+	idleTeardownMemberStarted func(*Session)
+	idleTeardownMemberSettled func(*Session)
+
 	// afterDelegateAttentionRestore observes the wake pass's one vulnerable
 	// window: after a cold attention restoration has installed the runtime and
 	// before the attention reservation commits, on the root session's own
