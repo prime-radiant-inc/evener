@@ -624,7 +624,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	if inheritedContext != nil {
-		s.turnSequenceFloor = highestClientMutationTurnSequence(inheritedContext)
 		if tw == nil {
 			return nil, errors.New("fork delegate context requires a writable child transcript")
 		}
