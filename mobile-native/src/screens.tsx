@@ -36,12 +36,17 @@ import {
 	humanizeState,
 	parseSlashToken,
 	spliceSlashCommand,
+	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import {
+	projectTimeline,
+	type MobileConversation,
+} from "../../mobile/src/conversation/project";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -117,12 +122,40 @@ import { TasksSheet } from "./TasksSheet";
 import { TimelineItem } from "./TimelineItem";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
-import { projectNativeTranscript } from "./transcriptPresentation";
+import {
+	projectNativeTranscript,
+	type NativeTranscriptPresentation,
+} from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
 const noControls = () => null;
 const noControlSubscription = () => () => {};
+
+// The transcript a screen renders, at the user's content level. The locked
+// seam projects every conversation at the show-everything default (D24-3), and
+// it cannot carry the display config; the screen owns the user's config, so it
+// applies the level here by re-projecting the model through the shared
+// projector before the presentation layer maps what survives. The projector
+// decides at this level which rows exist and what they carry (a running
+// thought becomes a content-free placeholder, a settled thought disappears, an
+// intent row keeps its detail with a trimmed summary line), so a non-full
+// level's content filtering happens at projection time, not only presentation
+// time. With no config the call keeps the projector's own show-everything
+// default, exactly as the seam's rows already are.
+export function projectDisplayTranscript(
+	conversation: MobileConversation | null,
+	config: TranscriptDisplayConfigV1 | null | undefined,
+): NativeTranscriptPresentation {
+	const projected =
+		conversation === null
+			? null
+			: {
+					...conversation,
+					items: projectTimeline(conversation, undefined, config ?? undefined),
+				};
+	return projectNativeTranscript(projected, config);
+}
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -1320,7 +1353,7 @@ export function ConversationScreen({
 	const preferences = useNativePreferences();
 	const presentation = useMemo(
 		() =>
-			projectNativeTranscript(
+			projectDisplayTranscript(
 				conversation,
 				preferences.hubId === route.params.hubId ? preferences.config : null,
 			),
