@@ -506,3 +506,29 @@ func TestLiveReadKeepsChangesForItemsThePackerDrops(t *testing.T) {
 		}
 	}
 }
+
+// TestDeletingASessionRemovesItsTranscriptIndex pins the deletion sweep over
+// the transcript index sidecar: the <transcript>.index directory goes with
+// the transcript, and the hub's cached handle on it is closed rather than
+// left open on a deleted file.
+func TestDeletingASessionRemovesItsTranscriptIndex(t *testing.T) {
+	_, entry, path := seedIndexedPastSession(t, execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("hello"))))
+	index, err := pastTranscriptIndexes.Acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pastTranscriptIndexes.Release(index)
+	if _, err := os.Stat(transcriptindex.DirFor(path)); err != nil {
+		t.Fatalf("the read left no sidecar: %v", err)
+	}
+
+	if err := (&WebServer{}).removeProjectDeletionArtifacts(entry.StateDir, entry.Meta.ID); err != nil {
+		t.Fatalf("removeProjectDeletionArtifacts: %v", err)
+	}
+	if _, err := os.Stat(transcriptindex.DirFor(path)); !os.IsNotExist(err) {
+		t.Fatalf("sidecar after deletion: %v, want it gone", err)
+	}
+	if _, err := index.Incarnation(); err == nil {
+		t.Fatal("the hub's cached handle on the deleted transcript is still open")
+	}
+}
