@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -188,12 +189,12 @@ func TestConcurrentWritersOnOneFileKeepOneSequence(t *testing.T) {
 }
 
 // A writer that is dropped without Close — its handle closed by the runtime
-// instead — leaves its tail registered. Once its file is gone the filesystem
-// may hand the same inode to the next transcript created, and that transcript
-// must not inherit the dead file's sequence. The handle is closed directly
-// here, as the os.File finalizer would; on a filesystem that does not reuse
-// the inode the test passes without exercising the collision. The new
-// transcript is created both at the dropped file's path and at another.
+// instead — leaves its tail registered until it is collected. Once its file is
+// gone the filesystem would be free to hand the same inode to the next
+// transcript created, which must not inherit the dead file's sequence. The
+// handle is closed directly here, as the os.File finalizer would. Before tails
+// pinned their files this failed wherever the filesystem reused the inode, at
+// the dropped file's path and at another.
 func TestNewTranscriptDoesNotInheritADroppedWritersTail(t *testing.T) {
 	for _, freshName := range []string{"dropped.jsonl", "fresh.jsonl"} {
 		t.Run(freshName, func(t *testing.T) {
@@ -229,8 +230,8 @@ func TestNewTranscriptDoesNotInheritADroppedWritersTail(t *testing.T) {
 	}
 }
 
-// Writers reach one transcript by different spellings of its path — through
-// a symlinked directory, or relative to the working directory — and still
+// Writers reach one transcript by different names — through a symlinked
+// directory, relative to the working directory, or by a hard link — and still
 // share its tail.
 func TestWritersOnOneFileByAliasedPathsShareOneSequence(t *testing.T) {
 	path := newSharedFileTranscript(t)
@@ -238,8 +239,12 @@ func TestWritersOnOneFileByAliasedPathsShareOneSequence(t *testing.T) {
 	if err := os.Symlink(filepath.Dir(path), link); err != nil {
 		t.Fatalf("symlink transcript dir: %v", err)
 	}
+	hardLink := filepath.Join(t.TempDir(), "hard.jsonl")
+	if err := os.Link(path, hardLink); err != nil {
+		t.Fatalf("hard link transcript: %v", err)
+	}
 	t.Chdir(filepath.Dir(path))
-	aliases := []string{filepath.Join(link, filepath.Base(path)), filepath.Base(path)}
+	aliases := []string{filepath.Join(link, filepath.Base(path)), filepath.Base(path), hardLink}
 
 	session := openSharedFileWriter(t, path)
 	defer session.Close() //nolint:errcheck // assertion fixture
@@ -275,7 +280,7 @@ func TestDroppedWriterReleasesItsTail(t *testing.T) {
 	// no completion to await; the bound is a tripwire, not the mechanism.
 	for range 100 {
 		runtime.GC()
-		if !tailRegistered(canonicalPath(path)) {
+		if !tailRegistered(path) {
 			return
 		}
 		runtime.Gosched()
@@ -284,12 +289,11 @@ func TestDroppedWriterReleasesItsTail(t *testing.T) {
 }
 
 func tailRegistered(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
-	for _, tail := range openTails.tails {
-		if tail.path == path {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(openTails.tails, func(tail *appendTail) bool { return os.SameFile(tail.info, info) })
 }

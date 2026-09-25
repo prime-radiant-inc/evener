@@ -3,7 +3,6 @@ package transcript
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 
@@ -34,68 +33,68 @@ type appendTail struct {
 	// not the current one may have a handle position behind the end.
 	move uint64
 
-	// path and info identify the file and refs counts the open writers
-	// sharing this tail; all are guarded by openTails.mu.
-	path string
+	// info identifies the file and refs counts the open writers sharing this
+	// tail; both are guarded by openTails.mu. pin is the tail's own handle on
+	// the file: while it is open the filesystem cannot give the file's inode to
+	// another file, so a registered tail never matches a different file — even
+	// after a writer dropped without Close has had its handle closed by the
+	// runtime and the file has been removed.
 	info os.FileInfo
+	pin  *os.File
 	refs int
 }
 
 // openTails holds the tail of every transcript file some writer in this
-// process has open. A process holds few transcripts open at once, so a linear
-// scan on open is cheap.
-//
-// A tail matches on the file's canonical path as well as os.SameFile. A writer
-// dropped without Close gives its hold back only when it is collected, and the
-// runtime may close its handle first; once its file is removed the filesystem
-// can give the same inode to a new transcript, which must not inherit the dead
-// file's sequence. Hard links to one transcript get separate tails; nothing
-// links transcripts.
+// process has open, matched by os.SameFile so every name of a file (symlinked
+// directory, relative path, hard link) finds the same tail. A process holds
+// few transcripts open at once, so a linear scan on open is cheap.
 var openTails struct {
 	mu    sync.Mutex
 	tails []*appendTail
 }
 
 // acquireAppendTail returns the tail shared by every open writer on f's file,
-// creating it for the first. f.Name() is the path f was opened by. A file os.SameFile cannot identify — one on an
+// creating it for the first. A file that cannot be pinned — one on an
 // in-memory test filesystem — gets a tail of its own.
 func acquireAppendTail(f afero.File) (*appendTail, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat transcript file: %w", err)
 	}
-	// os.SameFile is false for any FileInfo that did not come from the os
-	// package, even compared with itself: such a file cannot be matched, so
-	// it is never shared.
-	if !os.SameFile(info, info) {
-		return &appendTail{}, nil
-	}
-	path := canonicalPath(f.Name())
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
 	for _, tail := range openTails.tails {
-		if tail.path == path && os.SameFile(tail.info, info) {
+		if os.SameFile(tail.info, info) {
 			tail.refs++
 			return tail, nil
 		}
 	}
-	tail := &appendTail{path: path, info: info, refs: 1}
+	pin := pinFile(f.Name(), info)
+	if pin == nil {
+		return &appendTail{}, nil
+	}
+	tail := &appendTail{info: info, pin: pin, refs: 1}
 	openTails.tails = append(openTails.tails, tail)
 	return tail, nil
 }
 
-// canonicalPath names a file by an absolute path with its symlinks resolved,
-// so every spelling of the same path matches. A path that cannot be resolved
-// keeps the form it has; at worst its writer does not share a tail.
-func canonicalPath(name string) string {
-	abs, err := filepath.Abs(name)
+// pinFile opens a read-only handle on the file at name if it is the file info
+// describes, or returns nil. os.SameFile is false for any FileInfo that did
+// not come from the os package, so a file on another filesystem is never
+// pinned; neither is one whose name no longer leads to it.
+func pinFile(name string, info os.FileInfo) *os.File {
+	if !os.SameFile(info, info) {
+		return nil
+	}
+	pin, err := os.Open(name)
 	if err != nil {
-		return filepath.Clean(name)
+		return nil
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
+	if pinInfo, err := pin.Stat(); err != nil || !os.SameFile(pinInfo, info) {
+		_ = pin.Close()
+		return nil
 	}
-	return abs
+	return pin
 }
 
 // moved records a writer taking the file's end and returns the new move.
@@ -105,9 +104,10 @@ func (t *appendTail) moved() uint64 {
 	return t.move
 }
 
-// release drops one writer's hold on the tail, forgetting it after the last.
+// release drops one writer's hold on the tail, forgetting it and closing its
+// pin after the last.
 func (t *appendTail) release() {
-	if t.info == nil {
+	if t.pin == nil {
 		return
 	}
 	openTails.mu.Lock()
@@ -115,5 +115,6 @@ func (t *appendTail) release() {
 	t.refs--
 	if t.refs == 0 {
 		openTails.tails = slices.DeleteFunc(openTails.tails, func(other *appendTail) bool { return other == t })
+		_ = t.pin.Close() // read-only handle; nothing to flush
 	}
 }
