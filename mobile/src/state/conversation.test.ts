@@ -1841,6 +1841,90 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       expect(store.getState().pendingMutations ?? null).toBeNull();
     });
+
+    it("a foreign-target record never pollutes submitted-here provenance", async () => {
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-9", targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore(authoritativeModel("cmid-9"));
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+
+      // The foreign row is not projected (target-scoped) — and it must not have
+      // recorded the id as this client's own submission either.
+      const rows = store.getState().pendingMutations;
+      expect(rows?.map((row) => row.id)).toEqual(["cmid-9"]);
+      expect(rows?.[0]?.fromThisClient).toBe(false);
+      expect(rows?.[0]?.createdAt).toBeUndefined();
+    });
+
+    it("a failed read does not suppress an earlier successful read", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Read #1 is held; read #2 fails before #1 resolves. #1's newer state
+      // must still publish — a failed read advances nothing.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let invocation = 0;
+      port.read = () => {
+        invocation += 1;
+        if (invocation === 1) {
+          return heldRead.then(() => ({
+            outbox: [],
+            optimistic: [],
+            recovery: [],
+          }));
+        }
+        return Promise.reject(new Error("storage unavailable"));
+      };
+      port.publish({});
+      port.publish({});
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a conversation write that does not change the rows keeps the projection reference", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const before = store.getState().pendingMutations;
+      expect(before).toHaveLength(1);
+
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thread-1", ref: "ref-1", queue: { revision: 9 } },
+      } as AnyNotification);
+      expect(store.getState().pendingMutations).toBe(before);
+    });
+
+    it("openProjected retires the prior target's seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ ref: "ref-2", threadId: "thread-2" });
+      await store
+        .getState()
+        .openProjected(other, createFakeSink(), "ref-2");
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error

@@ -2081,6 +2081,39 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     );
   }
 
+  // Whether two reconciliations describe the same rows. The reconciliation
+  // always allocates a fresh array, so publishing it on every conversation
+  // write would re-render every subscriber on each streaming delta even when
+  // nothing about the rows changed; comparing the fields keeps the reference
+  // stable until a row actually appears, changes state, or drops out.
+  function samePendingRows(
+    left: readonly PendingTurnEntry[] | null | undefined,
+    right: readonly PendingTurnEntry[],
+  ): boolean {
+    if (left === undefined || left === null || left.length !== right.length) {
+      return false;
+    }
+    for (let index = 0; index < right.length; index += 1) {
+      const a = left[index];
+      const b = right[index];
+      if (
+        a.id !== b.id ||
+        a.method !== b.method ||
+        a.state !== b.state ||
+        a.source !== b.source ||
+        a.text !== b.text ||
+        a.imageCount !== b.imageCount ||
+        a.createdAt !== b.createdAt ||
+        a.fromThisClient !== b.fromThisClient ||
+        a.skillNames.length !== b.skillNames.length ||
+        a.skillNames.some((name, skillIndex) => name !== b.skillNames[skillIndex])
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // Stops following the bound seam and forgets its snapshot. Never sets state:
   // the callers that clear the published projection do so through their own
   // set (close/reset null it, the returned unbind publishes the clear).
@@ -2095,9 +2128,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     pendingSnapshot = null;
   }
 
-  // Forgets the carried provenance. Only a true teardown (close/reset) or a
-  // thread open (a different durable target may be next) may call this; a
-  // rebind must not.
+  // Forgets the carried provenance. Only a true teardown (close/reset) calls
+  // this: a rebind keeps it (same target), and a thread open keeps it too - the
+  // map is keyed by client mutation id, unique per submission, and it is the
+  // only carrier once a record settles out of storage while the daemon still
+  // reports the id.
   function forgetPendingProvenance(): void {
     pendingSubmittedHere.clear();
   }
@@ -2119,7 +2154,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         pendingPort !== null &&
         pendingSnapshot !== null
       ) {
-        rawSet({ pendingMutations: reconcilePendingMutations() });
+        const next = reconcilePendingMutations();
+        if (!samePendingRows(get().pendingMutations, next)) {
+          rawSet({ pendingMutations: next });
+        }
       }
     };
     storeGet = get;
@@ -3755,13 +3793,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         set({ pendingMutations: null });
         const generation = pendingGeneration;
         pendingPort = port;
-        // Within one binding, only the newest read may publish: a slow earlier
-        // read that resolves after a newer one cannot resurrect a row the newer
-        // read already dropped.
-        let latestRequest = 0;
+        // Within one binding, only a read newer than the last PUBLISHED one may
+        // publish: a slow earlier read cannot resurrect a row a newer successful
+        // read already dropped, and a FAILED read (sync throw or rejection)
+        // never advances the fence, so an earlier in-flight read still publishes
+        // its newer state rather than being suppressed by a read that produced
+        // nothing.
+        let readRequest = 0;
+        let lastPublishedRequest = 0;
 
         const read = () => {
-          const request = ++latestRequest;
+          const request = ++readRequest;
           let pending: ReturnType<ConversationMutationPendingPort["read"]>;
           try {
             pending = port.read();
@@ -3781,15 +3823,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               // records of this client's own, and the package store it mirrors
               // records submitted-here before applying the same fence.
               for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
-                if (port.isOwnMutationRecord(record)) {
+                // Target-scoped exactly as the reconciliation is: a foreign
+                // target's row must not claim this client's provenance.
+                if (
+                  record.targetRef === port.targetRef &&
+                  port.isOwnMutationRecord(record)
+                ) {
                   pendingSubmittedHere.set(
                     record.clientMutationId,
                     record.createdAt,
                   );
                 }
               }
-              // Only the newest read publishes its snapshot.
-              if (request !== latestRequest) return;
+              // Only a read newer than the last published one publishes.
+              if (request <= lastPublishedRequest) return;
+              lastPublishedRequest = request;
               pendingSnapshot = snapshot;
               set({ pendingMutations: reconcilePendingMutations() });
             },
