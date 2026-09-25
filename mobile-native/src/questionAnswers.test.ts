@@ -195,7 +195,7 @@ it("offers the model's answerable asks", () => {
 });
 
 // pendingQuestions must answer from the canonical refs (liveAsksFor), never
-// from a display-bound copy: a store that wires project.ts's truncateItem
+// from a display-bound copy: a store that wires the row module's truncateItem
 // into its own cap-and-truncate pass (mobile/src/state/conversation.ts) can
 // bound a "question" row's option labels for display, and two options that
 // share a prefix past that bound collide once cut — composeQuestionAnswers

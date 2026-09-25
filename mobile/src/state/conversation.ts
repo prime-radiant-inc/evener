@@ -705,7 +705,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   }[] = [];
   let liveNoticeSerial = 0;
   // The row an idle warning displays as: the same attention row the
-  // canonical projection builds for a model warning item (project.ts's
+  // canonical projection builds for a model warning item projectedRows.ts's
   // warningItem — kind "failure", title its own field, message and hint
   // joined as detail), under the live serial identity main's applier
   // used, since there is no model item to share an identity with.

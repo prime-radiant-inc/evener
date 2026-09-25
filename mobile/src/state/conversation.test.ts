@@ -3834,7 +3834,7 @@ describe("ConversationStore", () => {
     // initial wire text (item/started here), and mergeReasoning keeps that
     // seeded summary across later merges once it's set — but mergeCompletedText
     // still treats the completion's own explicit text as authoritative
-    // (project.ts's reasoningText: a settled item's non-blank text wins over a
+    // (the row module's reasoningText: a settled item's non-blank text wins over a
     // stale seeded summary; see project.test.ts's "shows the completion's
     // authoritative text over a stale seeded reasoningSummaries entry" for the
     // same invariant through the canonical projector directly). Main's landed
@@ -5008,7 +5008,7 @@ describe("ConversationStore", () => {
     });
 
     // capAndTruncate bounds every published row's text for display
-    // (truncateItem's "question" case, project.ts's boundQuestion) — the
+    // (truncateItem's "question" case, the row module's boundQuestion) — the
     // existing "bounds a question row's prose" test above pins that for the
     // hydrate/openProjected path. The answer path is unaffected because it
     // reads liveAskQuestions' canonical, uncut model — not the bounded row —
@@ -5461,7 +5461,7 @@ describe("ConversationStore", () => {
     // exactly here, while idle). The wire drops it and never persists it,
     // so no read can recover it either — the store displays it itself, as
     // the attention row the canonical projection builds for a model
-    // warning item (project.ts's warningItem), held in transient display
+    // warning item (the row module's warningItem), held in transient display
     // state that every timeline rebuild re-appends and every conversation
     // transition clears, the lifetime main's live-owned rows gave it.
     it("shows a warning that arrives with no active turn, and keeps it through rebuilds and transitions", async () => {
@@ -27355,7 +27355,7 @@ describe("ConversationStore", () => {
       const { store } = await openProjectedWithItems([
         reasoningItem("wire-a", "key-a", "first"),
         // inProgress: a summaryTextDelta only ever streams into a still-running
-        // item, and project.ts's reasoningText prefers the settled item.text
+        // item, and the row module's reasoningText prefers the settled item.text
         // over reasoningSummaries once an item is completed (see the reducer's
         // own mergeReasoning/mergeCompletedText contract) — a completed item
         // would show its frozen "second" instead of the delta.

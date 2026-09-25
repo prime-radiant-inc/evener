@@ -834,7 +834,7 @@ function expectSeamVisibilityLikeProjector(
 }
 
 // A one-item thread for classifying a single system event (the deleted
-// project.ts's systemEventProbe, kept here as the sweep's local fixture):
+// the deleted project.ts's systemEventProbe, kept here as the sweep's local fixture):
 // projectThread reads only `turns`, so the rest of the shape is inert.
 function systemEventModel(
 	eventKind: string | undefined,

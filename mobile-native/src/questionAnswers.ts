@@ -18,7 +18,7 @@ export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
   // Asked of the MODEL, with the package's own rule — the same call the
-  // projection's question rows come from (project.ts's askQuestionsByCall,
+  // projection's question rows come from (projectedRows.ts's askQuestionsByCall,
   // through liveAsksFor's shared scan), so the refs are canonical: the sheet
   // renders, and the answer composer validates against, exactly the labels
   // the agent offered. The timeline rows a reader scrolls carry the display
