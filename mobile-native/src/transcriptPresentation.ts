@@ -108,21 +108,20 @@ function actionSummary(
 	);
 }
 
-function isCritical(item: MobileTimelineItem): boolean {
-	if (item.kind === "activity")
-		return item.state === "failed" || item.state === "running";
-	return (
-		item.kind === "failure" ||
-		item.kind === "question" ||
-		(item.kind === "notice" && item.tone === "warning")
-	);
+// activityMode is only ever called with activity rows, so an activity's own
+// failed/running state is the whole attention rule here. Notice criticality is
+// timeline.ts's isCriticalNotice, not a second copy in this layer.
+function activityIsCritical(
+	item: Extract<MobileTimelineItem, { kind: "activity" }>,
+): boolean {
+	return item.state === "failed" || item.state === "running";
 }
 
 function activityMode(
 	item: Extract<MobileTimelineItem, { kind: "activity" }>,
 	config: TranscriptDisplayConfigV1,
 ): ActivityPresentation | null {
-	if (isCritical(item))
+	if (activityIsCritical(item))
 		return {
 			mode: "critical",
 			...(item.family === "tool"
@@ -171,17 +170,6 @@ function memberItem(
 		...(member.transcriptKey ? { transcriptKey: member.transcriptKey } : {}),
 		...(member.position ? { position: member.position } : {}),
 	};
-}
-
-// The projector owns the event-kind vocabulary and its gate table, so native
-// asks it (project.ts's systemEventVisible) rather than keeping a second copy.
-// A steering notice carries no eventKind: the projector renders an unknown event,
-// so it stays visible exactly as before.
-function eventVisible(
-	item: Extract<MobileTimelineItem, { kind: "notice" }>,
-	config: TranscriptDisplayConfigV1,
-): boolean {
-	return systemEventVisible(item.eventKind, item.exitCode, config);
 }
 
 // A cumulative field's Go zero value ("0") signals absence, not a real
@@ -298,7 +286,12 @@ function projectTimeline(
 		} else if (
 			item.kind === "notice" &&
 			config &&
-			!eventVisible(item, config)
+			// The projector owns the event-kind vocabulary and its gate table,
+			// so native asks it (project.ts's systemEventVisible) rather than
+			// keeping a second classification. A steering notice carries no
+			// eventKind: the projector renders an unknown event, so it stays
+			// visible exactly as before.
+			!systemEventVisible(item.eventKind, item.exitCode, config)
 		) {
 		} else if (
 			item.kind === "attachments" &&
