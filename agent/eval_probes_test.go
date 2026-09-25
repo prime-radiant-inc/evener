@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/schema/schematest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -315,5 +316,12 @@ func TestRunRetentionProbes_DistractorScoring(t *testing.T) {
 	}
 	if results[0].Difficulty != "distractor" {
 		t.Errorf("expected difficulty 'distractor', got %q", results[0].Difficulty)
+	}
+}
+
+func TestTurnsToMessagesSkipsTranscriptOnlyEntries(t *testing.T) {
+	plain := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("u")), schema.NewTurn(schema.TurnAssistant, llm.Assistant("a"))}
+	if got, want := turnsToMessages(schematest.InterleaveTranscriptOnly(plain)), turnsToMessages(plain); !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %+v, want %+v", got, want)
 	}
 }
