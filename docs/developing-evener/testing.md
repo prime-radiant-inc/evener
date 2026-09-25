@@ -544,21 +544,24 @@ and `EVENER_SSH_E2E_EVENER_PATH` overrides the host's evener path (default
 
 What it creates and removes: its own directory on the host
 (`$HOME/evener-session-e2e-<pid>-<timestamp>`), used as the spawned session's
-working directory and removed when the check finishes. A name that already exists
+working directory and removed when the check finishes — unless a session it
+started could not be stopped, in which case it stays. A name that already exists
 is refused before anything is created, so the cleanup cannot adopt a directory
 this run did not make. The stop is registered before the spawn is asked for, so a
-start whose response is lost is still cleaned up: with no ref to address, the
-check looks the session up in the controller's fleet view by that directory and
-stops it in band. The direct stop and that reconciliation each get their own
-window inside one cleanup budget, and both retry while their window lasts, so
-neither can starve the other. A session that still cannot be stopped is left
-alone and the **directory stays too**, with a failure naming the ref, the
-directory, and the fact that nothing was cleaned up — a directory a running
-session still references is better left than deleted out from under it. What it
-cannot remove is the session *record* the host keeps in its own state root —
-`thread/shutdown` stops the daemon, it does not delete the session — and the
-session runs against the host's real provider and credentials. Both are why this
-gate asks for a **disposable** host, the same contract the deploy check states.
+session that came back with a ref is stopped in band, retrying inside one bounded
+window, and a session that could not be stopped is left alone: the **directory
+stays too**, with a failure naming the ref, the directory, and the fact that
+nothing was cleaned up — a directory a running session still references is better
+left than deleted out from under it. When the start's response was lost there is
+no ref to address at all, and the check does not go looking for the session: it
+says plainly that one may be running under that directory that it cannot stop,
+points at the controller's own fleet view (where the session is visible by its
+working directory) as the place to stop it, and leaves the directory in place.
+What it cannot remove is the session *record* the host keeps in its own state
+root — `thread/shutdown` stops the daemon, it does not delete the session — and
+the session runs against the host's real provider and credentials. Both are why
+this gate asks for a **disposable** host, the same contract the deploy check
+states.
 
 It sends no input items, so **no turn runs and no completion is requested**. That
 is narrower than it sounds: resolving the spawn still makes the host enumerate its
