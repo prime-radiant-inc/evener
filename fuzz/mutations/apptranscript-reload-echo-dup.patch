@@ -1,13 +1,13 @@
 diff --git a/internal/apptranscript/apptranscript.go b/internal/apptranscript/apptranscript.go
-index 3a4a0373..72c85e91 100644
+index a50c606602..af986b3dd9 100644
 --- a/internal/apptranscript/apptranscript.go
 +++ b/internal/apptranscript/apptranscript.go
-@@ -315,7 +315,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
+@@ -562,7 +562,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
  				}
  				toolNames[part.ToolCall.ID] = part.ToolCall.Name
  				if part.ToolCall.Name == "communicate" {
--					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && strings.TrimSpace(text) != lastAssistantText {
-+					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && strings.TrimSpace(text) != lastAssistantText+" " {
+-					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && !EchoesAssistantText(lastAssistantText, text) {
++					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && !EchoesAssistantText(lastAssistantText, "") {
  						items = append(items, appwire.ThreadItem{
  							Type:   "agentMessage",
  							ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),

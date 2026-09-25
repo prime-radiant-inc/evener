@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hydrateThread,
+  makeTranscriptDisplayConfig,
   markItemTextOmitted,
   liveAskQuestions,
   QUEUE_UNAVAILABLE,
@@ -30,9 +31,9 @@ import type {
   ActivityMember,
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/project";
-import { projectConversation } from "../conversation/project";
-import * as project from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
+import { projectConversation } from "../../../mobile-native/src/projectedRows";
+import * as project from "../../../mobile-native/src/projectedRows";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -43,7 +44,15 @@ import type { ActivityIdentity } from "./activity";
 import type {
   ConversationMutationRequest,
   ConversationMutationSubmitter,
+  ConversationMutationPendingPort,
 } from "./conversationMutation";
+import type {
+  MutationOptimisticRecord,
+  MutationOutboxRecord,
+  MutationPersistenceSnapshot,
+  MutationRecoveryRecord,
+  PendingTurnEntry,
+} from "@evener/appwire-client/state/mutation";
 import { createActivityStore } from "./activity";
 import {
   createConversationStore,
@@ -1389,6 +1398,693 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await store.getState().send(service, textInput("x"));
       expect(store.getState().error).toBeNull();
+    });
+  });
+
+  // Slice 7a: the durable pending-row foundation. An in-flight mutation must
+  // not be a per-process memory fact: a host-bound seam reads the target's
+  // durable outbox/optimistic records and projects them through the shared
+  // reconciliation (#2140's shape), so a cold reopen shows the mutation, a
+  // rejected or reflected one drops out, and a settled one clears.
+  describe("durable pending rows — the host-bound durable projection", () => {
+    const TARGET = "hub-1::ref-1";
+
+    function outbox(
+      over: Partial<MutationOutboxRecord> = {},
+    ): MutationOutboxRecord {
+      return {
+        version: 1,
+        clientMutationId: "cmid-1",
+        targetRef: TARGET,
+        method: "turn/start",
+        payload: {},
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input: textInput("hello") },
+        intentSequence: 0,
+        createdAt: 7,
+        state: "submitting",
+        ...over,
+      };
+    }
+
+    function recovery(
+      over: Partial<MutationRecoveryRecord> = {},
+    ): MutationRecoveryRecord {
+      return { ...outbox(), recoveryKind: "rejected", ...over };
+    }
+
+    function optimistic(
+      over: Partial<MutationOptimisticRecord> = {},
+    ): MutationOptimisticRecord {
+      return { ...outbox(), state: "accepted", ...over };
+    }
+
+    function fakePort(initial: Partial<MutationPersistenceSnapshot> = {}) {
+      let snapshot: MutationPersistenceSnapshot = {
+        outbox: [],
+        optimistic: [],
+        recovery: [],
+        ...initial,
+      };
+      const listeners = new Set<() => void>();
+      const port = {
+        targetRef: TARGET,
+        read: async (): Promise<MutationPersistenceSnapshot> => snapshot,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        isOwnMutationRecord: () => true,
+        publish(next: Partial<MutationPersistenceSnapshot>) {
+          snapshot = { outbox: [], optimistic: [], recovery: [], ...next };
+          for (const listener of [...listeners]) listener();
+        },
+        listenerCount: () => listeners.size,
+      };
+      return port satisfies ConversationMutationPendingPort & {
+        publish(next: Partial<MutationPersistenceSnapshot>): void;
+        listenerCount(): number;
+      };
+    }
+
+    async function openStore(
+      conversation: MobileConversation = makeConversation(),
+    ) {
+      const service = new FakeConversationService();
+      service.openConv = conversation;
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      return store;
+    }
+
+    // A model whose daemon projection still reports the mutation as pending —
+    // the source that carries a settled-out id, and so the one that needs the
+    // carried submitted-here provenance for `fromThisClient`/`createdAt`.
+    function authoritativeModel(id: string): MobileConversation {
+      return makeConversation({
+        pendingMutations: [
+          {
+            clientMutationId: id,
+            method: "turn/start",
+            input: textInput("carried"),
+            executionState: "accepted",
+            projectionState: "pending",
+          },
+        ],
+      });
+    }
+
+    it("shows a durable in-flight row after a cold reopen", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      // First app run: the store follows the mutation's durable row.
+      const first = await openStore();
+      first.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(first.getState().pendingMutations?.map((row) => row.id)).toEqual([
+        "cmid-1",
+      ]);
+
+      // Restart: a fresh store with no memory of the submission, over the same
+      // durable storage. Nothing shows until the durable seam is bound...
+      const restarted = await openStore();
+      expect(restarted.getState().pendingMutations ?? null).toBeNull();
+      restarted.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const rows = restarted.getState().pendingMutations;
+      expect(rows).toHaveLength(1);
+      expect(rows?.[0]).toMatchObject({
+        id: "cmid-1",
+        method: "send",
+        text: "hello",
+        state: "submitting",
+        source: "outbox",
+      } satisfies Partial<PendingTurnEntry>);
+    });
+
+    it("a rejected mutation supersedes its pending row — no double row, no zombie", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Rejection: the outbox row leaves storage and a recovery row takes over.
+      port.publish({
+        recovery: [recovery({ recoveryReason: "no such thread" })],
+      });
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("clears exactly at settlement and never early", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      // Still submitting: a storage notification that re-serves the same row
+      // keeps it — settlement is the row leaving storage, not a timer.
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+      // The dispatcher deletes the settled row.
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a mutation the model already reflects never projects as a pending row", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore(
+        makeConversation({
+          queue: { revision: 1, clientMutationIds: ["cmid-1"] },
+        }),
+      );
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("ignores a record another target owns", async () => {
+      const port = fakePort({
+        outbox: [outbox({ targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("unbind stops following and clears; a later change cannot resurrect it", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      const unbind = store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      unbind();
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations).toBeNull();
+
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a failed durable read leaves the last projection standing", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const originalRead = port.read;
+      let fail = false;
+      port.read = () => {
+        if (fail) return Promise.reject(new Error("storage unavailable"));
+        return originalRead();
+      };
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      fail = true;
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+    });
+
+    it("a slower older read cannot resurrect a row a newer read removed", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Hold the next read open; a later read (the settlement) resolves first.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let held = false;
+      port.read = async () => {
+        if (!held) {
+          held = true;
+          await heldRead;
+          return { outbox: [outbox()], optimistic: [], recovery: [] };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      port.publish({}); // the held, older read
+      port.publish({}); // the newer read: the row is gone
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("rebinding clears the prior target's rows even when the new read fails", async () => {
+      const first = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(first);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A replacement seam whose first read rejects must not leave the retired
+      // target's rows on screen.
+      const replacement = fakePort();
+      replacement.read = () => Promise.reject(new Error("storage unavailable"));
+      store.getState().bindPendingMutations(replacement);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a model write drops a now-reflected row without a storage notification", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // The model now reflects the id through a live frame — no durable read.
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          queue: { revision: 2, clientMutationIds: ["cmid-1"] },
+        },
+      } as AnyNotification);
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("opening a different thread retires the prior target's seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ ref: "ref-2", threadId: "thread-2" });
+      await store.getState().open(other, "ref-2");
+
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("reopening the same ref through a different target retires the prior seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+
+      // The same wire ref through a different hub/service: the durable target
+      // key differs, and the store cannot see the hub, so the seam retires.
+      const otherHub = new FakeConversationService();
+      otherHub.openConv = makeConversation({
+        ref: "ref-1",
+        threadId: "thread-1",
+      });
+      await store.getState().open(otherHub, "ref-1");
+
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a read a newer read superseded still records submitted-here provenance", async () => {
+      const port = fakePort({});
+      const store = await openStore(authoritativeModel("cmid-9"));
+      // The first read is held and observes the durable record; a newer read
+      // resolves first against storage where the record is already settled out.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let held = false;
+      port.read = async () => {
+        if (!held) {
+          held = true;
+          await heldRead;
+          return {
+            outbox: [outbox({ clientMutationId: "cmid-9" })],
+            optimistic: [],
+            recovery: [],
+          };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      store.getState().bindPendingMutations(port);
+      port.publish({}); // the newer read: the record is gone
+      await yieldMicrotask();
+      await yieldMicrotask();
+      releaseRead?.(); // the held, older read resolves late
+      await yieldMicrotask();
+      await yieldMicrotask();
+
+      // The superseded read's provenance must reach the already-published row
+      // with no further storage notification.
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-9",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a same-target rebind keeps the client's submitted-here provenance", async () => {
+      const store = await openStore(authoritativeModel("cmid-7"));
+      const first = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-7" })],
+      });
+      store.getState().bindPendingMutations(first);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        // The daemon's own projection describes the same id, so the entry is
+        // authoritative from the start; the durable record supplies provenance.
+        source: "authoritative",
+        fromThisClient: true,
+      });
+
+      // A same-target rebind whose read shows the record settled out: the
+      // daemon still reports the id, and the carried provenance must survive
+      // the rebind to keep `fromThisClient`/`createdAt` honest.
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        source: "authoritative",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a failed open does not leave the retired target's rows visible", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      const failing = new FakeConversationService();
+      failing.open = async () => {
+        throw new Error("open failed");
+      };
+      await store.getState().open(failing, "ref-1");
+      expect(store.getState().status).toBe("error");
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a same-target reopen keeps the client's submitted-here provenance", async () => {
+      const store = await openStore(authoritativeModel("cmid-7"));
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-7" })],
+      });
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+
+      // Reopen the same target, then rebind with the durable record gone: the
+      // daemon still reports the id, and the carried provenance must survive.
+      const reopen = new FakeConversationService();
+      reopen.openConv = authoritativeModel("cmid-7");
+      await store.getState().open(reopen, "ref-1");
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a synchronous read throw on a notification keeps the last projection", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      port.read = () => {
+        throw new Error("storage unavailable");
+      };
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+    });
+
+    it("a synchronous read throw on the first read leaves the projection null", async () => {
+      const port = fakePort();
+      port.read = () => {
+        throw new Error("storage unavailable");
+      };
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a foreign-target record never pollutes submitted-here provenance", async () => {
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-9", targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore(authoritativeModel("cmid-9"));
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+
+      // The foreign row is not projected (target-scoped) — and it must not have
+      // recorded the id as this client's own submission either.
+      const rows = store.getState().pendingMutations;
+      expect(rows?.map((row) => row.id)).toEqual(["cmid-9"]);
+      expect(rows?.[0]?.fromThisClient).toBe(false);
+      expect(rows?.[0]?.createdAt).toBeUndefined();
+    });
+
+    it("a failed read does not suppress an earlier successful read", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // Read #1 is held; read #2 fails before #1 resolves. #1's newer state
+      // must still publish — a failed read advances nothing.
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let invocation = 0;
+      port.read = () => {
+        invocation += 1;
+        if (invocation === 1) {
+          return heldRead.then(() => ({
+            outbox: [],
+            optimistic: [],
+            recovery: [],
+          }));
+        }
+        return Promise.reject(new Error("storage unavailable"));
+      };
+      port.publish({});
+      port.publish({});
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a conversation write that does not change the rows keeps the projection reference", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const before = store.getState().pendingMutations;
+      expect(before).toHaveLength(1);
+
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thread-1", ref: "ref-1", queue: { revision: 9 } },
+      } as AnyNotification);
+      expect(store.getState().pendingMutations).toBe(before);
+    });
+
+    it("openProjected retires the prior target's seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ ref: "ref-2", threadId: "thread-2" });
+      await store
+        .getState()
+        .openProjected(other, createFakeSink(), "ref-2");
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("projects an optimistic record", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ clientMutationId: "cmid-3" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-3",
+        source: "optimistic",
+        state: "accepted",
+      });
+    });
+
+    it("an optimistic record the model reflects never projects", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ clientMutationId: "cmid-3" })],
+      });
+      const store = await openStore(
+        makeConversation({
+          queue: { revision: 1, clientMutationIds: ["cmid-3"] },
+        }),
+      );
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("ignores an optimistic record another target owns", async () => {
+      const port = fakePort({
+        optimistic: [optimistic({ targetRef: "hub-2::ref-9" })],
+      });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a durable read that re-serves identical rows keeps the projection reference", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      const before = store.getState().pendingMutations;
+      expect(before).toHaveLength(1);
+
+      port.publish({ outbox: [outbox()] });
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toBe(before);
+    });
+
+    it("a record the ownership predicate rejects never claims this client's provenance", async () => {
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-4" })],
+      });
+      port.isOwnMutationRecord = () => false;
+      const store = await openStore(authoritativeModel("cmid-4"));
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-4",
+        fromThisClient: false,
+      });
+
+      // After the record settles out, the daemon still reports the id: the
+      // rejected predicate must have left nothing in the carried provenance.
+      const rebound = fakePort({});
+      rebound.isOwnMutationRecord = () => false;
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      const rows = store.getState().pendingMutations;
+      expect(rows?.[0]).toMatchObject({ id: "cmid-4", fromThisClient: false });
+      expect(rows?.[0]?.createdAt).toBeUndefined();
+    });
+
+    it("a conversation write never exposes a stale pending row to a subscriber", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A subscriber must never observe the model reflecting the mutation while
+      // pendingMutations still holds its row: the reconcile rides the same write
+      // as the model commit.
+      let sawStale = false;
+      const unsubscribe = store.subscribe((state) => {
+        const reflected = state.conversation?.queue?.clientMutationIds ?? [];
+        if (
+          reflected.includes("cmid-1") &&
+          (state.pendingMutations ?? []).some((row) => row.id === "cmid-1")
+        ) {
+          sawStale = true;
+        }
+      });
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          queue: { revision: 2, clientMutationIds: ["cmid-1"] },
+        },
+      } as AnyNotification);
+      unsubscribe();
+
+      expect(sawStale).toBe(false);
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("a read in flight across a same-target rebind still records provenance", async () => {
+      const first = fakePort({});
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let reads = 0;
+      first.read = async () => {
+        reads += 1;
+        if (reads === 1) {
+          await heldRead;
+          return {
+            outbox: [outbox({ clientMutationId: "cmid-11" })],
+            optimistic: [],
+            recovery: [],
+          };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      const store = await openStore(authoritativeModel("cmid-11"));
+      store.getState().bindPendingMutations(first); // read #1 held in flight
+
+      // A same-target rebind: its read resolves against storage where the
+      // record has already settled out, while the daemon still reports the id.
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-11",
+        fromThisClient: false,
+      });
+
+      // The in-flight read lands after the rebind; its provenance must stick.
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-11",
+        fromThisClient: true,
+        createdAt: 7,
+      });
     });
   });
 
@@ -3138,7 +3834,7 @@ describe("ConversationStore", () => {
     // initial wire text (item/started here), and mergeReasoning keeps that
     // seeded summary across later merges once it's set — but mergeCompletedText
     // still treats the completion's own explicit text as authoritative
-    // (project.ts's reasoningText: a settled item's non-blank text wins over a
+    // (the row module's reasoningText: a settled item's non-blank text wins over a
     // stale seeded summary; see project.test.ts's "shows the completion's
     // authoritative text over a stale seeded reasoningSummaries entry" for the
     // same invariant through the canonical projector directly). Main's landed
@@ -4312,7 +5008,7 @@ describe("ConversationStore", () => {
     });
 
     // capAndTruncate bounds every published row's text for display
-    // (truncateItem's "question" case, project.ts's boundQuestion) — the
+    // (truncateItem's "question" case, the row module's boundQuestion) — the
     // existing "bounds a question row's prose" test above pins that for the
     // hydrate/openProjected path. The answer path is unaffected because it
     // reads liveAskQuestions' canonical, uncut model — not the bounded row —
@@ -4765,7 +5461,7 @@ describe("ConversationStore", () => {
     // exactly here, while idle). The wire drops it and never persists it,
     // so no read can recover it either — the store displays it itself, as
     // the attention row the canonical projection builds for a model
-    // warning item (project.ts's warningItem), held in transient display
+    // warning item (the row module's warningItem), held in transient display
     // state that every timeline rebuild re-appends and every conversation
     // transition clears, the lifetime main's live-owned rows gave it.
     it("shows a warning that arrives with no active turn, and keeps it through rebuilds and transitions", async () => {
@@ -5222,6 +5918,103 @@ describe("ConversationStore", () => {
         ["activity", "b-tool"],
       ]);
     });
+
+    // The summary-only ruling meets the R38 split: a cluster of summarized
+    // rows re-projects its sub-runs through activityRunRow when a notice
+    // splits it, and the rebuilt top-level rows must stay summary-only —
+      // a run of one loses the marker exactly when the split reduced it to
+      // its first member's fields.
+      it("keeps a split cluster's sub-run rows summary-only at the user's level", async () => {
+        const thread = makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "a-tool",
+                  toolName: "shell",
+                  status: "completed",
+                  description: "first audit",
+                } as ThreadItem,
+                {
+                  type: "commandExecution",
+                  id: "b-tool",
+                  toolName: "shell",
+                  status: "completed",
+                  description: "second audit",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        });
+        const store = await openProjectedThread(thread);
+        store.getState().setDisplayConfig(
+          makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
+        );
+        // The two completed calls cluster into one summary-only row at
+        // intent (the operator's summary-only ruling).
+        const clustered = rows(store).find((row) => row.id === "a-tool");
+        expect(clustered).toMatchObject({
+          kind: "activity",
+          summaryOnly: true,
+          detail: { description: "first audit" },
+        });
+        store.getState().applyNotification({
+          method: "warning",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            title: "Provider",
+            message: "careful",
+          },
+        } as AnyNotification);
+        // A newer same-family activity arrives AFTER the notice: the run
+        // splits at the anchored member, and BOTH sub-runs re-project.
+        store.getState().applyNotification({
+          method: "turn/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turn: { id: "t2", itemsView: "default", status: "running" },
+          },
+        } as AnyNotification);
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: {
+              type: "commandExecution",
+              id: "c-tool",
+              toolName: "shell",
+              status: "completed",
+              description: "third audit",
+            } as ThreadItem,
+          },
+        } as AnyNotification);
+        // The split keeps the members displayed at arrival above the notice
+        // (the [a, b] run) and seats the member that arrived later below it.
+        const split = rows(store).filter((row) => row.kind === "activity");
+        expect(split.map((row) => row.id)).toEqual(["a-tool", "c-tool"]);
+        for (const row of split) {
+          if (row.kind !== "activity") continue;
+          expect(row.summaryOnly, `row ${row.id}`).toBe(true);
+          expect(row.detail.output, `row ${row.id} output`).toBeUndefined();
+        }
+        const above = split[0];
+        expect(above?.detail.description).toBe("first audit");
+        expect(
+          above?.members?.map(
+            (member) => `${member.id}:${member.summaryOnly === true}`,
+          ),
+        ).toEqual(["a-tool:true", "b-tool:true"]);
+        const below = split[1];
+        expect(below?.detail.description).toBe("third audit");
+        expect(below?.members).toBeUndefined();
+      });
 
     // RoboRev review round 1: the anchor a notice records when it arrives
     // over an ALREADY-CLUSTERED row. The cluster's top-level identity
@@ -26659,7 +27452,7 @@ describe("ConversationStore", () => {
       const { store } = await openProjectedWithItems([
         reasoningItem("wire-a", "key-a", "first"),
         // inProgress: a summaryTextDelta only ever streams into a still-running
-        // item, and project.ts's reasoningText prefers the settled item.text
+        // item, and the row module's reasoningText prefers the settled item.text
         // over reasoningSummaries once an item is completed (see the reducer's
         // own mergeReasoning/mergeCompletedText contract) — a completed item
         // would show its frozen "second" instead of the delta.
@@ -27060,6 +27853,363 @@ describe("ConversationStore", () => {
       expect(after).not.toBe(before);
       // The rows did not: same array, same row objects.
       expect(after?.items).toBe(before?.items);
+    });
+  });
+
+  // D24 slices 5+6: the conversation's projection follows the user's display
+  // config. The level is store state (setDisplayConfig), so the projection
+  // runs ONCE, at the user's level, through the same display boundary
+  // (capAndTruncate: seating, cap, truncation) every other rebuild passes
+  // through — no screen-level re-projection (the rejected D24-5 route
+  // re-projected per render, thrashing the per-turn row cache and bypassing
+  // the boundary).
+  describe("the conversation's projection follows the user's display config", () => {
+    const intentConfig = makeTranscriptDisplayConfig({
+      kind: "preset",
+      level: "intent",
+    });
+    const fullConfig = makeTranscriptDisplayConfig({
+      kind: "preset",
+      level: "full",
+    });
+
+    // One settled turn holding the level's three subjects: a summarized
+    // tool action (a completed shell call whose description the projector
+    // trims into its rationale, plus full arguments/output), a settled
+    // thought, and a user message.
+    function configLevelsThread(): Thread {
+      return makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [
+              userMessageItem("u1", "please audit the config"),
+              {
+                type: "commandExecution",
+                id: "c1",
+                toolName: "shell",
+                status: "completed",
+                description: "  run the audit  ",
+                argumentsJson: JSON.stringify({ cmd: "ls" }),
+                output: "tool output text",
+              } as ThreadItem,
+              reasoningItem("r1", "auditing quietly"),
+            ],
+          }),
+        ],
+      });
+    }
+
+    it("re-projects the live conversation when the level changes", async () => {
+      const store = await openProjectedThread(configLevelsThread());
+      // No config: the show-everything default the seam has always
+      // projected, still on screen.
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "c1")).toMatchObject({
+        detail: { output: "tool output text" },
+      });
+
+      store.getState().setDisplayConfig(intentConfig);
+      expect(store.getState().displayConfig).toEqual(intentConfig);
+      // The settled thought is gone at intent; the summarized tool row
+      // carries only its trimmed summary line (the summary-only ruling).
+      expect(rowById(store, "r1")).toBeUndefined();
+      const c1 = rowById(store, "c1");
+      expect(c1).toMatchObject({
+        kind: "activity",
+        detail: { description: "run the audit" },
+      });
+      expect(JSON.stringify(rows(store))).not.toContain("tool output text");
+
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "c1")).toMatchObject({
+        detail: { output: "tool output text" },
+      });
+    });
+
+    it("treats a value-equal config as no change — the boundary does not re-run", async () => {
+      const store = await openProjectedThread(configLevelsThread());
+      store.getState().setDisplayConfig(intentConfig);
+      const before = store.getState().conversation;
+      expect(before).not.toBeNull();
+      // The provider hands the store a fresh object per publish; the
+      // level is keyed by the config's VALUE (configFingerprint), so an
+      // equal value republishes nothing.
+      store.getState().setDisplayConfig(
+        makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
+      );
+      expect(store.getState().conversation).toBe(before);
+    });
+
+    it("runs the level re-projection through the same display boundary", async () => {
+      // An oversized summary line is bounded in the published rows exactly
+      // as any other row text: capAndTruncate seats, caps and truncates
+      // once, on the config-projected rows.
+      const hugeSummary = "s".repeat(MAX_ITEM_BYTES + 100);
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [
+              {
+                type: "commandExecution",
+                id: "c1",
+                toolName: "shell",
+                status: "completed",
+                description: hugeSummary,
+              } as ThreadItem,
+            ],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().setDisplayConfig(intentConfig);
+      const c1 = rowById(store, "c1");
+      expect(c1).toMatchObject({ kind: "activity" });
+      const summary =
+        c1?.kind === "activity" ? c1.detail.description : undefined;
+      if (summary === undefined) throw new Error("no summarized row");
+      expect(summary.endsWith(TRUNCATION_MARKER)).toBe(true);
+    });
+
+    // Review round 2 (Medium): a level change hides rows without
+    // withdrawing them from the model, and a transient warning must not
+    // retire just because the row it anchored to became hidden — the
+    // store re-anchors it to the nearest preceding row the new level
+    // still shows, so it stays on screen at the compact level and comes
+    // back when the level does.
+    it("keeps a transient warning whose anchor the level hides", async () => {
+      // The warning lands over an idle thread — no active turn to fold
+      // into — so the store holds it on its transient surface, anchored
+      // to the last model row, the thought.
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [
+              userMessageItem("u1", "please audit"),
+              reasoningItem("r1", "the settled thought that anchors"),
+            ],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      // A later reply arrives on a new turn, so the anchored thought
+      // sits mid-timeline.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: agentMessageItem("a2", "working on it", "completed"),
+        },
+      } as AnyNotification);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+
+      // At intent the thought is hidden; the warning re-anchors to the
+      // user message above it and stays on screen.
+      store.getState().setDisplayConfig(intentConfig);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+
+      // And it survives the round trip back to full.
+      store.getState().setDisplayConfig(fullConfig);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+    });
+
+    // Review round 3 (Medium), superseding round 2's Low: the bound RUNS
+    // at every publish (round 2), but its keep-window is LEVEL-INDEPENDENT
+    // — the display level decides what renders, never what payload leaves
+    // the model. A window taken from the level's own rows would shed every
+    // turn the level hides, and the switch back to the richer level could
+    // not rebuild what the re-projection reads: the payloads would be gone
+    // from the model. The show-everything cap is the retention truth; only
+    // the cap window decides what leaves.
+    it("keeps a level-hidden turn's payload for the switch back", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [reasoningItem("r1", "the thought")],
+          }),
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [userMessageItem("u1", "hi")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      // Show-everything keeps both turns' payloads.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(intentConfig);
+      // t0's every row is hidden at intent — hidden, not withdrawn: the
+      // payload stays in the model.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      expect(rowById(store, "r1")).toBeUndefined();
+      // Switch back: the hidden row reappears from the kept payload.
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // Review round 3 (Medium, the frame publish): a row-changing frame
+    // while at a coarse level bounds against the same level-independent
+    // window — the frame must not shed the payload of a turn the level
+    // hides either, or the switch back would lose it the same way.
+    it("a row-changing frame at a coarse level keeps the hidden turn's payload", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [reasoningItem("r1", "the thought")],
+          }),
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [userMessageItem("u1", "hi")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().setDisplayConfig(intentConfig);
+      // A row-changing frame lands at intent: a new turn starts.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // RoboRev panel: the rehydrate bound against its level-projected window
+    // too — a rehydrate at a coarse level skeletonized the turns it hid, so
+    // the switch back to full rendered them empty. The keep-window is the
+    // level-independent union at this site as well.
+    it("a rehydrate at a coarse level keeps the hidden turn's payload", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("u1", "hi")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The older page lands at the show-everything default: its payload
+      // is retained, and the turn is PAGE HISTORY now — the rehydrate's
+      // merge path runs over it.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "r1",
+                turnId: "t0",
+                type: "reasoning",
+                text: "the thought",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(intentConfig);
+      // The rehydrate re-reads at the coarse level; the level-hidden turn's
+      // payload must survive the merge's bound.
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // RoboRev panel: the loadOlder bound against its level-projected window
+    // as well. The page's own accounting (the admitted item keys, F8/F10's
+    // inputs) is level-independent; only the payload bound was not.
+    it("an older page loaded at a coarse level keeps the hidden turn's payload", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("u1", "hi")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.getState().setDisplayConfig(intentConfig);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "r1",
+                turnId: "t0",
+                type: "reasoning",
+                text: "the thought",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      // The level-hidden turn's payload survives the merge.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
     });
   });
 

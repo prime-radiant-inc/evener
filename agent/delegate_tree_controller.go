@@ -46,10 +46,19 @@ type delegateTreeControllerConfig struct {
 type delegateTreeController struct {
 	mu sync.Mutex
 
-	store       *delegatestore.Store
-	durable     delegatestore.State
-	live        map[string]*delegateLiveState
-	rootRuntime *Session
+	store   *delegatestore.Store
+	durable delegatestore.State
+	// delegateChildren is the parent→children edge set over durable — the
+	// index subtreeMembersLocked walks instead of re-scanning every durable
+	// record per tree level. The constructor derives it from the folded
+	// journal and appendLocked maintains it on accepted delegate_created
+	// events, the only event kind that writes parentage, so it stays a pure
+	// function of durable. Root-level delegates contribute no edge: no
+	// delegate carries the empty id, so a membership walk never follows a
+	// ""-keyed edge. Guarded by mu.
+	delegateChildren map[string]map[string]struct{}
+	live             map[string]*delegateLiveState
+	rootRuntime      *Session
 
 	rootSessionID         string
 	stateDir              string
@@ -274,6 +283,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 	c := &delegateTreeController{
 		store:               cfg.store,
 		durable:             durable,
+		delegateChildren:    deriveDelegateChildrenIndex(durable),
 		live:                make(map[string]*delegateLiveState),
 		rootRuntime:         cfg.rootRuntime,
 		rootSessionID:       cfg.rootSessionID,
@@ -336,6 +346,12 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 			// tree the activity clock is that fence, so a shape change moves
 			// it exactly as a job starting or finishing does.
 			c.rootRuntime.noteJobTreeShapeChange()
+			// delegate_created is the only event kind that writes parentage,
+			// so maintaining the children index here keeps it a pure
+			// function of durable.
+			if aggregate := c.durable[event.DelegateID]; aggregate != nil {
+				c.addChildEdgeLocked(event.DelegateID, aggregate.Descriptor.ParentDelegateID)
+			}
 		}
 	}
 	return appended, nil
@@ -412,7 +428,7 @@ func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []
 // delegateIsAncestorLocked reports whether ancestorID is receiverID or any of
 // its transitive parents in the delegate tree. Callers must hold c.mu. The
 // walk is cycle-guarded: a corrupt journal with a parent loop cannot hang the
-// controller mutex (the same property subtreeMembersLocked's fixed-point
+// controller mutex (the same property subtreeMembersLocked's visited-set
 // closure provides downward).
 func (c *delegateTreeController) delegateIsAncestorLocked(ancestorID, receiverID string) bool {
 	if ancestorID == "" || receiverID == "" {

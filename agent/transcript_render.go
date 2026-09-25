@@ -331,8 +331,8 @@ func parseDashRange(spec string) (lo, hi int, ok bool) {
 // the output builder is grown up front to the exact byte size, and cap
 // enforcement is a single linear prefix walk — never a re-decode or re-copy of
 // the accumulator per line.
-func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
-	f, err := openTranscriptFile(path)
+func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
+	f, err := openTranscriptFile(path, root)
 	if err != nil {
 		return "", 0, 0, false, fmt.Errorf("open transcript: %w", err)
 	}
