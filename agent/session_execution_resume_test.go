@@ -1,13 +1,17 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -119,5 +123,62 @@ func TestResumeLeavesOpenTheTurnsPendingWorkWillRunAgain(t *testing.T) {
 	closed := closeCrashedExecutionTargets(executions, map[string]bool{"turn_m1": true})
 	if len(closed) != 2 || closed[0] != "t_a" || closed[1] != "t_b" {
 		t.Fatalf("resume would close %v, want [t_a t_b]", closed)
+	}
+}
+
+// A crash can land after a failed client start's entries are recorded and
+// before its execution's completion is. Recovery at restore then has nothing
+// to append, but the execution it owns is still open: it completes it, failed,
+// rather than leaving it for a later restart to call interrupted.
+func TestRecoveredFailedStartCompletesItsOpenExecution(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-crashed-before-completion",
+		Input:            []appwire.InputItem{{Type: "text", Text: "fails, then the process dies"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	failure := errors.New("deterministic pre-append failure")
+	crash := errors.New("simulated crash after the failure entry")
+	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+	sess.clientMutationFailureRecoveryFault = func(point string) error {
+		if point == "after_failure" {
+			return crash
+		}
+		return nil
+	}
+	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, false); !errors.Is(err, crash) {
+		t.Fatalf("acceptUserInput = %v, want the simulated crash", err)
+	}
+	sess.Close()
+	// The process died before the completion entry: cut it off the file.
+	path := transcriptPath(dir, id)
+	_, entries, _, err := readTranscript(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := entries[len(entries)-1].Turn; last.Kind != schema.TurnCompletion || last.TurnID != started.Turn.ID {
+		t.Fatalf("setup: the transcript ends with %s in %q", last.Kind, last.TurnID)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut := bytes.LastIndexByte(bytes.TrimSuffix(data, []byte{'\n'}), '\n')
+	if err := os.WriteFile(path, data[:cut+1], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{})
+	defer restored.Close()
+	if got := completionsOf(transcriptTurnsOf(t, restored), started.Turn.ID); len(got) != 1 || got[0] != schema.TurnFailed {
+		t.Fatalf("completions of the recovered turn = %v, want one failed", got)
 	}
 }

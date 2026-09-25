@@ -151,26 +151,48 @@ func (s *Session) roundIDForModelCall() string {
 // anything.
 func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	executions := transcript.ExecutionTurns(entries)
+	pending := s.turnsPendingWork()
 	s.mu.Lock()
-	for turnID := range executions {
+	for turnID, open := range executions {
 		s.noteRecordedExecutionLocked(turnID)
+		if open && pending[turnID] {
+			if s.openPendingExecutions == nil {
+				s.openPendingExecutions = map[string]bool{}
+			}
+			s.openPendingExecutions[turnID] = true
+		}
 	}
 	s.mu.Unlock()
 	recorded := false
-	for _, turnID := range closeCrashedExecutionTargets(executions, s.turnsPendingWork()) {
-		now := s.sclock().Now().UTC()
-		turn := schema.Turn{Kind: schema.TurnCompletion, Timestamp: now, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted, CompletedAt: now}}
-		rec, err := func() (transcript.Record, error) {
-			s.attentionMu.Lock()
-			defer s.attentionMu.Unlock()
-			return s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceInTurn(turnID))
-		}()
+	for _, turnID := range closeCrashedExecutionTargets(executions, pending) {
+		rec, err := s.completeTurn(turnID, schema.TurnInterrupted)
 		if err != nil {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 		recorded = recorded || rec.Recorded
 	}
 	return recorded
+}
+
+// completeTurn records a completion of status for turnID, an execution no
+// running process owns any more.
+func (s *Session) completeTurn(turnID string, status schema.TurnCompletionStatus) (transcript.Record, error) {
+	now := s.sclock().Now().UTC()
+	turn := schema.Turn{Kind: schema.TurnCompletion, Timestamp: now, Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now}}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceInTurn(turnID))
+}
+
+// takeOpenPendingExecution reports whether turnID was an open execution that
+// restore left open for pending work to finish, and forgets it: only one
+// finisher completes it.
+func (s *Session) takeOpenPendingExecution(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	open := s.openPendingExecutions[turnID]
+	delete(s.openPendingExecutions, turnID)
+	return open
 }
 
 // closeCrashedExecutionTargets is the open executions resume closes: every
