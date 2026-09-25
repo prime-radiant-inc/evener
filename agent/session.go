@@ -546,6 +546,8 @@ type Session struct {
 	// is never reused, so the field needs no clearing: once the inherited turn
 	// ends, no later active turn can equal it again.
 	recoveredTurnID string
+	// execution is the running execution's bookkeeping (session_execution.go).
+	execution executionState
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -2216,7 +2218,11 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	} else if s.holdTurnUntilTranscriptReady(t) {
 		return transcript.Record{}, nil
 	}
-	return s.attachedTranscript().Record(t, transcript.RecordOptions{Door: door, Place: place})
+	rec, err := s.attachedTranscript().Record(t, transcript.RecordOptions{Door: door, Place: place})
+	s.mu.Lock()
+	s.noteRecordedLocked(rec)
+	s.mu.Unlock()
+	return rec, err
 }
 
 // withEntryModel stamps t with the model the session is configured with, so

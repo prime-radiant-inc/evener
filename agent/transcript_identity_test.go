@@ -133,3 +133,10 @@ func TestForkCopiesKeepTheParentsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// withoutRecordedIdentity is turn as a session appended it, before the writer
+// stamped the identity and model it records every entry with.
+func withoutRecordedIdentity(turn schema.Turn) schema.Turn {
+	turn.Format, turn.TurnID, turn.TurnKind, turn.Model = 0, "", "", ""
+	return turn
+}
