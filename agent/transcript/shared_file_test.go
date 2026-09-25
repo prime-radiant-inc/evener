@@ -318,3 +318,23 @@ func tailNextSeq(w *Writer) int {
 	defer w.tail.mu.Unlock()
 	return w.tail.nextSeq
 }
+
+// readSharedFileEntries strictly decodes every entry of the transcript at path
+// in file order.
+func readSharedFileEntries(t *testing.T, path string) []Entry {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(data, []byte{'\n'}), []byte{'\n'})
+	var entries []Entry
+	for i, line := range lines[1:] {
+		entry, err := DecodeEntry(line)
+		if err != nil {
+			t.Fatalf("entry %d is not a record (%v): %q", i, err, line)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
