@@ -23,6 +23,31 @@ func runWebPreflight(t *testing.T, frontend string) (string, error) {
 	return string(output), err
 }
 
+// sharedInstallFixture lays out a frontend whose node_modules is a symlink to
+// another worktree's shared install, the way agent worktrees link it: the
+// shared node_modules sits beside the lockfile it was installed from, which is
+// where preflight reads it (dirname of the link target). sharedLock is that
+// lockfile's content; age dates the shared install against this frontend's.
+func sharedInstallFixture(t *testing.T, sharedLock string, age time.Duration) (frontend, shared string) {
+	t.Helper()
+	root := t.TempDir()
+	frontend = filepath.Join(root, "frontend")
+	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), []byte("{}\n"), 0o644)
+	shared = filepath.Join(root, "shared")
+	writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte(sharedLock), 0o644)
+	if err := os.MkdirAll(filepath.Join(shared, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(frontend, "node_modules")); err != nil {
+		t.Fatalf("symlink node_modules: %v", err)
+	}
+	stamp := time.Now().Add(age)
+	if err := os.Chtimes(filepath.Join(shared, "node_modules"), stamp, stamp); err != nil {
+		t.Fatalf("date the shared install: %v", err)
+	}
+	return frontend, shared
+}
+
 // A symlinked node_modules is another worktree's shared install, and npm ci
 // deletes an existing node_modules first: through the symlink, that deletes
 // the shared install for every worktree. Preflight refuses whenever the shared
@@ -30,32 +55,38 @@ func runWebPreflight(t *testing.T, frontend string) (string, error) {
 // install would otherwise trip the -nt freshness check into npm ci, and a
 // newer one used to short-circuit the lockfile comparison entirely.
 func TestWebPreflightRefusesNpmCiThroughASymlink(t *testing.T) {
-	for name, age := range map[string]time.Duration{"older": -time.Hour, "newer": time.Hour} {
-		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
-			frontend := filepath.Join(root, "frontend")
-			writeTestFile(t, filepath.Join(frontend, "package-lock.json"), []byte("{}\n"), 0o644)
-			shared := filepath.Join(root, "shared-node-modules")
-			writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte("{\"different\":true}\n"), 0o644)
-			if err := os.Symlink(shared, filepath.Join(frontend, "node_modules")); err != nil {
-				t.Fatalf("symlink node_modules: %v", err)
-			}
-			stamp := time.Now().Add(age)
-			if err := os.Chtimes(shared, stamp, stamp); err != nil {
-				t.Fatalf("date the shared install: %v", err)
-			}
-
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+	}{{"older", -time.Hour}, {"newer", time.Hour}} {
+		t.Run(tc.name, func(t *testing.T) {
+			frontend, shared := sharedInstallFixture(t, "{\"different\":true}\n", tc.age)
 			output, err := runWebPreflight(t, frontend)
 			if err == nil {
 				t.Fatalf("preflight accepted a mismatched symlinked node_modules; output = %s", output)
 			}
-			if !strings.Contains(output, "symlink") {
-				t.Fatalf("refusal does not explain the symlink, so the reader cannot act on it; output = %s", output)
+			if !strings.Contains(output, "does not match") {
+				t.Fatalf("refusal does not say the shared lockfile differs, so the reader cannot act on it; output = %s", output)
 			}
-			if _, err := os.Stat(filepath.Join(shared, "package-lock.json")); err != nil {
+			if _, err := os.Stat(filepath.Join(shared, "node_modules")); err != nil {
 				t.Fatalf("the shared install was touched despite the refusal: %v", err)
 			}
 		})
+	}
+}
+
+// A symlinked shared install built from this worktree's own lockfile is the
+// install it wants, so preflight takes it without npm ci: every agent
+// worktree builds this way. (The empty shared install then fails the tsc
+// health check, which is how the test sees preflight got past the symlink.)
+func TestWebPreflightAcceptsASharedInstallWithTheSameLockfile(t *testing.T) {
+	frontend, _ := sharedInstallFixture(t, "{}\n", -time.Hour)
+	output, _ := runWebPreflight(t, frontend)
+	if strings.Contains(output, "symlink") {
+		t.Fatalf("preflight refused a shared install built from the same lockfile; output = %s", output)
+	}
+	if !strings.Contains(output, "tsc") {
+		t.Fatalf("preflight did not reach the install health check; output = %s", output)
 	}
 }
 
