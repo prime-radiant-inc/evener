@@ -2902,8 +2902,9 @@ describe("D24-3 differential oracle: projectTimeline delegates to the shared pro
     }
     // ...while the full level still shows all three, exactly as the pre-swap
     // projection did.
-    expect(JSON.stringify(rowsAt(model, "full"))).toContain("auditing quietly");
-    expect(JSON.stringify(rowsAt(model, "full"))).toContain("secret live thought");
-    expect(JSON.stringify(rowsAt(model, "full"))).toContain("final thought");
+    const fullShown = JSON.stringify(rowsAt(model, "full"));
+    expect(fullShown).toContain("auditing quietly");
+    expect(fullShown).toContain("secret live thought");
+    expect(fullShown).toContain("final thought");
   });
 });

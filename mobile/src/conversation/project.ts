@@ -841,14 +841,13 @@ function rowForEntry(
       if (base === null) return null;
       if (base.kind !== "activity") return base;
       const row = base.pre.item;
-      const failed = entry.failed || row.state === "failed";
       return {
         kind: "activity",
         pre: {
-          family: failed ? `failed:${entry.item.id}` : base.pre.family,
+          family: entry.failed ? `failed:${entry.item.id}` : base.pre.family,
           item: {
             ...row,
-            state: failed ? "failed" : row.state,
+            state: entry.failed ? "failed" : row.state,
             detail: {
               ...row.detail,
               // The projector's own placeholder means the source carried no
