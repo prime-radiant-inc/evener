@@ -11371,9 +11371,9 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "codex:th_fork",
-		SourceTurnID: "codex-turn-1",
-		Model:        "gpt-5-codex",
+		Ref:           "codex:th_fork",
+		SourceItemKey: "codex-turn-1",
+		Model:         "gpt-5-codex",
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -11381,7 +11381,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	if !source.forkCalled {
 		t.Fatal("non-local source ForkThread was not called")
 	}
-	if source.forkParams.SourceTurnID != "codex-turn-1" || source.forkParams.EditedInput != "" {
+	if source.forkParams.SourceItemKey != "codex-turn-1" || source.forkParams.EditedInput != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
 	}
 	if resp.Thread.Evener.Ref != "codex:th_child" {
@@ -11426,7 +11426,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 	if !source.forkCalled {
 		t.Fatal("whole-thread fork was not routed to source")
 	}
-	if source.forkParams.SourceTurnID != "" || source.forkParams.EditedInput != "" || source.forkParams.Label != "" {
+	if source.forkParams.SourceItemKey != "" || source.forkParams.EditedInput != "" || source.forkParams.Label != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
 	}
 	if resp.Thread.Evener.Ref != "codex:th_whole_child" {
@@ -11459,8 +11459,8 @@ func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testi
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
-		Ref:          "codex:th_no_fork",
-		SourceTurnID: "codex-turn-1",
+		Ref:           "codex:th_no_fork",
+		SourceItemKey: "codex-turn-1",
 	}, &appwire.ThreadForkResponse{})
 	if err == nil {
 		t.Fatal("ThreadFork succeeded for source without fork capability")
@@ -11495,10 +11495,10 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		SourceTurnID: "3",
-		EditedInput:  "second task, edited",
-		Label:        "before edit",
+		Ref:           "local:" + parentID,
+		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+		EditedInput:   "second task, edited",
+		Label:         "before edit",
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -11538,9 +11538,9 @@ func TestHubRPCThreadForkDeferInput(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		SourceTurnID: "3",
-		DeferInput:   true,
+		Ref:           "local:" + parentID,
+		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+		DeferInput:    true,
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -11590,10 +11590,10 @@ func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		SourceTurnID: "3",
-		EditedInput:  "second task, edited",
-		DeferInput:   true,
+		Ref:           "local:" + parentID,
+		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+		EditedInput:   "second task, edited",
+		DeferInput:    true,
 	}, &appwire.ThreadForkResponse{})
 	if err == nil {
 		t.Fatal("ThreadFork with both editedInput and deferInput should fail")

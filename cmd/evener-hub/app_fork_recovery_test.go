@@ -21,7 +21,7 @@ func TestForkRespectsSourceRecoveryAdmission(t *testing.T) {
 			cfg := hubcore.WebConfig{StateDir: stateDir, ResumeLocks: locks}
 			params := appwire.ThreadForkParams{Ref: localAppRef(parent), Aside: aside}
 			if !aside {
-				params.SourceTurnID, params.DeferInput = "turn_1", true
+				params.SourceItemKey, params.DeferInput = "apptranscript-item-v2:t_1:0:0", true
 			}
 			queued := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadFork, params))
 			finish := locks.BeginForceStop([]string{parent})

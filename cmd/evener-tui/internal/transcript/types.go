@@ -151,9 +151,10 @@ type ChatMessage struct {
 	// TranscriptEntryIndex is the row's 1-based position in the session's
 	// transcript ENTRY list (appwire.ThreadItem.TranscriptEntryIndex), counting
 	// every entry rather than only the ones that opened a turn. It is the sole
-	// field that names a thread/fork divergence position — the hub reads
-	// ThreadForkParams.SourceTurnID as exactly this index and hands it to
-	// agent.ForkSessionAtUserTurn, which forks only at a USER_INPUT entry. The
+	// field that names a thread/fork divergence position — sendHubFork packs
+	// it into ThreadForkParams.SourceItemKey, which the hub parses back to
+	// this same index and hands to agent.ForkSessionAtUserTurn, which forks
+	// only at a USER_INPUT entry. The
 	// reducer therefore stamps it on user rows; zero means "no persisted
 	// transcript position" (an un-reconciled composer echo, a wire item that
 	// carried none) and hub_browse.go's fork draft refuses rather than guess.

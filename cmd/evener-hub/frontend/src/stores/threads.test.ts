@@ -5175,10 +5175,14 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     const result = await threadsStore
       .getState()
-      .forkFromTurn("ref_a", { sourceTurnId: "turn_1", editedInput: "edited text" });
+      .forkFromTurn("ref_a", { sourceItemKey: "apptranscript-item-v2:turn_1:0:0", editedInput: "edited text" });
 
     const call = fake.calls.find((c) => c.method === "thread/fork");
-    expect(call?.params).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", editedInput: "edited text" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      sourceItemKey: "apptranscript-item-v2:turn_1:0:0",
+      editedInput: "edited text",
+    });
     expect(result.thread.evener.ref).toBe("ref_child");
   });
 
@@ -5189,11 +5193,10 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().forkFromTurn("ref_a", { aside: true });
 
     const call = fake.calls.find((c) => c.method === "thread/fork");
-    // sourceTurnId has no `omitempty` on the wire (appwire/types.go:694) -
-    // it is required JSON even when meaningless (aside is mutually
-    // exclusive with it), so the store defaults it to "" rather than
-    // omitting the field.
-    expect(call?.params).toEqual({ ref: "ref_a", aside: true, sourceTurnId: "" });
+    // sourceItemKey carries `omitempty` on the wire (appwire/types.go), so
+    // an aside-mode caller that never set it (aside is mutually exclusive
+    // with it) sends no field at all.
+    expect(call?.params).toEqual({ ref: "ref_a", aside: true });
   });
 
   // The durable clear response is the authoritative replacement snapshot; the

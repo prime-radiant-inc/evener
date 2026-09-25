@@ -17,9 +17,10 @@ import (
 // TestHubForkDraftDivergesAtTheTranscriptEntryIndex (kata e6q0, the TUI twin of
 // 0jhh) pins the number the fork draft sends as its divergence position.
 //
-// thread/fork's sourceTurnId is a 1-based index into the parent transcript's
-// ENTRY list — the hub's parseSourceTurnID hands it straight to
-// agent.ForkSessionAtUserTurn — so the only field that names it is the item's
+// thread/fork's sourceItemKey names a 1-based index into the parent
+// transcript's ENTRY list — the hub's parseSourceItemKey recovers it and
+// hands it straight to agent.ForkSessionAtUserTurn — so the only field that
+// names it is the item's
 // own TranscriptEntryIndex. A turn id coincides with that index only on a
 // transcript replayed from disk; internal/appprojector numbers a live turn off
 // a per-turn counter while the entry index counts every entry, so the second
