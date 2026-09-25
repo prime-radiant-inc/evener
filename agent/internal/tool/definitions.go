@@ -462,7 +462,10 @@ func DefGrep() llm.ToolDefinition {
 				"path":             map[string]any{"type": "string"},
 				"glob_filter":      map[string]any{"type": "string"},
 				"case_insensitive": map[string]any{"type": "boolean"},
-				"max_results":      map[string]any{"type": "integer"},
+				"max_results": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of results to return: output lines in content mode, file paths in files_with_matches mode, count entries in count mode. Defaults to 100.",
+				},
 				"context_lines": map[string]any{
 					"type":        "integer",
 					"description": "Lines of context to include before and after each match, 0-10 (default 0).",

@@ -939,6 +939,31 @@ func TestDefGrepContextLinesParam(t *testing.T) {
 	}
 }
 
+func TestDefGrepMaxResultsParam(t *testing.T) {
+	def := DefGrep()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	mr, ok := props["max_results"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep missing max_results property; got properties: %v", props)
+	}
+	if mr["type"] != "integer" {
+		t.Errorf("max_results type = %v, want integer", mr["type"])
+	}
+	desc, _ := mr["description"].(string)
+	// Pin the cap's contract the way TestDefGrepContextLinesParam pins its
+	// range and default: what the field limits, and the default the
+	// implementation falls back to (values <= 0 become 100).
+	if !strings.Contains(desc, "Maximum number") {
+		t.Errorf("max_results description should state the results cap, got: %q", desc)
+	}
+	if !strings.Contains(desc, "100") {
+		t.Errorf("max_results description should document the default of 100, got: %q", desc)
+	}
+}
+
 // TestDefAskUserDescriptionIsSpecVerbatim pins the description to spec §4.4's
 // key contract points: yields the floor, no timeout, batching, the reply
 // contract, and the "no Other option" rule.
