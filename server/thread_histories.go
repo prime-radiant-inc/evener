@@ -25,7 +25,9 @@ type threadHistories struct {
 	root string
 	// lastEpoch is the epoch each detached thread's history ended at: a
 	// history recreated for the thread starts there, so a thread's epochs
-	// never go backwards while this process runs.
+	// never go backwards within this boot generation (one per process; a
+	// thread/clear replaces the served root, whose new session is another
+	// thread). It holds one number per thread the process ever served.
 	lastEpoch map[string]uint64
 }
 

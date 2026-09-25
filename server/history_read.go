@@ -24,7 +24,10 @@ func (h *threadHistory) capture() historyCapture {
 // longer holds: a stream, preview or tool state an entry recorded since the
 // cut covered is history in this response. The read applies every queued
 // entry within the projected length to the overlay first, so nothing within
-// it is left in both.
+// it is left in both, except while the overlay gap is open (a dropped queue
+// not yet replayed, or a failed thread): then the overlay may still hold
+// state the returned history covers, and the client drops it by key and
+// version as it does for a notification that races a read.
 func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, overlay []appwire.OverlayItem, err error) {
 	var window transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Index) (err error) {

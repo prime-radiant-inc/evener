@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
 )
 
@@ -105,8 +106,9 @@ func publishedOnce(t *testing.T, updates []appwire.HistoryUpdatedParams) map[str
 }
 
 // The recorded hook takes the queue mutex and nothing else: it runs to the
-// end while every other lock the server, the registry and the history own is
-// held elsewhere.
+// end while the appserver's commit lock and every other lock the server, the
+// registry and the history own (the overlay's aside, which the hook no longer
+// reaches) are held elsewhere.
 func TestRecordedHookTakesOnlyTheQueueMutex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	st := newServedTranscript(t, srv, "root")
@@ -114,22 +116,28 @@ func TestRecordedHookTakesOnlyTheQueueMutex(t *testing.T) {
 	if history == nil {
 		t.Fatal("no history")
 	}
-	srv.mu.Lock()
-	srv.appHistories.mu.Lock()
-	history.applyMu.Lock()
 	recorded := make(chan struct{})
-	go func() {
-		defer close(recorded)
-		st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("under every other lock")))
-	}()
-	select {
-	case <-recorded:
-	case <-time.After(historyTestWait):
-		t.Error("the recorded hook blocked on a lock other than the queue mutex")
-	}
-	history.applyMu.Unlock()
-	srv.appHistories.mu.Unlock()
-	srv.mu.Unlock()
+	// Inside a projection commit, so the appserver's commit lock is held too.
+	srv.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		srv.mu.Lock()
+		srv.appHistories.mu.Lock()
+		history.serial.Lock()
+		history.applyMu.Lock()
+		go func() {
+			defer close(recorded)
+			st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("under every other lock")))
+		}()
+		select {
+		case <-recorded:
+		case <-time.After(historyTestWait):
+			t.Error("the recorded hook blocked on a lock other than the queue mutex")
+		}
+		history.applyMu.Unlock()
+		history.serial.Unlock()
+		srv.appHistories.mu.Unlock()
+		srv.mu.Unlock()
+		return nil
+	})
 	<-recorded
 	st.settle(t)
 }
@@ -369,8 +377,9 @@ func TestThreadHistoryOverflowingEveryRebuildFailsThenAReadRecovers(t *testing.T
 	}
 }
 
-// Appends from several goroutines while the projection rebuilds over and over
-// never deadlock, and the thread ends up holding every entry.
+// Appends from several goroutines while the projection rebuilds over and over,
+// with reads and the event path running alongside, never deadlock, and the
+// thread ends up holding every entry.
 func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 	var publishes atomic.Int32
 	var failing atomic.Bool
@@ -398,11 +407,41 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 		}
 	}()
 	done := make(chan struct{})
+	appended := make(chan struct{})
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		for g := range 4 {
+		// Reads and overlay events until the appends end: a read applies
+		// the queue and takes the index; an event applies it before the
+		// overlay. Neither may deadlock with the hook or a rebuild.
+		for range 2 {
 			wg.Go(func() {
+				for {
+					select {
+					case <-appended:
+						return
+					default:
+					}
+					if _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
+						t.Errorf("read during rebuilds: %v", err)
+						return
+					}
+				}
+			})
+		}
+		wg.Go(func() {
+			for i := 0; ; i++ {
+				select {
+				case <-appended:
+					return
+				default:
+				}
+				hx.history.overlayEvent(events.New(events.LoopDetectionData{Message: fmt.Sprintf("loop %d", i)}))
+			}
+		})
+		var appenders sync.WaitGroup
+		for g := range 4 {
+			appenders.Go(func() {
 				for i := range 25 {
 					text := fmt.Sprintf("goroutine %d entry %d", g, i)
 					if i%5 == 0 {
@@ -412,6 +451,8 @@ func TestThreadHistoryAppendsDuringRepeatedRebuilds(t *testing.T) {
 				}
 			})
 		}
+		appenders.Wait()
+		close(appended)
 		wg.Wait()
 	}()
 	// A tripwire, not a wait: a deadlock between the append lock, the queue
