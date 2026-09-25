@@ -1082,10 +1082,20 @@ export function ConversationScreen({
 							nativeMutationTargetKey(route.params.hubId, route.params.ref),
 						),
 					);
-				} catch {
+				} catch (error) {
 					// The mutations database could not be opened. The conversation
-					// stays usable; a later reconnect or remount retries.
+					// stays usable; a later reconnect or remount retries, and the
+					// failure is logged so it is not silent.
+					console.error(
+						"ConversationScreen: durable pending seam bind failed",
+						error,
+					);
 				}
+			})
+			.catch((error) => {
+				// The store surfaces a failed resume in its own state; this only
+				// keeps the rejection from going unobserved.
+				console.error("ConversationScreen: resume failed", error);
 			});
 		return () => {
 			cancelled = true;

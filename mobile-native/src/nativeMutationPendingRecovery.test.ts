@@ -31,13 +31,22 @@ import { projectConversation, type MobileConversation } from "./projectedRows";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
+// A deterministic, unique id per call: IDs must be unique per test without
+// depending on Math.random (which could collide and flake).
+const uuidCounter = vi.hoisted(() => ({ next: 0 }));
 vi.mock("expo-crypto", () => ({
-	randomUUID: () => "test-uuid-" + Math.random().toString(16).slice(2),
+	randomUUID: () => `test-uuid-${++uuidCounter.next}`,
 	getRandomValues: (array: Uint8Array) => array,
 }));
 
 let database: SqliteDoubleDatabase | undefined;
-afterEach(() => {
+// Every runtime a test creates, stopped before its database closes so no
+// timer or dispatch chain outlives the test.
+const runtimes: NativeMutationRuntime[] = [];
+afterEach(async () => {
+	for (const runtime of runtimes.splice(0)) {
+		await runtime.stop().catch(() => undefined);
+	}
 	database?.close();
 	database = undefined;
 });
@@ -116,8 +125,14 @@ function readResponse(
 	} as ThreadReadResponse;
 }
 
-async function flush(): Promise<void> {
-	for (let i = 0; i < 4; i += 1) {
+// Poll until an asynchronous condition holds instead of assuming a fixed number
+// of ticks: a storage subscription and the dispatcher's fire-and-forget chains
+// settle across an unbounded number of microtasks/macrotasks under load.
+async function waitFor(condition: () => boolean, what: string): Promise<void> {
+	const deadline = Date.now() + 2000;
+	for (;;) {
+		if (condition()) return;
+		if (Date.now() > deadline) throw new Error(`waitFor timed out: ${what}`);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
 }
@@ -146,6 +161,7 @@ function turnStarts(client: FakeClient): number {
 // the runtime through the production port factory.
 async function composition(hubId = "hub-1", targetRef = "ref-1") {
 	const runtime = new NativeMutationRuntime(openDatabase(), {});
+	runtimes.push(runtime);
 	const client = new FakeClient("ready");
 	client.on("turn/start", appliedReceipt);
 	runtime.registerTarget(hubId, targetRef, client);
@@ -155,14 +171,17 @@ async function composition(hubId = "hub-1", targetRef = "ref-1") {
 	const key = nativeMutationTargetKey(hubId, targetRef);
 	const port = createConversationMutationPendingPort(runtime, key);
 	store.getState().bindPendingMutations(port);
-	await flush();
+	await waitFor(() => Array.isArray(store.getState().pendingMutations), "the initial read publishes");
 	return { runtime, client, store, key };
 }
 
 test("(3) a never-attempted record dispatches only when readiness holds, never eagerly on boot", async () => {
 	const { runtime, client, store, key } = await composition();
 	const record = await seed(runtime, key);
-	await flush();
+	await waitFor(
+		() => store.getState().pendingMutations?.some((row) => row.id === record.clientMutationId) === true,
+		"the durable row is visible",
+	);
 
 	// Boot: the durable row is visible, but nothing has left the client. The
 	// target gate is closed until an authoritative read opens it.
@@ -176,21 +195,21 @@ test("(3) a never-attempted record dispatches only when readiness holds, never e
 	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	expect(lease).toBeDefined();
 	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { ids: [] }));
-	await flush();
+	await waitFor(() => turnStarts(client) === 1, "the record dispatches once ready");
 	expect(turnStarts(client)).toBe(1);
 });
 
 test("(1) a server-acknowledged mutation settles exactly once across restart/reconnect replays", async () => {
 	const { runtime, client, store, key } = await composition();
 	const record = await seed(runtime, key);
-	await flush();
+	await waitFor(() => store.getState().pendingMutations?.length === 1, "the durable row is visible");
 	expect(store.getState().pendingMutations).toHaveLength(1);
 
 	// The server acknowledges it: the authoritative read names the id, which
 	// settles the durable record out of storage exactly once.
 	const first = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(first!, readResponse("ref-1", { ids: [record.clientMutationId] }));
-	await flush();
+	await waitFor(() => store.getState().pendingMutations?.length === 0, "the settled row drops");
 	expect(store.getState().pendingMutations).toEqual([]);
 	await expect(runtime.storage.getOutbox(record.clientMutationId)).resolves.toBeUndefined();
 
@@ -198,7 +217,7 @@ test("(1) a server-acknowledged mutation settles exactly once across restart/rec
 	// record neither resurrects nor re-dispatches.
 	const replay = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(replay!, readResponse("ref-1", { ids: [record.clientMutationId] }));
-	await flush();
+	await waitFor(() => store.getState().pendingMutations?.length === 0, "the replay does not resurrect");
 	expect(store.getState().pendingMutations).toEqual([]);
 	expect(turnStarts(client)).toBe(0);
 	await expect(runtime.storage.getOutbox(record.clientMutationId)).resolves.toBeUndefined();
@@ -211,7 +230,10 @@ test("(2) an unknown outcome stays blocked, never auto-resumes, and surfaces thr
 	await runtime.storage.markAttempted(record.clientMutationId);
 	const blockedRead = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(blockedRead!, readResponse("ref-1", { authoritative: false }));
-	await flush();
+	await waitFor(
+		() => store.getState().pendingMutations?.[0]?.state === "blockedUnknown",
+		"the blocked row surfaces",
+	);
 
 	// Surfaces through the landed stack: the store's pending row carries the
 	// blockedUnknown state.
@@ -229,7 +251,10 @@ test("(2) an unknown outcome stays blocked, never auto-resumes, and surfaces thr
 	const later = await seed(runtime, key);
 	const open = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(open!, readResponse("ref-1", { authoritative: false }));
-	await flush();
+	await waitFor(
+		() => store.getState().pendingMutations?.some((row) => row.id === later.clientMutationId) === true,
+		"the later row is visible",
+	);
 	expect(turnStarts(client)).toBe(0);
 	expect((await runtime.storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
 	expect((await runtime.storage.getOutbox(later.clientMutationId))?.state).toBe("submitting");
@@ -238,6 +263,7 @@ test("(2) an unknown outcome stays blocked, never auto-resumes, and surfaces thr
 test("(4) storage/hub-ref identities stay isolated across a restart", async () => {
 	const db = openDatabase();
 	const runtime = new NativeMutationRuntime(db, {});
+	runtimes.push(runtime);
 	const client = new FakeClient("ready");
 	client.on("turn/start", appliedReceipt);
 	runtime.registerTarget("hub-a", "ref-1", client);
@@ -259,14 +285,14 @@ test("(4) storage/hub-ref identities stay isolated across a restart", async () =
 	const store = createConversationStore();
 	await store.getState().open(fakeService(conversation()) as never, "ref-1");
 	store.getState().bindPendingMutations(createConversationMutationPendingPort(runtime, keyA));
-	await flush();
+	await waitFor(() => store.getState().pendingMutations?.length === 1, "hub-a's own row shows");
 	expect(store.getState().pendingMutations).toHaveLength(1);
 
 	// Restart: a fresh store over the same durable storage, rebound for hub-a.
 	const restarted = createConversationStore();
 	await restarted.getState().open(fakeService(conversation()) as never, "ref-1");
 	restarted.getState().bindPendingMutations(createConversationMutationPendingPort(runtime, keyA));
-	await flush();
+	await waitFor(() => restarted.getState().pendingMutations?.length === 1, "the restarted store restores hub-a's row");
 	expect(restarted.getState().pendingMutations).toHaveLength(1);
 	expect(restarted.getState().pendingMutations?.map((row) => row.id)).not.toContain(
 		foreign.clientMutationId,
@@ -281,17 +307,19 @@ test("(restart) a fresh runtime over a reopened database restores the durable ro
 		// ---- first process -------------------------------------------------
 		const opened = openSqliteSyncDouble(file);
 		const first = new NativeMutationRuntime(opened.port, {});
+		runtimes.push(first);
 		const firstClient = new FakeClient("ready");
 		firstClient.on("turn/start", appliedReceipt);
 		first.registerTarget("hub-1", "ref-1", firstClient);
 		await first.start();
 
-		// One mutation still never-attempted, one whose outcome is unknown. The
-		// unknown one is blocked through the runtime's own attempted-then-blocked
-		// path (a non-authoritative read: the server has not vouched for the
-		// mutation state), and the process exits with both rows durable.
-		const acked = await seed(first, key);
+		// The unknown-outcome mutation is seeded FIRST so it is the FIFO head; it
+		// is blocked through the runtime's own attempted-then-blocked path (a
+		// non-authoritative read: the server has not vouched for the mutation
+		// state), and the never-attempted mutation parks behind it. The process
+		// exits with both rows durable.
 		const unknown = await seed(first, key);
+		const acked = await seed(first, key);
 		await first.storage.markAttempted(unknown.clientMutationId);
 		const blockedRead = first.beginAuthoritativeRead("hub-1", "ref-1", firstClient);
 		await first.reconcileAuthoritativeRead(blockedRead!, readResponse("ref-1", { authoritative: false }));
@@ -304,6 +332,7 @@ test("(restart) a fresh runtime over a reopened database restores the durable ro
 		// ---- restart: reopen the SAME database file, fresh runtime + client --
 		const reopened = openSqliteSyncDouble(file);
 		const second = new NativeMutationRuntime(reopened.port, {});
+		runtimes.push(second);
 		const secondClient = new FakeClient("ready");
 		secondClient.on("turn/start", appliedReceipt);
 		second.registerTarget("hub-1", "ref-1", secondClient);
@@ -312,7 +341,10 @@ test("(restart) a fresh runtime over a reopened database restores the durable ro
 		const store = createConversationStore();
 		await store.getState().open(fakeService(conversation()) as never, "ref-1");
 		store.getState().bindPendingMutations(createConversationMutationPendingPort(second, key));
-		await flush();
+		await waitFor(
+			() => store.getState().pendingMutations?.length === 2,
+			"both durable rows are restored",
+		);
 
 		// Dispatch behavior on boot: nothing leaves the client.
 		expect(turnStarts(secondClient)).toBe(0);
@@ -336,7 +368,7 @@ test("(restart) a fresh runtime over a reopened database restores the durable ro
 			settle!,
 			readResponse("ref-1", { ids: [acked.clientMutationId, unknown.clientMutationId] }),
 		);
-		await flush();
+		await waitFor(() => store.getState().pendingMutations?.length === 0, "both settle out");
 		expect(store.getState().pendingMutations).toEqual([]);
 		expect(turnStarts(secondClient)).toBe(0);
 		await expect(second.storage.getOutbox(acked.clientMutationId)).resolves.toBeUndefined();
@@ -346,8 +378,9 @@ test("(restart) a fresh runtime over a reopened database restores the durable ro
 			replay!,
 			readResponse("ref-1", { ids: [acked.clientMutationId, unknown.clientMutationId] }),
 		);
-		await flush();
+		await waitFor(() => store.getState().pendingMutations?.length === 0, "the replay does not resurrect");
 		expect(store.getState().pendingMutations).toEqual([]);
+		await second.stop();
 		reopened.database.close();
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
