@@ -149,7 +149,7 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 	}
 
 	selectedRanges := intersectItemRanges(ranges, start, end)
-	tail := end == total
+	tail := end == total && !previous
 	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project, tail)
 	if err != nil {
 		if !isContextError(err) {
@@ -213,7 +213,8 @@ func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) 
 }
 
 func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosition) (uint64, error) {
-	for _, itemRange := range ranges {
+	last := len(ranges) - 1
+	for i, itemRange := range ranges {
 		if itemRange.prelude {
 			if before.Entry != 0 {
 				continue
@@ -227,6 +228,14 @@ func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosi
 			continue
 		}
 		if uint64(before.Item) >= itemRange.count {
+			// The tail group may have flushed communicates that extend
+			// beyond the sidecar's item count. A cursor naming one of
+			// those flushed positions (Item == count) is valid: clamp
+			// to the indexed boundary so the previous window returns
+			// the older indexed items rather than erroring stale.
+			if i == last {
+				return itemRange.start + itemRange.count, nil
+			}
 			return 0, appwire.TranscriptItemCursorStale()
 		}
 		return itemRange.start + uint64(before.Item), nil
