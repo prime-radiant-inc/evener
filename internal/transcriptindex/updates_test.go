@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -132,4 +133,55 @@ func TestExtensionTruncatesTablesToTheirCounts(t *testing.T) {
 		}
 	}
 	assertAllWindows(t, x, path)
+}
+
+// The update log keeps only its newest records: once it holds more than
+// twice updateLogRecords it is cut back to them. ChangedSince for a length
+// the kept log no longer covers reports ErrUpdateLogTruncated, so the
+// caller sends a full latest-window replacement; for a newer length it
+// answers exactly as an unbounded log does. Another handle on the sidecar
+// follows the cut.
+func TestTheUpdateLogIsBounded(t *testing.T) {
+	previous := updateLogRecords
+	updateLogRecords = 4
+	t.Cleanup(func() { updateLogRecords = previous })
+	fx := everything()
+	path, lines := writeHeaderOnly(t, fx)
+	dir := t.TempDir()
+	x := openIndex(t, path, dir)
+	var lengths []int64
+	for _, line := range lines {
+		appendBytes(t, path, line)
+		catchUp(t, x)
+		lengths = append(lengths, x.meta.Length)
+	}
+	if x.updates.n > 2*uint64(updateLogRecords) || x.meta.UpdatesFrom == 0 {
+		t.Fatalf("update log holds %d records (kept from %d), want at most %d", x.updates.n, x.meta.UpdatesFrom, 2*updateLogRecords)
+	}
+	if _, err := x.ChangedSince(lengths[0]); !errors.Is(err, ErrUpdateLogTruncated) {
+		t.Fatalf("ChangedSince before the kept log = %v, want ErrUpdateLogTruncated", err)
+	}
+	updateLogRecords = previous
+	unbounded := openIndex(t, path, t.TempDir())
+	updateLogRecords = 4
+	recent := lengths[len(lengths)-3]
+	got, err := x.ChangedSince(recent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := unbounded.ChangedSince(recent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Incarnation, want.Incarnation = "", ""
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ChangedSince(%d) on the bounded log = %s, want %s", recent, dump(got), dump(want))
+	}
+	other := openIndex(t, path, dir)
+	if other.meta.UpdatesFile != x.meta.UpdatesFile || other.updates.n != x.updates.n {
+		t.Fatalf("another handle holds log %q (%d records), want %q (%d)", other.meta.UpdatesFile, other.updates.n, x.meta.UpdatesFile, x.updates.n)
+	}
+	if _, err := other.ChangedSince(recent); err != nil {
+		t.Fatal(err)
+	}
 }

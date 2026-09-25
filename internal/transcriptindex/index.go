@@ -34,6 +34,19 @@ const (
 	maxLineBytes = 128 << 20
 )
 
+// updateLogRecords is how many of the newest update log records the index
+// keeps: once the log holds more than twice as many, an extension cuts it
+// back to them. A reader whose snapshot predates the kept log gets
+// ErrUpdateLogTruncated from ChangedSince and replaces its window instead.
+// About one record is logged per entry, so this covers the last ten
+// thousand entries or so. A variable only so tests can shrink it.
+var updateLogRecords = 10_000
+
+// ErrUpdateLogTruncated reports a ChangedSince for a length older than the
+// kept update log: the changes since then are not all known any more, and
+// the caller sends a full latest-window replacement with no deltas.
+var ErrUpdateLogTruncated = errors.New("transcript index update log no longer reaches that length")
+
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
 // over, so a reader never sees a half-built index.
@@ -60,7 +73,8 @@ type meta struct {
 	Incarnation  string `json:"incarnation"`
 	FileIdentity string `json:"file_identity"`
 	// Length is the transcript bytes covered: the header and every complete
-	// entry line. Entries counts those entries; the next one's ordinal.
+	// entry line. Entries counts those entries; the next one's ordinal. Both
+	// are published together, with the table counts, in one meta write.
 	Length       int64  `json:"length"`
 	Entries      uint64 `json:"entries"`
 	TailSHA256   string `json:"tail_sha256"`
@@ -69,6 +83,12 @@ type meta struct {
 	Items        uint64 `json:"items"`
 	Turns        uint64 `json:"turns"`
 	Updates      uint64 `json:"updates"`
+	// UpdatesFile names the update log's file in the build ("" is the
+	// first, updatesFile); a cut writes the kept records to a new file.
+	// UpdatesFrom is the offset from which the log holds every update: those
+	// caused by entries before it may have been cut (0: nothing was).
+	UpdatesFile string `json:"updates_file,omitempty"`
+	UpdatesFrom int64  `json:"updates_from,omitempty"`
 	// The legacy grouping state, for grouping the next legacy entry: whether
 	// a legacy group is open, and its id and summary slot.
 	Open       bool   `json:"open"`
@@ -101,6 +121,8 @@ type Index struct {
 	meta       meta
 	prelude    *appwire.Turn
 	builder    builder
+	// updatesName is the update log file updates has open.
+	updatesName string
 	// builderStale reports records another handle extended, which the
 	// builder's open-turn state does not reflect yet.
 	builderStale bool
@@ -239,6 +261,9 @@ func (x *Index) readMeta() (meta, error) {
 // adopt takes m as the covered state. The builder's open-turn state is
 // restored from records before the next extension.
 func (x *Index) adopt(m meta) error {
+	if err := x.openUpdates(m.updatesFileName()); err != nil {
+		return err
+	}
 	items, err := x.items.available()
 	if err != nil {
 		return err
@@ -562,8 +587,106 @@ func (x *Index) scan(length int64) error {
 	return nil
 }
 
-// writeMeta publishes the covered state, after the records it counts.
+// updatesFileName is the update log file m names.
+func (m meta) updatesFileName() string {
+	if m.UpdatesFile == "" {
+		return updatesFile
+	}
+	return m.UpdatesFile
+}
+
+// openUpdates makes name the open update log file, if it is not already.
+func (x *Index) openUpdates(name string) error {
+	if x.updates.file != nil && x.updatesName == name {
+		return nil
+	}
+	f, err := os.OpenFile(filepath.Join(x.dir, x.build, name), os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	if x.updates.file != nil {
+		_ = x.updates.file.Close()
+	}
+	x.updates.file, x.updates.size, x.updatesName = f, updateRecordSize, name
+	return nil
+}
+
+// cutUpdateLog keeps only the newest updateLogRecords of an update log that
+// has grown past twice as many: it writes them to a new file, which the next
+// meta names. The old file stays until that meta is written (writeMeta), so
+// a crash before it leaves the old log in force; a file no meta names is
+// removed at the next cut.
+func (x *Index) cutUpdateLog() (old string, err error) {
+	keep := uint64(updateLogRecords)
+	if x.updates.n <= 2*keep {
+		return "", nil
+	}
+	drop := x.updates.n - keep
+	last, err := x.updates.read(drop-1, 1)
+	if err != nil {
+		return "", err
+	}
+	kept, err := x.updates.read(drop, int(keep))
+	if err != nil {
+		return "", err
+	}
+	name, err := randomName()
+	if err != nil {
+		return "", err
+	}
+	name = updatesFile + "." + name
+	f, err := os.OpenFile(filepath.Join(x.dir, x.build, name), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create transcript index update log: %w", err)
+	}
+	if _, err := f.Write(kept); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("write transcript index update log: %w", err)
+	}
+	old = x.updatesName
+	_ = x.updates.file.Close()
+	x.updates.file, x.updates.n, x.updatesName = f, keep, name
+	x.meta.UpdatesFile = name
+	x.meta.UpdatesFrom = max(x.meta.UpdatesFrom, decodeUpdate(last).Offset+1)
+	return old, nil
+}
+
+// removeOtherUpdateLogs deletes every update log file in the build but the
+// live one.
+func (x *Index) removeOtherUpdateLogs() {
+	entries, err := os.ReadDir(filepath.Join(x.dir, x.build))
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if name := entry.Name(); (name == updatesFile || strings.HasPrefix(name, updatesFile+".")) && name != x.updatesName {
+			_ = os.Remove(filepath.Join(x.dir, x.build, name))
+		}
+	}
+}
+
+// writeMeta publishes the covered state, after the records it counts,
+// cutting the update log first when it has grown past its bound. A meta that
+// fails to publish a cut leaves the index to rebuild.
 func (x *Index) writeMeta() error {
+	cut, err := x.cutUpdateLog()
+	if err != nil {
+		return err
+	}
+	if err := x.publishMeta(); err != nil {
+		if cut != "" {
+			x.stale = true
+		}
+		return err
+	}
+	if cut != "" {
+		x.removeOtherUpdateLogs()
+	}
+	return nil
+}
+
+// publishMeta writes the covered state.
+func (x *Index) publishMeta() error {
 	sum, err := x.tailSum(x.meta.Length)
 	if err != nil {
 		return err
@@ -613,10 +736,12 @@ func (x *Index) openFiles(create bool) error {
 		return err
 	}
 	x.turns.size = turnRecordSize
-	if x.updates.file, err = open(updatesFile); err != nil {
-		return err
+	if create {
+		if x.updates.file, err = open(updatesFile); err != nil {
+			return err
+		}
+		x.updates.size, x.updatesName = updateRecordSize, updatesFile
 	}
-	x.updates.size = updateRecordSize
 	x.strings.file, err = open(stringsFile)
 	return err
 }
@@ -631,6 +756,7 @@ func (x *Index) closeBuild() error {
 		}
 	}
 	x.build = ""
+	x.updatesName = ""
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0

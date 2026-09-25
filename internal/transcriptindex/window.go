@@ -204,6 +204,9 @@ func (x *Index) ChangedSince(length int64) (Changes, error) {
 	var changes Changes
 	err := x.locked(false, func() error {
 		changes = Changes{Incarnation: x.meta.Incarnation, Length: x.meta.Length}
+		if length < x.meta.UpdatesFrom {
+			return ErrUpdateLogTruncated
+		}
 		first, err := x.firstUpdateAt(length)
 		if err != nil {
 			return err

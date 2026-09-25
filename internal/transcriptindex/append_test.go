@@ -290,6 +290,17 @@ func replayAfterCrash(t *testing.T, tail []fixtureLine, pastCrash int) {
 	if replayed.rebuilds != 0 {
 		t.Fatal("replaying after a crash rebuilt the index")
 	}
+	// The covered entry count (the next ordinal) is part of the one meta
+	// write that covers the length: the replay counts every entry once.
+	entries := 0
+	for _, line := range fx.lines {
+		if !line.blank {
+			entries++
+		}
+	}
+	if replayed.meta.Entries != uint64(entries) {
+		t.Fatalf("replayed index counts %d entries, want %d", replayed.meta.Entries, entries)
+	}
 	assertAllWindows(t, replayed, path)
 	// The replay redoes the update log, so a reader holding the old snapshot
 	// still learns what the replayed entries changed.
