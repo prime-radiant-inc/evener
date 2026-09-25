@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -283,7 +282,7 @@ func TestDroppedWriterReleasesItsTail(t *testing.T) {
 	// ran, so this watches for its effect. The deadline is a tripwire for a
 	// cleanup that never runs, not the mechanism.
 	deadline := time.Now().Add(time.Minute)
-	for tailRegistered(path) {
+	for openInProcess(path) {
 		if time.Now().After(deadline) {
 			t.Fatal("the dropped writer's tail is still registered a minute after it was dropped")
 		}
@@ -292,40 +291,25 @@ func TestDroppedWriterReleasesItsTail(t *testing.T) {
 	}
 }
 
-func tailRegistered(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	openTails.mu.Lock()
-	defer openTails.mu.Unlock()
-	return slices.ContainsFunc(openTails.tails, func(tail *appendTail) bool { return os.SameFile(tail.info, info) })
-}
-
-// Creating a transcript over a file another writer still holds open shares
-// that writer's tail, so it must not rewind the sequence under it.
-func TestCreatingOverAnOpenTranscriptDoesNotRewindItsSequence(t *testing.T) {
+// Creating a transcript truncates the file. No caller creates over a
+// transcript this process has open, and one that did would cut the records out
+// from under the open writer, so the create is refused and the file is left
+// as it was.
+func TestCreatingOverAnOpenTranscriptIsRefused(t *testing.T) {
 	path := newSharedFileTranscript(t)
 	open := openSharedFileWriter(t, path)
 	defer open.Close() //nolint:errcheck // assertion fixture
 	if err := open.Append(steeringTurn("open before create")); err != nil {
 		t.Fatalf("open Append: %v", err)
 	}
-	created, err := NewWriterNoSync(path, sharedFileHeader)
-	if err != nil {
-		t.Fatalf("NewWriterNoSync over open transcript: %v", err)
-	}
-	defer created.Close() //nolint:errcheck // assertion fixture
-	if err := created.Append(steeringTurn("created")); err != nil {
-		t.Fatalf("created Append: %v", err)
+	if created, err := NewWriterNoSync(path, sharedFileHeader); err == nil {
+		_ = created.Close()
+		t.Fatal("NewWriterNoSync over a transcript this process has open succeeded")
 	}
 	if err := open.Append(steeringTurn("open after create")); err != nil {
-		t.Fatalf("open Append after create: %v", err)
+		t.Fatalf("open Append after refused create: %v", err)
 	}
-	assertSeqsStrictlyIncreasing(t, path)
-	if seq := tailNextSeq(open); seq != 4 {
-		t.Fatalf("next sequence = %d, want 4: creating the file spent nothing and rewound nothing", seq)
-	}
+	requireOneSequenceInFileOrder(t, path, []string{"before resume", "open before create", "open after create"})
 }
 
 // tailNextSeq reads the next sequence number under the tail's own lock.

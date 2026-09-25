@@ -78,6 +78,20 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	return tail, nil
 }
 
+// openInProcess reports whether a writer in this process has the file at path
+// open. Only a file the os package can name is ever registered (see pinFile),
+// so the lookup goes to the operating system whatever filesystem the caller
+// writes through.
+func openInProcess(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	openTails.mu.Lock()
+	defer openTails.mu.Unlock()
+	return slices.ContainsFunc(openTails.tails, func(tail *appendTail) bool { return os.SameFile(tail.info, info) })
+}
+
 // pinFile opens a read-only handle on the file at name if it is the file info
 // describes, or returns nil. os.SameFile is false for any FileInfo that did
 // not come from the os package, so a file on another filesystem is never
