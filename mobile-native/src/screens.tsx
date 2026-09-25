@@ -1062,55 +1062,54 @@ export function ConversationScreen({
 	// child or editor must reacquire this screen's stream and current snapshot.
 	useEffect(() => {
 		if (!service || !connected || !focused) return;
-		let cancelled = false;
-		let unbindPending: (() => void) | undefined;
 		void store
 			.getState()
 			.resumeProjected(service, activitySink, route.params.ref)
-			.then(() => {
-				if (cancelled) return;
-				// The store retires its durable pending-row seam on any thread
-				// open; rebind it once the open/reconnect has installed the
-				// projection, so the in-flight rows the screen follows are the
-				// target's durable outbox/optimistic records. A rebind re-reads
-				// storage and follows it, so a mutation enqueued before a restart
-				// is still shown after it.
-				try {
-					unbindPending = store.getState().bindPendingMutations(
-						createConversationMutationPendingPort(
-							getNativeMutationRuntime(),
-							nativeMutationTargetKey(route.params.hubId, route.params.ref),
-						),
-					);
-				} catch (error) {
-					// The mutations database could not be opened. The conversation
-					// stays usable; a later reconnect or remount retries, and the
-					// failure is logged so it is not silent.
-					console.error(
-						"ConversationScreen: durable pending seam bind failed",
-						error,
-					);
-				}
-			})
 			.catch((error) => {
 				// The store surfaces a failed resume in its own state; this only
 				// keeps the rejection from going unobserved.
 				console.error("ConversationScreen: resume failed", error);
 			});
 		return () => {
-			cancelled = true;
-			unbindPending?.();
 			store.getState().suspendProjected();
 			service.close();
 		};
+	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	// The durable pending-row seam. The store retires it on EVERY thread open,
+	// and `openProjected` runs from more than the resume effect: the /clear
+	// command's cleared callback, the refresh paths, and resumeProjected's own
+	// fall-through all reopen the thread. Key the rebind on the conversation
+	// generation so any host-initiated (re)open re-establishes the seam once the
+	// store has retired it, while a suspend/rehydrate generation bump that did
+	// not retire it leaves the live subscription untouched (the store's
+	// bindPendingMutationsIfUnbound is idempotent). The store's own close/reset
+	// retires the seam on unmount, so this effect needs no cleanup.
+	useEffect(() => {
+		if (!client || !connected || !focused) return;
+		try {
+			store.getState().bindPendingMutationsIfUnbound(
+				createConversationMutationPendingPort(
+					getNativeMutationRuntime(),
+					nativeMutationTargetKey(route.params.hubId, route.params.ref),
+				),
+			);
+		} catch (error) {
+			// The mutations database could not be opened. The conversation stays
+			// usable; a later reconnect or remount retries, and the failure is
+			// logged so it is not silent.
+			console.error(
+				"ConversationScreen: durable pending seam bind failed",
+				error,
+			);
+		}
 	}, [
-		service,
 		store,
-		activitySink,
+		client,
 		connected,
 		focused,
 		route.params.hubId,
 		route.params.ref,
+		snapshot.conversationGeneration,
 	]);
 	async function refresh() {
 		if (!service || !connected || !focused || refreshing) return;

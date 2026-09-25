@@ -388,6 +388,15 @@ export interface LiveConversationState extends ConversationState {
   // records as `pendingMutations`. Returns the unbind that stops following and
   // clears the projection; a later storage change cannot resurrect it.
   bindPendingMutations(port: ConversationMutationPendingPort): () => void;
+  // Slice 7b: binds the seam UNLESS one is already following this conversation.
+  // The store retires the seam on any thread open (openProjected runs from the
+  // resume effect, /clear's cleared callback and the refresh paths), so a host
+  // re-establishes it after each (re)open; this makes that idempotent, so a
+  // suspend/rehydrate generation bump that did not retire the seam leaves the
+  // live subscription untouched. Returns null when a seam is already bound.
+  bindPendingMutationsIfUnbound(
+    port: ConversationMutationPendingPort,
+  ): (() => void) | null;
   openProjected(
     service: LiveConversationService,
     activitySink: LiveActivitySink,
@@ -4098,6 +4107,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           detachPendingRows();
           set({ pendingMutations: null });
         };
+      },
+
+      bindPendingMutationsIfUnbound(port) {
+        // Already following a seam: leave it alone, so a host that re-runs its
+        // rebind after a generation bump the store did not retire (suspend,
+        // rehydrate) does not churn a live subscription.
+        if (pendingPort !== null) return null;
+        return get().bindPendingMutations(port);
       },
 
       async send(service, input) {

@@ -299,6 +299,68 @@ test("(4) storage/hub-ref identities stay isolated across a restart", async () =
 	);
 });
 
+test("(1/restart) a dispatched-but-unsettled mutation survives a restart and settles without re-dispatch", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "evener-inflight-"));
+	const file = join(dir, "evener-mutations.db");
+	const key = nativeMutationTargetKey("hub-1", "ref-1");
+	try {
+		// ---- first process: dispatch, but never settle (the wire outcome
+		// hangs, so the record stays attempted and in-flight).
+		const opened = openSqliteSyncDouble(file);
+		const first = new NativeMutationRuntime(opened.port, {});
+		runtimes.push(first);
+		const firstClient = new FakeClient("ready");
+		firstClient.on("turn/start", () => new Promise<never>(() => {}));
+		first.registerTarget("hub-1", "ref-1", firstClient);
+		await first.start();
+		const record = await seed(first, key);
+		const lease = first.beginAuthoritativeRead("hub-1", "ref-1", firstClient);
+		await first.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { ids: [] }));
+		await waitFor(() => turnStarts(firstClient) === 1, "the mutation reaches the client");
+		const inFlight = await first.storage.getOutbox(record.clientMutationId);
+		expect(inFlight?.state).toBe("submitting");
+		expect(inFlight?.attempted).toBe(true);
+		await first.stop();
+		opened.database.close();
+
+		// ---- restart: reopen the same file, fresh runtime + client.
+		const reopened = openSqliteSyncDouble(file);
+		const second = new NativeMutationRuntime(reopened.port, {});
+		runtimes.push(second);
+		const secondClient = new FakeClient("ready");
+		secondClient.on("turn/start", appliedReceipt);
+		second.registerTarget("hub-1", "ref-1", secondClient);
+		await second.start();
+		const store = createConversationStore();
+		await store.getState().open(fakeService(conversation()) as never, "ref-1");
+		store.getState().bindPendingMutations(createConversationMutationPendingPort(second, key));
+		await waitFor(
+			() => store.getState().pendingMutations?.length === 1,
+			"the in-flight row survives the restart",
+		);
+
+		// Boot does not re-dispatch it: the gate stays closed until an
+		// authoritative read opens it.
+		expect(turnStarts(secondClient)).toBe(0);
+
+		// The server acknowledges it: the authoritative read naming it settles
+		// the durable row exactly once, with no second client call.
+		const settle = second.beginAuthoritativeRead("hub-1", "ref-1", secondClient);
+		await second.reconcileAuthoritativeRead(
+			settle!,
+			readResponse("ref-1", { ids: [record.clientMutationId] }),
+		);
+		await waitFor(() => store.getState().pendingMutations?.length === 0, "the acknowledged row removes");
+		expect(store.getState().pendingMutations).toEqual([]);
+		expect(turnStarts(secondClient)).toBe(0);
+		await expect(second.storage.getOutbox(record.clientMutationId)).resolves.toBeUndefined();
+		await second.stop();
+		reopened.database.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("(restart) a fresh runtime over a reopened database restores the durable rows and reconciles once", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "evener-restart-"));
 	const file = join(dir, "evener-mutations.db");
