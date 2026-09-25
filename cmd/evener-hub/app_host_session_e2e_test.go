@@ -3,7 +3,9 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -162,12 +164,14 @@ func sessionModelAmbiguousWithController(hostResolvedModel, controllerModel stri
 // inside one bounded window. A stop that never takes leaves the directory in
 // place, with a failure naming the ref, the directory, and the fact that nothing
 // was cleaned up — deleting a directory a running session still references would
-// be the leak this cleanup exists to prevent. And when NO ref came back — the
-// start response was lost — there is nothing to address a stop by, so the check
-// does not hunt for the session: it says the truth plainly (the host, the
-// directory, the session that may be running there that this check cannot stop,
-// and where the operator can stop it) and leaves the directory too. There is no
-// fleet sweep, no directory matcher, and no process table in any of this.
+// be the leak this cleanup exists to prevent. When NO ref came back the outcome
+// decides: a start the host refused as a request (an answered request-refusal
+// frame) never started anything, so the directory goes; anything else — a lost
+// response, a timeout, a dropped connection, or any other answered frame — leaves
+// it, and the check does not hunt for the session: it says the truth plainly (the
+// host, the directory, the session that may be running there that this check
+// cannot stop, and where the operator can stop it). There is no fleet sweep, no
+// directory matcher, and no process table in any of this.
 //
 // What the stop does not remove is the session RECORD the host keeps in its own
 // state root — thread/shutdown stops the daemon, it does not delete the session —
@@ -179,8 +183,8 @@ func sessionModelAmbiguousWithController(hostResolvedModel, controllerModel stri
 // The session gate is separate from the read-mostly add/attach check beside this
 // file because this test WRITES to the host: it creates its own directory there,
 // starts a session in it, stops that session through the controller, and removes
-// the directory — unless a session it started could not be stopped, in which case
-// the directory stays and the run says so.
+// the directory — unless a session it started could not be stopped, or a start's
+// outcome was unknown, in which case the directory stays and the run says so.
 // EVENER_SSH_E2E_EVENER_PATH overrides the host's evener path (default
 // ~/.local/bin/evener).
 func TestHostSpawnSessionE2E(t *testing.T) {
@@ -301,20 +305,29 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// a timeout, a dropped connection — still leaves a session running on the host.
 	//
 	// When a ref came back, the session is stopped through the controller in band,
-	// retrying inside one bounded window. When none came back there is nothing to
-	// address a stop by, and this cleanup does not hunt for it: the run has already
-	// failed — that is what a lost start response is — so it says the truth plainly
-	// and leaves the directory. Nothing here reaches for a process table, a kill, a
-	// pattern, or a sweep of the fleet view.
+	// retrying inside one bounded window. When none came back, the cleanup does not
+	// hunt for it: it asks whether the host REFUSED the start — an answered
+	// request-refusal means nothing was started, so the directory goes — and
+	// otherwise treats the outcome as unknown, says the truth plainly, and leaves
+	// the directory. Nothing here reaches for a process table, a kill, a pattern, or
+	// a sweep of the fleet view.
 	var ref string
+	var startErr error
 	t.Cleanup(func() {
 		if ref == "" {
+			if startErrorIsDefiniteRefusal(startErr) {
+				// The host answered and refused the request, so nothing was ever
+				// started: there is no session the directory could belong to. The run
+				// fails on the start error itself (thread/start's own error path).
+				t.Logf("host %s refused the start (%v), so nothing was started there; removing %s", host.target, startErr, hostDir)
+				return
+			}
 			// The run has already failed at this point (thread/start's error path, or
 			// the SPAWN assertion that refuses an empty ref), so this reports rather
 			// than adds a failure: the session the host may be running cannot be
 			// addressed from here, and the operator is told where it is.
 			sessionLeftBehind = true
-			t.Logf("a session may be running on host %s under %s that this check cannot stop: thread/start never returned a ref — its response was lost — so there is nothing here to address it by. It is visible in the controller's own fleet view, as a session whose working directory is %s, and can be stopped from there. Nothing was cleaned up: the directory is left in place.", host.target, hostDir, hostDir)
+			t.Logf("a session may be running on host %s under %s that this check cannot stop: thread/start never returned a ref — its response was lost, or its answer carried none — so there is nothing here to address it by. It is visible in the controller's own fleet view, as a session whose working directory is %s, and can be stopped from there. Nothing was cleaned up: the directory is left in place.", host.target, hostDir, hostDir)
 			return
 		}
 		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionCleanupStopTimeout)
@@ -330,6 +343,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		Source:  hostE2EName,
 		CWD:     hostDir,
 	})
+	startErr = err
 	if err != nil {
 		t.Fatalf("step thread/start with source %q: %v (a host that cannot resolve a model from its own launch configuration refuses here)", hostE2EName, err)
 	}
@@ -471,6 +485,36 @@ func stopSessionInBand(ctx context.Context, client *appwire.Client, ref string) 
 	}
 }
 
+// startErrorIsDefiniteRefusal reports whether a thread/start error is the HOST
+// answering with a refusal, which means it never got as far as starting a
+// session: the directory this check made then holds nothing, so it can be
+// removed. Every other failure — a transport failure, a timeout, a dropped
+// connection, or an answered frame that is not that refusal — leaves the outcome
+// unknown, and an unknown outcome keeps the directory.
+//
+// The discriminator is the AppWire client's own, not one invented here: an
+// answered error arrives as appwire.WireError (client.go's request returns
+// msg.Error.Error verbatim), while a call that never got an answer arrives as a
+// context error, a transport error, or appwire.RequestNotSentError. Within the
+// answered frames only CodeInvalidParams is taken as definite, because "the host
+// answered" does not by itself mean nothing was started: the start path can
+// answer Unavailable after the daemon is up (app_threadlifecycle.go's post-spawn
+// read failure, :251) and InvalidParams after it too (:281's skill-input gate,
+// reachable only for a request carrying Input — see the boundary comment on the
+// start call for why this check's request cannot). The internal-error frame the
+// client SYNTHESIZES when the connection dies mid-request (client.go) is likewise
+// not a refusal, and neither is a bare error.
+func startErrorIsDefiniteRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	return wire.Code == appwire.CodeInvalidParams
+}
+
 // TestSessionModelProvenance pins the provenance judgement the live check makes,
 // with no host and no ssh: the seam is the pair of pure predicates above.
 //
@@ -539,6 +583,41 @@ func TestSessionModelProvenance(t *testing.T) {
 	for _, tc := range ambiguity {
 		if got := sessionModelAmbiguousWithController(tc.hostResolvedModel, fakellm.ModelID); got != tc.want {
 			t.Errorf("sessionModelAmbiguousWithController(%q, %q) = %v, want %v: a false here means the check passes while the record cannot distinguish a host-resolved launch from a controller-resolved one", tc.hostResolvedModel, fakellm.ModelID, got, tc.want)
+		}
+	}
+}
+
+// TestStartErrorIsDefiniteRefusal pins the classification the cleanup's no-ref
+// branch depends on: a start the host REFUSED as a request (its answer is a wire
+// frame carrying the request-refusal code) lets the directory go, because nothing
+// was started; every other outcome — any other answered frame, a transport
+// failure, a timeout, a dropped connection — leaves the directory and reports,
+// because a session may be running.
+//
+// The values are the shapes the client really produces: appwire.WireError frames
+// for an answered error (client.go's request returns msg.Error.Error verbatim),
+// and appwire.RequestNotSentError / context errors / net.ErrClosed for a call that
+// never got an answer.
+func TestStartErrorIsDefiniteRefusal(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"the host's request refusal", appwire.InvalidParams("model is required"), true},
+		{"a refusal wrapped by a caller", fmt.Errorf("step thread/start: %w", appwire.InvalidParams("model is required")), true},
+		{"another answered frame", appwire.Unavailable("session ownership changed"), false},
+		{"a launch-path answer", appwire.HubLaunchError("evener launch-check timed out"), false},
+		{"the client's synthesized internal-error frame", appwire.InternalError("appwire: client closed"), false},
+		{"a call that never went out", appwire.RequestNotSentError{Err: context.Canceled}, false},
+		{"a timeout", context.DeadlineExceeded, false},
+		{"a dropped connection", net.ErrClosed, false},
+		{"a bare error from the client's other paths", errors.New("appwire thread/start: expected response"), false},
+		{"no error at all", nil, false},
+	}
+	for _, tc := range tests {
+		if got := startErrorIsDefiniteRefusal(tc.err); got != tc.want {
+			t.Errorf("startErrorIsDefiniteRefusal(%v) = %v, want %v (%s)", tc.err, got, tc.want, tc.name)
 		}
 	}
 }

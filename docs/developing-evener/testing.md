@@ -552,11 +552,14 @@ session that came back with a ref is stopped in band, retrying inside one bounde
 window, and a session that could not be stopped is left alone: the **directory
 stays too**, with a failure naming the ref, the directory, and the fact that
 nothing was cleaned up — a directory a running session still references is better
-left than deleted out from under it. When the start's response was lost there is
-no ref to address at all, and the check does not go looking for the session: it
-says plainly that one may be running under that directory that it cannot stop,
-points at the controller's own fleet view (where the session is visible by its
-working directory) as the place to stop it, and leaves the directory in place.
+left than deleted out from under it. When no ref came back the outcome decides: a
+start the host refused as a request never started anything, so the directory is
+removed; anything else — a lost response, a timeout, a dropped connection, or any
+other answered frame — leaves it, and the check does not go looking for the
+session: it says plainly that one may be running under that directory that it
+cannot stop, points at the controller's own fleet view (where the session is
+visible by its working directory) as the place to stop it, and leaves the
+directory in place.
 What it cannot remove is the session *record* the host keeps in its own state
 root — `thread/shutdown` stops the daemon, it does not delete the session — and
 the session runs against the host's real provider and credentials. Both are why
