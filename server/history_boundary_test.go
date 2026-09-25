@@ -204,6 +204,57 @@ func TestPaginatedReadOverlappingCrossProcessRollback(t *testing.T) {
 	}
 }
 
+// TestReadOverlappingRetryResetAndNextAttempt starts a round's first
+// attempt's stream, resets it (a retried round: AssistantTextReset ends
+// attempt 1 and moves the overlay to attempt 2), and starts attempt 2's
+// stream -- pausing right there, with the reset and attempt 2's first delta
+// both committed. A read at that point holds only attempt 2's stream:
+// attempt 1's was discarded by the reset. Once ASSISTANT is recorded for
+// attempt 2, the reduced client applies its later deltas once, not twice
+// alongside the recorded text.
+func TestReadOverlappingRetryResetAndNextAttempt(t *testing.T) {
+	hx := newHistoryHarness(t)
+	question := hx.record(t, "a question")
+	hx.updatesThrough(t, question.Offset+question.Length)
+
+	hx.overlay.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	hx.overlay.Event(events.New(events.AssistantTextDeltaData{Delta: "attempt one, cut short"}))
+	hx.overlay.Event(events.New(events.AssistantTextResetData{}))
+	hx.overlay.Event(events.New(events.AssistantTextDeltaData{Delta: "attempt two, "}))
+
+	captured := hx.history.capture()
+	if len(captured.overlay) != 1 || captured.overlay[0].Kind != appwire.OverlayStream || captured.overlay[0].Item.Text != "attempt two, " {
+		t.Fatalf("captured overlay = %+v, want only attempt two's stream", captured.overlay)
+	}
+	turns, _, _, overlay, err := hx.history.latest(captured, "local:th_history", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overlay) != 1 || overlay[0].Item.Text != "attempt two, " {
+		t.Fatalf("read overlay = %+v, want only attempt two's stream", overlay)
+	}
+
+	client := newHistoryClient(appwire.ThreadReadResponse{Thread: appwire.Thread{Turns: turns}})
+	hx.overlay.Event(events.New(events.AssistantTextDeltaData{Delta: "the rest"}))
+	final := hx.recordAssistantEntry(t, "r_1", "", "attempt two, the rest")
+	updates := hx.updatesThrough(t, final.Offset+final.Length)
+	for _, u := range updates {
+		client.apply(t, u)
+	}
+	result := client.turnsInOrder()
+	count := 0
+	for _, turn := range result {
+		for _, item := range turn.Items {
+			if item.Text == "attempt two, the rest" {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("client holds %d copies of the final text, want 1: %+v", count, result)
+	}
+}
+
 // TestFailedHistoryPublication fails one publish; the thread resyncs at a
 // new epoch and a client that re-reads on the resync (the reducer's rule for
 // any resync) holds every item once the rebuild catches back up, none
