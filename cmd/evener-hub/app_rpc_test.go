@@ -4236,9 +4236,10 @@ func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire
 }
 
 // expectRelayGaveUpNotice asserts the overlay notice the relay publishes when
-// it gives up on a running turn: an error notice in that turn naming why, so
-// the reader sees the cause rather than a turn that silently stopped.
-func expectRelayGaveUpNotice(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID, wantCause string) {
+// it gives up on a running turn: an error notice in that turn, anchored after
+// the latest history the relay forwarded, naming why, so the reader sees the
+// cause rather than a turn that silently stopped.
+func expectRelayGaveUpNotice(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID string, wantAnchorEntry uint64, wantCause string) {
 	t.Helper()
 	select {
 	case got := <-notifications:
@@ -4254,7 +4255,7 @@ func expectRelayGaveUpNotice(t *testing.T, notifications <-chan appwire.Notifica
 			t.Fatalf("notice target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
 		}
 		if notice.Kind != appwire.OverlayNotice || notice.TurnID != wantTurnID || notice.Item.EventKind != appwire.ThreadItemEventKindError ||
-			notice.Anchor == nil || *notice.Anchor != (appwire.ThreadItemPosition{Item: appwire.NoticeAnchorItem}) {
+			notice.Anchor == nil || *notice.Anchor != (appwire.ThreadItemPosition{Entry: wantAnchorEntry, Item: appwire.NoticeAnchorItem}) {
 			t.Fatalf("notice = %+v, want an anchored error notice in turn %s", notice, wantTurnID)
 		}
 		if !strings.Contains(notice.Item.Text, wantCause) {
@@ -4352,13 +4353,24 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	// is gone (kill -9): its notification channel closes with no error and
 	// no persisted TurnFailure, exactly like a SIGKILLed process.
 	notifications <- relayActiveStatusNotification(t, threadID, turnID)
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyThreadStatusChanged {
-			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyThreadStatusChanged)
+	// The turn records history: the latest item the relay forwards sits at
+	// entry 7, which is where the give-up notice anchors.
+	notifications <- *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: threadID, Ref: "codex:" + threadID,
+		Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "late", Position: &appwire.ThreadItemPosition{Entry: 7, Item: 1}},
+			{Type: "userMessage", ID: "early", Position: &appwire.ThreadItemPosition{Entry: 5}},
+		},
+	}).Notification
+	for _, want := range []string{appwire.NotifyThreadStatusChanged, appwire.NotifyHistoryUpdated} {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != want {
+				t.Fatalf("notification method=%q, want %q", got.Method, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %s", want)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for the active status")
 	}
 	close(notifications)
 
@@ -4377,7 +4389,7 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
 	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
-	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, "connection refused (3)")
+	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 7, "connection refused (3)")
 	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	// The cause is recorded in the hub's log: the target, how many re-dials
 	// failed, and the last one's error.

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 type hubRelayHandle struct {
@@ -266,23 +267,23 @@ func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appw
 // relay session), and each subscriber acts on the ref it names, so each copy
 // names the subscriber's own.
 // relayGaveUpNotice is the error notice a relay publishes when it gives up
-// on turnID's source: the cause of the last failed re-dial.
-func relayGaveUpNotice(turnID string, cause error) appwire.OverlayItem {
+// on turnID's source: the cause of the last failed re-dial, anchored after
+// entry (an entry position, ordinal + 1). The key is the hub's own, apart from
+// the daemon's numbered notice keys.
+func relayGaveUpNotice(turnID string, entry uint64, cause error) appwire.OverlayItem {
 	const key = "notice:hub:relay-gave-up"
+	// The announcement always has text, so SystemMessage always builds it.
+	item, _ := apptranscript.SystemMessage(apptranscript.NoticeAnnouncement{
+		EventKind:   appwire.ThreadItemEventKindError,
+		Description: "Hub lost the connection to the session",
+		Text:        "Hub lost the connection to the session: " + cause.Error(),
+	}, key, turnID)
 	return appwire.OverlayItem{
 		Key:    key,
 		Kind:   appwire.OverlayNotice,
 		TurnID: turnID,
-		Anchor: &appwire.ThreadItemPosition{Item: appwire.NoticeAnchorItem},
-		Item: appwire.ThreadItem{
-			Type:        "systemMessage",
-			ID:          key,
-			TurnID:      turnID,
-			Description: "Hub lost the connection to the session",
-			Text:        "Hub lost the connection to the session: " + cause.Error(),
-			Status:      appwire.TurnStatusCompleted,
-			EventKind:   appwire.ThreadItemEventKindError,
-		},
+		Anchor: &appwire.ThreadItemPosition{Entry: entry, Item: appwire.NoticeAnchorItem},
+		Item:   item,
 	}
 }
 
@@ -1797,15 +1798,32 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// screen is waiting, so nothing needs to be told).
 			var turnRunning bool
 			var runningTurnID string
+			// latestEntry is the highest entry among the history items this
+			// relay forwarded: the entry a give-up notice anchors after.
+			var latestEntry uint64
 			var consecutiveFailures int
-			trackRunningTurn := func(notification appwire.Notification) {
-				if notification.Method != appwire.NotifyThreadStatusChanged {
-					return
-				}
-				var params appwire.ThreadStatusChangedParams
-				if json.Unmarshal(notification.Params, &params) == nil {
-					turnRunning = params.Status.Type == appwire.ThreadStatusActive
-					runningTurnID = params.ActiveTurnID
+			trackRelayedThread := func(notification appwire.Notification) {
+				switch notification.Method {
+				case appwire.NotifyThreadStatusChanged:
+					var params appwire.ThreadStatusChangedParams
+					if json.Unmarshal(notification.Params, &params) == nil {
+						turnRunning = params.Status.Type == appwire.ThreadStatusActive
+						runningTurnID = params.ActiveTurnID
+					}
+				case appwire.NotifyHistoryUpdated:
+					var params struct {
+						Items []struct {
+							Position *appwire.ThreadItemPosition `json:"position"`
+						} `json:"items"`
+					}
+					if json.Unmarshal(notification.Params, &params) != nil {
+						return
+					}
+					for _, item := range params.Items {
+						if item.Position != nil {
+							latestEntry = max(latestEntry, item.Position.Entry)
+						}
+					}
 				}
 			}
 			// giveUpOnRunningTurn tells the reader what the unreachable source can
@@ -1822,9 +1840,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// federated sources; a local daemon's death takes the relay session's
 			// DaemonGoneResync path instead), and the client's re-read goes to the
 			// same unreachable source and fails, which leaves its history and
-			// overlay, the notice included, as they were. The hub knows no entry
-			// to anchor the notice after, so it anchors at the start of history
-			// and names the running turn.
+			// overlay, the notice included, as they were. The notice anchors after
+			// the latest history this relay forwarded, and at the start of history
+			// only when it forwarded none.
 			//
 			// Both frames name the relay's target. Without the status frame the
 			// client would keep the session active with Stop and Steer still
@@ -1847,7 +1865,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				server.Broadcast(relayKey, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 					ThreadID: threadID,
 					Ref:      subscribeParams.Ref,
-					Item:     relayGaveUpNotice(runningTurnID, cause),
+					Item:     relayGaveUpNotice(runningTurnID, latestEntry, cause),
 				})
 				server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 					ThreadID: threadID,
@@ -1863,7 +1881,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			broadcastNotification := func(notification appwire.Notification) {
 				backoff.Reset()
 				consecutiveFailures = 0
-				trackRunningTurn(notification)
+				trackRelayedThread(notification)
 				if source.ID() == "local" {
 					notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
 				}
