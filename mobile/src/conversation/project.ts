@@ -203,6 +203,8 @@ const SYSTEM_NOTICE_FAMILY_ENTRIES: Record<ThreadItemEventKind, NoticeFamily> = 
   tool_repair: "lifecycle",
   model_switch: "lifecycle",
   "notes-context": "lifecycle",
+  warning: "warning",
+  interrupted: "warning",
 };
 
 // The exhaustive Record above is checked at compile time; this Map is the

@@ -313,6 +313,8 @@ describe("transcript projector", () => {
       "error",
       "environment",
       "notes-context",
+      "warning",
+      "interrupted",
     ] as const;
     const model = threadWith(
       ...eventKinds.map((eventKind, index) =>
@@ -339,6 +341,20 @@ describe("transcript projector", () => {
     );
 
     expect(entriesFor(model, preset("full")).map((entry) => entry.kind)).toEqual(["critical", "critical", "critical"]);
+  });
+
+  test("keeps the overlay's warning and interrupted notices critical with system events off", () => {
+    const model = threadWith(
+      item("warning", "systemMessage", { eventKind: "warning", text: "ordinary text" }),
+      item("interrupted", "systemMessage", { eventKind: "interrupted", text: "ordinary text" }),
+    );
+
+    expect(
+      entriesFor(
+        model,
+        preset("chat", { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" }),
+      ).map((entry) => entry.kind),
+    ).toEqual(["critical", "critical"]);
   });
 
   test("uses turn and item status fields rather than message prose for active and failed work", () => {

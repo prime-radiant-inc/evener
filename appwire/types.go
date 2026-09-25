@@ -1441,6 +1441,13 @@ const (
 	// shared-notes snapshot block. Same visibility contract as environment —
 	// harness chrome, never hidden by a toggle.
 	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
+	// ThreadItemEventKindWarning marks a live overlay notice for a session
+	// warning. Warnings are never recorded, so only the overlay shows them.
+	ThreadItemEventKindWarning ThreadItemEventKind = "warning"
+	// ThreadItemEventKindInterrupted marks the live overlay notice a model
+	// round collapses into when it ended with streamed content or running
+	// tools that were never recorded.
+	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1463,6 +1470,8 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindError),
 	string(ThreadItemEventKindEnvironment),
 	string(ThreadItemEventKindNotesContext),
+	string(ThreadItemEventKindWarning),
+	string(ThreadItemEventKindInterrupted),
 }
 
 type ThreadItem struct {

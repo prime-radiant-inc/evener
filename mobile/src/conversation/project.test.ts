@@ -1175,6 +1175,8 @@ describe("projectThread", () => {
       ["tool_repair", "lifecycle"],
       ["model_switch", "lifecycle"],
       ["notes-context", "lifecycle"],
+      ["warning", "warning"],
+      ["interrupted", "warning"],
       ["future-event", "unknown-system"],
       ["constructor", "unknown-system"],
       ["toString", "unknown-system"],

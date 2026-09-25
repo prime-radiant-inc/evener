@@ -113,12 +113,14 @@ const KNOWN_EVENT_KINDS = new Set([
   "error",
   "environment",
   "notes-context",
+  "warning",
+  "interrupted",
 ]);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "tool_repair"]);
+const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "tool_repair", "warning", "interrupted"]);
 
 // ask_user is the current interaction tool. The other names are protocol/tool
 // vocabulary used by compatible clients; matching exact names keeps this typed
