@@ -142,3 +142,45 @@ func TestTextlessAssistantEchoDoesNotSuppressCrossTurnMessage(t *testing.T) {
 		t.Fatalf("cross-turn agentMessage count for %q = %d, want 2 (text + genuine cross-turn communicate); items: %+v", "the answer", got, allItems)
 	}
 }
+
+// TestGroupingEchoFixPropagatesOpenerTurnID verifies the grouping-level echo
+// fix through the real projection path. The existing
+// TestTextlessAssistantDoesNotZeroReloadEchoState calls ProjectTurn directly
+// with a hardcoded turnID, bypassing appendProjectedEntry's opener-ID
+// propagation; if that propagation regressed, the existing test would still
+// pass. This test drives ItemTurnsFromEntries (appendProjectedEntry →
+// groupedAppTurnProjection) with DISTINCT StableTurnIDs on the two ASSISTANT
+// entries (turn_a on entry 1, turn_b on entry 3). All four entries share one
+// logical group (ASSISTANT is a continuation, not an opener), so the group's
+// turn id is the opener's persistedTurnID = "turn_a". With the propagation
+// fix, entry 3 (the text-less communicate) projects under the group's turn id
+// "turn_a" — matching the LastAssistantTurnID set by entry 1 — so the healed
+// communicate's echo is suppressed and exactly ONE agentMessage renders.
+// Without the fix, entry 3 would project under its own persistedTurnID
+// "turn_b", the echo check would fail (turn_b != turn_a), and TWO would
+// render.
+func TestGroupingEchoFixPropagatesOpenerTurnID(t *testing.T) {
+	entries := textlessAssistantEchoesAssistantTextFixture()
+	// Assign distinct StableTurnIDs to the two ASSISTANT entries so a
+	// regression that drops opener-ID propagation (using each entry's own
+	// persistedTurnID) produces a observable divergence.
+	entries[0].Turn.StableTurnID = "turn_a" // text-bearing assistant
+	entries[2].Turn.StableTurnID = "turn_b" // text-less communicate
+
+	// Shared registry, as the full read threads.
+	reg := NewToolCallRegistry()
+	projector := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
+	}
+
+	turns, err := ItemTurnsFromEntries(transcript.Header{}, entries, projector)
+	if err != nil {
+		t.Fatalf("ItemTurnsFromEntries: %v", err)
+	}
+	FlushUnpairedCommunicates(&turns, reg)
+
+	got := countAgentMessagesWithText(allTurnsItems(turns), "the answer")
+	if got != 1 {
+		t.Fatalf("grouping agentMessage count for %q = %d, want 1 (echo suppressed via opener-ID propagation); items: %+v", "the answer", got, allTurnsItems(turns))
+	}
+}
