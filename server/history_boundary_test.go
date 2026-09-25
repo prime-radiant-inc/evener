@@ -461,6 +461,71 @@ func TestConcurrentAppendsProjectInOrdinalOrder(t *testing.T) {
 	}
 }
 
+// TestStaleIncarnationResponseOrdering is the server half of plan item 10
+// (the TS half is Task 15's reducer test): a read served before a rebuild
+// and one served after each carry the request generation the caller gave
+// them (ThreadReadParams.RequestGeneration is a pure echo -- the server
+// keeps no ordering of its own) and their own accurate epoch and
+// incarnation, so a client that fires the earlier read but receives its
+// response after the later one's can tell which is fresher from the
+// generation alone, without the two ever needing to arrive in order.
+func TestStaleIncarnationResponseOrdering(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	// The seed turn is folded into the served identity's starting recorded
+	// length (newServedTranscriptAt records it before ReplaceAppIdentity), so
+	// it is never itself projected -- project()'s first real call, whichever
+	// entry that is, has no earlier publication to compare with and just
+	// adopts the index's incarnation (thread_history.go's project() doc
+	// comment). A second entry establishes a real incarnation baseline
+	// before the rebuild below, so the rebuild has something to diverge from.
+	st := newServedTranscript(t, srv, "stale-gen-thread", schema.NewTurn(schema.TurnUserInput, llm.User("one")))
+	st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("two")))
+	st.settle(t)
+
+	before, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: "stale-gen-thread", IncludeTurns: true, RequestGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.RequestGeneration != 1 {
+		t.Fatalf("RequestGeneration = %d, want the caller's 1", before.RequestGeneration)
+	}
+
+	// Another handle rebuilds the index (the same "another handle rotated
+	// the incarnation" seam TestThreadHistoryRotatedIncarnationResyncs uses):
+	// the next entry the projection sees under the old incarnation resyncs.
+	history := srv.appHistoryForID("stale-gen-thread")
+	if history == nil {
+		t.Fatal("the served thread has no history")
+	}
+	idx, err := history.cache.Acquire(history.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Rebuild(before.Snapshot.Length); err != nil {
+		t.Fatal(err)
+	}
+	history.cache.Release(idx)
+	st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("three")))
+	st.settle(t)
+
+	after, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: "stale-gen-thread", IncludeTurns: true, RequestGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RequestGeneration != 2 {
+		t.Fatalf("RequestGeneration = %d, want the caller's 2", after.RequestGeneration)
+	}
+	if before.Epoch == after.Epoch {
+		t.Fatalf("epoch %d unchanged across the rebuild", before.Epoch)
+	}
+	if before.Snapshot.Incarnation == after.Snapshot.Incarnation {
+		t.Fatalf("incarnation %q unchanged across the rebuild", before.Snapshot.Incarnation)
+	}
+	if before.RequestGeneration >= after.RequestGeneration {
+		t.Fatalf("generations %d, %d do not order the reads a client fired in that order", before.RequestGeneration, after.RequestGeneration)
+	}
+}
+
 // TestCrashLostBufferedEntriesAreReplacedByBootGeneration simulates a crash
 // that lost entries a client had already been told about (buffered, not
 // fsynced): the transcript on disk is shorter than what the client holds.
