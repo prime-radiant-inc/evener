@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.x (module `primeradiant.com/evener`), standard library only (`encoding/binary`, `crypto/sha256`, `os.File.ReadAt`).
 
-**Spec:** `docs/superpowers/specs/2026-09-25-transcript-read-model-design.md` (revision 6), sections "Recorded length, entry ordinals and Seq", "Index", "Acceptance criteria", "Migration" phase 1. Also `docs/superpowers/specs/2026-09-01-atomic-transcript-item-paging-design.md`.
+**Spec:** `docs/superpowers/specs/2026-09-25-transcript-read-model-design.md` (revision 7; the plan was written against revision 6 and Task 4b aligns the index with revision 7), sections "Recorded length, entry ordinals and Seq", "Index", "Acceptance criteria", "Migration" phase 1. Also `docs/superpowers/specs/2026-09-01-atomic-transcript-item-paging-design.md`.
 
 ## Global Constraints
 
@@ -498,6 +498,30 @@ func TestWindowsEqualTheReferenceOnEveryBoundary(t *testing.T) {
 - [ ] **Step 7: Implement** meta persistence, validation, reopen state recovery, `CatchUp`, `errRebuild`, table truncation on open.
 - [ ] **Step 8: Run** — `go test -race ./internal/transcriptindex -count=1`; PASS, each test under 3 s.
 - [ ] **Step 9: Commit** — `feat(transcriptindex): seekable item and turn-summary index over a transcript`
+
+### Task 4b: Align the index with spec revision 7
+
+Revision 7 (merged from `origin/wip/transcript-read-model`) changed the Index section: a read captures a length and extends to it; one extender at a time under a file lock shared by the hub and a daemon, readers under a shared lock; the covered length is written last and records past it are never trusted; a rebuild writes a new sidecar and renames it into place, and a reader holding the old one reopens on the incarnation change; the turn summary holds the latest lifecycle entry and the status it sets; the index can find a round's calls.
+
+**Files:**
+- Modify: `internal/transcriptindex/index.go`, `window.go`, `build.go`, `records.go`
+- Create: `internal/transcriptindex/lock_unix.go`, `internal/transcriptindex/lock_windows.go`
+- Test: `internal/transcriptindex/sharing_test.go`
+
+**Interfaces:**
+- Produces:
+  - `func (x *Index) CatchUpTo(length int64) error` — index complete lines that end at or before `length` (the recorded length in-process); `CatchUp` is `CatchUpTo(file size)`.
+  - `Window.Incarnation string` beside `Window.Length`: the snapshot identity. A rebuild mints a new incarnation; appends keep it.
+- Layout: `<dir>/lock` (flock/LockFileEx; exclusive to extend or rebuild, shared to read records), `<dir>/CURRENT` (the live incarnation's name, replaced by rename), `<dir>/<incarnation>/{meta.json,items,turns,strings}`. A rebuild builds a fresh incarnation directory, renames `CURRENT` over, and removes the old directory.
+- Every operation re-reads `CURRENT` and the incarnation's `meta.json` under the lock: a different incarnation reopens; a longer covered length (another extender) adopts the new counts and restores the builder from records before extending.
+- Turn summary: `Lifecycle{Offset, Length}` and `Status` (completed, failed, interrupted) replace the failure offset and interrupted flag. Legacy rule: failed once any TURN_FAILURE is in the turn (its latest supplies the error), interrupted when an interrupted STEERING is and no failure is.
+- Calls: the extender finds a result's item through the open turn's call map, rebuilt from the item records' call ids after any reload. Revision 7's "latest ASSISTANT awaiting results" field serves the new-format projector; today's grouping merges by call id across the whole turn, so the index keeps the turn-wide map (Ruling in the ledger).
+
+- [ ] **Step 1: Failing tests** (`sharing_test.go`): `CatchUpTo` stops at the last complete line within the length; `Window.Incarnation` is stable across appends and changes after a rebuild; two handles on one sidecar (the hub and a daemon): A extends, B reads A's covered length without catching up, B then extends after A and equals the reference; A rebuilds while B holds the old incarnation, B's next read reopens and equals the reference; two handles extending concurrently from goroutines while a writer appends equal the reference (`-race`).
+- [ ] **Step 2: Run** — FAIL.
+- [ ] **Step 3: Implement** the lock, the incarnation layout, refresh-under-lock, `CatchUpTo`, the lifecycle status.
+- [ ] **Step 4: Run** the package with `-race`; PASS. Re-run the real-data equality and latency script.
+- [ ] **Step 5: Commit** — `feat(transcriptindex): align the index with spec revision 7`
 
 ### Task 5: Real-data equality and the latency gate
 
