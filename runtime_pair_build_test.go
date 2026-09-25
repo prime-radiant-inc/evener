@@ -1300,6 +1300,8 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
 				t.Errorf("cleanup did not reap make test-web: %v", err)
 			}
+		} else {
+			procgroup.KillGroupAfterReap(command.Process.Pid)
 		}
 	})
 	if err := waitForPathOrExit(readyPath, run, readinessTripwire); err != nil {

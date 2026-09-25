@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // webInterruptTripwire bounds the wait for an interrupted `make test-web` to
@@ -377,11 +379,13 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 		_ = waitRelease.Close()
 		_ = waitReady.Close()
 		if command.ProcessState == nil {
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+			procgroup.Kill(command.Process.Pid)
 			_ = command.Process.Kill()
 			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
 				t.Errorf("cleanup did not reap make test-web: %v", err)
 			}
+		} else {
+			procgroup.KillGroupAfterReap(command.Process.Pid)
 		}
 	})
 
@@ -529,11 +533,13 @@ func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
 				_, _ = release.WriteString("cleanup\n")
 				_ = release.Close()
 				if command.ProcessState == nil {
-					_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+					procgroup.Kill(command.Process.Pid)
 					_ = command.Process.Kill()
 					if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
 						t.Errorf("cleanup did not reap make test-web: %v", err)
 					}
+				} else {
+					procgroup.KillGroupAfterReap(command.Process.Pid)
 				}
 			})
 			if err := exec.Command("kill", "-"+signal, webPID).Run(); err != nil {
