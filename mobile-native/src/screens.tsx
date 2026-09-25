@@ -1093,7 +1093,15 @@ export function ConversationScreen({
 			store.getState().suspendProjected();
 			service.close();
 		};
-	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	}, [
+		service,
+		store,
+		activitySink,
+		connected,
+		focused,
+		route.params.hubId,
+		route.params.ref,
+	]);
 	async function refresh() {
 		if (!service || !connected || !focused || refreshing) return;
 		setRefreshing(true);
