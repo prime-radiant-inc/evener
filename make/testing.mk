@@ -2,9 +2,10 @@
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
-# the script runs them concurrently with per-check private HOME/TMPDIR/XDG
-# roots; wall time is the slowest one (vitest) instead of the sum. A failure
-# replays exactly the failing check's log.
+# the gate (`evener dev web-checks`, run from the prebuilt evener-dev binary so
+# an interrupt reaches it) runs them concurrently with per-check private
+# HOME/TMPDIR/XDG roots; wall time is the slowest one (vitest) instead of the
+# sum. A failure replays exactly the failing check's log.
 ## The frontend's single gate entry point: typecheck, unit tests, then lint,
 ## run concurrently.
 ## proves: jsdom/unit-level frontend behavior, type safety, and source lint.
@@ -14,7 +15,7 @@
 ##   Node's compile cache; no real browser, provider, or network service.
 ## fails-when: Any of the three streams is nonzero; a missing or unhealthy
 ##   frontend install fails preflight.
-test-web: web-preflight
+test-web: web-preflight build-dev
 	@scripts/web/test-web.sh
 
 # test-web-browser runs the real browser-only frontend guards. They stay out

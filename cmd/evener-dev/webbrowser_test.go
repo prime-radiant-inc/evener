@@ -142,7 +142,7 @@ type gateResult struct {
 
 // testGate is a gate running over a test launcher in the background.
 type testGate struct {
-	gate    *browserGate
+	gate    *webGate
 	signals chan os.Signal
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
@@ -158,16 +158,18 @@ func startTestGate(t *testing.T, launcher guardLauncher, slots int, buildFronten
 // unbuffered one: a send on it completes only once the gate receives it.
 func startTestGateWithSignals(t *testing.T, launcher guardLauncher, slots int, buildFrontend bool, signals chan os.Signal) *testGate {
 	t.Helper()
-	tg := &testGate{signals: signals, result: make(chan gateResult, 1)}
-	tg.gate = &browserGate{
-		launcher:      launcher,
-		slots:         slots,
-		scratch:       t.TempDir(),
-		buildFrontend: buildFrontend,
-		signals:       tg.signals,
-		stdout:        &tg.stdout,
-		stderr:        &tg.stderr,
-	}
+	return startGate(t, newBrowserGate(slots, buildFrontend), launcher, signals)
+}
+
+// startGate runs gate over launcher in the background, in a scratch of its
+// own, as runWebGate would run it for real.
+func startGate(t *testing.T, gate *webGate, launcher guardLauncher, signals chan os.Signal) *testGate {
+	t.Helper()
+	tg := &testGate{gate: gate, signals: signals, result: make(chan gateResult, 1)}
+	gate.launcher = launcher
+	gate.scratch = t.TempDir()
+	gate.signals = signals
+	gate.stdout, gate.stderr = &tg.stdout, &tg.stderr
 	go func() {
 		status, keep := tg.gate.run()
 		tg.result <- gateResult{status, keep}
@@ -897,7 +899,7 @@ func TestExecGuardTerminateAfterExitSignalsNothing(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	proc.Terminate()
-	if err := proc.(execGuard).cmd.Process.Signal(syscall.SIGTERM); !errors.Is(err, os.ErrProcessDone) {
+	if err := proc.(*execGuard).cmd.Process.Signal(syscall.SIGTERM); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("signalling a reaped guard: err = %v, want os.ErrProcessDone", err)
 	}
 }
