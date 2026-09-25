@@ -363,7 +363,7 @@ func TestCovReconcilePendingFromNotification(t *testing.T) {
 	pending := pendingpkg.NewPendingCoordinator(pendingpkg.RealClock{}, func(tea.Msg) {})
 
 	// Steering injected.
-	pending.Register(appwire.MethodTurnDrainAsSteer, "queued steering", "local:01TEST")
+	pending.Register(appwire.MethodTurnDrainAsSteer, "queued steering", "local:01TEST", "")
 	n := appwire.Notification{
 		Method: appwire.NotifyEvenerSteeringInjected,
 		Params: mustJSON(appwire.EvenerSteeringInjectedParams{Ref: "local:01TEST", Text: "steer text"}),
@@ -374,7 +374,7 @@ func TestCovReconcilePendingFromNotification(t *testing.T) {
 	}
 
 	// Item started (userMessage).
-	pending.Register(appwire.MethodTurnStart, "hello", "local:01TEST")
+	pending.Register(appwire.MethodTurnStart, "hello", "local:01TEST", "")
 	n = appwire.Notification{
 		Method: appwire.NotifyItemStarted,
 		Params: mustJSON(appwire.ItemLifecycleParams{
@@ -388,7 +388,7 @@ func TestCovReconcilePendingFromNotification(t *testing.T) {
 	}
 
 	// Turn completed.
-	pending.Register(appwire.MethodTurnStart, "completed input", "local:01TEST")
+	pending.Register(appwire.MethodTurnStart, "completed input", "local:01TEST", "")
 	n = appwire.Notification{
 		Method: appwire.NotifyTurnCompleted,
 		Params: mustJSON(appwire.TurnCompletedParams{
@@ -406,7 +406,7 @@ func TestCovReconcilePendingFromNotification(t *testing.T) {
 	}
 
 	// Invalid JSON must not reconcile an unrelated pending mutation.
-	pending.Register(appwire.MethodTurnStart, "still pending", "local:01TEST")
+	pending.Register(appwire.MethodTurnStart, "still pending", "local:01TEST", "")
 	n = appwire.Notification{
 		Method: appwire.NotifyTurnCompleted,
 		Params: json.RawMessage(`invalid`),

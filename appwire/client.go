@@ -564,6 +564,10 @@ func (c *Client) ThreadShutdown(ctx context.Context, params ThreadShutdownParams
 	return c.request(ctx, MethodThreadShutdown, params, nil)
 }
 
+// TurnStart deliberately does not register with the pending coordinator
+// (TestTurnStart_DoesNotRegisterPending): the caller renders its own local
+// echo of the opening message before the RPC even goes out, so there is no
+// gap for a coordinator-drawn placeholder to fill.
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
 	var out TurnStartResponse
 	err := c.request(ctx, MethodTurnStart, params, &out)
@@ -573,7 +577,7 @@ func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnSta
 func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input), pendingTargetRef(params.Ref, params.ThreadID))
+		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input), pendingTargetRef(params.Ref, params.ThreadID), params.ClientMutationID)
 	}
 	err := c.request(ctx, MethodTurnSteer, params, nil)
 	if err != nil && handle != nil {
@@ -633,7 +637,7 @@ func (c *Client) UrlsRemove(ctx context.Context, params UrlsRemoveParams) (UrlsR
 func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "", params.Ref)
+		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "", params.Ref, params.ClientMutationID)
 	}
 	err := c.request(ctx, MethodTurnDrainAsSteer, params, nil)
 	if err != nil && handle != nil {

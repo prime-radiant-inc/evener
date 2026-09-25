@@ -161,6 +161,13 @@ type ChatMessage struct {
 	ItemID               string
 	ToolCallID           string
 	Tool                 *ToolCallInfo
+	// TranscriptKey is the row's appwire.ThreadItem.TranscriptKey, stamped on
+	// user rows the same way TranscriptEntryIndex is. thread/fork under the
+	// read model names its divergence point by an item's transcript key
+	// instead of an entry index (appwire.ThreadForkParams.SourceItemKey); this
+	// is where a caller reads it from once that switch lands. Empty on a
+	// legacy item that carries no key, and on any non-user row.
+	TranscriptKey string
 
 	// PendingID is non-zero when this message is an optimistic placeholder
 	// created in response to a user click before the authoritative event
@@ -182,4 +189,27 @@ type ChatMessage struct {
 	Failed bool
 	// Reason is the failure message when Failed is true.
 	Reason string
+
+	// OverlayKind is set on a row created from an overlay/upserted stream or
+	// preview item (appwire.OverlayStream / appwire.OverlayPreview) and left
+	// zero-value on every history-backed row. It never applies to an overlay
+	// tool item: that kind merges onto the same row a history commandExecution
+	// item uses (matched by ToolCallID), so it never gets a row of its own.
+	OverlayKind appwire.OverlayKind
+	// RoundID is the model round (appwire.OverlayItem.RoundID /
+	// appwire.ThreadItem.RoundID) a stream/preview overlay row or a recorded
+	// ASSISTANT-projected history row belongs to. On an overlay row it is how
+	// the reducer knows to drop the row once the round's recorded item covers
+	// it, or once the round ends.
+	RoundID string
+	// StreamID is the overlay attempt (appwire.OverlayItem.StreamID) a
+	// stream/preview overlay row belongs to, used to discard the row on
+	// overlay/reset.
+	StreamID string
+	// Version is a history row's appwire.ThreadItem.Version, the highest
+	// entry ordinal that contributed to it. ApplyHistoryItem drops an
+	// incoming item whose version is at or below this, so a stale replay (a
+	// resync or a backfill overlap) never overwrites a newer form. Zero on an
+	// overlay row and on a row no versioned update has touched yet.
+	Version uint64
 }

@@ -39,7 +39,7 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 	// reconcilePendingFromNotification's item/started case (a userMessage
 	// item reconciles a MethodTurnStart placeholder registered with the same
 	// text).
-	handle := m.pending.Register(appwire.MethodTurnStart, "hi", "")
+	handle := m.pending.Register(appwire.MethodTurnStart, "hi", "", "")
 	send(appwire.NotifyItemStarted, `{"item":{"id":"i1","type":"userMessage","text":"hi"}}`)
 	found := false
 	for _, msg := range m.session.messages {
@@ -84,7 +84,7 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 
 	// evener/steering/injected: EvenerSteeringInjectedParams.Text. Also exercises
 	// reconcilePendingFromNotification's steering case (MethodTurnSteer).
-	m.pending.Register(appwire.MethodTurnSteer, "steered", "")
+	m.pending.Register(appwire.MethodTurnSteer, "steered", "", "")
 	send(appwire.NotifyEvenerSteeringInjected, `{"text":"steered"}`)
 	sawSteering := false
 	for _, msg := range m.session.messages {
@@ -104,13 +104,34 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 	// userMessage item nested in the turn reconciles a MethodTurnStart
 	// placeholder).
 	m.detail.ActiveTurnID = "turn_1"
-	m.pending.Register(appwire.MethodTurnStart, "bye", "")
+	m.pending.Register(appwire.MethodTurnStart, "bye", "", "")
 	send(appwire.NotifyTurnCompleted, `{"turn":{"id":"turn_1","status":"completed","items":[{"id":"i2","type":"userMessage","text":"bye"}]}}`)
 	if m.detail.ActiveTurnID != "" {
 		t.Fatalf("ActiveTurnID = %q after its turn completed, want empty", m.detail.ActiveTurnID)
 	}
 	if m.pending.TryReconcile(appwire.MethodTurnStart, "bye", "") {
 		t.Fatal("turn/completed with a matching userMessage item should have already reconciled the pending turn/start placeholder")
+	}
+}
+
+// history/updated carries a recorded userMessage item; reconcilePendingFromNotification
+// matches it against a pending turn/start placeholder by ClientMutationID
+// (the read model's replacement for item/started|completed and
+// turn/completed for this purpose), not by text, since the recorded text can
+// differ from what was sent (an image placeholder).
+func TestApplyHubNotification_HistoryUpdatedReconcilesPendingByMutationID(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.mode = hubModeSession
+	m.detail.Ref = "local:01SESSION"
+	send := func(method, params string) {
+		m.applyHubNotification(appwire.Notification{Method: method, Params: json.RawMessage(params)})
+	}
+
+	m.pending.Register(appwire.MethodTurnStart, "[image]", "", "mut-42")
+	send(appwire.NotifyHistoryUpdated, `{"items":[{"id":"i1","type":"userMessage","text":"a caption the daemon rewrote","clientMutationId":"mut-42"}]}`)
+
+	if m.pending.TryReconcileByMutationID(appwire.MethodTurnStart, "mut-42", "") {
+		t.Fatal("history/updated with a matching clientMutationId should have already reconciled the pending turn/start placeholder")
 	}
 }
 
