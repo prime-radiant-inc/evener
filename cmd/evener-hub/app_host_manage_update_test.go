@@ -1084,7 +1084,7 @@ func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) 
 	case strings.HasSuffix(joined, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(joined, "launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+		return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 	case strings.Contains(joined, "api/health"):
 		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	default:

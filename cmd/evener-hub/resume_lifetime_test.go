@@ -419,7 +419,7 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 				t.Fatal(err)
 			}
 			binary := filepath.Join(root, "fixture-evener")
-			writeFakeEvener(t, binary, "#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n printf '%s\\n' '{\"protocol\":\"evener-appwire-v5\",\"launch_flags\":[\"api-log\"]}'\n exit 0\nfi\nexit 2\n")
+			writeFakeEvener(t, binary, "#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n printf '%s\\n' '{\"protocol\":\"evener-appwire-v6\",\"launch_flags\":[\"api-log\"]}'\n exit 0\nfi\nexit 2\n")
 			waiting, killed, allowExit := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			original := startResumeChild
 			defer func() { startResumeChild = original }()
@@ -619,7 +619,7 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(root, "fixture-evener")
-	writeFakeEvener(t, binary, "#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n printf '%s\\n' '{\"protocol\":\"evener-appwire-v5\",\"launch_flags\":[\"api-log\"]}'\n exit 0\nfi\nexit 2\n")
+	writeFakeEvener(t, binary, "#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n printf '%s\\n' '{\"protocol\":\"evener-appwire-v6\",\"launch_flags\":[\"api-log\"]}'\n exit 0\nfi\nexit 2\n")
 	locks, err := hubcore.NewPersistentResumeLocks(recoveryRoot)
 	if err != nil {
 		t.Fatal(err)

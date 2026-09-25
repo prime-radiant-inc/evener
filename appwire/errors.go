@@ -36,6 +36,10 @@ const (
 	// ErrorHistoryFailed marks a read of a thread whose history entered its
 	// failed state: an entry that fails to project, named in the message.
 	ErrorHistoryFailed ErrorInfo = "historyFailed"
+	// ErrorUpgradeRequired marks initialize refusing a client that announced
+	// an older AppWire protocol than the server speaks; the message names both
+	// versions.
+	ErrorUpgradeRequired ErrorInfo = "upgradeRequired"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -214,6 +218,16 @@ func HistoryFailed(ordinal uint64) WireError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
 		Data:    ErrorData{EvenerErrorInfo: ErrorHistoryFailed},
+	}
+}
+
+// UpgradeRequired refuses a client that announced clientVersion, an AppWire
+// protocol older than serverVersion.
+func UpgradeRequired(clientVersion, serverVersion string) WireError {
+	return WireError{
+		Code:    CodeInvalidRequest,
+		Message: fmt.Sprintf("protocol version %q is older than this server's %q: upgrade required", clientVersion, serverVersion),
+		Data:    ErrorData{EvenerErrorInfo: ErrorUpgradeRequired},
 	}
 }
 

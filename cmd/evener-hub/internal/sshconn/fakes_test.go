@@ -183,7 +183,7 @@ func (b *fakeBridge) floodNotifications(n int) error {
 	return nil
 }
 
-const goodLaunchCheck = `{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`
+const goodLaunchCheck = `{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`
 
 // cannedRun returns a runFn answering the standard preflight commands, with
 // optional substring-keyed overrides consulted first.

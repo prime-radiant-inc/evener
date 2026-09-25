@@ -68,6 +68,7 @@ func TestWireErrorConstructors(t *testing.T) {
 		{"InstanceRemoveApplied", InstanceRemoveApplied("leftover"), -32603, ErrorInstanceRemoveApplied, "leftover"},
 		{"EndpointConflict", EndpointConflict("moved"), -32013, ErrorEndpointConflict, "moved"},
 		{"HistoryFailed", HistoryFailed(7), -32603, ErrorHistoryFailed, "thread history failed at entry 7"},
+		{"UpgradeRequired", UpgradeRequired("evener-appwire-v5", "evener-appwire-v6"), -32600, ErrorUpgradeRequired, "protocol version \"evener-appwire-v5\" is older than this server's \"evener-appwire-v6\": upgrade required"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.err.Code != c.wantCode {

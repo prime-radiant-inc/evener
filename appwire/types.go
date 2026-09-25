@@ -14,6 +14,10 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v6 serves history only as history/updated from recorded entries and live
+// unrecorded state only as overlay/* notifications: turn/started,
+// turn/completed, item/* and evener/steering/injected are gone, and a client
+// announcing an older version is refused with upgradeRequired.
 // v4 makes transcript reads item-only and rejects retired paging fields. v3
 // dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
@@ -22,7 +26,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v5"
+const ProtocolVersion = "evener-appwire-v6"
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.

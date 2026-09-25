@@ -254,7 +254,7 @@ func TestRegistrationEntryReturnsDetachedCopy(t *testing.T) {
 	want := rendezvous.Entry{
 		PID:       2468,
 		Address:   "127.0.0.1:4600",
-		Protocol:  "evener-appwire-v5",
+		Protocol:  "evener-appwire-v6",
 		ThreadID:  "01JENT",
 		SessionID: "01JENT",
 		StateDir:  "/state/entry",
@@ -408,7 +408,7 @@ func TestRegistrationRemoveTreatsExcludedFieldDriftAsReplacement(t *testing.T) {
 			mine := rendezvous.Entry{
 				PID:        pid,
 				Address:    "127.0.0.1:4100",
-				Protocol:   "evener-appwire-v5",
+				Protocol:   "evener-appwire-v6",
 				Endpoint:   "ws://127.0.0.1:4100/rpc",
 				SourceID:   "local",
 				ThreadID:   "01MINE",
