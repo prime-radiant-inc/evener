@@ -693,7 +693,7 @@ func TestStopFailureToReport(t *testing.T) {
 		{"a cancellation with no substantive failure", context.Canceled, nil, context.Canceled},
 	}
 	for _, tc := range tests {
-		if got := stopFailureToReport(tc.lastAttempt, tc.lastSubstantive); got != tc.want {
+		if got := stopFailureToReport(tc.lastAttempt, tc.lastSubstantive); !errors.Is(got, tc.want) {
 			t.Errorf("stopFailureToReport(%v, %v) = %v, want %v (%s)", tc.lastAttempt, tc.lastSubstantive, got, tc.want, tc.name)
 		}
 	}
