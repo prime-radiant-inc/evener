@@ -199,14 +199,13 @@ func (b *builder) stampTurn(entry *schema.Turn, version uint64, offset int64, le
 		return nil // already accounted before an interrupted catch-up
 	}
 	if entry.Kind == schema.TurnFailure {
-		r.FailureOffset, r.FailureLength = offset, length
+		r.LifecycleOffset, r.LifecycleLength, r.Status = offset, length, statusFailed
 	}
-	if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted {
-		r.Flags |= turnInterrupted
+	if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted && r.Status != statusFailed {
+		r.Status = statusInterrupted
 	}
-	if r.Flags&turnStarted == 0 && !entry.Timestamp.IsZero() {
-		r.StartedAt = entry.Timestamp.UnixMilli()
-		r.Flags |= turnStarted
+	if !r.Started && !entry.Timestamp.IsZero() {
+		r.StartedAt, r.Started = entry.Timestamp.UnixMilli(), true
 	}
 	usage := entry.Usage
 	r.Usage[0] += int64(usage.InputTokens)

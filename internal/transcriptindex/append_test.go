@@ -50,6 +50,33 @@ func hasNamelessResult(turn schema.Turn) bool {
 	return false
 }
 
+// liveBuild is the sidecar's live build directory.
+func liveBuild(t testing.TB, dir string) string {
+	t.Helper()
+	current, err := os.ReadFile(filepath.Join(dir, currentFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, string(bytes.TrimSpace(current)))
+}
+
+// namedResults is the corpus minus the fixtures holding tool results with no
+// name of their own, which an index that extends may rebuild for.
+func namedResults() fixture {
+	fx := fixture{name: "named results"}
+	for _, set := range fixtures() {
+		named := true
+		for _, line := range set.lines {
+			named = named && !hasNamelessResult(line.turn)
+		}
+		if named && set.name != "everything" {
+			fx.header = set.header
+			fx.lines = append(fx.lines, set.lines...)
+		}
+	}
+	return fx
+}
+
 func everything() fixture {
 	all := fixtures()
 	return all[len(all)-1]
@@ -206,7 +233,7 @@ func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	cut := len(lines) - 2
 	appendBytes(t, path, joinLines(lines[:cut]))
 	x := openIndex(t, path, dir)
-	saved, err := os.ReadFile(filepath.Join(dir, metaFile))
+	saved, err := os.ReadFile(filepath.Join(liveBuild(t, dir), metaFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +246,7 @@ func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	if err := x.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, metaFile), saved, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(liveBuild(t, dir), metaFile), saved, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	replayed := openIndex(t, path, dir)
@@ -277,27 +304,27 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 		corrupt func(t *testing.T, dir string)
 	}{
 		{"garbage meta", func(t *testing.T, dir string) {
-			if err := os.WriteFile(filepath.Join(dir, metaFile), []byte("{not json"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(liveBuild(t, dir), metaFile), []byte("{not json"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"short items table", func(t *testing.T, dir string) {
-			if err := os.Truncate(filepath.Join(dir, itemsFile), itemRecordSize); err != nil {
+			if err := os.Truncate(filepath.Join(liveBuild(t, dir), itemsFile), itemRecordSize); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"other format", func(t *testing.T, dir string) {
-			data, err := os.ReadFile(filepath.Join(dir, metaFile))
+			data, err := os.ReadFile(filepath.Join(liveBuild(t, dir), metaFile))
 			if err != nil {
 				t.Fatal(err)
 			}
 			data = []byte(string(data[:len(data)-1]) + `,"format":99}`)
-			if err := os.WriteFile(filepath.Join(dir, metaFile), data, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(liveBuild(t, dir), metaFile), data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"missing strings", func(t *testing.T, dir string) {
-			if err := os.Remove(filepath.Join(dir, stringsFile)); err != nil {
+			if err := os.Remove(filepath.Join(liveBuild(t, dir), stringsFile)); err != nil {
 				t.Fatal(err)
 			}
 		}},

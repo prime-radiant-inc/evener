@@ -21,8 +21,11 @@ type Window struct {
 	Candidates []appitempaging.TranscriptItemCandidate
 	// HasOlder reports whether items remain before the first candidate.
 	HasOlder bool
-	// Length is the transcript bytes the window was read from.
-	Length int64
+	// Incarnation and Length are the window's snapshot identity: the index
+	// incarnation and the transcript bytes it covered. Within one incarnation
+	// the length only grows; a rebuild mints a new incarnation.
+	Incarnation string
+	Length      int64
 }
 
 // Latest returns the newest limit items (see appwire.NormalizeTranscriptItemLimit).
@@ -33,7 +36,12 @@ func (x *Index) Latest(limit int) (Window, error) {
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	return x.window(x.preludeCount()+x.items.n, limit)
+	var window Window
+	err = x.locked(false, func() (err error) {
+		window, err = x.window(x.preludeCount()+x.items.n, limit)
+		return err
+	})
+	return window, err
 }
 
 // Before returns up to limit items immediately before the exclusive position.
@@ -45,11 +53,16 @@ func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, er
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	rank, err := x.rank(before)
-	if err != nil {
-		return Window{}, err
-	}
-	return x.window(rank, limit)
+	var window Window
+	err = x.locked(false, func() error {
+		rank, err := x.rank(before)
+		if err != nil {
+			return err
+		}
+		window, err = x.window(rank, limit)
+		return err
+	})
+	return window, err
 }
 
 func (x *Index) preludeCount() uint64 {
@@ -98,7 +111,7 @@ func (x *Index) rank(position appwire.ThreadItemPosition) (uint64, error) {
 // window reads the items ranked [end-limit, end).
 func (x *Index) window(end uint64, limit int) (Window, error) {
 	start := end - min(end, uint64(limit))
-	window := Window{Candidates: make([]appitempaging.TranscriptItemCandidate, 0, end-start), HasOlder: start > 0, Length: x.meta.Length}
+	window := Window{Candidates: make([]appitempaging.TranscriptItemCandidate, 0, end-start), HasOlder: start > 0, Incarnation: x.meta.Incarnation, Length: x.meta.Length}
 	prelude := x.preludeCount()
 	for rank := start; rank < min(end, prelude); rank++ {
 		window.Candidates = append(window.Candidates, x.preludeCandidate(int(rank)))
@@ -222,17 +235,17 @@ func (r *reader) turn(slot uint32) (appwire.Turn, error) {
 		return appwire.Turn{}, err
 	}
 	turn := appwire.Turn{ID: string(id), ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-	if record.FailureLength > 0 {
-		failure, err := r.entry(record.FailureOffset, record.FailureLength)
+	switch record.Status {
+	case statusFailed:
+		failure, err := r.entry(record.LifecycleOffset, record.LifecycleLength)
 		if err != nil {
 			return appwire.Turn{}, err
 		}
 		apptranscript.StampTurnFailure(&turn, *failure)
-	}
-	if record.Flags&turnInterrupted != 0 && turn.Status != appwire.TurnStatusFailed {
+	case statusInterrupted:
 		turn.Status = appwire.TurnStatusInterrupted
 	}
-	if record.Flags&turnStarted != 0 {
+	if record.Started {
 		startedAt := record.StartedAt
 		turn.StartedAt = &startedAt
 	}

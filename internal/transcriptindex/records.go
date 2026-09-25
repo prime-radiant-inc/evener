@@ -11,7 +11,7 @@ import (
 // and an append can rewrite one in place.
 const (
 	itemRecordSize  = 112
-	turnRecordSize  = 92
+	turnRecordSize  = 96
 	contributorSize = 32
 )
 
@@ -47,24 +47,31 @@ type itemRecord struct {
 	Middle    strRef      // contributors between opener and completer, encoded
 }
 
-// Turn summary flags.
+// Turn statuses, as the summary's latest lifecycle entry sets them.
 const (
-	turnInterrupted uint32 = 1 << iota
-	turnStarted
+	statusCompleted uint32 = iota
+	statusFailed
+	statusInterrupted
 )
 
 // turnRecord summarizes one logical turn: everything needed to stamp the turn
-// without reading its entries, plus where its failure diagnostic lives.
+// without reading its entries.
+//
+// Lifecycle names the latest entry that sets the turn's status, and Status is
+// the status it set. Today's grouping has one rule for it: a turn is failed
+// once any TURN_FAILURE is in it, and the latest one carries the diagnostic;
+// otherwise it is interrupted once an interrupted STEERING is in it.
 type turnRecord struct {
-	ID            strRef
-	FirstOffset   int64
-	FirstOrdinal  uint64
-	FailureOffset int64
-	FailureLength uint32 // 0: no TURN_FAILURE entry
-	Flags         uint32
-	StartedAt     int64    // unix ms of the first entry with a timestamp
-	Usage         [4]int64 // input, output, cache read, total tokens
-	Version       uint64   // highest accounted entry ordinal + 1
+	ID              strRef
+	FirstOffset     int64
+	FirstOrdinal    uint64
+	LifecycleOffset int64
+	LifecycleLength uint32 // 0: no entry carries the status's diagnostic
+	Status          uint32
+	Started         bool     // StartedAt is set
+	StartedAt       int64    // unix ms of the first entry with a timestamp
+	Usage           [4]int64 // input, output, cache read, total tokens
+	Version         uint64   // highest accounted entry ordinal + 1
 }
 
 // codec reads and writes little-endian fields over a fixed buffer.
@@ -99,6 +106,21 @@ func (c *codec) putU32(v uint32) {
 }
 
 func (c *codec) putI64(v int64) { c.putU64(uint64(v)) }
+
+// bool and putBool keep a u32 slot, so the record layout stays aligned.
+func (c *codec) bool(v *bool) {
+	var u uint32
+	c.u32(&u)
+	*v = u != 0
+}
+
+func (c *codec) putBool(v bool) {
+	var u uint32
+	if v {
+		u = 1
+	}
+	c.putU32(u)
+}
 
 func (c *codec) ref(r *strRef)   { c.u64(&r.Off); c.u32(&r.Len) }
 func (c *codec) putRef(r strRef) { c.putU64(r.Off); c.putU32(r.Len) }
@@ -149,9 +171,10 @@ func encodeTurn(r turnRecord) []byte {
 	c.putRef(r.ID)
 	c.putI64(r.FirstOffset)
 	c.putU64(r.FirstOrdinal)
-	c.putI64(r.FailureOffset)
-	c.putU32(r.FailureLength)
-	c.putU32(r.Flags)
+	c.putI64(r.LifecycleOffset)
+	c.putU32(r.LifecycleLength)
+	c.putU32(r.Status)
+	c.putBool(r.Started)
 	c.putI64(r.StartedAt)
 	for _, v := range r.Usage {
 		c.putI64(v)
@@ -166,9 +189,10 @@ func decodeTurn(buf []byte) turnRecord {
 	c.ref(&r.ID)
 	c.i64(&r.FirstOffset)
 	c.u64(&r.FirstOrdinal)
-	c.i64(&r.FailureOffset)
-	c.u32(&r.FailureLength)
-	c.u32(&r.Flags)
+	c.i64(&r.LifecycleOffset)
+	c.u32(&r.LifecycleLength)
+	c.u32(&r.Status)
+	c.bool(&r.Started)
 	c.i64(&r.StartedAt)
 	for i := range r.Usage {
 		c.i64(&r.Usage[i])
@@ -263,14 +287,11 @@ func (b *blob) get(ref strRef) ([]byte, error) {
 	return buf, nil
 }
 
-// truncate drops records past n: an append the meta never counted.
-func (t *table) truncate(n uint64) error {
-	if n > t.n {
-		return fmt.Errorf("%w: %d records where the meta counts %d", errCorrupt, t.n, n)
+// available is how many whole records the file holds, counted or not.
+func (t *table) available() (uint64, error) {
+	info, err := t.file.Stat()
+	if err != nil {
+		return 0, err
 	}
-	if err := t.file.Truncate(int64(n) * t.size); err != nil {
-		return fmt.Errorf("truncate index records: %w", err)
-	}
-	t.n = n
-	return nil
+	return uint64(info.Size() / t.size), nil
 }
