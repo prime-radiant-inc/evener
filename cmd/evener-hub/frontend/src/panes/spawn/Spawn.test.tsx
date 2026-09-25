@@ -1702,8 +1702,8 @@ test("successful keyless testing refreshes availability without an auth notifica
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
-  expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
+  await screen.findByRole("option", { name: /local-model/ });
+  expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull();
 });
 
 test("credential changes reload the cached model catalog and re-enter setup after removal", async () => {
