@@ -21,13 +21,17 @@ import (
 // rollback — and across a resume scan, so no writer observes a sequence number a
 // rollback later returns, and no resume truncates another writer's record as a
 // crash tail.
+//
+// The tail coordinates writers in this process only; another process appending
+// to the same file is not coordinated.
 type appendTail struct {
 	mu sync.Mutex
 	// nextSeq is the sequence number the next appended entry takes.
 	nextSeq int
-	// lastWriter is the writer whose append (or resume) last moved the file's
-	// end. Any other writer's handle position may be behind that end.
-	lastWriter *Writer
+	// move counts the times a writer positioned its handle at the file's end
+	// to append (or opened the file). A writer whose last recorded move is
+	// not the current one may have a handle position behind the end.
+	move uint64
 
 	// info identifies the file (os.SameFile) and refs counts the open writers
 	// sharing this tail; both are guarded by openTails.mu.
@@ -51,6 +55,9 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat transcript file: %w", err)
 	}
+	// os.SameFile is false for any FileInfo that did not come from the os
+	// package, even compared with itself: such a file cannot be matched, so
+	// it is never shared.
 	if !os.SameFile(info, info) {
 		return &appendTail{}, nil
 	}
@@ -65,6 +72,13 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	tail := &appendTail{info: info, refs: 1}
 	openTails.tails = append(openTails.tails, tail)
 	return tail, nil
+}
+
+// moved records a writer taking the file's end and returns the new move.
+// Callers hold t.mu.
+func (t *appendTail) moved() uint64 {
+	t.move++
+	return t.move
 }
 
 // release drops one writer's hold on the tail, forgetting it after the last.

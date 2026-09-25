@@ -71,7 +71,7 @@ func requireOneSequenceInFileOrder(t *testing.T, path string, wantTexts []string
 		if entry.Seq != i {
 			t.Fatalf("entry %d in file order has seq %d, want %d", i, entry.Seq, i)
 		}
-		seen[entry.Turn.Message.Content[0].Text]++
+		seen[entry.Turn.Message.Text()]++
 	}
 	for _, text := range wantTexts {
 		if seen[text] != 1 {
@@ -159,13 +159,11 @@ func TestConcurrentWritersOnOneFileKeepOneSequence(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range writers {
 		w := openSharedFileWriter(t, path)
-		defer w.Close() //nolint:errcheck // assertion fixture
+		t.Cleanup(func() { _ = w.Close() })
 		for j := range appendsEach {
 			texts = append(texts, fmt.Sprintf("writer %d append %d", i, j))
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for j := range appendsEach {
 				turn := steeringTurn(fmt.Sprintf("writer %d append %d", i, j))
 				var err error
@@ -182,7 +180,7 @@ func TestConcurrentWritersOnOneFileKeepOneSequence(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	requireOneSequenceInFileOrder(t, path, texts)

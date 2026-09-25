@@ -47,15 +47,8 @@ func TestColdAttentionAppendWhileSessionWriterOpenKeepsOneSequence(t *testing.T)
 	if err := sessionWriter.Append(schema.NewTurn(schema.TurnSteering, llm.User("session buffered"))); err != nil {
 		t.Fatalf("session Append: %v", err)
 	}
-	if err := sessionWriter.Close(); err != nil {
-		t.Fatalf("close session writer: %v", err)
-	}
 
-	reader, entries, err := transcript.OpenWriterForSession(path, sessionID)
-	if err != nil {
-		t.Fatalf("reopen transcript: %v", err)
-	}
-	defer reader.Close() //nolint:errcheck // read-only assertion fixture
+	entries := readAttentionTranscriptEntries(t, path)
 	if len(entries) != 5 {
 		t.Fatalf("transcript holds %d entries, want 5", len(entries))
 	}

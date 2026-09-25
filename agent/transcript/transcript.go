@@ -310,10 +310,13 @@ func ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete boo
 
 // Writer appends turns to an immutable JSONL transcript file.
 type Writer struct {
-	fs        afero.Fs
-	file      afero.File
-	mu        sync.Mutex
-	tail      *appendTail
+	fs   afero.Fs
+	file afero.File
+	mu   sync.Mutex
+	tail *appendTail
+	// tailMove is the tail's move this writer's handle position reflects:
+	// the file's end as of this writer's own last append or open.
+	tailMove  uint64
 	closeOnce sync.Once
 	closed    atomic.Bool
 	// header is the validated header of the resumed transcript, retained
@@ -473,11 +476,9 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		_ = f.Close() // cleanup on error path; the stat error is what matters
 		return nil, err
 	}
-	w := &Writer{fs: fs, file: f, tail: tail, lastSync: time.Now(), header: header}
 	tail.mu.Lock()
-	tail.lastWriter = w
-	tail.mu.Unlock()
-	return w, nil
+	defer tail.mu.Unlock()
+	return &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}, nil
 }
 
 // Header returns the transcript's validated header: the header this writer
@@ -653,7 +654,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 	if len(turns) == 0 {
 		return firstSeq, nil, nil
 	}
-	if w.tail.lastWriter != w {
+	if w.tailMove != w.tail.move {
 		// Another writer on this file moved its end since this one last wrote,
 		// so this handle's position is behind it.
 		w.positionUnknown = true
@@ -667,7 +668,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 		}
 		w.positionUnknown = false
 	}
-	w.tail.lastWriter = w
+	w.tailMove = w.tail.moved()
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
@@ -1018,20 +1019,19 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	defer tail.mu.Unlock()
 	header, entries, nextSeq, err := scanForResume(f, expectedSessionID)
 	if err != nil {
+		_ = f.Close() // cleanup on error path; the scan error is what matters
 		tail.release()
 		return nil, nil, err
 	}
 	// Another writer still open on the file may have used more of the sequence
 	// than the file shows; never go back below it.
 	tail.nextSeq = max(tail.nextSeq, nextSeq)
-	w := &Writer{fs: fs, file: f, tail: tail, lastSync: time.Now(), header: header}
-	tail.lastWriter = w
-	return w, entries, nil
+	return &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}, entries, nil
 }
 
 // scanForResume validates the transcript, truncates any crash tail, positions
 // f at the end, and returns the header, the entries, and the next sequence
-// number. It closes f on every error.
+// number.
 func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int, error) {
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
@@ -1049,7 +1049,6 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 	for {
 		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
-			_ = f.Close()
 			return Header{}, nil, 0, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
@@ -1065,11 +1064,9 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 			var err error
 			header, err = DecodeHeader(line)
 			if err != nil {
-				_ = f.Close()
 				return Header{}, nil, 0, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
-				_ = f.Close()
 				return Header{}, nil, 0, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
 			}
 			headerRead = true
@@ -1077,7 +1074,6 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 		}
 		entry, err := DecodeEntry(line)
 		if err != nil {
-			_ = f.Close()
 			return Header{}, nil, 0, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		entries = append(entries, entry)
@@ -1086,7 +1082,6 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 		}
 	}
 	if !headerRead {
-		_ = f.Close()
 		if hasPartialTail && validLen == 0 {
 			return Header{}, nil, 0, errors.New("transcript has no complete lines")
 		}
@@ -1095,7 +1090,6 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 
 	if hasPartialTail {
 		if err := f.Truncate(validLen); err != nil {
-			_ = f.Close() // cleanup on error path; the truncate error is what matters
 			return Header{}, nil, 0, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
@@ -1109,7 +1103,6 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		_ = f.Close() // cleanup on error path; the seek error is what matters
 		return Header{}, nil, 0, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
