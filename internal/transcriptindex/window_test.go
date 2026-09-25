@@ -1,0 +1,88 @@
+package transcriptindex
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"testing"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
+)
+
+func isCursorStale(err error) bool {
+	var wire appwire.WireError
+	return errors.As(err, &wire) && reflect.DeepEqual(wire, appwire.TranscriptItemCursorStale())
+}
+
+// assertWindow requires window to hold exactly the reference items [end-limit,
+// end), and HasOlder to say whether items remain before them.
+func assertWindow(t testing.TB, label string, window Window, want []appitempaging.TranscriptItemCandidate, end, limit int) {
+	t.Helper()
+	start := max(0, end-limit)
+	if expected := want[start:end]; !reflect.DeepEqual(window.Candidates, expected) {
+		t.Fatalf("%s (end %d, limit %d): window diverges from the reference\n got: %s\nwant: %s", label, end, limit, dump(window.Candidates), dump(expected))
+	}
+	if window.HasOlder != (start > 0) {
+		t.Fatalf("%s (end %d, limit %d): HasOlder = %v, want %v", label, end, limit, window.HasOlder, start > 0)
+	}
+}
+
+// assertAllWindows compares the latest window at every limit, and every
+// Before boundary at a spread of limits, with the reference of the transcript
+// at path.
+func assertAllWindows(t testing.TB, x *Index, path string) {
+	t.Helper()
+	want := referenceCandidates(t, path)
+	for limit := 1; limit <= appwire.TranscriptItemPageLimit; limit++ {
+		window, err := x.Latest(limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertWindow(t, "latest", window, want, len(want), limit)
+	}
+	for _, limit := range []int{1, 2, 3, 7, appwire.TranscriptItemPageLimit} {
+		for end := range len(want) {
+			window, err := x.Before(want[end].Position, limit)
+			if err != nil {
+				t.Fatalf("before %v: %v", want[end].Position, err)
+			}
+			assertWindow(t, fmt.Sprintf("before %v", want[end].Position), window, want, end, limit)
+		}
+	}
+}
+
+func TestWindowsEqualTheReferenceOnEveryBoundary(t *testing.T) {
+	for _, fx := range fixtures() {
+		t.Run(fx.name, func(t *testing.T) {
+			path := writeFixture(t, fx)
+			x, err := Open(path, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer x.Close() //nolint:errcheck // test cleanup
+			assertAllWindows(t, x, path)
+			for _, missing := range []appwire.ThreadItemPosition{{Entry: 1 << 40}, {Entry: 0, Item: 1 << 20}, {Entry: 1, Item: 999}} {
+				if _, err := x.Before(missing, 5); !isCursorStale(err) {
+					t.Fatalf("Before(%v): err = %v, want a stale cursor", missing, err)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyTranscriptHasNoItems(t *testing.T) {
+	path := writeFixture(t, fixture{name: "empty"})
+	x, err := Open(path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close() //nolint:errcheck // test cleanup
+	window, err := x.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Candidates) != 0 || window.HasOlder {
+		t.Fatalf("empty transcript window = %+v", window)
+	}
+}
