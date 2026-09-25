@@ -16,7 +16,7 @@ later release drops it. An `evener-dev` that an earlier install left in
 updated. Remove it if you don't use it:
 
 ```sh
-rm ~/.local/bin/evener-dev ~/.local/share/evener/bin/evener-dev
+rm -f ~/.local/bin/evener-dev ~/.local/share/evener/bin/evener-dev
 ```
 
 ## Unreleased — Tool `purpose` param renamed to `intent`

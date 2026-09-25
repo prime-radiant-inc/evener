@@ -1504,8 +1504,12 @@ func isETXTBSYExecFailure(err error, out []byte) bool {
 func assertNoEvenerDevInstalled(t *testing.T, dirs ...string) {
 	t.Helper()
 	for _, dir := range dirs {
-		if _, err := os.Lstat(filepath.Join(dir, "evener-dev")); !os.IsNotExist(err) {
-			t.Fatalf("the install put evener-dev into %s (err=%v); it is dev tooling, not part of an install", dir, err)
+		_, err := os.Lstat(filepath.Join(dir, "evener-dev"))
+		if err == nil {
+			t.Fatalf("the install put evener-dev into %s; it is dev tooling, not part of an install", dir)
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("lstat %s: %v", filepath.Join(dir, "evener-dev"), err)
 		}
 	}
 }
