@@ -16,6 +16,8 @@ package transcriptindex
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -33,4 +35,71 @@ func ItemKey(turnID string, position appwire.ThreadItemPosition) string {
 		return fmt.Sprintf("apptranscript-item-v%d:prelude:header:%d", keyVersion, position.Item)
 	}
 	return fmt.Sprintf("apptranscript-item-v%d:%s:%d:%d", keyVersion, turnID, position.Entry-1, position.Item)
+}
+
+// keyPrefix is the fixed lead-in every ItemKey carries; ParseItemKey rejects
+// anything that does not start with it, including keys stamped by an older
+// keyVersion.
+var keyPrefix = fmt.Sprintf("apptranscript-item-v%d:", keyVersion)
+
+// headerKeyPrefix is the lead-in a header prelude key carries after
+// keyPrefix, in place of a turn id and ordinal.
+const headerKeyPrefix = "prelude:header:"
+
+// ParseItemKey is ItemKey's inverse: it recovers the turn id and position a
+// transcriptKey names. For a header prelude key it returns position {Entry:
+// 0, Item: part} and an empty turnID, since the header key carries no turn
+// id. For an entry key it returns {Entry: ordinal + 1, Item: part} and the
+// turn id, splitting the trailing "<ordinal>:<part>" from the right so a turn
+// id is never mistaken for part of that suffix.
+func ParseItemKey(key string) (turnID string, position appwire.ThreadItemPosition, err error) {
+	malformed := func() (string, appwire.ThreadItemPosition, error) {
+		return "", appwire.ThreadItemPosition{}, fmt.Errorf("transcriptindex: malformed item key %q", key)
+	}
+
+	rest, ok := strings.CutPrefix(key, keyPrefix)
+	if !ok {
+		return malformed()
+	}
+
+	if headerRest, ok := strings.CutPrefix(rest, headerKeyPrefix); ok {
+		part, perr := parseKeyUint(headerRest)
+		if perr != nil {
+			return malformed()
+		}
+		return "", appwire.ThreadItemPosition{Entry: 0, Item: uint32(part)}, nil
+	}
+
+	partIdx := strings.LastIndex(rest, ":")
+	if partIdx < 0 {
+		return malformed()
+	}
+	turnAndOrdinal, partStr := rest[:partIdx], rest[partIdx+1:]
+	ordinalIdx := strings.LastIndex(turnAndOrdinal, ":")
+	if ordinalIdx < 0 {
+		return malformed()
+	}
+	turnID, ordinalStr := turnAndOrdinal[:ordinalIdx], turnAndOrdinal[ordinalIdx+1:]
+	if turnID == "" {
+		return malformed()
+	}
+	ordinal, err := parseKeyUint(ordinalStr)
+	if err != nil {
+		return malformed()
+	}
+	part, err := parseKeyUint(partStr)
+	if err != nil {
+		return malformed()
+	}
+	return turnID, appwire.ThreadItemPosition{Entry: ordinal + 1, Item: uint32(part)}, nil
+}
+
+// parseKeyUint parses a key segment as a non-negative integer. strconv.Atoi
+// alone accepts a leading "+" and would silently misparse "prelude:header:+3"
+// as 3; ItemKey never emits a sign, so any sign is malformed.
+func parseKeyUint(s string) (uint64, error) {
+	if s == "" || s[0] == '+' || s[0] == '-' {
+		return 0, fmt.Errorf("transcriptindex: not a non-negative integer: %q", s)
+	}
+	return strconv.ParseUint(s, 10, 64)
 }

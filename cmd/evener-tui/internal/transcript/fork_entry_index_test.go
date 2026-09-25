@@ -9,8 +9,9 @@ import (
 // TestApplyThreadItemCarriesTranscriptEntryIndexOntoUserMessages (kata e6q0)
 // pins the field the TUI's fork draft reads as its divergence position.
 //
-// thread/fork's sourceTurnId is a 1-based index into the parent transcript's
-// ENTRY list, and appwire.ThreadItem.TranscriptEntryIndex is the only field
+// thread/fork's sourceItemKey names a 1-based index into the parent
+// transcript's ENTRY list, and appwire.ThreadItem.TranscriptEntryIndex is the
+// only field
 // that names it. TurnIndex is the id-derived turn number, which coincides with
 // the entry index only on a transcript replayed from disk; every live minter
 // numbers turns off its own counter, so the two diverge the moment a turn

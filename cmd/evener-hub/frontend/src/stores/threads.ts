@@ -84,13 +84,13 @@ export type ComposerMutationRoute = "send" | "queue" | "steer" | "drain";
 // ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types.go:
 // 692-711) minus ref (a separate positional argument, like every other
 // action here). Fork and aside are the SAME wire method with mutually
-// exclusive param sets (aside excludes sourceTurnId/editedInput/deferInput/
+// exclusive param sets (aside excludes sourceItemKey/editedInput/deferInput/
 // label per that struct's own doc comment) - the Go type itself is one flat
 // struct with no type-level split enforcing this, so this TS type mirrors
 // that honestly rather than inventing a discriminated union the wire
 // doesn't have; enforcing the exclusion is the caller's (T5's) job.
 export interface ForkFromTurnOptions {
-  sourceTurnId?: string;
+  sourceItemKey?: string;
   editedInput?: string;
   label?: string;
   modelProvider?: string;
@@ -3584,12 +3584,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async forkFromTurn(ref, opts) {
     const client = requireClient();
     try {
-      // ThreadForkParams.sourceTurnId has no `omitempty` on the wire
-      // (appwire/types.go:694) - it is REQUIRED JSON, unlike every other
-      // fork field - so an aside-mode caller that never set it (aside is
-      // mutually exclusive with sourceTurnId) still gets a well-formed
-      // request rather than an absent field.
-      return await client.request("thread/fork", { ...opts, ref, sourceTurnId: opts.sourceTurnId ?? "" });
+      return await client.request("thread/fork", { ...opts, ref });
     } catch (err) {
       throw mapConflict(err);
     }

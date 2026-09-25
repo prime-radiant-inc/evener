@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -1209,12 +1209,12 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 // daemon ownership or resolving the target's transcript.
 func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
 	if params.Aside {
-		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
-			return 0, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
+		if strings.TrimSpace(params.SourceItemKey) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
+			return 0, appwire.InvalidParams("aside does not accept sourceItemKey, editedInput, deferInput, or label")
 		}
 		return 0, nil
 	}
-	turn, err := parseSourceTurnID(params.SourceTurnID)
+	turn, err := parseSourceItemKey(params.SourceItemKey)
 	if err != nil {
 		return 0, appwire.InvalidParams(err.Error())
 	}
@@ -1549,22 +1549,31 @@ func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
-	return strings.TrimSpace(params.SourceTurnID) != "" ||
+	return strings.TrimSpace(params.SourceItemKey) != "" ||
 		strings.TrimSpace(params.EditedInput) != "" ||
 		strings.TrimSpace(params.Label) != "" ||
 		params.DeferInput
 }
 
-func parseSourceTurnID(raw string) (int, error) {
-	raw = strings.TrimSpace(strings.TrimPrefix(raw, "turn_"))
+// parseSourceItemKey resolves a transcriptKey (transcriptindex.ItemKey) to the
+// 1-based transcript entry index agent.ForkSessionAtUserTurn and
+// agent.ForkSession divergence on. The key's turn id is not otherwise
+// validated here: whether the named entry exists, and whether it is a
+// USER_INPUT entry, is answered downstream when the fork actually reads the
+// parent transcript.
+func parseSourceItemKey(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return 0, errors.New("sourceTurnId is required")
+		return 0, errors.New("sourceItemKey is required")
 	}
-	turn, err := strconv.Atoi(raw)
-	if err != nil || turn < 1 {
-		return 0, errors.New("sourceTurnId must be a positive turn number")
+	_, position, err := transcriptindex.ParseItemKey(raw)
+	if err != nil {
+		return 0, fmt.Errorf("sourceItemKey is not a valid transcript item key: %w", err)
 	}
-	return turn, nil
+	if position.Entry == 0 {
+		return 0, errors.New("sourceItemKey names the transcript header, which is not a turn")
+	}
+	return int(position.Entry), nil
 }
 
 // readSpawnedLocalThread keeps pre-admission reads in the same recovery scope

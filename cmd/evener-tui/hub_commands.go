@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1289,13 +1290,21 @@ func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
 	return sendHubURLRemove(m.client, ref, id, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
 }
 
+// forkEntryKeyTurnID fills the turn-id component of the item key sendHubFork
+// builds from req.EntryIndex. The TUI does not yet carry each transcript
+// item's own key (appwire.ThreadItem.TranscriptKey) through to
+// hubForkRequest, only its entry index; the hub's item-key parser recovers
+// the divergence position from the key's ordinal alone and never reads this
+// component, so a fixed placeholder is sufficient until that plumbing lands.
+const forkEntryKeyTurnID = "tui-fork-entry"
+
 func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-			Ref:          ref.String(),
-			SourceTurnID: strconv.Itoa(req.EntryIndex),
-			EditedInput:  req.EditedMessage,
-			Label:        req.Label,
+			Ref:           ref.String(),
+			SourceItemKey: transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: uint64(req.EntryIndex)}),
+			EditedInput:   req.EditedMessage,
+			Label:         req.Label,
 		})
 		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Evener.Ref}, err: err}
 	}

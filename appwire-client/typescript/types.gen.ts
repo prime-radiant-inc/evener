@@ -2863,17 +2863,6 @@ export interface ThreadForceStopParams {
 
 export interface ThreadForkParams {
   ref: string;
-  /**
-   * SourceTurnID names the divergence position as a 1-based index into the
-   * parent transcript's ENTRY list — every entry, not just the ones that
-   * opened a turn — optionally spelled with a "turn_" prefix. Despite the
-   * name it is NOT a turn id: the hub parses it with parseSourceTurnID and
-   * hands the number straight to agent.ForkSessionAtUserTurn. Send
-   * ThreadItem.TranscriptEntryIndex, never Turn.ID; the two coincide only on
-   * a transcript replayed from disk, because every live turn minter numbers
-   * turns off its own counter (kata 0jhh).
-   */
-  sourceTurnId: string;
   editedInput?: string;
   label?: string;
   modelProvider?: string;
@@ -2891,14 +2880,22 @@ export interface ThreadForkParams {
    * Aside forks a local evener thread at its tip instead of at a source turn:
    * the child is a complete copy of the parent session (same permissions and
    * config via the inherited session meta) and opens as a side thread. Aside
-   * is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
+   * is mutually exclusive with SourceItemKey, EditedInput, DeferInput, and
    * Label, and is only supported for local evener threads.
    */
   aside?: boolean;
   /**
    * SourceItemKey names the divergence position as an item key
-   * (transcriptindex.ItemKey), the versioned-history successor to
-   * SourceTurnID's entry-index addressing.
+   * (transcriptindex.ItemKey): a 1-based entry ordinal into the parent
+   * transcript's ENTRY list — every entry, not just the ones that opened a
+   * turn — plus the content part that opened the item. Despite embedding a
+   * turn id, it is NOT read as one: the hub parses it with
+   * parseSourceItemKey and hands the entry index straight to
+   * agent.ForkSessionAtUserTurn. Send ThreadItem.TranscriptKey, never
+   * Turn.ID; the entry ordinal a live turn's own id implies coincides with
+   * its transcript entry index only on a transcript replayed from disk,
+   * because every live turn minter numbers turns off its own counter (kata
+   * 0jhh). Required unless Aside.
    */
   sourceItemKey?: string;
 }
