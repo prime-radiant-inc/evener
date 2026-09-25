@@ -10,8 +10,7 @@ import type {
 	ActivityMember,
 	MobileConversation,
 	MobileTimelineItem,
-} from "../../mobile/src/conversation/project";
-import { systemEventVisible } from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -116,11 +115,24 @@ function activityIsCritical(
 	return item.state === "failed" || item.state === "running";
 }
 
-function activityMode(
+// How an activity row renders. This is a RENDERING hint only: which rows
+// exist at all is the shared projector's decision at the user's display
+// config, made once inside the store's seam (D24-6 retired this layer's own
+// config-driven row filtering — the projector subsumed it). What remains
+// here is the mode each surviving row renders in:
+//   - a summary-only row (the projector's intent entry; the operator's
+//     summary-only ruling) renders its summary line, nothing to expand;
+//   - a running or failed activity renders as attention: its summary line
+//     above an expandable body (tools carry the summary; reasoning rows do
+//     not — their body is the thought);
+//   - everything else renders in full.
+function presentationFor(
 	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-	config: TranscriptDisplayConfigV1,
-): ActivityPresentation | null {
-	if (activityIsCritical(item))
+): ActivityPresentation {
+	if (item.summaryOnly === true) {
+		return { mode: "intent", summary: actionSummary(item) };
+	}
+	if (activityIsCritical(item)) {
 		return {
 			mode: "critical",
 			...(item.family === "tool"
@@ -129,29 +141,13 @@ function activityMode(
 					}
 				: {}),
 		};
-	if (item.family === "unknown") return { mode: "full" };
-	const content =
-		config.content.kind === "preset"
-			? presetContent(config.content.level)
-			: config.content;
-	if (item.family === "reasoning")
-		return content.reasoning ? { mode: "full" } : null;
-	if (!item.detail.description?.trim() && content.toolCalls)
-		return { mode: "critical", summary: actionSummary(item) };
-	if (content.toolCalls) return { mode: "full" };
-	if (content.toolIntent)
-		return {
-			mode: "intent",
-			summary: actionSummary(item),
-		};
-	if (item.family === "tool" && !item.detail.description?.trim())
-		return { mode: "critical", summary: actionSummary(item) };
-	return null;
+	}
+	return FULL_PRESENTATION;
 }
 
-// Without transcript preferences nothing is hidden or summarised: every
-// activity shows in full until the hub's config arrives, or forever on a hub
-// that does not support it.
+// Without transcript preferences nothing is summarised: every activity shows
+// in full until the hub's config arrives, or forever on a hub that does not
+// support it.
 // One object stands under every activity id in that map, so it is readonly:
 // nothing may edit one row's presentation and move the rest with it.
 const FULL_PRESENTATION = { mode: "full" } as const;
@@ -166,6 +162,7 @@ function memberItem(
 		family: member.family,
 		state: member.state,
 		detail: member.detail,
+		...(member.summaryOnly ? { summaryOnly: member.summaryOnly } : {}),
 		...(member.transcriptKey ? { transcriptKey: member.transcriptKey } : {}),
 		...(member.position ? { position: member.position } : {}),
 	};
@@ -232,6 +229,12 @@ export function projectNativeTranscript(
 // and the trailing rows those came from are dropped. Both the configured path
 // and the no-config fallback emit through this, so the two cannot disagree
 // about adjacency; without a config every activity is simply shown in full.
+//
+// Every row the seam projected reaches the renderer: the shared projector
+// decided at the user's config which rows exist (D24-6), so this pass only
+// reshapes what survived — unrolling clustered members and seating
+// attachments beside the member that produced them — and computes each
+// activity's rendering mode.
 function projectTimeline(
 	source: MobileTimelineItem[],
 	config: TranscriptDisplayConfigV1 | null | undefined,
@@ -262,36 +265,22 @@ function projectTimeline(
 		if (item.kind === "activity" && item.members?.length) {
 			for (const member of item.members) {
 				const projected = memberItem(member);
-				const presentation = config
-					? activityMode(projected, config)
-					: FULL_PRESENTATION;
-				if (presentation) {
-					activityPresentation.set(projected.id, presentation);
-					projectedItems.push(projected);
-				}
+				activityPresentation.set(
+					projected.id,
+					config ? presentationFor(projected) : FULL_PRESENTATION,
+				);
+				projectedItems.push(projected);
 				// Attachments keep their source position even when that activity is hidden.
 				projectedItems.push(
 					...(attachmentsByKey.get(member.transcriptKey ?? member.id) ?? []),
 				);
 			}
 		} else if (item.kind === "activity") {
-			const presentation = config
-				? activityMode(item, config)
-				: FULL_PRESENTATION;
-			if (presentation) {
-				activityPresentation.set(item.id, presentation);
-				projectedItems.push(item);
-			}
-		} else if (
-			item.kind === "notice" &&
-			config &&
-			// The projector owns the event-kind vocabulary and its gate table,
-			// so native asks it (project.ts's systemEventVisible) rather than
-			// keeping a second classification. A steering notice carries no
-			// eventKind: the projector renders an unknown event, so it stays
-			// visible exactly as before.
-			!systemEventVisible(item.eventKind, item.exitCode, config)
-		) {
+			activityPresentation.set(
+				item.id,
+				config ? presentationFor(item) : FULL_PRESENTATION,
+			);
+			projectedItems.push(item);
 		} else if (
 			item.kind === "attachments" &&
 			item.sourceTranscriptKey &&

@@ -9,7 +9,7 @@ import {
   MAX_ITEM_BYTES,
   type MobileConversation,
   truncateText,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
@@ -33,7 +33,7 @@ export function pendingQuestions(
 }
 
 // The sheet's own rendered text, bounded the same as a timeline row
-// (mobile/src/conversation/project.ts). Shared by questionsIdentity below and
+// (the row module, projectedRows.ts). Shared by questionsIdentity below and
 // QuestionSheet.tsx's own display copy, so the identity and what a reader
 // actually sees are cut exactly the same way.
 export const boundQuestionText = (text: string) =>

@@ -16,7 +16,7 @@ import {
   type MobileConversation,
   type MobileTimelineItem,
   truncateText,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 import { truncateItem as storeTruncateItem } from "../../mobile/src/state/conversation";
 import {
   composeQuestionAnswers,

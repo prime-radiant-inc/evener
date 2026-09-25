@@ -16,7 +16,7 @@
 // summary line at compact levels; its full detail returns at
 // tools/activity/full.
 import { describe, expect, it } from "vitest";
-import type { Thread, ThreadItem, ThreadCapabilities, Turn } from "@evener/appwire-client";
+import type { Thread, ThreadItem, Turn } from "@evener/appwire-client";
 import {
 	hydrateThread,
 	makeTranscriptDisplayConfig,
@@ -26,7 +26,7 @@ import {
 import { projectConversation } from "./projectedRows";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
-const CAPS: ThreadCapabilities = {
+const CAPS = {
 	send: true,
 	steer: true,
 	interrupt: true,
@@ -126,10 +126,13 @@ describe("the seam projects the conversation at the user's content level", () =>
 			kind: "activity",
 			detail: { output: "auditing quietly" },
 		});
-		expect(rowById(rows, "r2")).toMatchObject({
-			kind: "activity",
-			detail: { output: "secret live thought" },
-		});
+		// The running thought is a live current item entry at full: same
+		// reasoning family as the settled thought, so the two cluster across
+		// the turn boundary and the live one rides as a member.
+		const r1 = rowById(rows, "r1");
+		expect(r1?.kind === "activity" && r1.members?.some(
+			(member) => member.id === "r2" && member.detail.output === "secret live thought",
+		)).toBe(true);
 		expect(rowById(rows, "c1")).toMatchObject({
 			kind: "activity",
 			detail: {

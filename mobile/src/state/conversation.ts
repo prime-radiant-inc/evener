@@ -28,6 +28,7 @@ import type {
 } from "@evener/appwire-client/state/mutation";
 import {
   applyNotification,
+  configFingerprint,
   copyItemTextPresence,
   foldWarningParams,
   isStaleCursorError,
@@ -53,6 +54,7 @@ import type {
   MutationReceipt,
   TurnModel,
   ThreadModel,
+  TranscriptDisplayConfigV1,
   WarningParams,
 } from "@evener/appwire-client";
 import type {
@@ -60,7 +62,7 @@ import type {
   BoundText,
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
 import {
   activityIdentity,
   attachmentSourceId,
@@ -77,15 +79,16 @@ import {
   timelineIdentities,
   truncateText,
   truncateItem as sharedTruncateItem,
-} from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
 // Re-exported where they have always been imported from: the bounds are the row
-// shape's, and project.ts owns that shape.
+// shape's, and the row module (mobile-native/src/projectedRows.ts, the D24-6
+// re-home) owns that shape.
 export {
   MAX_ITEM_BYTES,
   RETAINED_ITEM_CAP,
   TRUNCATION_MARKER,
   truncateText,
-} from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -141,6 +144,12 @@ export interface AcceptedConversationMutation {
 export interface ConversationStoreOptions {
   readonly mutationHubId?: string;
   readonly mutationSubmitter?: ConversationMutationSubmitter;
+  // The display config the projection opens at. The screen owns the config's
+  // source (the hub's transcriptDisplay settings); the store holds the value
+  // the projection runs at, and a later change reaches it through
+  // setDisplayConfig — the store is not recreated per config (its identity is
+  // the conversation binding).
+  readonly displayConfig?: TranscriptDisplayConfigV1 | null;
 }
 
 export type LoadOlderResult =
@@ -317,6 +326,13 @@ export interface ConversationState {
   readonly conversationGeneration: number;
 
   readonly conversation: MobileConversation | null;
+  // The display config the projection runs at (D24-5's content dimension,
+  // routed through this seam): null means the show-everything default. The
+  // rows are a projection of the model AT THIS CONFIG — which items exist at
+  // all is the shared projector's decision here — so a level change
+  // re-projects the conversation through the same display boundary
+  // (capAndTruncate) every other rebuild passes through.
+  readonly displayConfig: TranscriptDisplayConfigV1 | null;
   readonly olderCursor: string | null;
   readonly hasEarlierItems: boolean;
   readonly hasLaterItems: boolean;
@@ -351,6 +367,12 @@ export interface ConversationState {
   close(): void;
   applyNotification(n: AnyNotification): void;
   reset(): void;
+  // Sets the display config the projection runs at. A value-equal config is a
+  // no-op (the level is keyed by configFingerprint, so a fresh-but-equal
+  // object from the provider's per-publish resolve does not re-project); a
+  // changed one re-projects a live conversation at the new level, once,
+  // inside the store's display boundary.
+  setDisplayConfig(config: TranscriptDisplayConfigV1 | null): void;
 }
 
 // Required live state interface (F3): the production store always implements
@@ -1453,6 +1475,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     previous: MobileConversation | null,
     sameInstance: boolean,
     projected: MobileConversation,
+    config: TranscriptDisplayConfigV1 | undefined,
   ): MobileConversation {
     const activeId = projected.activeTurnId;
     if (
@@ -1501,10 +1524,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     const freshRows = projectTimeline(
       { ...projected, turns: projected.turns },
       combinedAsks,
+      config,
     );
     const preservedRows = projectTimeline(
       { ...projected, turns: [preservedTurn] },
       combinedAsks,
+      config,
     );
     return {
       ...projected,
@@ -2188,6 +2213,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       conversationGeneration: 0,
 
       conversation: null,
+      displayConfig: options.displayConfig ?? null,
       olderCursor: null,
       hasEarlierItems: false,
       hasLaterItems: false,
@@ -2200,6 +2226,35 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       pendingMutation: null,
       pendingMutations: null,
       lastAcceptedMutation: null,
+
+      setDisplayConfig(config) {
+        const current = get();
+        // The level is keyed by the config's VALUE: the provider resolves a
+        // fresh object per publish, and an equal config re-derives nothing.
+        if (
+          (current.displayConfig ?? null) === (config ?? null) ||
+          (current.displayConfig !== null &&
+            config !== null &&
+            configFingerprint(current.displayConfig) === configFingerprint(config))
+        ) {
+          return;
+        }
+        // A live conversation re-projects at the new level through the same
+        // display boundary every other rebuild passes through — once, inside
+        // capAndTruncate (seating, cap, truncation) — so the level change is
+        // on screen with no frame and no screen-level re-projection.
+        const conversation = current.conversation;
+        if (conversation === null) {
+          set({ displayConfig: config });
+          return;
+        }
+        set({
+          displayConfig: config,
+          conversation: capAndTruncate(
+            projectConversation(conversation, undefined, config ?? undefined),
+          ),
+        });
+      },
 
       async open(service, ref) {
         suspendedService = null;
@@ -2622,10 +2677,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // The live-turn preserve keeps the working set the snapshot's
           // bounded window omits (round 28); its rows are the model's
           // projection, re-derived below.
+          // The user's display config, read after the read's await: the rows
+          // below project at it (which rows exist at all is the projector's
+          // decision at that config), and every projection this publish makes
+          // — the preserve, the seated window, the committed rows — shares
+          // the one value so they cannot disagree.
+          const projectConfig = get().displayConfig ?? undefined;
           const merged = withLiveActiveTurn(
             currentConvForMerge,
             sameInstance,
             conversation,
+            projectConfig,
           );
           // The page's cursor is the newer one when page history is kept
           // (turn ownership is the gate — a page whose rows were all deduped
@@ -3354,7 +3416,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // survives the commit even when the bound sheds the turn its
             // anchor row came from.
             const rehydrateSeated = seatTransientWarnings(
-              projectTimeline({ ...merged, turns: mergedTurns }),
+              projectTimeline(
+                { ...merged, turns: mergedTurns },
+                undefined,
+                projectConfig,
+              ),
             );
             mergedTurns = boundRetainedTurns(
               mergedTurns,
@@ -3376,6 +3442,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // projection of the merged model — the snapshot's own turns plus
           // the page history the model still carries, one projector for a
           // frame and for a snapshot.
+          // The projection runs at the user's display config, read after the
+          // read's await: which rows exist at all is the projector's decision
+          // at that config, and the level is read at merge time so a change
+          // that landed mid-read projects here (setDisplayConfig's own
+          // re-projection already republished the old level; this publish
+          // supersedes it with the fresh read).
           // RoboRev local round 1 (Medium): on the history-preserving path
           // the committed rows are the SAME seated projection the
           // retained-turn bound trimmed against — the projector's input is
@@ -3390,7 +3462,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
                   ...merged,
                   turns: mergedTurns,
                   olderCursor: wireOlderCursor,
-                })
+                }, undefined, projectConfig)
               : {
                   ...merged,
                   turns: mergedTurns,
@@ -3649,8 +3721,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               ...pageMerge.model,
               turns: strippedPageTurns,
             };
+            // The page merge projects at the user's display config, exactly
+            // as the rehydrate and frame paths do: one projector, one level.
             const mergedInput = seatTransientWarnings(
-              projectTimeline(mergedModel),
+              projectTimeline(
+                mergedModel,
+                undefined,
+                get().displayConfig ?? undefined,
+              ),
             );
             // F8 under D23d: the pre-cap merged projection can overflow
             // with rows the entry window already discarded — an in-window
@@ -4352,7 +4430,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             changesRows(state.conversation, applied) ||
             unplacedWarningNotice !== null
           ) {
-            const projected = projectConversation(applied);
+            // The frame's rows project at the user's display config — the
+            // same level every other publish projects at.
+            const projected = projectConversation(
+              applied,
+              undefined,
+              get().displayConfig ?? undefined,
+            );
             const bounded = capAndTruncate(projected);
             // #1919 follow-up: a row-changing frame can repopulate a
             // compacted turn's entire payload (a completion's full view)

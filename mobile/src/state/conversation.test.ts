@@ -31,9 +31,9 @@ import type {
   ActivityMember,
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/project";
-import { projectConversation } from "../conversation/project";
-import * as project from "../conversation/project";
+} from "../../../mobile-native/src/projectedRows";
+import { projectConversation } from "../../../mobile-native/src/projectedRows";
+import * as project from "../../../mobile-native/src/projectedRows";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {

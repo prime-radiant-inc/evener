@@ -1,4 +1,4 @@
-import type { MobileTimelineItem } from "../../mobile/src/conversation/project";
+import type { MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 

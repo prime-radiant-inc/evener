@@ -16,7 +16,7 @@ import {
 	MAX_ITEM_BYTES,
 	truncateText,
 	type MobileTimelineItem,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 import { TimelineItem } from "./TimelineItem";
 import { nativeModuleMock, render } from "./renderNative.testkit";
 

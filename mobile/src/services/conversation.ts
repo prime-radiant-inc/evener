@@ -30,6 +30,7 @@ import type {
   ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  TranscriptDisplayConfigV1,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
   TurnPromoteQueuedAsSteerResponse,
@@ -38,14 +39,14 @@ import {
   hydrateThread,
   isStaleCursorError,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../conversation/project";
-import { projectConversation } from "../conversation/project";
+import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
+import { projectConversation } from "../../../mobile-native/src/projectedRows";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";
 
 // The bounded read page limit, centralized so every caller uses the same
 // constant. The retained item cap lives with the shared projection helpers
-// (conversation/project.ts's RETAINED_ITEM_CAP); nothing here needs its own
+// (the row module's RETAINED_ITEM_CAP, mobile-native/src/projectedRows.ts); nothing here needs its own
 // copy.
 export const READ_ITEM_LIMIT = 40;
 
@@ -79,6 +80,13 @@ export interface ConversationServiceOptions<ReadLease = unknown> {
   readonly idFactory?: IdFactory;
   // The clock hydrateThread stamps the model with; tests inject a fixed one.
   readonly now?: () => number;
+  // The transcript display config the projection runs at (D24-5's content
+  // dimension, routed through the seam): read at projection time, so a read
+  // that starts under one level and lands after the user changed it projects
+  // at the level the store will republish anyway. Null/undefined means the
+  // show-everything default — a hub that does not support the settings, or a
+  // host that has not supplied the resolver.
+  readonly resolveDisplayConfig?: () => TranscriptDisplayConfigV1 | null;
   // Native wires these to its durable mutation host: onReadStart leases the
   // target just before the raw authoritative read, and onReadComplete hands
   // the same raw response back so the runtime can settle its dispatch gate
@@ -568,6 +576,11 @@ export function createConversationService<ReadLease = unknown>(
   ConversationRecoveryActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const now = options.now ?? Date.now;
+	// The display config this read's projection runs at, read at projection
+	// time (see the option's own comment). A null/undefined answer keeps the
+	// show-everything default.
+	const displayConfig = (): TranscriptDisplayConfigV1 | undefined =>
+		options.resolveDisplayConfig?.() ?? undefined;
   const activityService = createActivityService();
 
   // Current thread identity and capabilities, set by open() / readProjection().
@@ -717,10 +730,14 @@ export function createConversationService<ReadLease = unknown>(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
-      const conversation = projectConversation({
-        ...hydrateThread({ ...response, thread }, threadRef, now()),
-        instanceId: readInstanceId,
-      });
+      const conversation = projectConversation(
+        {
+          ...hydrateThread({ ...response, thread }, threadRef, now()),
+          instanceId: readInstanceId,
+        },
+        undefined,
+        displayConfig(),
+      );
       const caps = extractCapabilities(thread.evener.capabilities);
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
@@ -773,10 +790,14 @@ export function createConversationService<ReadLease = unknown>(
           response.thread.evener.instanceId ?? response.thread.id,
           "thread instance id",
         );
-        const conversation = projectConversation({
-          ...hydrateThread({ ...response, thread }, threadRef, now()),
-          instanceId: readInstanceId,
-        });
+        const conversation = projectConversation(
+          {
+            ...hydrateThread({ ...response, thread }, threadRef, now()),
+            instanceId: readInstanceId,
+          },
+          undefined,
+          displayConfig(),
+        );
         const activity = activityService.projectActivity(thread);
         const olderCursor = response.olderCursor ?? null;
         const caps = extractCapabilities(thread.evener.capabilities);
@@ -1046,10 +1067,14 @@ export function createConversationService<ReadLease = unknown>(
         thread.evener.instanceId,
         "replacement instance id",
       );
-      const conversation = projectConversation({
-        ...hydrateThread({ thread }, response.ref, now()),
-        instanceId: replacementInstance,
-      });
+      const conversation = projectConversation(
+        {
+          ...hydrateThread({ thread }, response.ref, now()),
+          instanceId: replacementInstance,
+        },
+        undefined,
+        displayConfig(),
+      );
       const activity = activityService.projectActivity(thread);
       const caps = extractCapabilities(thread.evener.capabilities);
       modelScope = { harness: thread.source, cwd: thread.cwd };
