@@ -855,3 +855,39 @@ func TestStoppableCommandTerminatesAndWaits(t *testing.T) {
 		t.Fatalf("Wait returned before the command finished its cleanup: %v", err)
 	}
 }
+
+// A spec's environment overrides the gate's own for the guard, and the rest of
+// the gate's environment (PATH above all) still reaches it: containment rests
+// on that merge, not on what the spec lists.
+func TestExecGuardLauncherSpecEnvOverridesTheAmbientEnv(t *testing.T) {
+	t.Setenv("HOME", "/ambient-home")
+	proc, logPath := startExecGuard(t, guardSpec{
+		argv: []string{"sh", "-c", `echo "home=$HOME"; echo "path=$PATH"`},
+		dir:  ".",
+		env:  []string{"HOME=/guard-private-home"},
+	})
+	if status := proc.Wait(); status != 0 {
+		t.Fatalf("status = %d", status)
+	}
+	out := readGuardLog(t, logPath)
+	if !strings.Contains(out, "home=/guard-private-home\n") {
+		t.Errorf("the guard did not get the spec's HOME:\n%s", out)
+	}
+	if !strings.Contains(out, "path="+os.Getenv("PATH")+"\n") {
+		t.Errorf("the guard lost the gate's PATH:\n%s", out)
+	}
+}
+
+// Terminate after the guard has been reaped signals nothing: os.Process
+// signals through a pidfd on Linux and refuses a reaped process, so a pid the
+// OS has since reused is never hit.
+func TestExecGuardTerminateAfterExitSignalsNothing(t *testing.T) {
+	proc, _ := startExecGuard(t, guardSpec{argv: []string{"true"}, dir: "."})
+	if status := proc.Wait(); status != 0 {
+		t.Fatalf("status = %d", status)
+	}
+	proc.Terminate()
+	if err := proc.(execGuard).cmd.Process.Signal(syscall.SIGTERM); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("signalling a reaped guard: err = %v, want os.ErrProcessDone", err)
+	}
+}
