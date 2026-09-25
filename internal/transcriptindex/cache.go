@@ -16,6 +16,19 @@ const DefaultCacheCapacity = 64
 // nil in production.
 var cacheOpenHook func(path string)
 
+// cacheOpenedHook, when set, runs synchronously right after Open returns,
+// before open() re-takes the cache lock to decide whether to publish the
+// result. Test seam only, for forcing a Close into that window; nil in
+// production.
+var cacheOpenedHook func(path string)
+
+// cachePublishedHook, when set, runs synchronously right after open()
+// unlocks having already decided, under the lock, whether to publish. Test
+// seam only, for forcing a Close into the window a past bug read c.closed a
+// second time, unsynchronized, to make the same decision again; nil in
+// production.
+var cachePublishedHook func(path string)
+
 // Cache holds up to capacity open indexes, least recently used first out. A
 // handle currently acquired is never closed; Release returns it to the pool
 // of idle handles the cache may evict from.
@@ -90,32 +103,46 @@ func (c *Cache) Acquire(path string) (*Index, error) {
 // open runs path's miss outside the cache lock and publishes the result: on
 // success e becomes usable, with one reference for this call; on failure, or
 // if the cache closed while this ran, e is removed so the next Acquire
-// retries. Either way every Acquire waiting on e.ready wakes once this
-// returns.
+// retries and this call errors. Whether to publish is one decision made
+// under the lock, so a Close that lands in the window between Open
+// returning and this re-taking the lock is never read twice with different
+// answers: either it is not yet visible and this publishes normally, or it
+// is, and this call sees exactly what every other Acquire from here on
+// sees. Either way every Acquire waiting on e.ready wakes once this returns.
 func (c *Cache) open(path string, e *cacheEntry) (*Index, error) {
 	if cacheOpenHook != nil {
 		cacheOpenHook(path)
 	}
 	x, err := Open(path, DirFor(path))
+	if cacheOpenedHook != nil {
+		cacheOpenedHook(path)
+	}
 
 	c.mu.Lock()
 	ready := e.ready
 	e.ready = nil
+	published := err == nil && !c.closed
 	switch {
-	case err != nil:
-		delete(c.entries, path)
-	case c.closed:
-		delete(c.entries, path)
-	default:
+	case published:
 		e.x, e.refs = x, 1
+	default:
+		delete(c.entries, path)
 	}
 	c.mu.Unlock()
 	close(ready)
+	if cachePublishedHook != nil {
+		// Test seam only: exercises the window where a bug once re-read
+		// c.closed here, unsynchronized and after publishing had already
+		// decided under the lock, and so could still discard an already
+		// published handle. published is a local copy of that one locked
+		// decision, so nothing read after this point can change the answer.
+		cachePublishedHook(path)
+	}
 
 	if err != nil {
 		return nil, err
 	}
-	if c.closed {
+	if !published {
 		_ = x.Close()
 		return nil, errors.New("transcript index cache is closed")
 	}

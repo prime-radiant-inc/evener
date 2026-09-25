@@ -305,6 +305,123 @@ func TestCacheConcurrentAcquireOfOnePathOpensOnce(t *testing.T) {
 	c.Release(handles[1])
 }
 
+// TestCacheCloseBetweenOpenAndPublishLeavesNoEntryAndErrorsWaiters forces
+// Close to run in the window between a miss's Open call returning and open()
+// re-taking the lock to publish it, using the cacheOpenedHook seam. The
+// contract: a lost race with Close makes Acquire error (the handle Open
+// opened is closed, not handed to the caller), the cache holds no entry for
+// the path afterward, and a concurrent waiter on the same path also errors.
+func TestCacheCloseBetweenOpenAndPublishLeavesNoEntryAndErrorsWaiters(t *testing.T) {
+	paths := openPaths(t, 1)
+	c := NewCache(4)
+
+	proceed := make(chan struct{})
+	oldOpen := cacheOpenHook
+	cacheOpenHook = func(path string) {
+		if path == paths[0] {
+			<-proceed // park inside Open, with the pending entry installed
+		}
+	}
+	defer func() { cacheOpenHook = oldOpen }()
+
+	closed := make(chan struct{})
+	oldOpened := cacheOpenedHook
+	cacheOpenedHook = func(path string) {
+		if path != paths[0] {
+			return
+		}
+		// Open just returned; Close runs here, before open() re-takes the
+		// lock to publish. A successful Close proves the race is possible
+		// only if open() has not published yet, which this ordering
+		// guarantees.
+		if err := c.Close(); err != nil {
+			t.Error(err)
+		}
+		close(closed)
+	}
+	defer func() { cacheOpenedHook = oldOpened }()
+
+	aDone := make(chan error, 1)
+	go func() {
+		x, err := c.Acquire(paths[0])
+		if err == nil {
+			c.Release(x)
+		}
+		aDone <- err
+	}()
+	// b waits on a's pending entry: it must see the same outcome as a, via
+	// the wait-and-recheck path, not by opening a second time.
+	bDone := make(chan error, 1)
+	go func() {
+		x, err := c.Acquire(paths[0])
+		if err == nil {
+			c.Release(x)
+		}
+		bDone <- err
+	}()
+
+	close(proceed) // let a's Open return; cacheOpenedHook races Close in
+	<-closed
+
+	if err := <-aDone; err == nil {
+		t.Fatal("Acquire that lost the race with a concurrent Close did not error")
+	}
+	if err := <-bDone; err == nil {
+		t.Fatal("a waiter on the same path did not see the close")
+	}
+	if got := c.refCount(paths[0]); got != 0 {
+		t.Fatalf("refcount = %d after Close raced the publish, want 0 (no entry left behind)", got)
+	}
+}
+
+// TestCachePublishDecisionIsMadeOnceUnderTheLock targets the exact window a
+// past bug lived in: open() had already decided, under the lock, to publish
+// a successful open (the entry is in the map with refs 1, e.x set), then
+// unlocked and read c.closed a second time, unsynchronized, to decide
+// whether to hand the caller the handle or close it. A Close landing in that
+// window made the second read see true while the first (locked) read had
+// seen false, so open() closed and discarded a handle it had already
+// published into the map: a poisoned entry, permanently refs==1 over a
+// closed Index, and a data race on c.closed itself. cachePublishedHook fires
+// exactly there. The fix collapses the decision to one locked read, kept in
+// a local (published), so nothing read afterward can change the answer: the
+// contract is that a handle already published is handed to its caller
+// intact, and behaves like any other acquired handle in a since-closed
+// cache — usable until Released, closed then.
+func TestCachePublishDecisionIsMadeOnceUnderTheLock(t *testing.T) {
+	paths := openPaths(t, 1)
+	c := NewCache(4)
+
+	old := cachePublishedHook
+	cachePublishedHook = func(path string) {
+		if path == paths[0] {
+			if err := c.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	defer func() { cachePublishedHook = old }()
+
+	x, err := c.Acquire(paths[0])
+	if err != nil {
+		t.Fatalf("Acquire lost a race with Close that landed after it had already published under the lock: %v", err)
+	}
+	if isClosed(x) {
+		t.Fatal("the published handle was closed despite already being handed to its caller")
+	}
+	if got := c.refCount(paths[0]); got != 1 {
+		t.Fatalf("refcount = %d for the published handle, want 1", got)
+	}
+	if _, err := c.Acquire(paths[0]); err == nil {
+		t.Fatal("Acquire after Close succeeded")
+	}
+
+	c.Release(x)
+	if !isClosed(x) {
+		t.Fatal("releasing the last reference to a handle published just before Close did not close it")
+	}
+}
+
 func TestCacheConcurrentAcquireRelease(t *testing.T) {
 	paths := openPaths(t, 6)
 	c := NewCache(3)
