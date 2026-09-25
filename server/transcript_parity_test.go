@@ -668,65 +668,30 @@ var parityAfterRestart = parityTable()
 // turn completes once. The parity harness compares the restored daemon's
 // live view with the file, which must agree.
 //
-// BLOCKED: simulating the crash from outside package agent needs the
-// process to keep running past the point of no completion (nothing may call
-// completeExecution), which this package can only reach by leaving the
-// original session's goroutine blocked in the scripted provider forever --
-// so its transcript writer never releases the state dir's lock, and a
-// restore over the same path cannot open it. Restoring from a *copy* of the
-// state dir instead trips absolute-path identity checks the durable records
-// carry: first the scratch retention manifest's owner (StateDir +
-// RootSessionID, fixed by a byte-for-byte rewrite of the copied files), then
-// a scratch allocation's own retention pin, whose identity is stored
-// outside the state dir (in the sandbox directory itself, e.g.
-// /tmp/evener-sandbox-<n>) and was not part of the copy. Patching that too
-// found a real external location, not a bug in a test seam; there is no
-// bound on how many more such layers exist, and guessing at each is not
-// testing the reclaim contract, it is reverse-engineering the sandbox
-// package's persistence format from the outside.
-//
-// The reclaim mechanism itself (claim -> beginExecution -> acceptUserInput,
-// crash, restore, TURN_REOPEN, one completion) is already covered by
-// agent.TestAReclaimedTurnReopensAndCompletesOnce, which can reach the
-// exact "no completion recorded" state because it is in package agent and
-// calls the unexported claimClientMutationStart/beginExecution steps
-// directly instead of running the round loop. Getting this parity check to
-// zero divergences needs either an exported, agent-package test seam for
-// that exact sequence (so a package-server test can drive it without a
-// live round to interrupt), or a way to restore over the identical state
-// dir path while the crashed session's own goroutine stays parked -- both
-// are design decisions for the agent package, not this task's to invent.
+// The crash is simulated through agent.Session's
+// SimulateCrashMidExecutionForTest, a small exported test-only seam added
+// for this: it runs exactly the claim -> beginExecution -> acceptUserInput
+// sequence agent.TestAReclaimedTurnReopensAndCompletesOnce drives with
+// unexported methods from inside package agent, then returns without
+// running the turn loop, leaving the transcript exactly as a real crash
+// would: USER_INPUT recorded, no completion. Closing the session normally
+// afterward releases its transcript writer's lock, so a restore over the
+// identical state dir path opens cleanly -- no copied state dir, and none of
+// the absolute-path identity checks a copy would trip.
 func TestTranscriptParityAcrossACrashAndReclaimedTurn(t *testing.T) {
-	t.Skip("BLOCKED: needs an agent-package seam to simulate a crashed client-mutation execution from outside the package -- see the doc comment above")
-	sess, script, workDir, stateDir := newScriptedSession(t)
-	crashCtx, cancelCrash := context.WithCancel(context.Background())
-	t.Cleanup(cancelCrash)
-	script.script(func(llm.Request) (llm.Response, error) {
-		<-crashCtx.Done()
-		return llm.Response{}, crashCtx.Err()
-	})
+	sess, _, workDir, stateDir := newScriptedSession(t)
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: "crash-start", ExpectedInstanceID: sess.ID(),
 		Input: []appwire.InputItem{{Type: "text", Text: "crash before completion"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	go func() { _, _, _ = sess.ProcessClientMutationStart(crashCtx, nil) }()
-	// Wait for the provider call so the USER_INPUT entry (recorded before the
-	// call) is on disk, then copy the state dir: a crash leaves exactly these
-	// bytes, with no completion entry. cancelCrash (deferred) unblocks the
-	// abandoned goroutine at test end; nothing further depends on its outcome.
-	waitForProviderCall(t, script)
-	crashDir := t.TempDir()
-	copyStateDir(t, stateDir, crashDir)
-	// Durable records under stateDir embed its absolute path (the scratch
-	// retention manifest's owner). The copy lives at a new path only because
-	// a live writer still holds the original's lock in this test process; a
-	// real crash restarts at the same path, so every such reference is
-	// rewritten to match, exactly as if crashDir were that path.
-	rewriteStateDirReferences(t, crashDir, stateDir, crashDir)
+	if _, err := sess.SimulateCrashMidExecutionForTest(); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(crashDir, sess.ID())
+	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,14 +700,14 @@ func TestTranscriptParityAcrossACrashAndReclaimedTurn(t *testing.T) {
 	client.Register(restoredScript)
 	restoredScript.script(step(parityCommunicate("comm-reclaim", "Recovered from the crash.", true)))
 	restored, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(workDir), meta, agent.RestoreSessionConfig{
-		StateDir: crashDir,
+		StateDir: stateDir,
 		LLMSleep: noSleep,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	restored.SetClientMutationStartWakeFunc(func() {})
-	ps := bridgeParitySession(t, restored, crashDir)
+	ps := bridgeParitySession(t, restored, stateDir)
 	t.Cleanup(func() { ps.close(t) })
 	if _, _, err := restored.ProcessClientMutationStart(context.Background(), nil); err != nil {
 		t.Fatal(err)
@@ -760,79 +725,6 @@ func TestTranscriptParityAcrossACrashAndReclaimedTurn(t *testing.T) {
 		t.Fatalf("the restored transcript has %d TURN_REOPEN markers, want 1", reopens)
 	}
 	assertParity(t, "crash and reclaim", ps, parityCrashAndReclaim)
-}
-
-// waitForProviderCall blocks until script's Complete has been invoked at
-// least once (its remaining count drops), so a caller knows the entries the
-// call was made from are already recorded -- the append happens before the
-// provider is asked.
-func waitForProviderCall(t *testing.T, script *parityProvider) {
-	t.Helper()
-	deadline := time.After(20 * time.Second)
-	for {
-		script.mu.Lock()
-		called := script.calls
-		script.mu.Unlock()
-		if called > 0 {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for the scripted provider to be called")
-		case <-time.After(time.Millisecond):
-		}
-	}
-}
-
-// rewriteStateDirReferences replaces every occurrence of oldDir with newDir
-// in every regular file under dir, byte for byte: state-dir paths embedded
-// in durable JSON records (the scratch retention manifest's owner) after
-// copyStateDir moved them to a new path.
-func rewriteStateDirReferences(t *testing.T, dir, oldDir, newDir string) {
-	t.Helper()
-	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		replaced := bytes.ReplaceAll(data, []byte(oldDir), []byte(newDir))
-		if bytes.Equal(replaced, data) {
-			return nil
-		}
-		return os.WriteFile(path, replaced, 0o600)
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// copyStateDir copies every regular file under from into the matching path
-// under to, as a crash leaves them: bytes already flushed to disk, nothing
-// in flight.
-func copyStateDir(t *testing.T, from, to string) {
-	t.Helper()
-	if err := filepath.WalkDir(from, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(from, path)
-		if err != nil {
-			return err
-		}
-		dest := filepath.Join(to, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0o755)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(dest, data, 0o600)
-	}); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // parityCrashAndReclaim lists the divergences for the crash-and-reclaim

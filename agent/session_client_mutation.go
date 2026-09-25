@@ -670,6 +670,32 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	return claimed, claimed.ClientMutationID != "", nil
 }
 
+// SimulateCrashMidExecutionForTest claims the pending client-mutation start,
+// begins its execution and records its USER_INPUT entry, then returns
+// without running the turn loop -- exactly the state a real crash leaves on
+// disk: an open execution whose last entry is USER_INPUT, with no completion
+// recorded. A caller outside package agent has no other way to reach that
+// exact state: the turn loop that would normally follow runs synchronously to
+// completion, and parking it mid-run (blocking a scripted provider call
+// forever) leaves the session's transcript writer holding its file lock, so a
+// restore over the same path cannot open it. Close the session normally
+// afterward and restore over its own transcript to drive the reclaim path.
+// Test-only seam; not called in production.
+func (s *Session) SimulateCrashMidExecutionForTest() (turnID string, err error) {
+	claimed, ok, err := s.claimClientMutationStart()
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", errors.New("no client-mutation start is pending to claim")
+	}
+	s.beginExecution(claimed.StableTurnID)
+	if err := s.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, true); err != nil {
+		return "", err
+	}
+	return claimed.StableTurnID, nil
+}
+
 // clientMutationStartSequence parses the reserved turn sequence out of
 // appwire.ClientMutationTurnID's "turn_m<N>" spelling, so accepted starts can
 // be claimed in the order they were reserved. It reports false for any id that
