@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 
@@ -149,7 +150,8 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 	}
 
 	selectedRanges := intersectItemRanges(ranges, start, end)
-	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project)
+	tail := end == total
+	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project, tail)
 	if err != nil {
 		if !isContextError(err) {
 			c.invalidate(path)
@@ -247,12 +249,38 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 	return selected
 }
 
-func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
+func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector, tail bool) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0
 	var file *os.File
 	var err error
+	// Thread one ToolCallRegistry across all selected ranges, matching the
+	// full read's single-registry threading. CommRawArgs seeded by an
+	// assistant communicate call in one group must reach its paired result
+	// turn in a later group (e.g. across a standalone HOOK_COMPLETED turn).
+	reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
+	// Seed the registry from the first selected group's StartsGroup record.
+	// The persisted CommRawArgs/LastAssistantText carry the unpaired
+	// communicate bytes and last assistant text from all preceding groups,
+	// matching the full read's single-registry threading without replaying
+	// the prefix.
+	firstGroupStart := -1
 	for _, itemRange := range ranges {
+		if itemRange.prelude {
+			continue
+		}
+		if itemRange.group != nil && firstGroupStart < 0 {
+			firstGroupStart = itemRange.group.start
+		}
+	}
+	if firstGroupStart >= 0 {
+		startRecord := index.recordAt(firstGroupStart)
+		if len(startRecord.CommRawArgs) > 0 {
+			reg.CommRawArgs = maps.Clone(startRecord.CommRawArgs)
+		}
+		reg.LastAssistantText = startRecord.LastAssistantText
+	}
+	for ri, itemRange := range ranges {
 		if err := ctx.Err(); err != nil {
 			if file != nil {
 				_ = file.Close()
@@ -303,10 +331,6 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		// call id — the same shape the full grouped read produces.
 		var items []appwire.ThreadItem
 		var entries []schema.Turn
-		// Shared per-group registry: CommRawArgs and LastAssistantText persist
-		// across records so the result turn receives the assistant turn's
-		// deferred communicate bytes (parity with the full read).
-		reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
 		for i := group.start; i < group.end; i++ {
 			if err := ctx.Err(); err != nil {
 				_ = file.Close()
@@ -335,13 +359,14 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 		}
-		// Flush unpaired communicates: the group's records ended with a
-		// pending communicate call whose CommRawArgs were never consumed by a
-		// paired result turn. Render each as an agentMessage, matching the
-		// full-read path's FlushUnpairedCommunicates and the turn-window
-		// path's projectIndexedGroup flush. Without this, the bounded
-		// item-window read silently drops unpaired communicates.
-		items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
+		// Flush unpaired communicates only at the tail of the read,
+		// matching the full read's FlushUnpairedCommunicates. A
+		// middle-window read's unpaired communicates may be paired by a
+		// result turn outside the window; flushing them would render a
+		// spurious agentMessage.
+		if tail && ri == len(ranges)-1 {
+			items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
+		}
 		merged := mergeGroupedItems(items)
 		if err := ctx.Err(); err != nil {
 			_ = file.Close()
