@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -39,9 +40,36 @@ func TestRestoredSeedIgnoresTranscriptOnlyEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := appTurnProjectionFromEntries(header, entries(schematest.InterleaveTranscriptOnly(plain)))
+	interleaved := entries(schematest.InterleaveTranscriptOnly(plain))
+	got, err := appTurnProjectionFromEntries(header, interleaved)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The live turn-id floor is every persisted entry, transcript-only ones
+	// included: the next live turn's id must not collide with, or fall short
+	// of, an entry index the file already holds.
+	if got.persistedEntries != len(interleaved) {
+		t.Fatalf("persisted entries = %d, want all %d", got.persistedEntries, len(interleaved))
+	}
+	path := filepath.Join(t.TempDir(), "s.transcript.jsonl")
+	w, err := transcript.NewWriterNoSync(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range interleaved {
+		if _, err := w.Record(entry.Turn, transcript.RecordOptions{Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fromFile, err := appTurnProjectionFromTranscriptFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromFile.persistedEntries != len(interleaved) {
+		t.Fatalf("file persisted entries = %d, want all %d", fromFile.persistedEntries, len(interleaved))
 	}
 	if got.nextEntry != want.nextEntry || len(got.turns) != len(want.turns) {
 		t.Fatalf("seed = %d turns, next entry %d; want %d turns, next entry %d", len(got.turns), got.nextEntry, len(want.turns), want.nextEntry)
