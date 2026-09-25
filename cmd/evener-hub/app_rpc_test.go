@@ -4235,6 +4235,36 @@ func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire
 	}
 }
 
+// expectRelayGaveUpNotice asserts the overlay notice the relay publishes when
+// it gives up on a running turn: an error notice in that turn naming why, so
+// the reader sees the cause rather than a turn that silently stopped.
+func expectRelayGaveUpNotice(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID, wantCause string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyOverlayUpserted {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyOverlayUpserted)
+		}
+		var params appwire.OverlayUpsertedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal overlay/upserted: %v", err)
+		}
+		notice := params.Item
+		if params.ThreadID != wantThreadID || params.Ref != wantRef {
+			t.Fatalf("notice target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
+		}
+		if notice.Kind != appwire.OverlayNotice || notice.TurnID != wantTurnID || notice.Item.EventKind != appwire.ThreadItemEventKindError ||
+			notice.Anchor == nil || *notice.Anchor != (appwire.ThreadItemPosition{Item: appwire.NoticeAnchorItem}) {
+			t.Fatalf("notice = %+v, want an anchored error notice in turn %s", notice, wantTurnID)
+		}
+		if !strings.Contains(notice.Item.Text, wantCause) {
+			t.Fatalf("notice text=%q, want it to name %q", notice.Item.Text, wantCause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the give-up notice")
+	}
+}
+
 // relayGaveUpCapabilities decides the action set the synthesized idle status
 // carries: the hub's past-session set for a local thread it can resume, and
 // nothing for a non-local source, whose own masked set must stand (absent
@@ -4347,6 +4377,7 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
 	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
+	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, "connection refused (3)")
 	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	// The cause is recorded in the hub's log: the target, how many re-dials
 	// failed, and the last one's error.

@@ -265,6 +265,27 @@ func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appw
 // every route the relay serves (a read-only child alias shares the root's
 // relay session), and each subscriber acts on the ref it names, so each copy
 // names the subscriber's own.
+// relayGaveUpNotice is the error notice a relay publishes when it gives up
+// on turnID's source: the cause of the last failed re-dial.
+func relayGaveUpNotice(turnID string, cause error) appwire.OverlayItem {
+	const key = "notice:hub:relay-gave-up"
+	return appwire.OverlayItem{
+		Key:    key,
+		Kind:   appwire.OverlayNotice,
+		TurnID: turnID,
+		Anchor: &appwire.ThreadItemPosition{Item: appwire.NoticeAnchorItem},
+		Item: appwire.ThreadItem{
+			Type:        "systemMessage",
+			ID:          key,
+			TurnID:      turnID,
+			Description: "Hub lost the connection to the session",
+			Text:        "Hub lost the connection to the session: " + cause.Error(),
+			Status:      appwire.TurnStatusCompleted,
+			EventKind:   appwire.ThreadItemEventKindError,
+		},
+	}
+}
+
 func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
 	params, err := json.Marshal(appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref})
 	if err != nil {
@@ -1775,6 +1796,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// mid-turn (spinner visibly stalled) or between turns (nothing on
 			// screen is waiting, so nothing needs to be told).
 			var turnRunning bool
+			var runningTurnID string
 			var consecutiveFailures int
 			trackRunningTurn := func(notification appwire.Notification) {
 				if notification.Method != appwire.NotifyThreadStatusChanged {
@@ -1783,15 +1805,26 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				var params appwire.ThreadStatusChangedParams
 				if json.Unmarshal(notification.Params, &params) == nil {
 					turnRunning = params.Status.Type == appwire.ThreadStatusActive
+					runningTurnID = params.ActiveTurnID
 				}
 			}
-			// giveUpOnRunningTurn tells the reader what the dead daemon can no
-			// longer say: nothing runs the turn any more. It publishes the idle
-			// status, which owns the session status, and a resync, so the client
-			// re-reads the transcript: the turn the daemon never completed reads
-			// as an open turn with nothing running it. It fires at most once per
-			// stall: clearing turnRunning makes every later call in the same
-			// stall a no-op, so continued backoff never re-broadcasts the pair.
+			// giveUpOnRunningTurn tells the reader what the unreachable source can
+			// no longer say: nothing runs the turn any more, and why. It publishes
+			// the idle status, which owns the session status; an error notice in
+			// the running turn naming the last re-dial failure; and a resync, so
+			// the client re-reads: the turn never completed reads as an open turn
+			// with nothing running it. It fires at most once per stall: clearing
+			// turnRunning makes every later call in the same stall a no-op, so
+			// continued backoff never re-broadcasts them.
+			//
+			// The notice is published live and nowhere else. This loop serves
+			// only sources without an atomic relay session (remote hubs and other
+			// federated sources; a local daemon's death takes the relay session's
+			// DaemonGoneResync path instead), and the client's re-read goes to the
+			// same unreachable source and fails, which leaves its history and
+			// overlay, the notice included, as they were. The hub knows no entry
+			// to anchor the notice after, so it anchors at the start of history
+			// and names the running turn.
 			//
 			// Both frames name the relay's target. Without the status frame the
 			// client would keep the session active with Stop and Steer still
@@ -1810,6 +1843,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					Ref:          subscribeParams.Ref,
 					Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 					Capabilities: relayGaveUpCapabilities(cfg, relayKey, thread),
+				})
+				server.Broadcast(relayKey, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+					ThreadID: threadID,
+					Ref:      subscribeParams.Ref,
+					Item:     relayGaveUpNotice(runningTurnID, cause),
 				})
 				server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 					ThreadID: threadID,
