@@ -433,21 +433,22 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 		t.Fatal("expected both subtree runtimes resident before the release")
 	}
 	parentSess, grandchildSess := parentLive.runtime, grandchildLive.runtime
-	if got := parentSess.subagents.get(grandchildChildID); got == nil {
+	grandchildSub := parentSess.subagents.get(grandchildChildID)
+	if grandchildSub == nil {
 		t.Fatal("grandchild record missing from the parent runtime's manager before the release")
 	}
+	// The grandchild runs on its own runner; its result reaches the parent
+	// before that runner reports done, which claimSettledIdleSubtree relies on.
+	grandchildSub.mu.Lock()
+	grandchildDone := grandchildSub.done
+	grandchildSub.mu.Unlock()
+	select {
+	case <-grandchildDone:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("grandchild delegate runner did not finish")
+	}
 
-	var claim *delegateRuntimeReclamationClaim
-	// The claim refuses until every member is terminal-idle; poll rather than
-	// assume the finalize tail has fully settled. TRIPWIRE: settle normally
-	// takes milliseconds; 15s only bounds a deadlock.
-	waitForCondition(t, 15*time.Second, "terminal subtree of "+parentRes.DelegateID+" to become claimable", func() bool {
-		claim, _, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
-		if err != nil {
-			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
-		}
-		return claim != nil
-	})
+	claim := claimSettledIdleSubtree(t, tree, parentRes.DelegateID, parentSess, grandchildSess)
 	if got, want := reclamationDelegateIDs(claim), []string{grandchildID, parentRes.DelegateID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claim entries = %v, want leaf-first %v", got, want)
 	}
@@ -487,6 +488,49 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	if err := grandchildSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
 		t.Fatalf("grandchild runtime teardown pass after release: err = %v, want errRetirementTeardownSpent (a depth-2 release must tear the descendant down itself)", err)
 	}
+}
+
+// claimSettledIdleSubtree waits until delegateID's resident subtree has
+// settled and returns the idle-release claim over it, still held; the caller
+// inspects it and aborts it before driving the release under test.
+//
+// Settled is more than claimable. A child's result delivered to a finished
+// parent becomes delegate attention on the parent, and the attention wake
+// drives each owed attention as one more parent generation. Between two of
+// those generations the parent is idle and the subtree is claimable, yet the
+// next owed generation is still coming: once it reserves, the release
+// correctly refuses the subtree as busy. So every member must also owe no
+// delegate attention and pass the release's own pre-gates, which cover the
+// delivery parcels not yet turned into attention. Those checks run BEFORE the
+// claim: a held claim fences the delegate, so polling claims while attention
+// is owed would push the wake into retry backoff instead of letting it run.
+// Nothing can become owed after the checks pass — the callers already waited
+// out every member's runner, and a finished member's deliveries reach their
+// receiver before its runner reports done — so a claim that then succeeds
+// covers a subtree with no generation left to run.
+func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
+	t.Helper()
+	var claim *delegateRuntimeReclamationClaim
+	// TRIPWIRE: the owed generations and the finalize tails settle in well
+	// under a second; 15s only bounds a deadlock.
+	waitForCondition(t, 15*time.Second, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+		for _, member := range members {
+			owed, err := member.pendingDelegateAttentionIDs()
+			if err != nil {
+				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
+			}
+			if len(owed) != 0 || !member.idleReleasePregatesClear() {
+				return false
+			}
+		}
+		var err error
+		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
+		if err != nil {
+			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
+		}
+		return claim != nil
+	})
+	return claim
 }
 
 // wideSubtreeReleaseProbe records what the idle release's member-teardown
@@ -694,17 +738,11 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 		}
 	}
 
-	var claim *delegateRuntimeReclamationClaim
-	// The claim refuses until every member is terminal-idle; poll rather than
-	// assume the finalize tail has fully settled. TRIPWIRE: settle normally
-	// takes milliseconds; 15s only bounds a deadlock.
-	waitForCondition(t, 15*time.Second, "terminal subtree of "+parentRes.DelegateID+" to become claimable", func() bool {
-		claim, _, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
-		if err != nil {
-			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
-		}
-		return claim != nil
-	})
+	members := []*Session{parentSess}
+	for _, id := range childIDs {
+		members = append(members, childRuntimes[id])
+	}
+	claim := claimSettledIdleSubtree(t, tree, parentRes.DelegateID, members...)
 	want := append([]string(nil), childIDs...)
 	want = append(want, parentRes.DelegateID)
 	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, want) {
