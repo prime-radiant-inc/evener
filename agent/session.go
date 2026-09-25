@@ -2098,8 +2098,9 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 }
 
 // markLastPairOrdinalLocked stamps the most recently logged pair with the
-// entry ordinal its write was recorded at, when it was: the copy a fold
-// re-appends after its markers carries it as OriginalOrdinal. The caller holds
+// entry ordinal and model its write was recorded with, when it was: the copy
+// a fold re-appends after its markers carries them as OriginalOrdinal and
+// Model. The caller holds
 // s.mu inside the attentionMu hold that cleared lastRecorded before the pair's
 // write, so lastRecorded is that write's own record.
 func (s *Session) markLastPairOrdinalLocked() {
@@ -2109,6 +2110,8 @@ func (s *Session) markLastPairOrdinalLocked() {
 	}
 	ordinal := s.lastRecorded.ordinal
 	s.persistedAppendLog[n-1].OriginalOrdinal = &ordinal
+	// The copy keeps the model its original was recorded with.
+	s.persistedAppendLog[n-1].Model = s.lastRecorded.model
 }
 
 // tombstoneLastPairPersistedLocked replaces the most recently logged pair with

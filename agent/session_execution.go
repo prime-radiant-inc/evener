@@ -88,8 +88,10 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 // execution, and a USER_INPUT entry's index, which its USER_INPUT event
 // reports. Callers hold s.mu.
 func (s *Session) noteRecordedLocked(rec transcript.Record) {
-	s.lastRecorded = recordedOrdinal{recorded: rec.Recorded, ordinal: rec.Ordinal}
-	if !rec.Recorded {
+	s.lastRecorded = recordedOrdinal{recorded: rec.Recorded, ordinal: rec.Ordinal, model: rec.Turn.Model}
+	if !rec.Recorded || rec.Turn.OriginalOrdinal != nil {
+		// A fold's copy of an entry recorded earlier says nothing about the
+		// execution running when the copy is written.
 		return
 	}
 	if rec.Turn.TurnKind == schema.TurnSpanExecution {
@@ -222,10 +224,12 @@ func (s *Session) turnsPendingWork() map[string]bool {
 	return pending
 }
 
-// recordedOrdinal is whether a write was recorded, and at which entry ordinal.
+// recordedOrdinal is whether a write was recorded, at which entry ordinal,
+// and with which model.
 type recordedOrdinal struct {
 	recorded bool
 	ordinal  uint64
+	model    string
 }
 
 // recordTranscriptOnlyAt records a transcript-only entry with the given
