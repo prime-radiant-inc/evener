@@ -478,13 +478,28 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		if record.Completer.Length > 0 {
 			contributors = append(contributors, record.Completer)
 		}
+		var completedAtEntry uint64
 		for _, c := range contributors {
+			entry, err := r.entry(c.Offset, c.Length)
+			if err != nil {
+				return appwire.ThreadItem{}, err
+			}
+			switch entry.Kind {
+			case schema.TurnCompletion:
+				// The execution completed with no results for the call:
+				// the call was interrupted (builder.interruptAwaitedCalls).
+				item.Status = appwire.TurnStatusInterrupted
+				continue
+			case schema.TurnTool, schema.TurnToolResults:
+				completedAtEntry = c.Ordinal + 1
+			}
 			items, _, err := r.project(c, callID, turnID)
 			if err != nil {
 				return appwire.ThreadItem{}, err
 			}
 			item = foldCall(item, items, callID)
 		}
+		item.CompletedAtEntry = completedAtEntry
 		// A new-format item that spans entries keeps its opener's identity.
 		if identity {
 			item.ID, item.RoundID = items[at].ID, items[at].RoundID

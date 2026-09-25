@@ -73,7 +73,12 @@ func assertAllCandidates(t testing.TB, x *Index, path string) {
 		want = nil
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("items diverge from the reference\n got: %s\nwant: %s", dump(got), dump(want))
+		for i := range min(len(got), len(want)) {
+			if !reflect.DeepEqual(got[i], want[i]) {
+				t.Fatalf("candidate %d of %d/%d diverges from the reference\n got: %s\nwant: %s", i, len(got), len(want), dump(got[i]), dump(want[i]))
+			}
+		}
+		t.Fatalf("items diverge from the reference: %d candidates, want %d", len(got), len(want))
 	}
 }
 

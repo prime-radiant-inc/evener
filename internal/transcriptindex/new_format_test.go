@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 )
@@ -286,4 +287,90 @@ func TestReplayOverAnAwaitingEntryAheadRebuilds(t *testing.T) {
 		t.Fatalf("builds = %d, want a rebuild for the result whose round the turn moved past", replayed.rebuilds)
 	}
 	assertAllWindows(t, replayed, path)
+}
+
+// Header-derived prelude items are keyed apptranscript-item-v2:prelude:header:<part>
+// at {entry: 0, item: part}, with no version: the header never changes.
+func TestHeaderPreludeItemsKeyAtTheHeader(t *testing.T) {
+	candidates := indexedCandidates(t, newFormatFixture(t, "new format session"), -1)
+	header := candidates[0]
+	if header.Position != (appwire.ThreadItemPosition{Entry: 0, Item: 0}) || header.Item.TranscriptKey != "apptranscript-item-v2:prelude:header:0" || header.Item.Version != 0 {
+		t.Fatalf("header prelude item = %s, want key apptranscript-item-v2:prelude:header:0 at entry 0, version 0", dump(header.Item))
+	}
+	if got := ItemKey("anything", appwire.ThreadItemPosition{Entry: 0, Item: 2}); got != "apptranscript-item-v2:prelude:header:2" {
+		t.Fatalf("ItemKey at the header = %q", got)
+	}
+}
+
+// The prelude's entries join the prelude turn: turn_system, completed, as
+// written with TurnKind "prelude".
+func TestPreludeEntriesJoinTheCompletedPreludeTurn(t *testing.T) {
+	session := indexedCandidates(t, newFormatFixture(t, "new format session"), -1)
+	var entries int
+	for _, c := range session {
+		if c.Position.Entry == 0 {
+			continue
+		}
+		if c.Item.Text == "prelude environment" || c.Item.Text == "prelude notes" {
+			entries++
+			if c.TurnID != appwire.SystemPreludeTurnID || c.Turn.Status != appwire.TurnStatusCompleted {
+				t.Fatalf("prelude entry item in turn %s (%s), want the completed %s", c.TurnID, c.Turn.Status, appwire.SystemPreludeTurnID)
+			}
+		}
+	}
+	if entries != 2 {
+		t.Fatalf("found %d prelude entry items, want 2", entries)
+	}
+	line := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ENVIRONMENT","message":{"role":"user","content":[{"kind":"text","text":"env"}]},"format":1,"turn_id":"turn_system","turn_kind":"prelude"}}`)
+	entry, err := transcript.DecodeEntry(line)
+	if err != nil || entry.Turn.TurnKind != schema.TurnSpanPrelude {
+		t.Fatalf("decode a written prelude entry = %+v, %v", entry.Turn.TurnKind, err)
+	}
+}
+
+// A tool item carries the ordinal + 1 of the TOOL_RESULTS entry that
+// completed it; its key and position stay the opener's.
+func TestToolItemsCarryTheirCompletingEntry(t *testing.T) {
+	candidates := indexedCandidates(t, newFormatFixture(t, "new format session"), -1)
+	for _, c := range candidates {
+		if c.Item.CallID == "f1" {
+			// Ordinals: 3 assistant, 5 results.
+			if c.Item.CompletedAtEntry != 6 || c.Position != (appwire.ThreadItemPosition{Entry: 4, Item: 3}) {
+				t.Fatalf("call item = %s, want completedAtEntry 6 at the opener's position", dump(c.Item))
+			}
+			return
+		}
+	}
+	t.Fatal("no call item")
+}
+
+// A call whose execution turn completed with no TOOL_RESULTS for it (a crash
+// before results; resume records an interrupted completion) projects as
+// interrupted: the completion contributes to the item, raising its version.
+func TestCallWithoutResultsIsInterruptedAtCompletion(t *testing.T) {
+	fx := newFormatFixture(t, "interrupted call")
+	before := indexedCandidates(t, fx, len(fx.lines)-1)
+	after := indexedCandidates(t, fx, -1)
+	find := func(candidates []appitempaging.TranscriptItemCandidate) appwire.ThreadItem {
+		for _, c := range candidates {
+			if c.Item.CallID == "ic1" {
+				return c.Item
+			}
+		}
+		t.Fatal("no call item")
+		return appwire.ThreadItem{}
+	}
+	if call := find(before); call.Status == appwire.TurnStatusInterrupted {
+		t.Fatalf("call before the completion = %s, want not yet interrupted", dump(call))
+	}
+	call := find(after)
+	completionVersion := uint64(len(fx.lines))
+	if call.Status != appwire.TurnStatusInterrupted || call.Version != completionVersion || call.CompletedAtEntry != 0 {
+		t.Fatalf("call after the completion = %s, want interrupted at version %d with no completing results", dump(call), completionVersion)
+	}
+	for _, c := range after {
+		if c.Item.CallID == "ic2" && c.Item.Status == appwire.TurnStatusInterrupted {
+			t.Fatalf("the call that got results = %s, want it completed", dump(c.Item))
+		}
+	}
 }

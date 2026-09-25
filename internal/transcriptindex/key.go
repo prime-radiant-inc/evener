@@ -26,10 +26,11 @@ const keyVersion = 2
 
 // ItemKey is the transcript key of the item at position in turn turnID:
 // apptranscript-item-v2:<turnID>:<entry ordinal>:<part>. Header-derived
-// prelude items, at entry 0, name "header" in place of the ordinal.
+// prelude items, at entry 0, are apptranscript-item-v2:prelude:header:<part>
+// whatever turn shows them.
 func ItemKey(turnID string, position appwire.ThreadItemPosition) string {
 	if position.Entry == 0 {
-		return fmt.Sprintf("apptranscript-item-v%d:%s:header:%d", keyVersion, turnID, position.Item)
+		return fmt.Sprintf("apptranscript-item-v%d:prelude:header:%d", keyVersion, position.Item)
 	}
 	return fmt.Sprintf("apptranscript-item-v%d:%s:%d:%d", keyVersion, turnID, position.Entry-1, position.Item)
 }

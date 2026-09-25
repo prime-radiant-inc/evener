@@ -448,8 +448,18 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		entryLine(completion("turn_m21", schema.TurnCompleted, 70, 10)),
 	}
 
+	interruptedCall := []fixtureLine{
+		entryLine(opens("turn_m22", execution, user("crash mid-call"))),
+		entryLine(inTurn("turn_m22", inRound(assistant(text("calling"), call("ic1", "shell", `{"cmd":"sleep"}`), call("ic2", "read_file", `{}`)), "r_22"))),
+		entryLine(inTurn("turn_m22", results(result("ic2", "read_file", "partial results")))),
+		// Resume after the crash records the open execution's interrupted
+		// completion.
+		entryLine(completion("turn_m22", schema.TurnInterrupted, 80, 10)),
+	}
+
 	return []fixture{
 		{name: "new format session", header: prelude, lines: session},
+		{name: "interrupted call", header: header, lines: interruptedCall},
 		{name: "gap turns", header: header, lines: gaps},
 		{name: "delivery inside an execution", header: header, lines: deliveries},
 		{name: "failed execution and retry", header: header, lines: failedRetry},

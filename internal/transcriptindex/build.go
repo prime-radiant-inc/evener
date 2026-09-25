@@ -176,6 +176,9 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 	}
 	if entry.Kind == schema.TurnCompletion {
 		delete(b.open, turnID)
+		if err := b.interruptAwaitedCalls(summary, c); err != nil {
+			return err
+		}
 	}
 	if entry.Kind == schema.TurnAssistant && hasToolCall(entry) {
 		b.assistant, b.assistantOffset = entry, offset
@@ -320,6 +323,48 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		}
 		return true, b.addContributor(target, completer, version)
 	})
+}
+
+// interruptAwaitedCalls makes an execution's completion a contributor of
+// every call of its awaiting ASSISTANT entry that no TOOL_RESULTS completed:
+// the call's item projects as interrupted (window.go), at the completion's
+// version. That completion is the interrupted one resume records for an
+// execution a crash left open, so a reload, a restart and a daemonless read
+// all show the call interrupted rather than running forever.
+func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contributor) error {
+	if summary.Kind != turnKindExecution || summary.AwaitingLength == 0 {
+		return nil
+	}
+	awaiting, err := b.awaitingEntry(summary)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for part, content := range awaiting.Message.Content {
+		if content.Kind != llm.ContentToolCall || content.ToolCall == nil || seen[content.ToolCall.ID] {
+			continue
+		}
+		seen[content.ToolCall.ID] = true
+		// A communicate call projects no item.
+		slot, found, err := b.x.findItem(appwire.ThreadItemPosition{Entry: summary.AwaitingOrdinal + 1, Item: uint32(part)})
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		buf, err := b.x.items.read(slot, 1)
+		if err != nil {
+			return err
+		}
+		if record := decodeItem(buf); record.Completer.Length > 0 && record.Completer.Ordinal != completion.Ordinal {
+			continue
+		}
+		if err := b.addContributor(slot, completion, completion.Ordinal+1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // appendItems projects a new-format entry and appends an item record for each

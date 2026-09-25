@@ -75,6 +75,12 @@ const (
 // new-format execution is open until a TURN_COMPLETION sets its status, and a
 // TURN_REOPEN opens it again; every other new-format turn is completed. The
 // latest TURN_FAILURE carries the diagnostic of a failed status either way.
+//
+// The Awaiting fields are the spec's "open round's call records"
+// (Incremental use): the opener's offset and length only, never the calls'
+// names or arguments, which extension reads back from the entry when its
+// TOOL_RESULTS lands, outside any server lock. Memory stays bounded by the
+// number of calls, not by their argument size.
 type turnRecord struct {
 	ID              strRef
 	Kind            uint32

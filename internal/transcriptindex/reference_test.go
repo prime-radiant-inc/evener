@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -135,8 +136,12 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 			for j, item := range items {
 				if apptranscript.MergesByCallID(item) {
 					if at, ok := s.calls[item.CallID]; ok {
+						completedAt := s.items[at].CompletedAtEntry
 						s.items[at] = apptranscript.MergeThreadItems(s.items[at], item)
-						s.items[at].Version = uint64(entryIndex)
+						s.items[at].Version, s.items[at].CompletedAtEntry = uint64(entryIndex), completedAt
+						if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
+							s.items[at].CompletedAtEntry = uint64(entryIndex)
+						}
 						continue
 					}
 					s.calls[item.CallID] = len(s.items)
@@ -173,6 +178,14 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 					info = *entry.Completion
 				}
 				s.open, s.completion = false, &info
+				// Calls of the awaiting entry that no results completed
+				// were interrupted.
+				for _, at := range s.awaitingItem {
+					if at >= 0 && s.items[at].CompletedAtEntry == 0 {
+						s.items[at].Status = appwire.TurnStatusInterrupted
+						s.items[at].Version = uint64(entryIndex)
+					}
+				}
 			}
 		case schema.TurnReopen:
 			if s.execution {
@@ -205,6 +218,7 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 					call := s.items[at]
 					s.items[at] = apptranscript.MergeThreadItems(call, item)
 					s.items[at].ID, s.items[at].RoundID, s.items[at].Version = call.ID, call.RoundID, uint64(entryIndex)
+					s.items[at].CompletedAtEntry = uint64(entryIndex)
 					continue
 				}
 			}
@@ -237,7 +251,7 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 		for i := range prelude.Items {
 			position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 			prelude.Items[i].Position = &position
-			prelude.Items[i].TranscriptKey = ItemKey(prelude.ID, position)
+			prelude.Items[i].TranscriptKey = fmt.Sprintf("apptranscript-item-v2:prelude:header:%d", i)
 		}
 		out = append(out, referenceTurn{turn: *prelude})
 	}
@@ -378,6 +392,7 @@ func stripPositions(turns []appwire.Turn) []appwire.Turn {
 			turns[i].Items[j].Position = nil
 			turns[i].Items[j].TranscriptKey = ""
 			turns[i].Items[j].Version = 0
+			turns[i].Items[j].CompletedAtEntry = 0
 		}
 	}
 	return turns
