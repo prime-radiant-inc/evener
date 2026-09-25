@@ -339,6 +339,46 @@ func ProjectTurnParts(turnID string, turnIndex int, turn schema.Turn, toolNames 
 	return items, parts
 }
 
+// ProjectEntryParts is ProjectTurnParts under the transcript read model's
+// rules: a new-format entry (Format == schema.TurnFormatIdentity) projects
+// its text runs, one reasoning item, its COMMUNICATE message and its NOTICE,
+// hides its communicate call and status entries, and projects nothing for a
+// fold copy. A legacy entry, and any new-format kind those rules leave
+// alone, projects exactly as ProjectTurnParts does.
+func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (items []appwire.ThreadItem, parts []int) {
+	if turn.Format != schema.TurnFormatIdentity {
+		return ProjectTurnParts(turnID, entryIndex, turn, toolNames, imageProjector, outputImageProjector)
+	}
+	// A fold copy is model history for resume; the original it copies
+	// already projected.
+	if turn.OriginalOrdinal != nil {
+		return nil, nil
+	}
+	switch turn.Kind {
+	case schema.TurnAssistant:
+		if toolNames == nil {
+			toolNames = map[string]string{}
+		}
+		items = projectIdentityAssistant(turnID, entryIndex, turn, toolNames, &parts)
+		return items, parts
+	case schema.TurnCommunicate:
+		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
+			return []appwire.ThreadItem{item}, []int{0}
+		}
+		return nil, nil
+	case schema.TurnNotice:
+		if item, ok := NoticeItem(turnID, entryIndex, turn); ok {
+			return []appwire.ThreadItem{item}, []int{0}
+		}
+		return nil, nil
+	case schema.TurnCompletion, schema.TurnReopen:
+		// These set the turn's status; they display nothing.
+		return nil, nil
+	default:
+		return ProjectTurnParts(turnID, entryIndex, turn, toolNames, imageProjector, outputImageProjector)
+	}
+}
+
 // projectTurn is ProjectTurn. When parts is non-nil, the kinds that project
 // one item per content part (assistant and tool results) record each item's
 // part index in it.
@@ -375,30 +415,6 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					"apptranscript: ProjectTurn emitted item with empty ID (type=%s, turnID=%s)", item.Type, turnID)
 			}
 		}()
-	}
-	if turn.Format == schema.TurnFormatIdentity {
-		// A fold copy is model history for resume; the original it copies
-		// already projected.
-		if turn.OriginalOrdinal != nil {
-			return nil
-		}
-		switch turn.Kind {
-		case schema.TurnAssistant:
-			return projectIdentityAssistant(turnID, turnIndex, turn, toolNames, parts)
-		case schema.TurnCommunicate:
-			if item, ok := CommunicateItem(turnID, turnIndex, turn); ok {
-				return []appwire.ThreadItem{item}
-			}
-			return nil
-		case schema.TurnNotice:
-			if item, ok := NoticeItem(turnID, turnIndex, turn); ok {
-				return []appwire.ThreadItem{item}
-			}
-			return nil
-		case schema.TurnCompletion, schema.TurnReopen:
-			// These set the turn's status; they display nothing.
-			return nil
-		}
 	}
 	switch turn.Kind {
 	case schema.TurnCheckpoint, schema.TurnSummary:
@@ -582,7 +598,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					Type:   "reasoning",
 					ID:     fmt.Sprintf("item_reasoning_%d_%d", turnIndex, i),
 					TurnID: turnID,
-					Text:   "[redacted thinking]",
+					Text:   redactedThinkingText,
 					Status: appwire.TurnStatusCompleted,
 				})
 				recordPart(parts, i)
@@ -679,13 +695,19 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 	runStart := -1
 	flushRun := func() {
 		if runStart >= 0 && run.Len() > 0 {
-			items = append(items, appwire.ThreadItem{
+			item := appwire.ThreadItem{
 				Type:   "agentMessage",
 				ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, runStart),
 				TurnID: turnID,
 				Text:   run.String(),
 				Status: appwire.TurnStatusCompleted,
-			})
+			}
+			// A persisted message has the entry's recorded instant.
+			if !turn.Timestamp.IsZero() {
+				ms := turn.Timestamp.UnixMilli()
+				item.StartedAt = &ms
+			}
+			items = append(items, item)
 			recordPart(parts, runStart)
 		}
 		run.Reset()
@@ -737,10 +759,13 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, to
 	return items
 }
 
+// redactedThinkingText stands in for a redacted-thinking part's content.
+const redactedThinkingText = "[redacted thinking]"
+
 // identityReasoning returns the index of the entry's first thinking or
 // redacted-thinking part (-1 when there is none) and the entry's reasoning
-// text: each thinking part's Text, or its Summary when Text is empty, joined
-// with blank lines.
+// text: each thinking part's Text, or its Summary when Text is empty, and
+// redactedThinkingText for a redacted part, joined with blank lines.
 func identityReasoning(content []llm.ContentPart) (int, string) {
 	first := -1
 	var texts []string
@@ -750,6 +775,10 @@ func identityReasoning(content []llm.ContentPart) (int, string) {
 		}
 		if first < 0 {
 			first = i
+		}
+		if part.Kind == llm.ContentRedThinking {
+			texts = append(texts, redactedThinkingText)
+			continue
 		}
 		if part.Thinking == nil {
 			continue
