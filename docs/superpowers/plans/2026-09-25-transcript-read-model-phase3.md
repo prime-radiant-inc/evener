@@ -55,6 +55,17 @@ Each takes the most conservative reading; each is pinned by a test named in its 
 11. **A new-format `TurnID` equal to a legacy turn id** (a resumed legacy session whose legacy `StableTurnID` was `turn_mN`) would give two turn records one id. Fork and client mutation sequences are seeded above every `turn_m` in the file (phase 2 Task 26), so this cannot arise from Evener's writers; the index does not try to merge them.
 12. **Where a stream is displayed.** The spec anchors notices; it does not anchor streams. Streams and previews display at the end of their turn (`TurnID` on the overlay item), after every history item of that turn.
 
+## Final contract decisions (spec owner, after the last review; binding, not in the spec text)
+
+1. **Lock order.** The thread's projection serialization (the drain goroutine) is outermost, then the transcript append lock, then the queue mutex (a leaf). The drain captures the rebuild boundary B by briefly taking the append lock while it holds its serialization. Nothing takes the serialization under the append lock. Neither the queue mutex nor the serialization is held across file I/O, except the drain's own projection reads (serialization only). Pinned by a `-race` stress test (Task 11b).
+2. **COMMUNICATE and completion entries use the synced door** (fsync), so a delivered message or a terminal status survives a crash (Task 11b).
+3. **Queue overflow**: after three consecutive overflow-triggered rebuilds that do not catch up, the thread enters the failed-history path; a later successful read recovers (Task 11b).
+4. **Client request generations are monotonic across boot changes** (a client-side counter that is never reset); any response older than the invalidating event's request generation is discarded (Task 15, Task 16).
+5. **The index header persists the covered entry count** (next ordinal) in the same header write as the covered length and table counts (Task 11b).
+6. **A single entry that deterministically fails to project is quarantined**: it projects as one visible "unreadable entry" item with a diagnostic, and the thread's history continues; the failed-history state is only for rebuild and infrastructure failures (Task 11b).
+7. **`delivery` TurnKind** covers cold writers and session-owned async writes that find no running execution (Task 11b pins it).
+8. **The index update log is bounded** (last 10,000 records); a request whose held snapshot predates the retained log gets a full latest-window replacement with no deltas (Task 11b index, Task 12 hub).
+
 ---
 
 ## Work units
