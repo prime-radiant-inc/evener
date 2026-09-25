@@ -669,6 +669,9 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 	// appendTail.
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
+	if w.tail.poisoned {
+		return 0, nil, ErrWriterPoisoned
+	}
 	firstSeq = w.tail.nextSeq
 	if len(turns) == 0 {
 		return firstSeq, nil, nil
@@ -762,8 +765,10 @@ func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOff
 	w.dirty = true // Close flushes only what it is told is dirty.
 	if written != bufLen {
 		// A partial line is the remains of a record, not a record. No fsync
-		// makes it whole, and an append onto it would be unreadable.
+		// makes it whole, and an append onto it — by this writer or any other
+		// on the file — would be unreadable.
 		w.poisoned = true
+		w.tail.poisoned = true
 		return nil, fmt.Errorf("%s: %w", operation, cause)
 	}
 	// The whole buffer is a record every reader will find: count it, keep it as
@@ -815,7 +820,18 @@ func (w *Writer) Poisoned() bool {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.poisoned
+	return w.poisonedLocked()
+}
+
+// poisonedLocked reports whether this writer, or any writer on its file, left
+// a partial line that no resume has yet cut off. Callers hold w.mu.
+func (w *Writer) poisonedLocked() bool {
+	if w.poisoned {
+		return true
+	}
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	return w.tail.poisoned
 }
 
 // Closed reports whether this writer has been closed and its ordinary appends
@@ -833,7 +849,9 @@ func (w *Writer) Closed() bool {
 // not a sample of one: an append holds this same door across its write, and a
 // write it cannot resolve records the poison under the door, so an append that
 // poisons is either already visible here -- f does not run -- or it has not
-// started, which orders the poison after f. A caller that checks Poisoned()
+// started, which orders the poison after f. A poison another writer on the same
+// file leaves is not taken under this door: one that lands while f runs refuses
+// this writer's next append instead. A caller that checks Poisoned()
 // outside the door can promise neither, and publishing work between such a check
 // and its commit leaves a window for a poisoning to land in.
 //
@@ -852,7 +870,7 @@ func (w *Writer) WhileHealthy(f func()) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.poisoned {
+	if w.poisonedLocked() {
 		return ErrWriterPoisoned
 	}
 	if w.closed.Load() {
@@ -1041,6 +1059,9 @@ func resumeWriter(fs afero.Fs, open func() (afero.File, error), expectedSessionI
 	// Another writer still open on the file may have used more of the sequence
 	// than the file shows; never go back below it.
 	tail.nextSeq = max(tail.nextSeq, nextSeq)
+	// The scan cut any partial line off the end, so the file ends in whole
+	// records again; only the writer that left the line stays poisoned.
+	tail.poisoned = false
 	return newWriterOnTail(fs, f, tail, header, tail.moved()), entries, nil
 }
 

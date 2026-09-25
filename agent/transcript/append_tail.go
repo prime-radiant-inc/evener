@@ -32,6 +32,10 @@ type appendTail struct {
 	// to append (or opened the file). A writer whose last recorded move is
 	// not the current one may have a handle position behind the end.
 	move uint64
+	// poisoned records a partial line some writer left at the file's end and
+	// could not roll back. Every writer on the tail refuses to append after
+	// it until a resume's scan cuts it off.
+	poisoned bool
 
 	// info identifies the file and refs counts the open writers sharing this
 	// tail; both are guarded by openTails.mu. pin is the tail's own handle on

@@ -176,3 +176,39 @@ func TestCreateCannotTruncateATranscriptBeingResumed(t *testing.T) {
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"before resume"})
 }
+
+// A writer whose append leaves part of a line at the end of the file poisons
+// the file's tail, not only itself: another writer on the same tail refuses to
+// append rather than run its record onto the broken bytes, which would make
+// the whole transcript unreadable. A resume truncates the broken bytes and
+// clears the poison for writers that did not leave them.
+func TestPartialLineFromOneWriterPoisonsEveryWriterOnTheFile(t *testing.T) {
+	path := newSharedFileTranscript(t)
+	broken := openSharedFileWriter(t, path)
+	defer broken.Close() //nolint:errcheck // assertion fixture
+	other := openSharedFileWriter(t, path)
+	defer other.Close() //nolint:errcheck // assertion fixture
+
+	realFile := broken.file
+	broken.file = &partialWriteFile{File: realFile, transferBeforeFailure: 10, writeFailure: errors.New("injected short write")}
+	if err := broken.Append(steeringTurn("partial")); err == nil {
+		t.Fatal("Append with a short write succeeded")
+	}
+	broken.file = realFile
+	if err := other.Append(steeringTurn("after the broken bytes")); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("other writer's Append after a partial line = %v, want ErrWriterPoisoned", err)
+	}
+	if !other.Poisoned() {
+		t.Fatal("other writer does not report the file's poison")
+	}
+
+	resumed := openSharedFileWriter(t, path)
+	defer resumed.Close() //nolint:errcheck // assertion fixture
+	if err := other.Append(steeringTurn("after resume")); err != nil {
+		t.Fatalf("other writer's Append after a resume truncated the broken bytes: %v", err)
+	}
+	if err := broken.Append(steeringTurn("never")); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("the writer that left the broken bytes = %v, want it to stay poisoned", err)
+	}
+	requireOneSequenceInFileOrder(t, path, []string{"before resume", "after resume"})
+}
