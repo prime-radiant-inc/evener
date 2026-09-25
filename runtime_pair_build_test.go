@@ -1276,6 +1276,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Env = append(fixture.environment(""),
 		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
 		"EVENER_TEST_NPM_READY="+readyPath,
@@ -1292,6 +1293,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	run := startChild(command)
 	t.Cleanup(func() {
 		if command.ProcessState == nil {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 			_ = command.Process.Kill()
 			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
 				t.Errorf("cleanup did not reap make test-web: %v", err)
