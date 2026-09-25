@@ -751,7 +751,7 @@ func wrapperSourceIsOS(w afero.Fs) bool {
 		return false
 	}
 	ct := concrete.Type()
-	return ct == reflect.TypeOf((*afero.OsFs)(nil)) || ct == reflect.TypeOf(afero.OsFs{})
+	return ct == reflect.TypeFor[*afero.OsFs]() || ct == reflect.TypeFor[afero.OsFs]()
 }
 
 // listSessionMetasFS is the filesystem seam beneath ListSessionMetas.
