@@ -696,7 +696,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				// error; its raw bytes are not the delivered message, so do not
 				// surface them.
 				if part.ToolResult.IsError && part.ToolResult.PrevalOnly {
-					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
+					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok {
 						item := appwire.ThreadItem{
 							Type:          "commandExecution",
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
