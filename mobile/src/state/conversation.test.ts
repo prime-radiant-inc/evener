@@ -2042,6 +2042,53 @@ describe("ConversationStore", () => {
       expect(sawStale).toBe(false);
       expect(store.getState().pendingMutations).toEqual([]);
     });
+
+    it("a read in flight across a same-target rebind still records provenance", async () => {
+      const first = fakePort({});
+      let releaseRead: (() => void) | null = null as (() => void) | null;
+      const heldRead = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let reads = 0;
+      first.read = async () => {
+        reads += 1;
+        if (reads === 1) {
+          await heldRead;
+          return {
+            outbox: [outbox({ clientMutationId: "cmid-11" })],
+            optimistic: [],
+            recovery: [],
+          };
+        }
+        return { outbox: [], optimistic: [], recovery: [] };
+      };
+      const store = await openStore(authoritativeModel("cmid-11"));
+      store.getState().bindPendingMutations(first); // read #1 held in flight
+
+      // A same-target rebind: its read resolves against storage where the
+      // record has already settled out, while the daemon still reports the id.
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-11",
+        fromThisClient: false,
+      });
+
+      // The in-flight read lands after the rebind; its provenance must stick.
+      releaseRead?.();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      rebound.publish({}); // a later reconcile reads the recorded provenance
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-11",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error

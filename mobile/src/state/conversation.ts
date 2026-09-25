@@ -2058,6 +2058,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   let pendingPort: ConversationMutationPendingPort | null = null;
   let pendingUnsubscribe: (() => void) | null = null;
   let pendingGeneration = 0;
+  // Advanced only by forgetPendingProvenance (close/reset). A read's provenance
+  // write is fenced on THIS, not on pendingGeneration: a read in flight across a
+  // same-target rebind or a thread open still observed a durable record of this
+  // client's own, and ids are unique per submission so it cannot contaminate
+  // another target. Only a teardown fences it out.
+  let pendingProvenanceGeneration = 0;
   let pendingSnapshot: {
     outbox: MutationPersistenceSnapshot<MutationAttachmentRef>["outbox"];
     optimistic: MutationPersistenceSnapshot<MutationAttachmentRef>["optimistic"];
@@ -2140,6 +2146,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // only carrier once a record settles out of storage while the daemon still
   // reports the id.
   function forgetPendingProvenance(): void {
+    ++pendingProvenanceGeneration;
     pendingSubmittedHere.clear();
   }
 
@@ -3817,6 +3824,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
         const read = () => {
           const request = ++readRequest;
+          const provenanceGeneration = pendingProvenanceGeneration;
           let pending: ReturnType<ConversationMutationPendingPort["read"]>;
           try {
             pending = port.read();
@@ -3827,27 +3835,30 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           }
           void pending.then(
             (snapshot) => {
-              // A detached binding must not repopulate the provenance
-              // detachPendingRows/forgetPendingProvenance reset, so the
-              // generation fence comes first...
-              if (generation !== pendingGeneration) return;
-              // ...and the provenance scan is NOT behind the newest-request
-              // fence: a read a newer one superseded still observed durable
-              // records of this client's own, and the package store it mirrors
-              // records submitted-here before applying the same fence.
-              for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
-                // Target-scoped exactly as the reconciliation is: a foreign
-                // target's row must not claim this client's provenance.
-                if (
-                  record.targetRef === port.targetRef &&
-                  port.isOwnMutationRecord(record)
-                ) {
-                  pendingSubmittedHere.set(
-                    record.clientMutationId,
-                    record.createdAt,
-                  );
+              // The provenance scan is fenced only on a forget (close/reset):
+              // a read in flight across a same-target rebind or a thread open,
+              // or one a newer read superseded, still observed durable records
+              // of this client's own, and the package store it mirrors records
+              // submitted-here before applying its own fences. Ids are unique
+              // per submission, so this cannot contaminate another target.
+              if (provenanceGeneration === pendingProvenanceGeneration) {
+                for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
+                  // Target-scoped exactly as the reconciliation is: a foreign
+                  // target's row must not claim this client's provenance.
+                  if (
+                    record.targetRef === port.targetRef &&
+                    port.isOwnMutationRecord(record)
+                  ) {
+                    pendingSubmittedHere.set(
+                      record.clientMutationId,
+                      record.createdAt,
+                    );
+                  }
                 }
               }
+              // Publishing is fenced on the binding generation (a retired
+              // binding must not publish) and on the request order.
+              if (generation !== pendingGeneration) return;
               // Only a read newer than the last published one publishes.
               if (request <= lastPublishedRequest) return;
               lastPublishedRequest = request;
