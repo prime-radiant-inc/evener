@@ -123,8 +123,9 @@ type guardProcess interface {
 // scheduling and interrupt rules can be tested against guards the test drives.
 type guardLauncher interface {
 	// BuildFrontend runs the production frontend build, its output in log,
-	// and returns its status.
-	BuildFrontend(log io.Writer) int
+	// and returns its status. Cancelling ctx asks the build to stop; it still
+	// returns only once the build has exited.
+	BuildFrontend(ctx context.Context, log io.Writer) int
 	// PrivateGoHome prepares a private Go home under root, its diagnostics in
 	// log, and returns the environment that selects it. It runs to
 	// completion: the gate never interrupts it, so no half-done copy keeps
@@ -183,6 +184,8 @@ func (g *browserGate) run() (int, bool) {
 		// the other guards serve the frontend through their own Vite.
 		_, _ = fmt.Fprintln(g.stdout, "building the production frontend for web-skillguard…")
 		built := make(chan int, 1)
+		ctx, stopBuild := context.WithCancel(context.Background())
+		defer stopBuild()
 		go func() {
 			log, err := os.Create(buildLog)
 			if err != nil {
@@ -191,16 +194,20 @@ func (g *browserGate) run() (int, bool) {
 				return
 			}
 			defer log.Close() //nolint:errcheck // the build's status is the result
-			built <- g.launcher.BuildFrontend(log)
+			built <- g.launcher.BuildFrontend(ctx, log)
 		}()
 		select {
 		case buildStatus = <-built:
 		case sig := <-g.signals:
-			// The build is waited for, as a foreground step would be, unless
-			// the operator insists with a second signal, whose status wins.
+			// The build is waited for, as a foreground step would be. If the
+			// operator insists with a second signal, whose status wins, the
+			// build is stopped, and still waited for: an abandoned build
+			// would keep writing after the gate had gone.
 			select {
 			case <-built:
 			case sig = <-g.signals:
+				stopBuild()
+				<-built
 			}
 			return signalStatus(sig), true
 		}
@@ -248,6 +255,11 @@ func (g *browserGate) run() (int, bool) {
 			live[index] = proc
 			running++
 			go func() { exits <- guardExit{index, proc.Wait()} }()
+		}
+		if done == n {
+			// The last guard was accounted for without starting (a failed
+			// build, or a start that failed); nothing is running to wait on.
+			break
 		}
 		select {
 		case exit := <-exits:
@@ -385,8 +397,8 @@ func frontendBuilt(frontend string) bool {
 // execGuardLauncher starts the real guards.
 type execGuardLauncher struct{}
 
-func (execGuardLauncher) BuildFrontend(log io.Writer) int {
-	cmd := exec.CommandContext(context.Background(), "npm", "run", "build")
+func (execGuardLauncher) BuildFrontend(ctx context.Context, log io.Writer) int {
+	cmd := stoppableCommand(ctx, "npm", "run", "build")
 	cmd.Dir = browserFrontendDir
 	cmd.Env = append(os.Environ(), "NODE_DISABLE_COMPILE_CACHE=1")
 	cmd.Stdout, cmd.Stderr = log, log
@@ -395,6 +407,14 @@ func (execGuardLauncher) BuildFrontend(log io.Writer) int {
 		return 1
 	}
 	return procgroup.ExitCode(cmd.ProcessState)
+}
+
+// stoppableCommand is a command that ctx stops with SIGTERM rather than exec's
+// default SIGKILL, so it can clean up; Wait still returns only once it exits.
+func stoppableCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	return cmd
 }
 
 // PrivateGoHome runs scripts/lib/private-go-home.sh, the one definition of the

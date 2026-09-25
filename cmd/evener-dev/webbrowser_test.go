@@ -2,6 +2,7 @@ package dev
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -45,6 +46,9 @@ type fakeLauncher struct {
 	buildOutput string
 	built       bool
 
+	// startErr, when set, is what every Start returns.
+	startErr error
+
 	homeEnv []string
 	// homeFailure, when set, is what PrivateGoHome writes to the guard's log
 	// before it fails.
@@ -65,7 +69,7 @@ func newFakeLauncher() *fakeLauncher {
 	}
 }
 
-func (l *fakeLauncher) BuildFrontend(log io.Writer) int {
+func (l *fakeLauncher) BuildFrontend(_ context.Context, log io.Writer) int {
 	l.mu.Lock()
 	l.built = true
 	l.mu.Unlock()
@@ -88,6 +92,9 @@ func (l *fakeLauncher) PrivateGoHome(_ string, log io.Writer) ([]string, error) 
 }
 
 func (l *fakeLauncher) Start(spec guardSpec, log *os.File) (guardProcess, error) {
+	if l.startErr != nil {
+		return nil, l.startErr
+	}
 	g := &fakeGuard{name: spec.name, exit: make(chan int, 1), terminated: make(chan struct{})}
 	l.mu.Lock()
 	l.guards[spec.name] = g
@@ -371,6 +378,33 @@ func TestFrontendBuiltNeedsARegularIndex(t *testing.T) {
 	}
 }
 
+// The gate finishes when the last guard is accounted for without starting:
+// with one slot and a failed build, the skill guard is failed after every
+// other guard has run, and nothing is left running to wait on.
+func TestBrowserGateFinishesWhenTheLastGuardNeverStarts(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.buildStatus = 17
+	tg := startTestGate(t, launcher, 1, true)
+	for range len(browserGuards) - 1 {
+		launcher.awaitStart(t).exit <- 0
+	}
+	if r := tg.await(t); r.status != 17 {
+		t.Fatalf("status = %d, want the build's 17", r.status)
+	}
+}
+
+func TestBrowserGateFinishesWhenNoGuardStarts(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.startErr = errors.New("exec: no such file")
+	tg := startTestGate(t, launcher, 1, false)
+	if r := tg.await(t); r.status != 1 {
+		t.Fatalf("status = %d, want 1", r.status)
+	}
+	if n := strings.Count(tg.stderr.String(), "FAIL  web-"); n != len(browserGuards) {
+		t.Fatalf("%d FAIL verdicts, want one per guard; stderr = %s", n, tg.stderr.String())
+	}
+}
+
 // A private Go home that fails to set up fails only its guard, and the
 // setup's own output is what the verdict replays.
 func TestBrowserGateReplaysAFailedGuardSetup(t *testing.T) {
@@ -525,7 +559,7 @@ func TestBrowserGateInterruptDuringGuardSetupWaitsAndNeverStartsTheGuard(t *test
 // An interrupt during the frontend build waits for the build, as a foreground
 // step would be, then stops without starting a guard.
 func TestBrowserGateInterruptDuringTheBuildWaitsForIt(t *testing.T) {
-	launcher := &blockingBuildLauncher{fakeLauncher: newFakeLauncher(), entered: make(chan struct{}), hold: make(chan struct{})}
+	launcher := &blockingBuildLauncher{fakeLauncher: newFakeLauncher(), entered: make(chan struct{}), hold: make(chan struct{}), stopped: make(chan struct{})}
 	tg := startTestGateWithSignals(t, launcher, len(browserGuards), true, make(chan os.Signal))
 	select {
 	case <-launcher.entered:
@@ -540,6 +574,14 @@ func TestBrowserGateInterruptDuringTheBuildWaitsForIt(t *testing.T) {
 	case r := <-tg.result:
 		t.Fatalf("the gate returned %+v while the build was still running", r)
 	}
+	// The operator insisting stops the build rather than abandoning it: the
+	// gate asks it to stop, then still waits for it to exit.
+	select {
+	case <-launcher.stopped:
+	case <-time.After(tripwire):
+		t.Fatal("a second interrupt did not stop the build")
+	}
+	tg.assertRunning(t, "the stopped build had not exited yet")
 	close(launcher.hold)
 	if r := tg.await(t); r.status != 130 || !r.keep {
 		t.Fatalf("result = %+v, want the second signal's 130 and the scratch kept", r)
@@ -548,16 +590,25 @@ func TestBrowserGateInterruptDuringTheBuildWaitsForIt(t *testing.T) {
 }
 
 // blockingBuildLauncher holds the frontend build until released.
+// It closes stopped when the gate asks it to stop, and still returns only once
+// hold is closed, like a build that takes a moment to wind down.
 type blockingBuildLauncher struct {
 	*fakeLauncher
 	entered chan struct{}
 	hold    chan struct{}
+	stopped chan struct{}
 }
 
-func (l *blockingBuildLauncher) BuildFrontend(log io.Writer) int {
+func (l *blockingBuildLauncher) BuildFrontend(ctx context.Context, _ io.Writer) int {
 	close(l.entered)
+	select {
+	case <-ctx.Done():
+		close(l.stopped)
+	case <-l.hold:
+		return 0
+	}
 	<-l.hold
-	return 0
+	return 143
 }
 
 // Every guard is launched with private roots inside its own scratch directory,
@@ -770,5 +821,37 @@ func TestExecGuardLauncherPrivateGoHomeFailureLeavesItsCauseInTheLog(t *testing.
 	}
 	if !strings.Contains(log.String(), "not-a-directory") {
 		t.Fatalf("the setup's own error is not in the log: %q", log.String())
+	}
+}
+
+// A stoppable command, stopped, gets SIGTERM (so it can clean up) and is waited
+// for until it exits.
+func TestStoppableCommandTerminatesAndWaits(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	cleaned := filepath.Join(dir, "cleaned")
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	cmd := stoppableCommand(ctx, "sh", "-c", `trap 'touch "$2"; exit 9' TERM; touch "$1"; while :; do sleep 0.05; done`, "sh", ready, cleaned)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(tripwire)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the command never became ready")
+		}
+		time.Sleep(10 * time.Millisecond) // TRIPWIRE-bounded wait for the command's own ready file
+	}
+	stop()
+	_ = cmd.Wait()
+	if code := cmd.ProcessState.ExitCode(); code != 9 {
+		t.Fatalf("exit = %d, want the TERM trap's 9 (a KILL would give -1)", code)
+	}
+	if _, err := os.Stat(cleaned); err != nil {
+		t.Fatalf("Wait returned before the command finished its cleanup: %v", err)
 	}
 }
