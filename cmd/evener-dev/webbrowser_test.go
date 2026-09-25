@@ -380,8 +380,9 @@ func TestBrowserGateSecondInterruptStopsWaiting(t *testing.T) {
 // gate starts leaves every guard unstarted.
 func TestBrowserGateStartsNoGuardAfterAPendingInterrupt(t *testing.T) {
 	launcher := newFakeLauncher()
-	tg := startTestGate(t, launcher, len(browserGuards), false)
-	tg.signals <- syscall.SIGHUP
+	signals := make(chan os.Signal, 4)
+	signals <- syscall.SIGHUP // queued before the gate runs, so it is pending from the start
+	tg := startTestGateWithSignals(t, launcher, len(browserGuards), false, signals)
 	if r := tg.await(t); r.status != 129 || !r.keep {
 		t.Fatalf("result = %+v, want 129 and the scratch kept", r)
 	}
