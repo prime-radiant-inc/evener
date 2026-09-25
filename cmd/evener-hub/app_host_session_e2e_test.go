@@ -3,11 +3,8 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -37,20 +34,6 @@ import (
 // ref only as a spelling this controller could produce.
 const (
 	sessionCheckControllerProvider = "fake"
-	// sessionCleanupStopTimeout bounds the cleanup's in-band stop. It is strictly
-	// larger than one worst-case attempt plus the wait between attempts — one
-	// attempt can spend the host daemon's whole drain budget (sessionStopDrainBudget)
-	// before it answers at all — because a window that size would never run a retry,
-	// and the failure an operator saw would be the deadline rather than the shutdown
-	// error stopFailureToReport exists to surface. Two minutes leaves room for two
-	// full-length attempts and their waits, and matches the STOP assertion's clock.
-	sessionCleanupStopTimeout = 2 * time.Minute
-	// sessionCleanupRetryWait is the pause between the cleanup's stop attempts.
-	sessionCleanupRetryWait = 2 * time.Second
-	// sessionStopDrainBudget is the host daemon's own shutdown drain budget (serve's
-	// is 30s): one stop attempt can spend that long before it answers at all, which is
-	// the worst case the cleanup's window has to leave room for.
-	sessionStopDrainBudget = 30 * time.Second
 	// sessionSpawnTimeout bounds the spawn: the host resolves the launch with
 	// several sequentially bounded shell-outs (two launch-checks and the daemon
 	// spawn), so the lease is generous for one spawn. It counts from
@@ -68,13 +51,15 @@ const (
 	// spawn did and the reason the spawn's own budget is three minutes, so it is
 	// sized like that resolution rather than like a plain read.
 	sessionResolveTimeout = 3 * time.Minute
-	// sessionStopTimeout bounds the STOP assertion's own call. The assertion is
-	// judged on its own clock, not the run's: the outer context has already spent
-	// the attach (up to hostAttachTimeout) and up to three minutes of spawn budget,
-	// and a slow attach must not turn a stop that works into a failure. It is
-	// generous for the same reason the call is not instant — it is forwarded to the
-	// host's hub, and the host's daemon drains its session state on the way down
-	// (sessionStopDrainBudget, the same figure the cleanup window is sized around).
+	// sessionStopTimeout bounds one thread/shutdown through the controller: the STOP
+	// assertion's call, and the cleanup's single attempt when the assertion did not
+	// settle the session first. The call is forwarded to the host's hub and is not
+	// instant — the session's daemon drains its state on the way down, a drain the
+	// daemon itself bounds at 30 seconds (cmd/evener/serve.go's
+	// shutdownDrainWaitBudget) — so the window is generous. Each use takes its own
+	// clock from context.Background, not the run's: the outer context has already
+	// spent the attach and the spawn, and a slow attach must not turn a stop that
+	// works into a failure.
 	sessionStopTimeout = 2 * time.Minute
 )
 
@@ -189,22 +174,33 @@ func sessionModelAmbiguousWithController(hostResolvedModel, controllerProvider, 
 //     band: the check never reaches for a process table on the host. The
 //     assertion is judged on its own clock, not the run's spent budget.
 //
-// Cleanup is band-only and says what it can and cannot do. The stop is registered
-// before the spawn is asked for, over a target the closure reads once the SPAWN
-// assertion has armed it: a session that came back with a ref this check may stop —
-// one that parses as the host's own, never the raw response — is stopped through
-// the controller, retrying inside one bounded window. A stop that never takes
-// leaves the directory in place, with a failure naming the ref, the directory, and
-// the fact that nothing was cleaned up — deleting a directory a running session
-// still references would be the leak this cleanup exists to prevent. When NO such
-// ref came back the outcome decides: a start the host refused as a request (an
-// answered request-refusal frame) never started anything, so the directory goes;
-// anything else — a lost response, a timeout, a dropped connection, a foreign ref,
-// or any other answered frame — leaves it, and the check does not hunt for the
-// session: it says the truth plainly (the host, the directory, the session that may
-// be running there that this check cannot stop, and where the operator can stop
-// it). There is no fleet sweep, no directory matcher, and no process table in any
-// of this.
+// Cleanup is band-only, and its rules are small enough to state whole:
+//
+//   - The directory this run creates on the host is removed only once the mkdir
+//     that made it has answered success. A creation this run cannot confirm — the
+//     name already exists, or ssh never said whether it ran — is not removed: the
+//     run fails there, before the spawn, and names the path. Nothing is ever
+//     deleted on a guess, and a creation whose answer was lost can leave one empty
+//     directory behind, which the failure names.
+//   - A stop is registered before the spawn is asked for, over a target the
+//     closure reads once the SPAWN assertion has armed it: a session that came
+//     back with a ref this check may stop — one that parses as the host's own,
+//     never the raw response — is stopped through the controller in one attempt
+//     on its own clock; an earlier design retried inside a window, which is not
+//     needed for a cleanup whose outcome the operator reads. A stop that does not
+//     succeed leaves the directory in place, with a failure naming the ref, the
+//     directory, and the fact that nothing was cleaned up — deleting a directory
+//     a running session still references would be the leak this cleanup exists to
+//     prevent.
+//   - When NO such ref came back, whatever the start's failure was, the directory
+//     stays: no answer this check reads proves nothing started there, so it does
+//     not hunt for the session — and it no longer sorts "the host refused, nothing
+//     started" from "the answer was lost, something may have": that sorting needed
+//     the wire's error taxonomy to be right, and its only prize was removing an
+//     empty directory on a run that had already failed. The run says the truth
+//     plainly (the host, the directory, the session that may be running there that
+//     this check cannot stop, and where the operator can stop it). There is no
+//     fleet sweep, no directory matcher, and no process table in any of this.
 //
 // What the stop does not remove is the session RECORD the host keeps in its own
 // state root — thread/shutdown stops the daemon, it does not delete the session —
@@ -216,8 +212,9 @@ func sessionModelAmbiguousWithController(hostResolvedModel, controllerProvider, 
 // The session gate is separate from the read-mostly add/attach check beside this
 // file because this test WRITES to the host: it creates its own directory there,
 // starts a session in it, stops that session through the controller, and removes
-// the directory — unless a session it started could not be stopped, or a start's
-// outcome was unknown, in which case the directory stays and the run says so.
+// the directory — unless it could not confirm the directory's creation, or a
+// session it started (or may have started but cannot address) could not be
+// stopped, in which case the directory stays and the run says so.
 // EVENER_SSH_E2E_EVENER_PATH overrides the host's evener path (default
 // ~/.local/bin/evener).
 func TestHostSpawnSessionE2E(t *testing.T) {
@@ -253,58 +250,30 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	}
 	token := fmt.Sprintf("evener-session-e2e-%d-%d", os.Getpid(), time.Now().UnixNano())
 	hostDir := home + "/" + token
-	// The removal is registered BEFORE the mkdir, not after it: a creation whose ssh
-	// response is lost may still have made the directory on the host, and a cleanup
-	// registered only once mkdir answered would leave that directory behind for good.
-	// What may be removed depends on what the mkdir told us, which is
-	// runDirectoryRemoval's judgement over the three outcomes: rm -rf only once this
-	// run watched the mkdir succeed; rmdir while the outcome is unknown, so an
-	// unproven creation can never be deleted with its contents; and nothing at all
-	// when the mkdir answered that the path already existed — someone else's
-	// directory, even an empty one. The stop arm below runs first (cleanups are LIFO)
-	// and sets sessionLeftBehind when a session it could not stop may still be running
-	// here: a directory a running session still references is better left than deleted
-	// out from under it.
-	var dirOutcome hostDirOutcome
+	// Plain `mkdir`, not `mkdir -p`: the atomic form refuses a path that already
+	// exists. A failure here is fatal and removes nothing — the name may be someone
+	// else's directory, and when ssh never said whether the command ran, this run
+	// cannot prove the directory is its own. Either way the failure names the path,
+	// so an empty directory this run did leave behind is the operator's to remove.
+	if out, err := host.run("mkdir " + shellquote.RemoteWord(hostDir)); err != nil {
+		t.Fatalf("could not create %s on host %s (%v: %s); this run removes only a directory whose creation it watched succeed, so the path is left untouched", hostDir, host.target, err, strings.TrimSpace(string(out)))
+	}
+	// The removal is registered now that the mkdir above has answered success: the
+	// directory is this run's, and rm -rf may take it with whatever the session
+	// leaves inside. The stop's own cleanup below runs first (cleanups are LIFO) and
+	// sets sessionLeftBehind when it could not establish that nothing it started is
+	// still running here: a directory a running session still references is better
+	// left than deleted out from under it.
 	var sessionLeftBehind bool
 	t.Cleanup(func() {
 		if sessionLeftBehind {
 			t.Logf("leaving %s in place: this run could not establish that nothing it started is still running there", hostDir)
 			return
 		}
-		remove := runDirectoryRemoval(hostDir, dirOutcome)
-		if remove == "" {
-			t.Logf("not removing %s on host %s: the mkdir refused it, so the path already existed and is not this run's directory", hostDir, host.target)
-			return
+		if out, err := host.run("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v (%s)", hostDir, host.target, err, strings.TrimSpace(string(out)))
 		}
-		out, err := host.run(remove)
-		if err == nil {
-			if dirOutcome == hostDirUnknown {
-				t.Logf("removed %s with rmdir: the mkdir response was lost and the directory was empty, which is what a creation this run just made leaves behind", hostDir)
-			}
-			return
-		}
-		if dirOutcome == hostDirWatched {
-			t.Errorf("remove the test-owned directory %s on host %s (%s): %v (%s)", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
-			return
-		}
-		t.Logf("did not remove %s on host %s (%s): %v (%s) — the mkdir response was lost, so only an empty directory is reconciled away with rmdir; anything holding content is left alone", hostDir, host.target, remove, err, strings.TrimSpace(string(out)))
 	})
-	// Plain `mkdir`, not `test -e` followed by `mkdir -p`: the atomic form refuses an
-	// existing path, while the two-step form would adopt a directory created in the
-	// gap — and once this run has watched that directory come into being, the cleanup
-	// takes it with whatever the session left inside. Its failure is read by
-	// classifyHostDirOutcome, so a refusal (the path exists) and an unknown outcome
-	// (ssh never said whether the command ran) are told apart rather than lumped
-	// together.
-	if out, err := host.run("mkdir " + shellquote.RemoteWord(hostDir)); err != nil {
-		dirOutcome = classifyHostDirOutcome(err)
-		if dirOutcome == hostDirRefused {
-			t.Fatalf("host %s already has %s (%v: %s); this check creates and removes its own directory, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
-		}
-		t.Fatalf("could not tell whether host %s made %s (%v: %s); this check creates and removes its own directory, so it stops rather than adopt one it cannot account for", host.target, hostDir, err, strings.TrimSpace(string(out)))
-	}
-	dirOutcome = hostDirWatched
 
 	evenerPath := os.Getenv("EVENER_SSH_E2E_EVENER_PATH")
 	if evenerPath == "" {
@@ -371,14 +340,14 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// is known. That ordering is the point: a start whose response never arrives —
 	// a timeout, a dropped connection — still leaves a session running on the host.
 	//
-	// When a ref this check may touch came back, the session is stopped through the
-	// controller in band, retrying inside one bounded window — unless the check's own
-	// STOP assertion already settled it (stopSettled below). When none did, the
-	// cleanup does not hunt for it: it asks whether the host REFUSED the start — an
-	// answered request-refusal means nothing was started, so the directory goes — and
-	// otherwise treats the outcome as unknown, says the truth plainly, and leaves the
-	// directory. Nothing here reaches for a process table, a kill, a pattern, or a
-	// sweep of the fleet view.
+	// The cleanup's stop is one attempt on sessionStopTimeout, the same call and
+	// clock the STOP assertion uses, and it is skipped once that assertion has
+	// settled the session (stopSettled below). A stop that fails is reported with
+	// the ref, the host and the reason, and leaves the directory in place. When no
+	// ref this check may stop came back, nothing here tries to find the session: no
+	// answer the check reads proves nothing started, so the directory stays and the
+	// run says the truth plainly. Nothing here reaches for a process table, a kill,
+	// a pattern, or a sweep of the fleet view.
 	var ref string
 	// stopRef is the cleanup's target, and it is NOT the raw response: it is armed
 	// only from sessionStopTarget, once the SPAWN assertion has judged the ref parses
@@ -386,51 +355,36 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// leaves it empty, so a response this check must not act on is never shut down.
 	var stopRef string
 	// stopSettled records that the body's own STOP assertion already stopped this
-	// session, so the cleanup has no stop left to make. The remote handler tolerates
-	// an exited session today (shutdownThreadTolerateExited, which the forwarding
-	// path lands on), so a repeat would be a tolerated no-op — but the cleanup's job
-	// must not depend on that tolerance holding: once the explicit stop has returned
-	// success, the session is settled and only the directory removal is left.
+	// session: the cleanup has no stop left to make, and it does not lean on the
+	// remote handler tolerating a repeat for an already-exited session.
 	var stopSettled bool
-	// startParams is the request this check sends, kept beside the cleanup so the
-	// refusal classification can check the request's own shape rather than assume it
-	// (it carries no Input: see the boundary comment above the start call).
-	startParams := appwire.ThreadStartParams{
-		Harness: "evener",
-		Source:  hostE2EName,
-		CWD:     hostDir,
-	}
-	var startErr error
 	t.Cleanup(func() {
 		if stopRef == "" {
-			if startErrorIsDefiniteRefusal(startErr, startParams) {
-				// The host answered and refused the request, so nothing was ever
-				// started: there is no session the directory could belong to. The run
-				// fails on the start error itself (thread/start's own error path).
-				t.Logf("host %s refused the start (%v), so nothing was started there; removing %s", host.target, startErr, hostDir)
-				return
-			}
 			// The run has already failed at this point (thread/start's error path, or
 			// the SPAWN assertion that refuses a ref this check may not stop), so this
-			// reports rather than adds a failure: the session the host may be running
-			// cannot be addressed from here, and the operator is told where it is.
+			// reports rather than adds a failure: no answer read here can prove nothing
+			// started, so the session the host may be running cannot be addressed from
+			// here, and the operator is told where it is.
 			sessionLeftBehind = true
-			t.Logf("a session may be running on host %s under %s that this check cannot stop: thread/start named no ref this check may stop — its response was lost, its answer carried none, or the ref it named was not this host's — so nothing here can address it. It is visible in the controller's own fleet view, as a session whose working directory is %s, and can be stopped from there. Nothing was cleaned up: the directory is left in place.", host.target, hostDir, hostDir)
+			t.Logf("a session may be running on host %s under %s that this check cannot stop: thread/start named no ref this check may stop — its response was lost, its answer carried none, or the ref it named was not this host's — so nothing here can address it. If one is running, the controller's own fleet view lists it by its working directory %s, and it can be stopped from there. Nothing was cleaned up: the directory is left in place.", host.target, hostDir, hostDir)
 			return
 		}
 		if stopSettled {
 			return
 		}
-		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionCleanupStopTimeout)
+		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionStopTimeout)
 		defer cancelStop()
-		if err := stopSessionInBand(stopCtx, client, stopRef); err != nil {
+		if _, err := clientRequest[appwire.EmptyResponse](stopCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: stopRef}); err != nil {
 			sessionLeftBehind = true
-			t.Errorf("left a session running on host %s: thread/shutdown of %s kept failing (%v) for its %s window, so the session could not be stopped; nothing was cleaned up — the directory is left in place, because a running session still references it", host.target, stopRef, err, sessionCleanupStopTimeout)
+			t.Errorf("left a session running on host %s: thread/shutdown of %s failed (%v), so the session could not be stopped; nothing was cleaned up — the directory is left in place, because a running session still references it", host.target, stopRef, err)
 		}
 	})
 
-	started, err := clientRequest[appwire.ThreadStartResponse](startCtx, client, appwire.MethodThreadStart, startParams)
-	startErr = err
+	started, err := clientRequest[appwire.ThreadStartResponse](startCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness: "evener",
+		Source:  hostE2EName,
+		CWD:     hostDir,
+	})
 	if err != nil {
 		t.Fatalf("step thread/start with source %q: %v (a host that cannot resolve a model from its own launch configuration refuses here)", hostE2EName, err)
 	}
@@ -562,54 +516,6 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	t.Logf("the controller stopped %s in band", stopRef)
 }
 
-// stopSessionInBand stops one session through the controller, retrying while the
-// context's budget lasts: one refusal can be a transient transport or an
-// unsettled daemon, and the cleanup's job is to settle the question rather than to
-// report the first failure.
-//
-// The wait between attempts wakes at once when the budget ends (a select, not a
-// sleep), so no attempt starts on a spent clock and the loop cannot overshoot its
-// own deadline by one retry delay. What it returns then is the last SHUTDOWN
-// error, chosen by stopFailureToReport: the operator needs to know why the stop
-// kept failing, not that time ran out.
-func stopSessionInBand(ctx context.Context, client *appwire.Client, ref string) error {
-	var lastErr, lastSubstantive error
-	for {
-		if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
-			lastErr = err
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				lastSubstantive = err
-			}
-		} else {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return stopFailureToReport(lastErr, lastSubstantive)
-		case <-time.After(sessionCleanupRetryWait):
-			// Both arms can be ready at once and select picks at random, so the
-			// deadline wins the race here rather than being trusted to have won it:
-			// no attempt starts on a spent clock.
-			if ctx.Err() != nil {
-				return stopFailureToReport(lastErr, lastSubstantive)
-			}
-		}
-	}
-}
-
-// stopFailureToReport picks what the cleanup reports when the stop budget runs
-// out: the last failure that was not the context ending itself, because that is
-// the one that says why the stop kept failing; or the last attempt's own error
-// when every attempt was cut off by the deadline, which is then the only thing
-// there is to report. The caller never asks this with both nil: the budget can
-// only end after at least one failed attempt.
-func stopFailureToReport(lastAttempt, lastSubstantive error) error {
-	if lastSubstantive != nil {
-		return lastSubstantive
-	}
-	return lastAttempt
-}
-
 // sessionStopTarget returns the ref the cleanup may stop for a thread/start
 // response, or an error naming why the response's ref is not one this check may
 // touch. A ref that does not parse names nothing; a ref whose source is not the
@@ -628,118 +534,8 @@ func sessionStopTarget(ref string) (string, error) {
 	return ref, nil
 }
 
-// hostDirOutcome is what this run knows about the directory it wants on the host,
-// judged from what the mkdir itself said.
-type hostDirOutcome int
-
-const (
-	// hostDirUnknown: the call failed without telling us whether the remote command
-	// ran at all — a transport failure, a dropped connection, a timeout.
-	hostDirUnknown hostDirOutcome = iota
-	// hostDirWatched: the mkdir answered success, so this run made the directory.
-	hostDirWatched
-	// hostDirRefused: the mkdir answered with its own non-zero status, which for a
-	// plain mkdir means the path already existed — someone else's directory.
-	hostDirRefused
-)
-
-// String implements fmt.Stringer, so a table failure names the outcome it read.
-func (o hostDirOutcome) String() string {
-	switch o {
-	case hostDirWatched:
-		return "watched"
-	case hostDirRefused:
-		return "refused"
-	}
-	return "unknown"
-}
-
-// sshTransportExitCode is the single status ssh(1) uses for its own failures. ssh
-// forwards the remote command's own status unchanged, so a completed run cannot in
-// general prove whose failure a status is (sshconn's isSSHAuthFailure says so) — but
-// this call site runs a plain mkdir, which exits 0 or 1 and never 255, so a 255
-// here is not the mkdir answering.
-const sshTransportExitCode = 255
-
-// classifyHostDirOutcome reads what this run knows about the directory from the
-// mkdir's own result:
-//
-//   - nil is the watched case: the mkdir answered success.
-//   - a completed ssh run whose status is not ssh's own failure convention is the
-//     remote mkdir answering — for a plain mkdir, the refusal it gives when the
-//     path already exists.
-//   - everything else — ssh's own 255, a context that ended, a spawn failure — does
-//     not say whether the remote command ran, so it is unknown.
-func classifyHostDirOutcome(err error) hostDirOutcome {
-	if err == nil {
-		return hostDirWatched
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() != sshTransportExitCode {
-		return hostDirRefused
-	}
-	return hostDirUnknown
-}
-
-// runDirectoryRemoval returns the one command the directory cleanup may run on the
-// host, or "" when nothing may be removed at all:
-//
-//   - watched: rm -rf may take the directory with whatever the session left in it;
-//   - unknown: rmdir reconciles an empty directory this run just made, and fails
-//     harmlessly on anything else, so an rm -rf never runs on a guess;
-//   - refused: nothing at all — the path was already there, and it is not this
-//     run's directory to delete.
-func runDirectoryRemoval(dir string, outcome hostDirOutcome) string {
-	if outcome == hostDirWatched {
-		return "rm -rf " + shellquote.RemoteWord(dir)
-	}
-	if outcome == hostDirUnknown {
-		return "rmdir " + shellquote.RemoteWord(dir)
-	}
-	return "" // refused: the path was already there, and it is not this run's directory
-}
-
-// startErrorIsDefiniteRefusal reports whether a thread/start error is the HOST
-// answering with a refusal, which means it never got as far as starting a
-// session: the directory this check made then holds nothing, so it can be
-// removed. Every other failure — a transport failure, a timeout, a dropped
-// connection, or an answered frame that is not that refusal — leaves the outcome
-// unknown, and an unknown outcome keeps the directory.
-//
-// The discriminator is the AppWire client's own, not one invented here: an
-// answered error arrives as appwire.WireError (client.go's request returns
-// msg.Error.Error verbatim), while a call that never got an answer arrives as a
-// context error, a transport error, or appwire.RequestNotSentError. Within the
-// answered frames only CodeInvalidParams is taken as definite, because "the host
-// answered" does not by itself mean nothing was started: the start path can
-// answer Unavailable after the daemon is up (app_threadlifecycle.go's post-spawn
-// read failure, :251) and InvalidParams after it too (:281's skill-input gate,
-// reachable only for a request carrying Input). The internal-error frame the
-// client SYNTHESIZES when the connection dies mid-request (client.go) is likewise
-// not a refusal, and neither is a bare error.
-//
-// That :281 gate is why the definite case requires the request's own shape as
-// well: it fires only for a request carrying Input, so a refusal frame proves that
-// nothing started only when the request carried none. The check asserts that about
-// the params it actually sent rather than assuming it — a future request that
-// carries input then cannot have the directory removed under a session that is
-// still running.
-func startErrorIsDefiniteRefusal(err error, params appwire.ThreadStartParams) bool {
-	if len(params.Input) > 0 {
-		return false
-	}
-	if err == nil {
-		return false
-	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		return false
-	}
-	return wire.Code == appwire.CodeInvalidParams
-}
-
 // TestSessionModelProvenance pins the provenance judgement the live check makes,
-// with no host and no ssh: the seam is the pair of pure predicates above.
+// with no host and no ssh: the seam is the three pure predicates above.
 //
 // The controller these tables name is the one startHubStack builds — a single
 // provider instance "fake" serving the fakellm model — so its possible
@@ -817,30 +613,6 @@ func TestSessionModelProvenance(t *testing.T) {
 	}
 }
 
-// TestStopFailureToReport pins what the cleanup reports when its stop budget runs
-// out: the last substantive shutdown failure, not the fact that time ran out. The
-// operator needs to know why the stop kept failing; a context error only stands in
-// when every attempt was cut off by the deadline and there is nothing else to say.
-func TestStopFailureToReport(t *testing.T) {
-	refusal := appwire.Unavailable("session is not addressable")
-	tests := []struct {
-		name            string
-		lastAttempt     error
-		lastSubstantive error
-		want            error
-	}{
-		{"a substantive failure before the deadline", context.DeadlineExceeded, refusal, refusal},
-		{"the last attempt was the failure", refusal, refusal, refusal},
-		{"every attempt ended on the deadline", context.DeadlineExceeded, nil, context.DeadlineExceeded},
-		{"a cancellation with no substantive failure", context.Canceled, nil, context.Canceled},
-	}
-	for _, tc := range tests {
-		if got := stopFailureToReport(tc.lastAttempt, tc.lastSubstantive); !errors.Is(got, tc.want) {
-			t.Errorf("stopFailureToReport(%v, %v) = %v, want %v (%s)", tc.lastAttempt, tc.lastSubstantive, got, tc.want, tc.name)
-		}
-	}
-}
-
 // TestSessionStopTarget pins which thread/start refs the cleanup may stop: only a
 // ref that parses and names the host that was asked. A controller-local ref,
 // another host's ref, a malformed ref and an empty one all leave the cleanup with
@@ -863,126 +635,6 @@ func TestSessionStopTarget(t *testing.T) {
 		got, err := sessionStopTarget(tc.ref)
 		if got != tc.want || (err != nil) != tc.wantErr {
 			t.Errorf("sessionStopTarget(%q) = (%q, %v), want (%q, err=%v) (%s)", tc.ref, got, err, tc.want, tc.wantErr, tc.name)
-		}
-	}
-}
-
-// TestRunDirectoryRemoval pins the one command the directory cleanup may run, per
-// outcome, and with it the property the atomic mkdir exists for: rm -rf only for a
-// directory this run watched itself create; rmdir — never rm -rf — while the
-// creation outcome is unknown; and nothing at all when the mkdir answered that the
-// path already existed, because that directory is not this run's to delete.
-func TestRunDirectoryRemoval(t *testing.T) {
-	const dir = "/Users/jesse/evener-session-e2e-1-2"
-	tests := []struct {
-		name    string
-		outcome hostDirOutcome
-		want    string
-	}{
-		{"a directory this run watched itself create", hostDirWatched, "rm -rf " + shellquote.RemoteWord(dir)},
-		{"a creation whose outcome is unknown", hostDirUnknown, "rmdir " + shellquote.RemoteWord(dir)},
-		{"a creation the host refused because the path exists", hostDirRefused, ""},
-	}
-	for _, tc := range tests {
-		got := runDirectoryRemoval(dir, tc.outcome)
-		if got != tc.want {
-			t.Errorf("runDirectoryRemoval(%q, %s) = %q, want %q (%s)", dir, tc.outcome, got, tc.want, tc.name)
-		}
-		if strings.Contains(got, "rm -rf") && tc.outcome != hostDirWatched {
-			t.Errorf("runDirectoryRemoval(%q, %s) = %q: rm -rf is only for a directory this run watched itself create", dir, tc.outcome, got)
-		}
-	}
-}
-
-// TestClassifyHostDirOutcome pins the discriminator: ssh's own failure status, and
-// any failure that never completed, are unknown; a completed run's own (non-ssh)
-// status is the remote mkdir answering, which for a plain mkdir is the refusal it
-// gives when the path already exists. The errors are the real shapes hostSSH.run
-// leaves behind: a completed command's *exec.ExitError with its status, and the
-// context or spawn failures that never ran one.
-func TestClassifyHostDirOutcome(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want hostDirOutcome
-	}{
-		{"the mkdir answered success", nil, hostDirWatched},
-		{"the remote mkdir answered with its own status", exitStatusError(t, 1), hostDirRefused},
-		{"ssh's own failure status", exitStatusError(t, sshTransportExitCode), hostDirUnknown},
-		{"a timeout", context.DeadlineExceeded, hostDirUnknown},
-		{"a dropped connection", net.ErrClosed, hostDirUnknown},
-		{"ssh never started", &exec.Error{Name: "ssh", Err: exec.ErrNotFound}, hostDirUnknown},
-	}
-	for _, tc := range tests {
-		if got := classifyHostDirOutcome(tc.err); got != tc.want {
-			t.Errorf("classifyHostDirOutcome(%v) = %s, want %s (%s)", tc.err, got, tc.want, tc.name)
-		}
-	}
-}
-
-// exitStatusError returns the error a completed local command leaves behind when it
-// exits with code: the same *exec.ExitError shape hostSSH.run reports for a
-// completed ssh run, whose status is the remote command's own.
-func exitStatusError(t *testing.T, code int) error {
-	t.Helper()
-	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
-	if err == nil {
-		t.Fatalf("sh -c 'exit %d' returned no error", code)
-	}
-	return err
-}
-
-// TestSessionCleanupWindowFitsARetry pins the cleanup window's arithmetic: one
-// attempt can spend the host daemon's whole drain budget before it answers, so a
-// window no larger than that plus the retry wait would never run a retry and the
-// failure an operator saw would be the deadline rather than the shutdown error
-// stopFailureToReport exists to surface.
-func TestSessionCleanupWindowFitsARetry(t *testing.T) {
-	if sessionCleanupStopTimeout <= sessionStopDrainBudget+sessionCleanupRetryWait {
-		t.Fatalf("the cleanup's window %s leaves no room for a retry after one full-length attempt (%s) plus the wait (%s): the stop would report the deadline instead of why it failed", sessionCleanupStopTimeout, sessionStopDrainBudget, sessionCleanupRetryWait)
-	}
-}
-
-// TestStartErrorIsDefiniteRefusal pins the classification the cleanup's no-ref
-// branch depends on: a start the host REFUSED as a request (its answer is a wire
-// frame carrying the request-refusal code) lets the directory go, because nothing
-// was started; every other outcome — any other answered frame, a transport
-// failure, a timeout, a dropped connection — leaves the directory and reports,
-// because a session may be running.
-//
-// The definite case requires the request's own shape too: the start path has a
-// post-spawn refusal for a request that carries input (the skill-input gate), so a
-// refusal frame is proof only when the request carried no input. That half is
-// pinned here as well, because "this check sends no input" has to be checked, not
-// assumed.
-//
-// The values are the shapes the client really produces: appwire.WireError frames
-// for an answered error (client.go's request returns msg.Error.Error verbatim),
-// and appwire.RequestNotSentError / context errors / net.ErrClosed for a call that
-// never got an answer.
-func TestStartErrorIsDefiniteRefusal(t *testing.T) {
-	noInput := appwire.ThreadStartParams{Harness: "evener", Source: hostE2EName, CWD: "/tmp/evener-session-e2e-1-2"}
-	tests := []struct {
-		name   string
-		err    error
-		params appwire.ThreadStartParams
-		want   bool
-	}{
-		{"the host's request refusal for an input-free request", appwire.InvalidParams("model is required"), noInput, true},
-		{"a refusal wrapped by a caller", fmt.Errorf("step thread/start: %w", appwire.InvalidParams("model is required")), noInput, true},
-		{"a refusal frame for a request that carried input", appwire.InvalidParams("input: skill input is not supported"), appwire.ThreadStartParams{Harness: "evener", Input: []appwire.InputItem{{Type: "text", Text: "go"}}}, false},
-		{"another answered frame", appwire.Unavailable("session ownership changed"), noInput, false},
-		{"a launch-path answer", appwire.HubLaunchError("evener launch-check timed out"), noInput, false},
-		{"the client's synthesized internal-error frame", appwire.InternalError("appwire: client closed"), noInput, false},
-		{"a call that never went out", appwire.RequestNotSentError{Err: context.Canceled}, noInput, false},
-		{"a timeout", context.DeadlineExceeded, noInput, false},
-		{"a dropped connection", net.ErrClosed, noInput, false},
-		{"a bare error from the client's other paths", errors.New("appwire thread/start: expected response"), noInput, false},
-		{"no error at all", nil, noInput, false},
-	}
-	for _, tc := range tests {
-		if got := startErrorIsDefiniteRefusal(tc.err, tc.params); got != tc.want {
-			t.Errorf("startErrorIsDefiniteRefusal(%v, %+v) = %v, want %v (%s)", tc.err, tc.params, got, tc.want, tc.name)
 		}
 	}
 }
