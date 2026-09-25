@@ -1276,11 +1276,7 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		// preceding groups, matching the full read's single-registry
 		// threading without replaying the prefix.
 		if !regSeeded {
-			startRecord := index.recordAt(groupStart)
-			if len(startRecord.CommRawArgs) > 0 {
-				reg.CommRawArgs = maps.Clone(startRecord.CommRawArgs)
-			}
-			reg.LastAssistantText = startRecord.LastAssistantText
+			seedRegistryFromRecord(reg, index.recordAt(groupStart))
 			regSeeded = true
 		}
 		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil, open: false}
@@ -1883,6 +1879,17 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 	return turnID, calls
 }
 
+// seedRegistryFromRecord copies a StartsGroup record's persisted
+// CommRawArgs/LastAssistantText onto a registry, cloning the args map only
+// when the record carries one so the common no-args case allocates nothing.
+// Bounded reads seed from the index record instead of replaying the prefix.
+func seedRegistryFromRecord(reg *ToolCallRegistry, record indexedTurn) {
+	if len(record.CommRawArgs) > 0 {
+		reg.CommRawArgs = maps.Clone(record.CommRawArgs)
+	}
+	reg.LastAssistantText = record.LastAssistantText
+}
+
 // replayCommRawArgs re-projects the open group's records from the indexed
 // prefix to reconstruct the deferred communicate raw bytes (CommRawArgs) the
 // assistant turn seeded, AND the LastAssistantText the last assistant turn in
@@ -1919,15 +1926,8 @@ func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryP
 	// CommRawArgs/LastAssistantText carried from preceding groups are
 	// included, then replay the group's records to reflect in-group changes.
 	startRecord := index.recordAt(startIdx)
-	seedArgs := map[string]string{}
-	if len(startRecord.CommRawArgs) > 0 {
-		seedArgs = maps.Clone(startRecord.CommRawArgs)
-	}
-	reg := &ToolCallRegistry{
-		Names:             map[string]string{},
-		CommRawArgs:       seedArgs,
-		LastAssistantText: startRecord.LastAssistantText,
-	}
+	reg := &ToolCallRegistry{Names: map[string]string{}}
+	seedRegistryFromRecord(reg, startRecord)
 	for i := startIdx; i < n; i++ {
 		record := index.recordAt(i)
 		raw := make([]byte, record.Length)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"os"
 
@@ -274,11 +273,7 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		}
 	}
 	if firstGroupStart >= 0 {
-		startRecord := index.recordAt(firstGroupStart)
-		if len(startRecord.CommRawArgs) > 0 {
-			reg.CommRawArgs = maps.Clone(startRecord.CommRawArgs)
-		}
-		reg.LastAssistantText = startRecord.LastAssistantText
+		seedRegistryFromRecord(reg, index.recordAt(firstGroupStart))
 	}
 	for ri, itemRange := range ranges {
 		if err := ctx.Err(); err != nil {
