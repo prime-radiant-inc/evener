@@ -135,13 +135,20 @@ func diffParity(live, file []appwire.Turn) map[parityDivergence]struct{} {
 // subsequence of their signatures, as index pairs in order.
 func alignParityItems(live, file []parityItem) [][2]int {
 	n, m := len(live), len(file)
+	liveSigs, fileSigs := make([]string, n), make([]string, m)
+	for i := range live {
+		liveSigs[i] = paritySignature(live[i].item)
+	}
+	for j := range file {
+		fileSigs[j] = paritySignature(file[j].item)
+	}
 	lengths := make([][]int, n+1)
 	for i := range lengths {
 		lengths[i] = make([]int, m+1)
 	}
 	for i := n - 1; i >= 0; i-- {
 		for j := m - 1; j >= 0; j-- {
-			if paritySignature(live[i].item) == paritySignature(file[j].item) {
+			if liveSigs[i] == fileSigs[j] {
 				lengths[i][j] = lengths[i+1][j+1] + 1
 			} else {
 				lengths[i][j] = max(lengths[i+1][j], lengths[i][j+1])
@@ -151,7 +158,7 @@ func alignParityItems(live, file []parityItem) [][2]int {
 	var pairs [][2]int
 	for i, j := 0, 0; i < n && j < m; {
 		switch {
-		case paritySignature(live[i].item) == paritySignature(file[j].item):
+		case liveSigs[i] == fileSigs[j]:
 			pairs = append(pairs, [2]int{i, j})
 			i++
 			j++
