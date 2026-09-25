@@ -77,6 +77,17 @@ func cloneThreadItem(item ThreadItem) ThreadItem {
 	return item
 }
 
+// CloneOverlayItem returns a copy of item that shares no mutable state with
+// it.
+func CloneOverlayItem(item OverlayItem) OverlayItem {
+	if item.Anchor != nil {
+		anchor := *item.Anchor
+		item.Anchor = &anchor
+	}
+	item.Item = cloneThreadItem(item.Item)
+	return item
+}
+
 func cloneInputItems(items []InputItem) []InputItem {
 	if items == nil {
 		return nil

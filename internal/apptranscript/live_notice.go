@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -214,4 +215,10 @@ func LiveOutputImages(images []events.OutputImage) []appwire.OutputImage {
 // URL points at bytes a server can already re-read.
 func UnfetchableUntilRecorded(image appwire.OutputImage) bool {
 	return image.Source == events.OutputImageSourceToolResult && image.URL == ""
+}
+
+// IsCancellation reports whether an error message is a cancelled context: a
+// user-cancelled turn, which is not a failure and shows as a warning.
+func IsCancellation(message string) bool {
+	return strings.TrimSpace(message) == context.Canceled.Error()
 }

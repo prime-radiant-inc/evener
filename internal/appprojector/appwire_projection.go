@@ -1,7 +1,6 @@
 package appprojector
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -905,7 +904,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// A user-cancelled turn is not a failure: surface it as a warning and
 		// let the interrupted SessionEnd own the turn's terminal state (do NOT
 		// complete the turn as failed here).
-		if isContextCanceledError(message) {
+		if apptranscript.IsCancellation(message) {
 			// Still map[string]any, not WarningParams - same omitempty-vs-blank-
 			// field risk as EventWarning's own comment above (kcb5).
 			return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
@@ -1612,10 +1611,6 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 		TurnID:   turnID,
 		Item:     item,
 	})}
-}
-
-func isContextCanceledError(message string) bool {
-	return strings.TrimSpace(message) == context.Canceled.Error()
 }
 
 func (p *AppEventProjector) threadStatus(status string) AppNotification {

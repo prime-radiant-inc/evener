@@ -1,6 +1,7 @@
 package appoverlay
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -240,16 +241,6 @@ func TestAPreviewSurvivesTheAssistantRecordUntilItsCommunicate(t *testing.T) {
 	none(t, o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"})))
 }
 
-func TestAPreviewResetRemovesItWithoutANotification(t *testing.T) {
-	o := newOverlay()
-	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
-	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
-	none(t, o.Event(events.New(events.CommunicatePreviewResetData{CallID: "c_1"})))
-	if o.Contains("preview:c_1") {
-		t.Fatal("the reset preview is still in the overlay")
-	}
-}
-
 func TestToolStateIsKeyedByTheHistoryKeyTheAssistantRecordTeaches(t *testing.T) {
 	o := newOverlay()
 	o.Event(events.New(events.ExecutionStartedData{TurnID: "t_1"}))
@@ -319,46 +310,161 @@ func TestHeldToolResultImagesArriveWhenPersisted(t *testing.T) {
 	none(t, o.Event(events.New(events.ToolResultImagesPersistedData{CallIDs: []string{"c_1"}})))
 }
 
-func TestRunningOutputKeepsTheLast256KBAtARuneBoundary(t *testing.T) {
+func TestRunningOutputTrimsBackTo192KBWithOneUpsertPastTheCap(t *testing.T) {
 	o := newOverlay()
 	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
 	o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_1"}))
 
-	// 4097-byte chunks of three-byte runes, so the cut lands inside a rune.
+	// 4097-byte chunks of three-byte runes, so a cut lands inside a rune.
 	chunk := strings.Repeat("€", 1365) + "ab"
 	var full strings.Builder
-	trimmed := false
+	clientHolds := 0 // what a client applying the changes holds
+	trims := 0
 	for full.Len() < 1<<20 {
 		full.WriteString(chunk)
 		change := one(t, o.Event(events.New(events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "c_1", Delta: chunk})))
-		if full.Len() <= maxRunningOutputBytes {
+		if clientHolds+len(chunk) <= maxRunningOutputBytes {
 			delta(t, change)
+			clientHolds += len(chunk)
 			continue
 		}
 		item := upserted(t, change)
-		if len(item.Item.Output) > maxRunningOutputBytes || !utf8.ValidString(item.Item.Output) {
-			t.Fatalf("trimmed output is %d bytes, valid UTF-8 %v", len(item.Item.Output), utf8.ValidString(item.Item.Output))
+		output := item.Item.Output
+		if len(output) > trimmedRunningOutputBytes || len(output) < trimmedRunningOutputBytes-utf8.UTFMax || !utf8.ValidString(output) {
+			t.Fatalf("trim kept %d bytes (valid UTF-8 %v), want the last 192 KB", len(output), utf8.ValidString(output))
 		}
-		trimmed = true
+		if !strings.HasSuffix(full.String(), output) {
+			t.Fatal("trimmed output is not the tail of what streamed")
+		}
+		clientHolds = len(output)
+		trims++
 	}
-	if !trimmed {
-		t.Fatal("1 MB of output never trimmed")
+	// 1 MB past a 256 KB cap, trimming to 192 KB: one trim per 64 KB.
+	if want := ((1 << 20) - maxRunningOutputBytes) / (maxRunningOutputBytes - trimmedRunningOutputBytes); trims < want-1 || trims > want+1 {
+		t.Fatalf("%d trims for 1 MB of output, want about %d", trims, want)
 	}
 	output := o.Snapshot()[0].Item.Output
-	if len(output) > maxRunningOutputBytes || len(output) < maxRunningOutputBytes-utf8.UTFMax || !utf8.ValidString(output) {
-		t.Fatalf("held output is %d bytes (valid %v), want the last 256 KB", len(output), utf8.ValidString(output))
-	}
-	if !strings.HasSuffix(full.String(), output) {
-		t.Fatal("held output is not the tail of what streamed")
+	if len(output) != clientHolds || len(output) > maxRunningOutputBytes || !strings.HasSuffix(full.String(), output) {
+		t.Fatalf("held output is %d bytes, the client holds %d; want the same tail within 256 KB", len(output), clientHolds)
 	}
 }
 
-func TestSettledOutputIsCappedToo(t *testing.T) {
+func TestSettledOutputIsTrimmedLikeRunningOutput(t *testing.T) {
 	o := newOverlay()
 	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
 	ended := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: strings.Repeat("x", 1<<20)}))))
-	if len(ended.Item.Output) != maxRunningOutputBytes {
-		t.Fatalf("settled output is %d bytes, want %d", len(ended.Item.Output), maxRunningOutputBytes)
+	if len(ended.Item.Output) != trimmedRunningOutputBytes {
+		t.Fatalf("settled output is %d bytes, want %d", len(ended.Item.Output), trimmedRunningOutputBytes)
+	}
+	short := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_2", Output: "done"}))))
+	if short.Item.Output != "done" {
+		t.Fatalf("short settled output = %q", short.Item.Output)
+	}
+}
+
+func TestTheSettledToolItemCarriesWhatTheLiveProjectorSettles(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_1"}))
+	state := json.RawMessage(`{"exit_code":3}`)
+	ended := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_1", PrevalOnly: true, ToolState: state}))))
+	if ended.Item.ExitCode == nil || *ended.Item.ExitCode != 3 || !ended.Item.PrevalOnly || string(ended.Item.Raw) != string(state) || ended.Item.RoundID != "r_1" {
+		t.Fatalf("settled item = %+v, want exit code 3, preval only, the tool state as Raw and round r_1", ended.Item)
+	}
+}
+
+func TestADuplicateCallIDKeysByItsFirstPartAsTheIndexDoes(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Recorded(assistantRecord(0, "t_1", "r_1", callPart("c_1", "shell"), callPart("c_1", "shell")))
+	item := upserted(t, one(t, o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_1"}))))
+	if want := transcriptindex.ItemKey("t_1", appwire.ThreadItemPosition{Entry: 1, Item: 0}); item.HistoryKey != want {
+		t.Fatalf("history key = %q, want the first part's %q", item.HistoryKey, want)
+	}
+}
+
+func TestAPreviewResetWithoutATextResetResetsTheAttempt(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "primary"}))
+	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
+
+	change := one(t, o.Event(events.New(events.CommunicatePreviewResetData{CallID: "c_1"})))
+	if params, ok := change.Params.(appwire.OverlayResetParams); change.Method != appwire.NotifyOverlayReset || !ok || params.StreamID != "r_1/1" {
+		t.Fatalf("preview reset = %s %+v, want overlay/reset of r_1/1", change.Method, change.Params)
+	}
+	if keys := snapshotKeys(o); len(keys) != 0 {
+		t.Fatalf("snapshot = %v, want the attempt discarded", keys)
+	}
+	item := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "fallback"}))))
+	if item.StreamID != "r_1/2" {
+		t.Fatalf("fallback streamed into %q, want r_1/2", item.StreamID)
+	}
+}
+
+func TestAPreviewResetAfterItsTextResetSendsNothingMore(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
+	one(t, o.Event(events.New(events.AssistantTextResetData{})))
+	none(t, o.Event(events.New(events.CommunicatePreviewResetData{CallID: "c_1"})))
+	item := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "x"}))))
+	if item.StreamID != "r_1/2" {
+		t.Fatalf("stream = %q, want r_1/2", item.StreamID)
+	}
+}
+
+func TestToolResultsNamingACommunicateCallLeaveItsPreview(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_1"}))
+	o.Recorded(assistantRecord(0, "t_1", "r_1", callPart("c_1", "communicate")))
+	o.Recorded(toolResultsRecord(1, "t_1", "c_1"))
+	if !o.Contains("preview:c_1") {
+		t.Fatal("TOOL_RESULTS covered a preview only its COMMUNICATE covers")
+	}
+}
+
+func TestARoundEndingWithCoveredStreamsButARunningToolIsInterrupted(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "text"}))
+	o.Recorded(assistantRecord(0, "t_1", "r_1", textPart("text"), callPart("c_1", "shell")))
+	o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_1"}))
+
+	changes := o.Event(events.New(events.RoundEndedData{RoundID: "r_1"}))
+	if len(changes) != 2 || upserted(t, changes[0]).Item.EventKind != appwire.ThreadItemEventKindInterrupted || changes[1].Method != appwire.NotifyOverlayEnd {
+		t.Fatalf("round end = %+v, want an interrupted notice then overlay/end", changes)
+	}
+}
+
+func TestSnapshotItemsAreCopies(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundTimings{Round: 1}))
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.ToolCallEndData{ToolName: "read_file", CallID: "c_1", OutputImages: []events.OutputImage{{Source: "file", URL: "/u", SHA: "s"}}}))
+
+	for _, item := range o.Snapshot() {
+		if item.Anchor != nil {
+			item.Anchor.Sub = 99
+		}
+		for i := range item.Item.Raw {
+			item.Item.Raw[i] = 'X'
+		}
+		for i := range item.Item.OutputImages {
+			item.Item.OutputImages[i].URL = "changed"
+		}
+	}
+	for _, item := range o.Snapshot() {
+		if item.Anchor != nil && item.Anchor.Sub == 99 {
+			t.Fatal("a snapshot anchor aliases the overlay's")
+		}
+		if len(item.Item.Raw) > 0 && item.Item.Raw[0] == 'X' {
+			t.Fatal("a snapshot Raw aliases the overlay's")
+		}
+		if len(item.Item.OutputImages) > 0 && item.Item.OutputImages[0].URL == "changed" {
+			t.Fatal("snapshot images alias the overlay's")
+		}
 	}
 }
 

@@ -3,6 +3,8 @@ package appoverlay
 import (
 	"container/list"
 	"sync"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // DefaultBudgetBytes is the daemon-wide cap on the encoded notices every
@@ -14,13 +16,15 @@ const DefaultBudgetBytes = 16 << 20
 //
 // Lock order: an Overlay's mutex, then the Budget's. An Overlay charges and
 // releases its notices while holding its own mutex; the Budget never takes an
-// Overlay's mutex. So an eviction only marks the evicted charge, and the
-// owning Overlay drops the notice the next time it looks at its ring (under
-// its own mutex, consulting the marks under the Budget's).
+// Overlay's mutex. So each notice's payload lives on its charge, under the
+// Budget's mutex: an eviction drops the payload at once, freeing it even for
+// a thread that never runs again, and the owning Overlay forgets the empty
+// entry the next time it looks at its ring.
 type Budget struct {
-	mu    sync.Mutex
-	used  int
+	mu sync.Mutex
+	// limit never changes after NewBudget, so it is read without the mutex.
 	limit int
+	used  int
 	// charges holds every live charge, oldest first, across all threads.
 	charges list.List
 }
@@ -28,9 +32,12 @@ type Budget struct {
 // charge is one notice's share of the budget. Its fields are guarded by the
 // Budget's mutex.
 type charge struct {
-	bytes   int
+	bytes int
+	// element is the charge's place in Budget.charges; nil once it is
+	// evicted or released.
 	element *list.Element
-	evicted bool
+	// item is the notice itself; nil once the charge is evicted or released.
+	item *appwire.OverlayItem
 }
 
 // NewBudget returns a budget that evicts the oldest notice while more than
@@ -40,17 +47,16 @@ func NewBudget(limit int) *Budget {
 }
 
 // charge adds a notice of the given size as the newest, evicting the oldest
-// notices, possibly this one, until the budget is within its limit.
-func (b *Budget) charge(bytes int) *charge {
+// notices until the budget is within its limit. The caller never charges more
+// than the limit, so the new notice itself is never evicted here.
+func (b *Budget) charge(item *appwire.OverlayItem, bytes int) *charge {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	c := &charge{bytes: bytes}
+	c := &charge{bytes: bytes, item: item}
 	c.element = b.charges.PushBack(c)
 	b.used += bytes
 	for b.used > b.limit {
-		oldest := b.charges.Front().Value.(*charge)
-		b.remove(oldest)
-		oldest.evicted = true
+		b.remove(b.charges.Front().Value.(*charge))
 	}
 	return c
 }
@@ -68,5 +74,6 @@ func (b *Budget) release(c *charge) {
 func (b *Budget) remove(c *charge) {
 	b.charges.Remove(c.element)
 	c.element = nil
+	c.item = nil
 	b.used -= c.bytes
 }

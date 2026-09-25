@@ -22,9 +22,14 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// maxRunningOutputBytes is how much of a running call's output the overlay
-// keeps: the last 256 KB.
-const maxRunningOutputBytes = 256 << 10
+// A call's output is capped at maxRunningOutputBytes. Passing the cap trims
+// it to its last trimmedRunningOutputBytes and sends the whole item once;
+// deltas resume until it passes the cap again, so a long-running command
+// costs one full item per 64 KB of output rather than one per delta.
+const (
+	maxRunningOutputBytes     = 256 << 10
+	trimmedRunningOutputBytes = 192 << 10
+)
 
 // Change is one notification the caller commits, in order.
 type Change struct {
@@ -79,9 +84,22 @@ type slot struct {
 	item appwire.OverlayItem
 	// order is the slot's creation order, which Snapshot follows.
 	order uint64
+	// output is a tool call's output, kept apart from item so a delta
+	// appends in amortized time under the leaf lock; view copies it in.
+	output []byte
 	// heldImages is a settled call's full image list while some of its
 	// images cannot be served before the tool-result entry is written.
 	heldImages []appwire.OutputImage
+}
+
+// view is a copy of the slot's item for a change or a snapshot, sharing
+// nothing with the overlay.
+func (s *slot) view() appwire.OverlayItem {
+	item := appwire.CloneOverlayItem(s.item)
+	if s.item.Kind == appwire.OverlayTool {
+		item.Item.Output = string(s.output)
+	}
+	return item
 }
 
 // New returns an empty overlay whose notices count against budget.
@@ -119,20 +137,16 @@ func (o *Overlay) RunningTurnID() string {
 func (o *Overlay) Snapshot() []appwire.OverlayItem {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.notices.dropEvicted(o.budget)
 	slots := make([]*slot, 0, len(o.slots))
 	for _, s := range o.slots {
 		slots = append(slots, s)
 	}
 	slices.SortFunc(slots, func(a, b *slot) int { return cmp.Compare(a.order, b.order) })
-	items := make([]appwire.OverlayItem, 0, len(slots)+len(o.notices.notices))
+	items := make([]appwire.OverlayItem, 0, len(slots))
 	for _, s := range slots {
-		items = append(items, s.item)
+		items = append(items, s.view())
 	}
-	for _, n := range o.notices.notices {
-		items = append(items, n.item)
-	}
-	return items
+	return append(items, o.notices.items(o.budget)...)
 }
 
 // Contains reports whether key is still in the overlay (a read drops captured
@@ -170,15 +184,16 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 	case events.ReasoningSummaryDeltaData:
 		return o.streamDelta("reasoning", data.Delta)
 	case events.AssistantTextResetData:
-		return o.resetAttempt()
+		if o.roundID == "" {
+			return nil
+		}
+		return o.resetStream(o.streamID())
 	case events.CommunicatePreviewStartData:
 		return o.startPreview(data.CallID)
 	case events.CommunicatePreviewDeltaData:
 		return o.appendText(previewKey(data.CallID), data.Delta)
 	case events.CommunicatePreviewResetData:
-		// The attempt's overlay/reset or the round's overlay/end tells
-		// clients; this only forgets it.
-		delete(o.slots, previewKey(data.CallID))
+		return o.resetPreview(data.CallID)
 	case events.ToolCallStartData:
 		return o.startTool(ev, data)
 	case events.ToolCallOutputDeltaData:
@@ -244,10 +259,14 @@ func (o *Overlay) coverRound(roundID string) {
 
 func (o *Overlay) learnCalls(rec transcript.Record) {
 	entry := rec.Turn
+	learned := map[string]bool{}
 	for part, content := range entry.Message.Content {
-		if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
+		// A call id the entry repeats is keyed by its first part, as the
+		// index keys it (internal/transcriptindex/build.go, awaited calls).
+		if content.Kind != llm.ContentToolCall || content.ToolCall == nil || learned[content.ToolCall.ID] {
 			continue
 		}
+		learned[content.ToolCall.ID] = true
 		c := o.call(content.ToolCall.ID)
 		if entry.RoundID != "" {
 			c.roundID = entry.RoundID
@@ -299,14 +318,12 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 	}))
 }
 
-// resetAttempt discards the current attempt's streams and previews and moves
-// to the next attempt.
-func (o *Overlay) resetAttempt() []Change {
-	if o.roundID == "" {
-		return nil
+// resetStream discards one attempt's streams and previews, telling clients
+// when it held any, and moves to the next attempt when it is the current one.
+func (o *Overlay) resetStream(streamID string) []Change {
+	if o.roundID != "" && streamID == o.streamID() {
+		o.attempt++
 	}
-	streamID := o.streamID()
-	o.attempt++
 	discarded := false
 	for key, s := range o.slots {
 		if s.item.StreamID == streamID && (s.item.Kind == appwire.OverlayStream || s.item.Kind == appwire.OverlayPreview) {
@@ -337,6 +354,19 @@ func (o *Overlay) startPreview(callID string) []Change {
 		CallID:   callID,
 		Item:     appwire.ThreadItem{Type: "agentMessage", ID: key, TurnID: o.runningTurnID, RoundID: o.roundID, CallID: callID, Status: appwire.TurnStatusInProgress},
 	}))
+}
+
+// resetPreview discards a failed provisional communicate call. When its
+// attempt's text was reset first, the preview is already gone and the
+// overlay/reset sent. Otherwise (a fallback group taking over with nothing to
+// salvage) nothing else would tell clients, so the preview's attempt is reset
+// here: its stream is being discarded too.
+func (o *Overlay) resetPreview(callID string) []Change {
+	s, ok := o.slots[previewKey(callID)]
+	if !ok {
+		return nil
+	}
+	return o.resetStream(s.item.StreamID)
 }
 
 // appendText appends to the text of the stream or preview at key.
@@ -384,13 +414,13 @@ func (o *Overlay) toolSlot(callID string, c *call) *slot {
 		RoundID:    c.roundID,
 		CallID:     callID,
 		HistoryKey: c.historyKey,
-		Item:       appwire.ThreadItem{Type: "commandExecution", ID: c.toolKey, TurnID: o.runningTurnID, CallID: callID, Status: appwire.TurnStatusInProgress},
+		Item:       appwire.ThreadItem{Type: "commandExecution", ID: c.toolKey, TurnID: o.runningTurnID, RoundID: c.roundID, CallID: callID, Status: appwire.TurnStatusInProgress},
 	})
 }
 
-// appendOutput appends to a running call's output, keeping the last
-// maxRunningOutputBytes. A delta that trims sends the whole item instead, so
-// clients hold the same tail.
+// appendOutput appends to a running call's output. A delta that takes it past
+// the cap trims it and sends the whole item instead, so clients hold the same
+// tail.
 func (o *Overlay) appendOutput(callID, text string) []Change {
 	c, ok := o.calls[callID]
 	if !ok || text == "" {
@@ -400,9 +430,9 @@ func (o *Overlay) appendOutput(callID, text string) []Change {
 	if !ok {
 		return nil
 	}
-	output, trimmed := lastBytes(s.item.Item.Output+text, maxRunningOutputBytes)
-	s.item.Item.Output = output
-	if trimmed {
+	s.output = append(s.output, text...)
+	if len(s.output) > maxRunningOutputBytes {
+		s.output = keepTail(s.output, trimmedRunningOutputBytes)
 		return o.upsert(s)
 	}
 	return []Change{{Method: appwire.NotifyOverlayDelta, Params: appwire.OverlayDeltaParams{Key: s.item.Key, Field: appwire.OverlayDeltaOutput, Delta: text}}}
@@ -423,8 +453,14 @@ func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
 	}
 	item.Status = apptranscript.SettledToolStatus(data.Error != "")
 	item.Error = data.Error
+	item.PrevalOnly = data.PrevalOnly
+	item.Raw = data.ToolState
+	item.ExitCode = apptranscript.ExitCodeFromToolState(data.ToolState)
 	if data.Output != "" {
-		item.Output, _ = lastBytes(data.Output, maxRunningOutputBytes)
+		s.output = append(s.output[:0], data.Output...)
+		if len(s.output) > maxRunningOutputBytes {
+			s.output = keepTail(s.output, trimmedRunningOutputBytes)
+		}
 	}
 	images := apptranscript.LiveOutputImages(data.OutputImages)
 	fetchable := slices.DeleteFunc(slices.Clone(images), apptranscript.UnfetchableUntilRecorded)
@@ -502,8 +538,20 @@ func (o *Overlay) addNotice(announcement apptranscript.NoticeAnnouncement) []Cha
 	}
 	o.nextNotice++
 	size := encodedSize(overlayItem)
+	// A notice no ring or budget could hold is neither kept nor sent: a
+	// read could never show it.
+	if size > maxNoticeBytes || size > o.budget.limit {
+		return nil
+	}
+	// The ring makes room first, so its own caps evict this thread's oldest
+	// before the budget evicts anyone else's; the budget's evictions (which
+	// may be this thread's) are then forgotten.
+	n := &notice{key: key, bytes: size, roundTimings: item.EventKind == appwire.ThreadItemEventKindRoundTimings}
 	o.notices.dropEvicted(o.budget)
-	o.notices.add(&notice{item: overlayItem, bytes: size, charge: o.budget.charge(size)}, o.budget)
+	o.notices.add(n, o.budget)
+	stored := appwire.CloneOverlayItem(overlayItem)
+	n.charge = o.budget.charge(&stored, size)
+	o.notices.dropEvicted(o.budget)
 	return []Change{{Method: appwire.NotifyOverlayUpserted, Params: appwire.OverlayUpsertedParams{Item: overlayItem}}}
 }
 
@@ -515,18 +563,15 @@ func (o *Overlay) newSlot(item appwire.OverlayItem) *slot {
 }
 
 func (o *Overlay) upsert(s *slot) []Change {
-	return []Change{{Method: appwire.NotifyOverlayUpserted, Params: appwire.OverlayUpsertedParams{Item: s.item}}}
+	return []Change{{Method: appwire.NotifyOverlayUpserted, Params: appwire.OverlayUpsertedParams{Item: s.view()}}}
 }
 
-// lastBytes keeps at most limit trailing bytes of s, starting at a rune
-// boundary, and reports whether it cut anything.
-func lastBytes(s string, limit int) (string, bool) {
-	if len(s) <= limit {
-		return s, false
-	}
-	cut := len(s) - limit
-	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+// keepTail keeps at most limit trailing bytes of b, starting at a rune
+// boundary, moved to the front of b's storage.
+func keepTail(b []byte, limit int) []byte {
+	cut := len(b) - limit
+	for cut < len(b) && !utf8.RuneStart(b[cut]) {
 		cut++
 	}
-	return s[cut:], true
+	return b[:copy(b, b[cut:])]
 }

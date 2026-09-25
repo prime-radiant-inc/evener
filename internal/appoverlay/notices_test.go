@@ -1,6 +1,8 @@
 package appoverlay
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -190,4 +192,74 @@ func budgetUsed(b *Budget) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.used
+}
+
+func TestAWarningNoticeKeepsItsTitleMessageHintAndSource(t *testing.T) {
+	o := newOverlay()
+	item := upserted(t, one(t, o.Event(events.New(events.WarningData{Message: "context nearly full", Source: "hook", Title: "Context", Hint: "compact soon"}))))
+	if item.Item.Description != "Context" || item.Item.Text != "context nearly full" {
+		t.Fatalf("warning = %q / %q, want its title and message", item.Item.Description, item.Item.Text)
+	}
+	var raw map[string]map[string]string
+	if err := json.Unmarshal(item.Item.Raw, &raw); err != nil {
+		t.Fatalf("warning Raw is not JSON: %v", err)
+	}
+	if raw["warning"]["hint"] != "compact soon" || raw["warning"]["source"] != "hook" || raw["warning"]["title"] != "Context" {
+		t.Fatalf("warning Raw = %v, want its source, title and hint", raw)
+	}
+}
+
+func TestAnUnrecordedCancellationIsAWarningNotAnError(t *testing.T) {
+	o := newOverlay()
+	item := upserted(t, one(t, o.Event(events.New(events.ErrorData{Error: context.Canceled.Error()}))))
+	if item.Item.EventKind != appwire.ThreadItemEventKindWarning || item.Item.Text != context.Canceled.Error() {
+		t.Fatalf("cancellation notice = %s %q, want a warning", item.Item.EventKind, item.Item.Text)
+	}
+}
+
+func TestBudgetEvictionFreesAnIdleOverlaysNotices(t *testing.T) {
+	probe := newOverlay()
+	probe.Event(events.New(events.LoopDetectionData{Message: "aaaa"}))
+	size := encodedSize(upserted(t, one(t, probe.Event(events.New(events.LoopDetectionData{Message: "aaaa"})))))
+	budget := NewBudget(3*size + size/2)
+	idle, busy := New(budget), New(budget)
+	idle.Event(events.New(events.LoopDetectionData{Message: "aaaa"}))
+	idle.Event(events.New(events.LoopDetectionData{Message: "bbbb"}))
+
+	busy.Event(events.New(events.LoopDetectionData{Message: "cccc"}))
+	busy.Event(events.New(events.LoopDetectionData{Message: "dddd"}))
+
+	// Read the idle overlay's ring without letting it run: the budget alone
+	// must have dropped the evicted payload.
+	budget.mu.Lock()
+	retained := 0
+	for _, n := range idle.notices.notices {
+		if n.charge.item != nil {
+			retained++
+		}
+	}
+	budget.mu.Unlock()
+	if retained != 1 {
+		t.Fatalf("the idle overlay still references %d notice payloads, want 1 after the budget evicted its oldest", retained)
+	}
+}
+
+func TestANoticeLargerThanTheBudgetIsDropped(t *testing.T) {
+	budget := NewBudget(64)
+	o := New(budget)
+	none(t, o.Event(events.New(events.LoopDetectionData{Message: "a notice bigger than the whole budget"})))
+	if keys := noticeKeys(o); len(keys) != 0 {
+		t.Fatalf("ring = %v, want empty", keys)
+	}
+	if used := budgetUsed(budget); used != 0 {
+		t.Fatalf("budget used = %d, want 0", used)
+	}
+}
+
+func TestANoticeLargerThanTheRingIsDropped(t *testing.T) {
+	o := newOverlay()
+	none(t, o.Event(events.New(events.LoopDetectionData{Message: strings.Repeat("x", maxNoticeBytes)})))
+	if keys := noticeKeys(o); len(keys) != 0 {
+		t.Fatalf("ring = %v, want empty", keys)
+	}
 }
