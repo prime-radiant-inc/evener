@@ -40,6 +40,11 @@ type builder struct {
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	if entry.Kind.TranscriptOnly() {
+		// Today's projection passes over it: the entry takes its ordinal and
+		// nothing else.
+		return nil
+	}
 	entryIndex := int(ordinal) + 1
 	version := ordinal + 1
 	turnID, newTurn := b.grouper.Place(entry, entryIndex)

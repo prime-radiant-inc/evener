@@ -76,6 +76,9 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 	toolNames := map[string]string{}
 	for i, entry := range entries {
 		entryIndex := i + 1
+		if entry.Kind.TranscriptOnly() {
+			continue // takes an entry index, and nothing else
+		}
 		id, isNew := grouper.Place(&entry, entryIndex)
 		if isNew {
 			groups = append(groups, &group{id: id, calls: map[string]int{}})

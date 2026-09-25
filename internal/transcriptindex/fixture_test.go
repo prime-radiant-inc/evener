@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/schema/schematest"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -250,6 +251,8 @@ func fixtures() []fixture {
 		{name: "steering", header: header, lines: steerings},
 		{name: "failures", header: header, lines: failures},
 		{name: "standalone kinds", header: header, lines: standalones},
+		{name: "transcript only", header: header, lines: interleaveTranscriptOnly(append(append([]fixtureLine(nil), basic...), communicate...))},
+		// Last: its final entry sits in the validated tail of "everything".
 		{name: "ordinals", header: header, lines: ordinals},
 	}
 	var everything []fixtureLine
@@ -257,4 +260,19 @@ func fixtures() []fixture {
 		everything = append(everything, set.lines...)
 	}
 	return append(sets, fixture{name: "everything", header: prelude, lines: everything})
+}
+
+// interleaveTranscriptOnly puts a transcript-only entry before, between and
+// after lines, the way a phase 2 writer records them among the entries today's
+// projection reads.
+func interleaveTranscriptOnly(lines []fixtureLine) []fixtureLine {
+	turns := make([]schema.Turn, len(lines))
+	for i, line := range lines {
+		turns[i] = line.turn
+	}
+	out := make([]fixtureLine, 0, 2*len(lines)+1)
+	for _, turn := range schematest.InterleaveTranscriptOnly(turns) {
+		out = append(out, entryLine(turn))
+	}
+	return out
 }
