@@ -522,10 +522,11 @@ and **no model**. Four claims, each its own assertion:
   what the session records, which is the BARE model the daemon was launched with
   (`Thread.ModelProvider` carries a model, not a provider). A session recording
   this controller's own provider or model — bare or qualified — or nothing at
-  all, fails. If the HOST resolves the same bare model id this controller would
-  record, the record cannot tell a host-resolved launch from a
-  controller-resolved one: the check fails rather than claim provenance its
-  evidence cannot support, and says to configure the host with a different model;
+  all, fails. If the HOST's own model id is any spelling this controller would
+  record — its model id, its provider id, or the qualified ref's model part — the
+  record cannot tell a host-resolved launch from a controller-resolved one: the
+  check fails rather than claim provenance its evidence cannot support, and says
+  to configure the host with a different model;
 - **fleet visibility** — the controller's own `thread/list` carries the ref, so a
   user sees their remote session beside the local ones;
 - **stop** — `thread/shutdown` through the controller stops the session it did not
@@ -533,7 +534,9 @@ and **no model**. Four claims, each its own assertion:
   capability mask in `appsource` names `Shutdown`), so the stop is **in band**:
   the check never reaches for a process table, a `pkill`, or a pattern on the
   host, and cleanup needs no host-side kill. The assertion is judged on its own
-  two-minute clock, not on what the run's outer budget has already spent.
+  two-minute clock, not on what the run's outer budget has already spent; the
+  reads around it take their own clocks too, so a slow attach or spawn cannot
+  starve them.
 
 **This gate writes to the host**, which is why it is a separate opt-in from the
 read-only `EVENER_SSH_E2E` check — a developer running that one is not signed up
@@ -553,9 +556,10 @@ window, and a session that could not be stopped is left alone: the **directory
 stays too**, with a failure naming the ref, the directory, and the fact that
 nothing was cleaned up — a directory a running session still references is better
 left than deleted out from under it. When no ref came back the outcome decides: a
-start the host refused as a request never started anything, so the directory is
-removed; anything else — a lost response, a timeout, a dropped connection, or any
-other answered frame — leaves it, and the check does not go looking for the
+start the host refused as a request — checked against the request this check
+actually sent, which carries no input — never started anything, so the directory
+is removed; anything else — a lost response, a timeout, a dropped connection, or
+any other answered frame — leaves it, and the check does not go looking for the
 session: it says plainly that one may be running under that directory that it
 cannot stop, points at the controller's own fleet view (where the session is
 visible by its working directory) as the place to stop it, and leaves the
