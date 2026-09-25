@@ -23,6 +23,25 @@ func TestCompareBootGeneration(t *testing.T) {
 		// Nothing held yet: whatever arrives replaces.
 		{"", "1", BootGenerationReplace},
 		{"", DaemonlessBootGeneration, BootGenerationReplace},
+		// A descendant's token, qualified by its root: same owner compares
+		// numerically.
+		{"3@root1", "3@root1", BootGenerationApply},
+		{"3@root1", "2@root1", BootGenerationIgnore},
+		{"3@root1", "4@root1", BootGenerationReplace},
+		{"9@root1", "10@root1", BootGenerationReplace},
+		// Different owners never compare.
+		{"3@root1", "2@root2", BootGenerationReplace},
+		{"3@root1", "4@root2", BootGenerationReplace},
+		// Qualified against unqualified, either way, replaces.
+		{"3@root1", "2", BootGenerationReplace},
+		{"3", "2@root1", BootGenerationReplace},
+		{"3", "4@root1", BootGenerationReplace},
+		// daemonless against a qualified token, either way, replaces.
+		{"3@root1", DaemonlessBootGeneration, BootGenerationReplace},
+		{DaemonlessBootGeneration, "1@root1", BootGenerationReplace},
+		// A malformed token is some other token: it replaces.
+		{"3@", "2@", BootGenerationReplace},
+		{"3", "x", BootGenerationReplace},
 	} {
 		if got := CompareBootGeneration(tc.held, tc.incoming); got != tc.want {
 			t.Errorf("CompareBootGeneration(%q, %q) = %v, want %v", tc.held, tc.incoming, got, tc.want)
@@ -33,6 +52,9 @@ func TestCompareBootGeneration(t *testing.T) {
 func TestBootGenerationFormatsTheCounter(t *testing.T) {
 	if got := BootGeneration(12); got != "12" {
 		t.Fatalf("BootGeneration(12) = %q", got)
+	}
+	if got := DescendantBootGeneration("12", "root1"); got != "12@root1" {
+		t.Fatalf("DescendantBootGeneration = %q", got)
 	}
 }
 

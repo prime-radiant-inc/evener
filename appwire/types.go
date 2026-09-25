@@ -1629,8 +1629,10 @@ type ThreadReadResponse struct {
 	OlderCursor string `json:"olderCursor,omitempty"`
 	// RequestGeneration echoes ThreadReadParams.RequestGeneration.
 	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
-	// BootGeneration is the boot generation of the daemon that served this
-	// read, or DaemonlessBootGeneration; see CompareBootGeneration.
+	// BootGeneration is the serving daemon's boot generation for this thread:
+	// its counter for its root thread, "<n>@<rootSessionID>" for a descendant
+	// (DescendantBootGeneration), or DaemonlessBootGeneration for the hub's
+	// own read. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
 	// Epoch is the history epoch this response was projected under; it
 	// advances on a replacement (a new incarnation, a resync epoch, or an
@@ -1665,8 +1667,9 @@ const NotifyHistoryUpdated = "history/updated"
 type HistoryUpdatedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
-	// BootGeneration is the publishing daemon's boot generation; see
-	// CompareBootGeneration.
+	// BootGeneration is the publishing daemon's boot generation for this
+	// thread: its counter for its root thread, "<n>@<rootSessionID>" for a
+	// descendant (DescendantBootGeneration). See CompareBootGeneration.
 	BootGeneration string           `json:"bootGeneration"`
 	Epoch          uint64           `json:"epoch"`
 	Snapshot       SnapshotIdentity `json:"snapshot"`
@@ -1795,8 +1798,8 @@ type ThreadTurnsListParams struct {
 type ThreadTurnsListResponse struct {
 	Data       []Turn `json:"data"`
 	NextCursor string `json:"nextCursor,omitempty"`
-	// BootGeneration is the boot generation of the daemon that served this
-	// page, or DaemonlessBootGeneration; see CompareBootGeneration.
+	// BootGeneration is the serving daemon's boot generation for this thread,
+	// as on ThreadReadResponse. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
 	// Epoch is the history epoch this page was projected under; see
 	// ThreadReadResponse.Epoch.
@@ -2892,8 +2895,9 @@ type ThreadClosedParams struct {
 type ThreadResyncParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
-	// BootGeneration is the publishing daemon's boot generation; see
-	// CompareBootGeneration. Empty on a resync the hub pushes itself.
+	// BootGeneration is the publishing daemon's boot generation for this
+	// thread, as on HistoryUpdatedParams. Empty on a resync the hub pushes
+	// itself. See CompareBootGeneration.
 	BootGeneration string `json:"bootGeneration,omitempty"`
 	// Epoch is the history epoch a client should resync to, when known.
 	Epoch uint64 `json:"epoch,omitempty"`

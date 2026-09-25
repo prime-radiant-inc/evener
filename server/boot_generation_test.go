@@ -97,8 +97,9 @@ func TestDescendantHistoryAndResyncCarryTheBootGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read.BootGeneration != "3" {
-		t.Fatalf("descendant read boot generation = %q, want 3", read.BootGeneration)
+	// A descendant carries its root's generation qualified by the root.
+	if read.BootGeneration != "3@root" {
+		t.Fatalf("descendant read boot generation = %q, want 3@root", read.BootGeneration)
 	}
 
 	cursor := srv.appNotifier.CurrentSequence()

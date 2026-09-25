@@ -1003,8 +1003,9 @@ export interface HistoryUpdatedParams {
   threadId: string;
   ref: string;
   /**
-   * BootGeneration is the publishing daemon's boot generation; see
-   * CompareBootGeneration.
+   * BootGeneration is the publishing daemon's boot generation for this
+   * thread: its counter for its root thread, "<n>@<rootSessionID>" for a
+   * descendant (DescendantBootGeneration). See CompareBootGeneration.
    */
   bootGeneration: string;
   epoch: number;
@@ -3129,8 +3130,10 @@ export interface ThreadReadResponse {
    */
   requestGeneration?: number;
   /**
-   * BootGeneration is the boot generation of the daemon that served this
-   * read, or DaemonlessBootGeneration; see CompareBootGeneration.
+   * BootGeneration is the serving daemon's boot generation for this thread:
+   * its counter for its root thread, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration), or DaemonlessBootGeneration for the hub's
+   * own read. See CompareBootGeneration.
    */
   bootGeneration?: string;
   /**
@@ -3184,8 +3187,9 @@ export interface ThreadResyncParams {
   threadId: string;
   ref: string;
   /**
-   * BootGeneration is the publishing daemon's boot generation; see
-   * CompareBootGeneration. Empty on a resync the hub pushes itself.
+   * BootGeneration is the publishing daemon's boot generation for this
+   * thread, as on HistoryUpdatedParams. Empty on a resync the hub pushes
+   * itself. See CompareBootGeneration.
    */
   bootGeneration?: string;
   /**
@@ -3342,8 +3346,8 @@ export interface ThreadTurnsListResponse {
   data: Turn[];
   nextCursor?: string;
   /**
-   * BootGeneration is the boot generation of the daemon that served this
-   * page, or DaemonlessBootGeneration; see CompareBootGeneration.
+   * BootGeneration is the serving daemon's boot generation for this thread,
+   * as on ThreadReadResponse. See CompareBootGeneration.
    */
   bootGeneration?: string;
   /**

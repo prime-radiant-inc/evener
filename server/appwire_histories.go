@@ -107,7 +107,7 @@ func (s *Server) storeDescendantHistorySourceLocked() {
 	s.appDescendantHistorySource.Store(&descendantHistorySource{
 		ownerThreadID:  s.appThreadID,
 		sourceID:       s.appSourceID,
-		bootGeneration: s.appBootGeneration,
+		bootGeneration: s.descendantBootGenerationLocked(),
 		pathFunc:       s.appDescendantTranscriptPathFunc,
 	})
 }
@@ -132,11 +132,25 @@ func (s *Server) historyPublishers(threadID, ref, bootGeneration string) (func(a
 	return publish, resync
 }
 
-// currentBootGeneration is the served identity's boot generation.
-func (s *Server) currentBootGeneration() string {
+// bootGenerationFor is threadID's boot generation: the served identity's for
+// the root, qualified by the root for a descendant.
+func (s *Server) bootGenerationFor(threadID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.appBootGeneration
+	if threadID == s.appThreadID {
+		return s.appBootGeneration
+	}
+	return s.descendantBootGenerationLocked()
+}
+
+// descendantBootGenerationLocked is the boot generation every descendant of
+// the served root carries (appwire.DescendantBootGeneration); empty while
+// the root has none. Callers hold s.mu.
+func (s *Server) descendantBootGenerationLocked() string {
+	if s.appBootGeneration == "" {
+		return ""
+	}
+	return appwire.DescendantBootGeneration(s.appBootGeneration, s.appThreadID)
 }
 
 // commitHistoryNotification commits one notification from threadID's history

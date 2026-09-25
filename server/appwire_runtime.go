@@ -1270,7 +1270,7 @@ func (s *Server) appThreadReadCutForTarget(params appwire.ThreadReadParams, thre
 	// addressed child's durable queue and mutation receipts.
 	thread.Evener.MutationStateAuthoritative = threadID == s.appProjectionThreadID()
 	cut := appThreadReadCut{
-		response: appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: s.currentBootGeneration()},
+		response: appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: s.bootGenerationFor(threadID)},
 		found:    true,
 		history:  s.appHistoryForID(threadID),
 	}
@@ -1463,7 +1463,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	}
 	history := s.appHistoryForID(threadID)
 	if history == nil {
-		return appwire.ThreadTurnsListResponse{BootGeneration: s.currentBootGeneration()}, nil
+		return appwire.ThreadTurnsListResponse{BootGeneration: s.bootGenerationFor(threadID)}, nil
 	}
 	epoch := history.Epoch()
 	turns, olderCursor, snapshot, err := history.before(history.ref, params.Cursor, params.ItemLimit)
