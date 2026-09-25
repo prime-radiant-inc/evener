@@ -40,6 +40,17 @@ jobs:
         with:
           kind: web-unit
 
+      # EXPERIMENT (do not merge): time each piece of the step below on its own.
+      - name: "EXPERIMENT: time each piece"
+        run: |
+          /usr/bin/time -f 'TIMING go-build %es %MKB' go build -o evener-dev ./cmd/evener-dev/bin/
+          cd cmd/evener-hub/frontend
+          npm ci >/dev/null 2>&1
+          for c in typecheck test lint; do
+            /usr/bin/time -f "TIMING $c %es %MKB user=%U sys=%S" npm run "$c" >/tmp/$c.log 2>&1 || { tail -20 /tmp/$c.log; exit 1; }
+          done
+          nproc
+
       - name: Typecheck, unit tests, and lint
         run: make test-web
 
