@@ -143,3 +143,20 @@ func withoutRecordedIdentity(turn schema.Turn) schema.Turn {
 	turn.Format, turn.TurnID, turn.TurnKind, turn.Model = 0, "", "", ""
 	return turn
 }
+
+// A resident session's attention resolutions carry its model, like every
+// other entry it records.
+func TestResidentAttentionResolutionCarriesTheModel(t *testing.T) {
+	s := newIdentitySession(t)
+	if _, err := s.appendDelegateNotificationDurably("delegate:d1", "the delegate reported"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.resolveAttentionDurably([]string{"delegate:d1"}, delegateAttentionConsumed); err != nil {
+		t.Fatal(err)
+	}
+	entries := transcriptEntries(t, s)
+	last := entries[len(entries)-1].Turn
+	if last.Kind != schema.TurnAttentionResolution || last.Model == "" {
+		t.Fatalf("resolution = %s with model %q", last.Kind, last.Model)
+	}
+}

@@ -558,10 +558,6 @@ type Session struct {
 	// openPendingExecutions holds the executions restore found open and left
 	// open because pending client work owns them; guarded by mu.
 	openPendingExecutions map[string]bool
-	// turnSequenceFloor is the highest turn_m<N> sequence the transcript this
-	// session was created with already names (a delegate's inherited
-	// context); its client-mutation store reserves above it.
-	turnSequenceFloor uint64
 	// recordedExecutions holds the TurnID of every execution turn this
 	// session's transcript records, so one that runs again reopens; guarded
 	// by mu.

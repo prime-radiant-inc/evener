@@ -100,7 +100,6 @@ func (s *Session) ensureClientMutationStore() error {
 	if err != nil {
 		return err
 	}
-	store.raiseTurnSequence(s.turnSequenceFloor)
 	s.clientMutations = store
 	return nil
 }
