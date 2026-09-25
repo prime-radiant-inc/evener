@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # owned-jobs.sh — ask a gate shell's own job table whether a background job
 # it started is still running. Sourced by the bash gate scripts that run
-# checks side by side (scripts/web/test-web.sh, scripts/web/test-web-browser.sh).
+# checks side by side (scripts/web/test-web.sh).
 #
 # Bash 3.2 (macOS) has no `wait -n`, so completion is found by asking the job
 # table, never by `kill -0`: once a job is reaped its pid can belong to an
