@@ -1,6 +1,6 @@
 # Transcript as the Only History Read Model
 
-Status: accepted for implementation, revision 6 (2026-09-25). Supersedes the eviction approach in
+Status: accepted for implementation, revision 7 (2026-09-25). Supersedes the eviction approach in
 the closed PR #2251.
 
 Revision history:
@@ -31,6 +31,14 @@ Revision history:
     rules
   - resync delivery failure ends the subscription
   - boundary tests gate activation
+- **Revision 7** closed consistency gaps from review of revision 6:
+  - ordinals are assigned only to recorded lines
+  - the index catches up to the recorded length before a read uses it
+  - a file that stops extending rotates the index incarnation
+  - a latest-window read is authoritative to the end
+  - the turn summary tracks reopen markers
+  - async writes pick their turn inside the append lock
+  - round coverage stops only the covered streams
 
 ## Problem
 
@@ -120,6 +128,11 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   duplicate `Seq`s. The registry knows it for every append in-process. A reader
   counts lines. `Seq` keeps its existing uses and nothing new depends on it being
   unique.
+  - Only a recorded line gets an ordinal. A rolled-back append consumes its
+    `Seq` but not an ordinal. Its entry was never announced in-process, so the
+    next record to take that ordinal aliases nothing a client got from this
+    process. A reader in another process that saw the rolled-back line sees the
+    file stop extending, which rotates the index incarnation (see Reads).
 - **Reads from another process.** A reader with no writer for the file in its
   process reads to end of file and drops an incomplete last line, as today. The
   hub reading a daemonless session is the main case. Such reads are
@@ -185,6 +198,9 @@ delivery and stop goroutines at any time: model-bound attention STEERING
 - Otherwise they take a `delivery` turn of their own.
 - They never take the ID of a turn that has already completed.
 - A turn's completion entry is written as the last entry of its execution span.
+- The choice is made inside the registry's append lock, from running-turn state
+  that the completion append clears inside the same lock. An async write that
+  loses the race to the completion therefore takes a delivery turn.
 
 **Turn membership** comes from `TurnID`, not from entry-kind adjacency.
 
@@ -337,8 +353,9 @@ The overlay is per thread and in memory. It holds four kinds of state.
     entry and then call the model again (`agent/session_lifecycle.go:2338-2345,
     2384-2392`).
   - Projected ASSISTANT and salvage items carry their `roundID` on the wire.
-  - Once a round's entry is recorded, the server emits no further overlay events
-    for that round.
+  - Once a round's entry is recorded, the server emits no further text or
+    reasoning deltas for that round. Tool execution state, communicate previews
+    and the round's `overlay/end` are still delivered after that point.
 - `overlay/reset(streamID)` discards one attempt when it is retried
   (`appwire_projection.go:549-575`). The next attempt has a new `streamID`, so
   its output is never mistaken for the discarded one.
@@ -465,13 +482,26 @@ the file. Every read response, live or daemonless, carries its **snapshot
 identity**: the index incarnation plus the recorded length it read. A daemonless
 response is authoritative for the position range it returned:
 - The client replaces its items in that range and keeps pages outside it.
-- A page from an older snapshot than the one the client already holds is
-  rejected with `TranscriptItemCursorStale`, and the client re-reads the latest
-  window.
+- A page from another incarnation, or from an older snapshot than the one the
+  client already holds, is rejected with `TranscriptItemCursorStale`, and the
+  client re-reads the latest window.
 - Pages from the same snapshot accumulate.
+- A latest-window response is authoritative from its first position to the end
+  of history. The client drops any item it holds past the returned window.
+
+**Index incarnation.** The index gets a new incarnation whenever the file is no
+longer an extension of what the index covers: shorter than its indexed length,
+or with different trailing bytes (see Validation). Within one incarnation the
+recorded length only grows, so snapshots of one incarnation order by length. A
+response from a different incarnation than the client holds replaces the
+thread's whole history, as a new daemon incarnation does. The hub already
+rotates its cursor incarnation when a snapshot does not extend the previous one
+(`cmd/evener-hub/internal/appsource/source.go:120, 604`), and this keeps that
+rule for the seekable index.
 
 So backfill never discards newer pages. A record that another process rolled back
-disappears the next time its range is read.
+disappears on the next read: the rollback rotates the incarnation, and the
+client replaces the thread's history.
 
 ### Index
 
@@ -487,12 +517,18 @@ it holds two tables of fixed-size records.
   - its version
 - **Turn summary records.** Each one holds:
   - the first entry's offset
-  - the latest completion entry's offset and status
+  - the latest lifecycle entry's offset and the status it sets: the recorded
+    status for a completion entry, open for a reopen marker
   - usage totals and timestamps
   - the turn's version
 
 An append updates records in place: it fills in a completer or rewrites a turn
 summary, both at fixed offsets, and appends new item and turn records.
+
+The index header records the length it covers. Index updates are not part of
+the append. Before a read uses the index, it extends the index from that length
+to the recorded length it is about to project. A read never serves from an index
+that is behind its recorded length.
 
 A window read binary-searches item records with `ReadAt`. It projects each item
 from its contributor entries and stamps each turn from its summary record. It
