@@ -489,30 +489,45 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	}
 }
 
-// TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently pins the
-// bounded-parallel contract of the idle release's member teardown. A member
-// teardown is wait-dominated — the runtime close signals processes and honors
-// bounded waits, and a stdio MCP member's close can take seconds — so a
-// serial release makes a wide subtree's wall clock the member count times one
-// member's close. The four same-depth children here must settle CONCURRENTLY
-// (the probe holds each child's teardown until all four are in flight, so the
-// assertion is a rendezvous, not a scheduling race), while the claim root
-// itself never starts before every descendant settled: the leaf-first
-// ordering the depth-2 contract test pins, held across the wave boundary.
-func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T) {
-	wideChildren := 4
+// wideSubtreeReleaseProbe records what the idle release's member-teardown
+// probes observed over one driven wide-subtree release: which members'
+// teardowns started and settled, in what order, and how many same-depth
+// children were mid-teardown at once.
+type wideSubtreeReleaseProbe struct {
+	parentSess    *Session
+	childRuntimes map[string]*Session
+	childIDs      []string
+	// parentSeq is the claim root's member-teardown start sequence number.
+	parentSeq   uint64
+	parentStart bool
+	maxInFlight int
+	settledAt   map[string]uint64 // keyed by runtime session id
+}
+
+// driveWideSubtreeIdleRelease builds a depth-2 delegate tree — one parent
+// delegate whose single scripted turn spawns wideChildren leaf delegates —
+// waits for every member to finalize, claims the subtree, and drives the
+// parent runtime's own finalize-tail release. The member-teardown probes
+// hold each CHILD's teardown until all wideChildren are in flight or
+// parkDeadline passes, so the concurrency the release chose is observable
+// rather than racy: a wave that launches the whole depth at once reaches
+// the rendezvous, while a serial or capped one burns the deadline batch
+// by batch. Everything the callers assert on is captured after the
+// release fully drained, so the returned state is quiescent.
+func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDeadline time.Duration) *wideSubtreeReleaseProbe {
+	t.Helper()
 
 	workspace := t.TempDir()
-	// The adapter scripts the parent's turn as ONE response carrying all
-	// four delegate spawns; every later step is an identical finish. The
+	// The adapter scripts the parent's turn as ONE response carrying
+	// every delegate spawn; each later step is an identical finish. The
 	// spawns all fire inside the parent's first turn, so the tree's SHAPE
 	// is fixed before any follow-up call happens: the parent's post-tool
-	// call and each child's first call consume the five generically
-	// interchangeable finish steps in whatever global order they race, and
-	// each ends its member's turn. Spawning from a finished parent is not
-	// an option (its lease is spent), and spawning one-at-a-time across
-	// turns lets the parent eat a child's finish step — the one-response
-	// spawn wave avoids both.
+	// call and each child's first call consume the interchangeable finish
+	// steps in whatever global order they race, and each ends its
+	// member's turn. Spawning from a finished parent is not an option
+	// (its lease is spent), and spawning one-at-a-time across turns lets
+	// the parent eat a child's finish step — the one-response spawn wave
+	// avoids both.
 	steps := []func(req llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			calls := make([]llm.ToolCallData, wideChildren)
@@ -526,11 +541,9 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 			}
 			return toolCallResponse(calls...)
 		},
-		func(llm.Request) llm.Response { return finalResponse("member done") },
-		func(llm.Request) llm.Response { return finalResponse("member done") },
-		func(llm.Request) llm.Response { return finalResponse("member done") },
-		func(llm.Request) llm.Response { return finalResponse("member done") },
-		func(llm.Request) llm.Response { return finalResponse("member done") },
+	}
+	for range wideChildren + 1 {
+		steps = append(steps, func(llm.Request) llm.Response { return finalResponse("member done") })
 	}
 	adapter := &fakeAdapter{name: "openai", steps: steps}
 	client := llm.NewClient()
@@ -561,13 +574,13 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 			return
 		}
 		// Rendezvous: hold this child's teardown until the whole wave is in
-		// flight. TRIPWIRE: under the bounded-concurrency release the last
-		// child arrives within milliseconds, so this wait costs nothing when
-		// the contract holds; it only burns the timeout on a serial
-		// implementation, where the max-in-flight assertion below fails
-		// anyway. waitForCondition cannot run here: the probe fires on a
-		// teardown goroutine, not the test's.
-		deadline := time.Now().Add(3 * time.Second)
+		// flight. TRIPWIRE: when the release launches the full depth in one
+		// batch the last child arrives within milliseconds, so the wait
+		// costs nothing; a capped or serial release burns parkDeadline per
+		// batch instead, and the callers read the observed concurrency off
+		// maxInFlight either way. waitForCondition cannot run here: the
+		// probe fires on a teardown goroutine, not the test's.
+		deadline := time.Now().Add(parkDeadline)
 		for {
 			probeMu.Lock()
 			inFlight := childInFlight
@@ -597,7 +610,7 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 			minimalSystemPrompt:        true,
 			sandboxProber:              bwrapCapableProber(workspace),
 			disableDelegateIdleRelease: true,
-			idleTeardownConcurrency:    &wideChildren,
+			idleTeardownConcurrency:    &limit,
 			idleTeardownMemberStarted:  memberStarted,
 			idleTeardownMemberSettled:  memberSettled,
 		},
@@ -607,10 +620,10 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 	}
 	t.Cleanup(sess.Close)
 
-	four := wideChildren
+	allowance := wideChildren
 	parentRes := sess.createDelegate(context.Background(), delegateArgs{
-		Task:                "spawn four leaf children, then finish",
-		DelegationAllowance: &four,
+		Task:                "spawn leaf children, then finish",
+		DelegationAllowance: &allowance,
 	})
 	if parentRes.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", parentRes.Err, parentRes.Status, parentRes.Reason)
@@ -706,37 +719,95 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 		t.Fatal("releaseIdleRuntimeAfterFinalize refused the terminal wide subtree")
 	}
 
+	// The release drained before returning (every batch joined), so the
+	// probe state is quiescent.
 	probeMu.Lock()
-	maxInFlight := childMaxInFlight
-	parentStart, parentStarted := startedAt[parentRes.ChildSessionID]
-	probeMu.Unlock()
-	if !parentStarted {
+	defer probeMu.Unlock()
+	parentSeq, parentStart := startedAt[parentRes.ChildSessionID]
+	return &wideSubtreeReleaseProbe{
+		parentSess:    parentSess,
+		childRuntimes: childRuntimes,
+		childIDs:      childIDs,
+		parentSeq:     parentSeq,
+		parentStart:   parentStart,
+		maxInFlight:   childMaxInFlight,
+		settledAt:     settledAt,
+	}
+}
+
+// assertWideSubtreeReleaseSettled pins the shared post-release contracts:
+// the claim root's teardown ran, every child's teardown settled before the
+// root started (leaf-first held across the wave or batch boundary), and
+// every member's retirement teardown pass is spent — the release tore each
+// member down itself.
+func assertWideSubtreeReleaseSettled(t *testing.T, probe *wideSubtreeReleaseProbe) {
+	t.Helper()
+	if !probe.parentStart {
 		t.Fatal("the claim root's member teardown never started")
 	}
-	if maxInFlight != wideChildren {
-		t.Fatalf("idle release settled the same-depth members serially: max concurrent child teardowns = %d, want %d", maxInFlight, wideChildren)
-	}
-	for _, id := range childIDs {
-		probeMu.Lock()
-		childSettled, settled := settledAt[childRuntimes[id].id]
-		probeMu.Unlock()
+	for _, id := range probe.childIDs {
+		childSettled, settled := probe.settledAt[probe.childRuntimes[id].id]
 		if !settled {
 			t.Fatalf("child %s teardown never settled", id)
 		}
-		if childSettled >= parentStart {
-			t.Fatalf("claim root started its teardown at seq %d before descendant %s settled at seq %d: leaf-first violated", parentStart, id, childSettled)
+		if childSettled >= probe.parentSeq {
+			t.Fatalf("claim root started its teardown at seq %d before descendant %s settled at seq %d: leaf-first violated", probe.parentSeq, id, childSettled)
 		}
 	}
 
 	// Every teardown body ran to completion: each member's pass is spent.
-	if err := parentSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+	if err := probe.parentSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
 		t.Fatalf("parent runtime teardown pass after release: err = %v, want errRetirementTeardownSpent", err)
 	}
-	for _, id := range childIDs {
-		if err := childRuntimes[id].releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+	for _, id := range probe.childIDs {
+		if err := probe.childRuntimes[id].releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
 			t.Fatalf("child %s teardown pass after release: err = %v, want errRetirementTeardownSpent", id, err)
 		}
 	}
+}
+
+// TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently pins the
+// bounded-parallel contract of the idle release's member teardown. A member
+// teardown is wait-dominated — the runtime close signals processes and honors
+// bounded waits, and a stdio MCP member's close can take seconds — so a
+// serial release makes a wide subtree's wall clock the member count times one
+// member's close. The four same-depth children here must settle CONCURRENTLY
+// (the probe holds each child's teardown until all four are in flight, so the
+// assertion is a rendezvous, not a scheduling race), while the claim root
+// itself never starts before every descendant settled: the leaf-first
+// ordering the depth-2 contract test pins, held across the wave boundary.
+func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T) {
+	const (
+		wideChildren = 4
+		limit        = wideChildren
+	)
+	probe := driveWideSubtreeIdleRelease(t, wideChildren, limit, 3*time.Second)
+	if probe.maxInFlight != wideChildren {
+		t.Fatalf("idle release settled the same-depth members serially: max concurrent child teardowns = %d, want %d", probe.maxInFlight, wideChildren)
+	}
+	assertWideSubtreeReleaseSettled(t, probe)
+}
+
+// TestDelegateIdleRelease_CapsConcurrentMemberTeardown pins the bound
+// itself: no more than idleTeardownConcurrency same-depth members may be
+// mid-teardown at once. The concurrency test above runs one batch (four
+// members, limit four), which cannot tell a bounded wave from an unbounded
+// one; three same-depth children under a limit of two here force the
+// multi-batch path, and the probe's rendezvous makes the cap observable in
+// both directions — an unbounded wave launches all three before any settles
+// (max in flight 3), while the capped one parks each batch at the rendezvous
+// and never holds more than two. Leaf-first still holds across the batches:
+// the claim root waits for the last batch to drain.
+func TestDelegateIdleRelease_CapsConcurrentMemberTeardown(t *testing.T) {
+	const (
+		wideChildren = 3
+		limit        = 2
+	)
+	probe := driveWideSubtreeIdleRelease(t, wideChildren, limit, 500*time.Millisecond)
+	if probe.maxInFlight > limit {
+		t.Fatalf("idle release tore down %d same-depth members at once, want at most %d", probe.maxInFlight, limit)
+	}
+	assertWideSubtreeReleaseSettled(t, probe)
 }
 
 // TestDelegateIdleReleaseGenerationGuard pins the stale-timer contract: a
