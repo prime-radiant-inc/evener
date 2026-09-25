@@ -2136,6 +2136,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
       async open(service, ref) {
         suspendedService = null;
+        // A different thread owns a different durable target: the prior seam's
+        // listener and its rows do not survive the open, exactly as close/reset
+        // retire them. A same-thread reopen keeps the binding (its records are
+        // still this target's).
+        const previousRef = get().ref;
+        if (previousRef !== ref) detachPendingRows();
         // Increment conversation generation so late frames from a previous
         // conversation are rejected.
         const gen = ++conversationGen;
@@ -2167,6 +2173,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          ...(previousRef !== ref ? { pendingMutations: null } : {}),
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
@@ -2199,6 +2206,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
       async openProjected(service, sink, ref, replacement) {
         suspendedService = null;
+        // Same rule as open(): a different thread retires the prior seam and
+        // its rows; a same-thread reopen keeps the binding.
+        const previousRef = get().ref;
+        if (previousRef !== ref) detachPendingRows();
         const gen = ++conversationGen;
         // I1: increment the binding epoch and bind service+sink so queued
         // requests from an older binding are suppressed at the boundary.
@@ -2230,6 +2241,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          ...(previousRef !== ref ? { pendingMutations: null } : {}),
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });

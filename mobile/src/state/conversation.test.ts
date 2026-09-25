@@ -1635,6 +1635,41 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       expect(store.getState().pendingMutations ?? null).toBeNull();
     });
+
+    it("a model write drops a now-reflected row without a storage notification", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // The model now reflects the id through a live frame — no durable read.
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          queue: { revision: 2, clientMutationIds: ["cmid-1"] },
+        },
+      } as AnyNotification);
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
+
+    it("opening a different thread retires the prior target's seam", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(port.listenerCount()).toBe(1);
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ ref: "ref-2", threadId: "thread-2" });
+      await store.getState().open(other, "ref-2");
+
+      expect(port.listenerCount()).toBe(0);
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error
