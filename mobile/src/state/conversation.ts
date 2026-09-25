@@ -968,6 +968,63 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     return seated;
   }
 
+  // A level change hides rows without withdrawing them from the model, and
+  // the prune in capAndTruncate retires a notice only when its own row left
+  // the window. But the seating walk consumes a notice only at a DISPLAYED
+  // anchor row, so a notice whose anchor the new level hides never seats
+  // and the prune mistakes it for withdrawn. Re-anchor each such notice to
+  // the nearest row the new level still displays at or above its arrival
+  // position — the closest visible seat, not a retirement — and to null
+  // (before everything) when nothing at or above it survives. The anchor
+  // only moves up: on switch-back to the richer level the notice sits at
+  // its re-anchored position, below rows that arrived after it, the
+  // disclosed cost of keeping it visible through the level change.
+  function reanchorTransientWarnings(
+    oldItems: MobileTimelineItem[],
+    newItems: MobileTimelineItem[],
+  ): void {
+    if (transientWarnings.length === 0) return;
+    const displayedIdentities = new Set<string>();
+    for (const row of newItems) {
+      for (const identity of ownTimelineIdentities(row)) {
+        displayedIdentities.add(identity);
+      }
+    }
+    for (const notice of transientWarnings) {
+      const anchor = notice.anchor;
+      if (anchor === null || displayedIdentities.has(anchor)) continue;
+      // The anchor's arrival position in the rows leaving the screen.
+      let arrival = -1;
+      for (let index = 0; index < oldItems.length; index += 1) {
+        const row = oldItems[index];
+        if (row === undefined) continue;
+        for (const identity of ownTimelineIdentities(row)) {
+          if (identity === anchor) {
+            arrival = index;
+            break;
+          }
+        }
+        if (arrival >= 0) break;
+      }
+      // The nearest displayed row at or above it, re-anchored through
+      // one of that row's own displayed identities so the next seating
+      // walk resolves the anchor as written.
+      let reanchor: string | null = null;
+      for (let above = arrival; above >= 0; above -= 1) {
+        const candidate = oldItems[above];
+        if (candidate === undefined) continue;
+        for (const identity of ownTimelineIdentities(candidate)) {
+          if (displayedIdentities.has(identity)) {
+            reanchor = identity;
+            break;
+          }
+        }
+        if (reanchor !== null) break;
+      }
+      notice.anchor = reanchor;
+    }
+  }
+
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
   // mutation owner changed during its await, it stores a deferred trailing
   // request with the EXACT binding snapshot captured at schedule time (not
@@ -2249,11 +2306,32 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           set({ displayConfig: config });
           return;
         }
+        const projected = projectConversation(
+          conversation,
+          undefined,
+          config ?? undefined,
+        );
+        // The rows the level change hides are hidden, not withdrawn:
+        // seat each notice whose anchor they include BEFORE the display
+        // boundary runs, or the seating walk drops it and the prune
+        // retires it as if the model had withdrawn the anchor.
+        reanchorTransientWarnings(conversation.items, projected.items);
+        const bounded = capAndTruncate(projected);
+        // The retained-turn bound every other publish runs: a turn whose
+        // every row the new level hides sheds its payload here too,
+        // exactly as the next row-changing frame's publish would. The
+        // active turn stays exempt inside the helper.
         set({
           displayConfig: config,
-          conversation: capAndTruncate(
-            projectConversation(conversation, undefined, config ?? undefined),
-          ),
+          conversation: {
+            ...bounded,
+            turns: boundRetainedTurns(
+              bounded.turns,
+              bounded.items,
+              mergedItemFoldIdentities,
+              bounded.activeTurnId,
+            ),
+          },
         });
       },
 

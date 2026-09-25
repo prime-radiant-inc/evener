@@ -5919,9 +5919,9 @@ describe("ConversationStore", () => {
       ]);
     });
 
-	    // The summary-only ruling meets the R38 split: a cluster of summarized
-	    // rows re-projects its sub-runs through activityRunRow when a notice
-	    // splits it, and the rebuilt top-level rows must stay summary-only —
+    // The summary-only ruling meets the R38 split: a cluster of summarized
+    // rows re-projects its sub-runs through activityRunRow when a notice
+    // splits it, and the rebuilt top-level rows must stay summary-only —
       // a run of one loses the marker exactly when the split reduced it to
       // its first member's fields.
       it("keeps a split cluster's sub-run rows summary-only at the user's level", async () => {
@@ -27973,6 +27973,106 @@ describe("ConversationStore", () => {
         c1?.kind === "activity" ? c1.detail.description : undefined;
       if (summary === undefined) throw new Error("no summarized row");
       expect(summary.endsWith(TRUNCATION_MARKER)).toBe(true);
+    });
+
+    // Review round 2 (Medium): a level change hides rows without
+    // withdrawing them from the model, and a transient warning must not
+    // retire just because the row it anchored to became hidden — the
+    // store re-anchors it to the nearest preceding row the new level
+    // still shows, so it stays on screen at the compact level and comes
+    // back when the level does.
+    it("keeps a transient warning whose anchor the level hides", async () => {
+      // The warning lands over an idle thread — no active turn to fold
+      // into — so the store holds it on its transient surface, anchored
+      // to the last model row, the thought.
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [
+              userMessageItem("u1", "please audit"),
+              reasoningItem("r1", "the settled thought that anchors"),
+            ],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      // A later reply arrives on a new turn, so the anchored thought
+      // sits mid-timeline.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: agentMessageItem("a2", "working on it", "completed"),
+        },
+      } as AnyNotification);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+
+      // At intent the thought is hidden; the warning re-anchors to the
+      // user message above it and stays on screen.
+      store.getState().setDisplayConfig(intentConfig);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+
+      // And it survives the round trip back to full.
+      store.getState().setDisplayConfig(fullConfig);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
+      ).toBe(true);
+    });
+
+    // Review round 2 (Low): the level-change publish runs the same
+    // retained-turn bound every other publish runs — a turn whose every
+    // row the new level hides sheds its payload, exactly as the next
+    // row-changing frame's publish would.
+    it("bounds the retained turns a level change hides", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [reasoningItem("r1", "the thought")],
+          }),
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [userMessageItem("u1", "hi")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      // Show-everything keeps both turns' payloads.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(intentConfig);
+      const after = store.getState().conversation;
+      // t0's every row is hidden at intent: the bound sheds its
+      // payload, exactly as a frame's publish would.
+      expect(after?.turns[0]?.items).toEqual([]);
+      // t1's row is visible: its payload stays.
+      expect(after?.turns[1]?.items).toHaveLength(1);
     });
   });
 
