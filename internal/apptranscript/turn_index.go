@@ -1249,6 +1249,22 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		entryOrdinalAt := entryOrdinal
 		entryOrdinal++
 		if groupItems == 0 {
+			// A zero-item group (e.g. a text-less assistant turn whose only
+			// content is a deferred communicate call) still seeds CommRawArgs
+			// via projection. The full read projects every record before
+			// dropping empty groups, so the tail flush sees the seeded bytes;
+			// the bounded read must do the same or a trailing unpaired
+			// communicate vanishes on paged reads. Project only when the
+			// registry is already seeded (an in-window group preceded this
+			// one): a before-window zero-item group's CommRawArgs are carried
+			// by the next group's StartsGroup snapshot, and projecting the
+			// prefix would defeat the index's O(1) seeding.
+			if regSeeded {
+				zg := indexedGroup{id: slot, start: i, end: spanEnd, turnID: index.recordAt(i).TurnID, openerIndex: index.recordAt(i).Index, items: 0, calls: nil, open: false}
+				if _, _, err := projectIndexedGroup(ctx, file, index, &zg, entryOrdinalAt, project, reg); err != nil {
+					return nil, projected, err
+				}
+			}
 			i = spanEnd
 			continue
 		}
