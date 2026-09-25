@@ -336,6 +336,70 @@ func TestFailedResyncDelivery(t *testing.T) {
 	}
 }
 
+// TestAsyncAttentionWriteAfterCompletion writes a delegate's attention entry
+// through PlaceAsync (agent/transcript/placement.go: the door for a write
+// from another goroutine, not the session's own turn loop) after the running
+// execution's completion is already recorded. PlaceAsync "never joins a turn
+// whose completion is already recorded" -- it gets a delivery turn of its
+// own -- so the delivery must appear in history as its own turn, never
+// reopening the turn that already completed.
+func TestAsyncAttentionWriteAfterCompletion(t *testing.T) {
+	hx := newHistoryHarness(t)
+	turnID := "turn_exec_1"
+	hx.writer.BeginExecution(turnID, false)
+	opened, err := hx.writer.Record(schema.Turn{
+		Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution,
+		Kind: schema.TurnUserInput, Message: llm.User("running"),
+	}, transcript.RecordOptions{Place: transcript.PlaceSession})
+	if err != nil || !opened.Recorded {
+		t.Fatalf("open the execution: %+v, %v", opened, err)
+	}
+	completed, err := hx.writer.Record(schema.Turn{
+		Kind: schema.TurnCompletion,
+		Completion: &schema.TurnCompletionInfo{
+			Status: schema.TurnCompleted, CompletedAt: time.Now().UTC(),
+		},
+	}, transcript.RecordOptions{Place: transcript.PlaceCompletion})
+	if err != nil || !completed.Recorded {
+		t.Fatalf("complete the execution: %+v, %v", completed, err)
+	}
+	hx.awaitPublished(t, completed.Offset+completed.Length)
+
+	// The attention delivery, released only now that the completion is
+	// already on disk: released after completion, not before.
+	delivered, err := hx.writer.Record(schema.Turn{
+		Kind: schema.TurnSteering, AttentionID: "attn-1", Message: llm.User("delegate report"),
+	}, transcript.RecordOptions{Place: transcript.PlaceAsync})
+	if err != nil || !delivered.Recorded {
+		t.Fatalf("deliver attention: %+v, %v", delivered, err)
+	}
+	hx.awaitPublished(t, delivered.Offset+delivered.Length)
+
+	turns := hxReadWhole(t, hx)
+	var execTurn, deliveryTurn *appwire.Turn
+	for i := range turns {
+		switch turns[i].ID {
+		case turnID:
+			execTurn = &turns[i]
+		default:
+			for _, item := range turns[i].Items {
+				if item.Text == "delegate report" {
+					deliveryTurn = &turns[i]
+				}
+			}
+		}
+	}
+	if execTurn == nil || execTurn.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("execution turn = %+v, want it present and completed", execTurn)
+	}
+	if deliveryTurn == nil {
+		t.Fatalf("no turn carries the delivered attention message: %+v", turns)
+	}
+	if deliveryTurn.ID == execTurn.ID {
+		t.Fatal("the attention delivery reopened the completed execution turn")
+	}
+}
+
 // TestConcurrentAppendsProjectInOrdinalOrder appends through the same
 // session writer from two goroutines at once (transcript.Writer.NewWriterNoSync
 // takes an exclusive lock on the file, so a genuinely independent "cold"
