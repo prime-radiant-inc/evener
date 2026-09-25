@@ -3835,6 +3835,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           }
           void pending.then(
             (snapshot) => {
+              let recordedProvenance = false;
               // The provenance scan is fenced only on a forget (close/reset):
               // a read in flight across a same-target rebind or a thread open,
               // or one a newer read superseded, still observed durable records
@@ -3849,6 +3850,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
                     record.targetRef === port.targetRef &&
                     port.isOwnMutationRecord(record)
                   ) {
+                    if (!pendingSubmittedHere.has(record.clientMutationId)) {
+                      recordedProvenance = true;
+                    }
                     pendingSubmittedHere.set(
                       record.clientMutationId,
                       record.createdAt,
@@ -3856,8 +3860,23 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
                   }
                 }
               }
-              // Publishing is fenced on the binding generation (a retired
-              // binding must not publish) and on the request order.
+              // Newly recorded provenance reaches the already-published
+              // projection at once, through whatever binding is CURRENT (which
+              // may differ from this read's: a same-target rebind). The
+              // reconciliation reads the current snapshot, never this fenced
+              // read's, so a newer read's removals cannot be resurrected.
+              if (
+                recordedProvenance &&
+                pendingPort !== null &&
+                pendingSnapshot !== null &&
+                pendingPort.targetRef === port.targetRef
+              ) {
+                const next = reconcilePendingMutations();
+                if (!samePendingRows(get().pendingMutations, next)) {
+                  set({ pendingMutations: next });
+                }
+              }
+              // A retired binding publishes nothing of its own snapshot.
               if (generation !== pendingGeneration) return;
               // Only a read newer than the last published one publishes.
               if (request <= lastPublishedRequest) return;

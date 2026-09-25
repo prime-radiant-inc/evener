@@ -1744,10 +1744,9 @@ describe("ConversationStore", () => {
       releaseRead?.(); // the held, older read resolves late
       await yieldMicrotask();
       await yieldMicrotask();
-      port.publish({}); // a later reconcile observes the recorded provenance
-      await yieldMicrotask();
-      await yieldMicrotask();
 
+      // The superseded read's provenance must reach the already-published row
+      // with no further storage notification.
       expect(store.getState().pendingMutations?.[0]).toMatchObject({
         id: "cmid-9",
         fromThisClient: true,
@@ -2078,9 +2077,6 @@ describe("ConversationStore", () => {
 
       // The in-flight read lands after the rebind; its provenance must stick.
       releaseRead?.();
-      await yieldMicrotask();
-      await yieldMicrotask();
-      rebound.publish({}); // a later reconcile reads the recorded provenance
       await yieldMicrotask();
       await yieldMicrotask();
       expect(store.getState().pendingMutations?.[0]).toMatchObject({
