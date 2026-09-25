@@ -548,6 +548,9 @@ type Session struct {
 	recoveredTurnID string
 	// execution is the running execution's bookkeeping (session_execution.go).
 	execution executionState
+	// roundID names the open model round, "" when none is open; guarded by
+	// mu. See roundIDForModelCall.
+	roundID string
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -2407,11 +2410,18 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		RoundID:                         s.roundIDForModelCall(),
 	}
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() { s.history = append(s.history, t) },
+		func() {
+			s.history = append(s.history, t)
+			// The round's entry is recorded: the next model call is a new
+			// round (a pause_turn continuation, a bare-text retry, the next
+			// tool round).
+			s.roundID = ""
+		},
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

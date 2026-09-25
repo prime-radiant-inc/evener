@@ -63,6 +63,7 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 	}
 	startedAt := s.execution.startedAt
 	s.execution = executionState{userInputEntry: s.execution.userInputEntry}
+	s.roundID = ""
 	s.mu.Unlock()
 	now := s.sclock().Now().UTC()
 	turn := schema.Turn{
@@ -111,4 +112,18 @@ func (s *Session) recordedUserInputTurn(fallback int) int {
 		return s.execution.userInputEntry
 	}
 	return fallback
+}
+
+// roundIDForModelCall is the open model round's id, opening a round with a
+// fresh r_ id when none is open. A round covers the requests that can record
+// one ASSISTANT entry (a salvage entry included): its attempts, retries and
+// fallback groups, up to the first recorded one, which closes it. The end of
+// the execution closes it too.
+func (s *Session) roundIDForModelCall() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.roundID == "" {
+		s.roundID = identifier.MustNewRoundID()
+	}
+	return s.roundID
 }

@@ -1176,6 +1176,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		policy = *s.cfg.LLMRetryPolicy
 	}
 	req, attempt := singleAttemptRequestMetadata(req)
+	// Every request up to the round's first recorded assistant entry belongs
+	// to its round: the attempts, the retries and the fallback groups.
+	s.roundIDForModelCall()
 	group := llm.NewAPIAttemptGroup(attempt.AttemptGroupID)
 	callCtx := llm.WithAPIAttemptGroup(ctx, group)
 	// Each callModel invocation is one retry group; the round's recorder keeps
