@@ -61,12 +61,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// The persisted parked environment's identity, so the restore target the
 	// session re-creates below carries the same binding it had before the crash
 	// (plan 648/654). Empty when the root had no parked role recorded.
-	parkedBindingID := ""
-	if pool := s.retainedScratch.Load(); pool != nil {
-		if consumer, ok := pool.consumers[s.id]; ok {
-			parkedBindingID = consumer.WorktreeRestoreBindingID
-		}
-	}
+	parkedBindingID := s.parkedWorktreeBindingID()
 
 	// Every environment the session leaves this function on is a clone of local,
 	// and a clone owns nothing of its original: the scratch local already
@@ -252,6 +247,27 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 		}
 	}
 	return nil
+}
+
+// parkedWorktreeBindingID reads this session's consumer row from the retained
+// pool to find the parked worktree binding identity the restore target must
+// carry (plan 648/654). Empty when no pool exists or the row has no parked
+// role.
+func (s *Session) parkedWorktreeBindingID() string {
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		return ""
+	}
+	// installConsumerRefresh mutates consumer rows after the pool is
+	// published, so the row is copied out under the pool lock — an unlocked
+	// read races the runtime's unrecoverable concurrent-map throw.
+	pool.mu.Lock()
+	consumer, ok := pool.consumers[s.id]
+	pool.mu.Unlock()
+	if !ok {
+		return ""
+	}
+	return consumer.WorktreeRestoreBindingID
 }
 
 func worktreeGitEntryExists(path string) bool {

@@ -339,7 +339,7 @@ func buildRawTestTranscript(t *testing.T) (path string, lines []string) {
 func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 	t.Parallel()
 	path, verbatim := buildRawTestTranscript(t)
-	content, lineCount, skipped, truncated, err := rawLinesForRange(path, 1, 2)
+	content, lineCount, skipped, truncated, err := rawLinesForRange(path, "", 1, 2)
 	if err != nil {
 		t.Fatalf("rawLinesForRange: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	content, lineCount, skipped, truncated, err := rawLinesForRange(path, 0, 0)
+	content, lineCount, skipped, truncated, err := rawLinesForRange(path, "", 0, 0)
 	if err != nil {
 		t.Fatalf("rawLinesForRange: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			content, lineCount, skipped, truncated, err := rawLinesForRange(path, 0, 10)
+			content, lineCount, skipped, truncated, err := rawLinesForRange(path, "", 0, 10)
 			if err != nil {
 				t.Fatalf("rawLinesForRange: %v", err)
 			}
@@ -422,7 +422,7 @@ func TestRawLinesForRangeRejectsMixedOrCorruptTranscript(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, _, err := rawLinesForRange(path, 0, 1); err == nil {
+		if _, _, _, _, err := rawLinesForRange(path, "", 0, 1); err == nil {
 			t.Fatalf("rawLinesForRange accepted invalid transcript: %q", body)
 		}
 	}
@@ -474,7 +474,7 @@ func TestRawLinesForRange_HardCapTruncation(t *testing.T) {
 	t.Parallel()
 	path, firstEntryLine := buildOvercapTranscript(t)
 
-	content, _, _, truncated, err := rawLinesForRange(path, 0, 4)
+	content, _, _, truncated, err := rawLinesForRange(path, "", 0, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

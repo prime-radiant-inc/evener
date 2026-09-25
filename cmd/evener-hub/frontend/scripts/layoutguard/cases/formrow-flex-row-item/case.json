@@ -1,0 +1,23 @@
+{
+  "name": "formrow-flex-row-item",
+  "description": "FormRow's widget contract, not a real screen: a FormRow dropped into a flex ROW as a sibling of another item must shrink with the row and let its control's own ellipsis clip a long value, instead of taking the full nowrap value width and overflowing the row (kata p6g8's mechanism). The flex-row parent and its sibling chip are invented scaffolding - no layout the app renders today makes a FormRow a flex item of a row (every parent is a column or a block, where formrow.module.css's min-width:0 has nothing to act on). The FormRow and the file-kind PathField inside it are their current real markup and classes.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/internal/fieldTrigger.module.css",
+    "widgets/pathfield/pathfield.module.css",
+    "widgets/formrow/formrow.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/formrow/formrow.module.css: .root { min-width: 0 } (deleted)",
+    "verified": "2026-09-23",
+    "expect": "fail",
+    "note": "Deleting the declaration fails the case naming the FormRow: it overflows its 268px flex row by 476.6px (736.6px wide), the trigger with it, the sibling chip is pushed 511.9px past the row's edge, and the path is no longer ellipsized. Restoring it passes with the FormRow filling exactly the room left of the chip and its gap (0.0px slack). Verified 2026-09-24 as well: dropping fieldTrigger.module.css's .value overflow: hidden fails the ellipsis check alone (overflow-x visible), so the check needs a clipping box, not only text-overflow: ellipsis."
+  }
+}

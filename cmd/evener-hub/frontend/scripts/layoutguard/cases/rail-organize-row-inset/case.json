@@ -1,0 +1,23 @@
+{
+  "name": "rail-organize-row-inset",
+  "description": "rail: the organize-by control row (Rail.module.css's .organizeRow, between the Live section and the tier it controls) sits hard right with the SAME right inset the pinned-section heading actions use (.sectionHeadingAction): the switcher's IconButton right edge must line up with a section heading action's IconButton right edge, at the sidebar's min (200px) and default (280px) widths - it reads as chrome of the section below, not a floating control",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/rail/Rail.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
+  ],
+  "viewport": {
+    "width": 1000,
+    "height": 1200,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "Rail.module.css: .organizeRow's justify-content reverted from flex-end to flex-start (the control row renders left instead of hard right)",
+    "verified": "2026-09-24",
+    "expect": "fail",
+    "note": "Both width fixtures fail with the switcher sitting the full row width minus the button left of the heading action's right edge; restoring justify-content: flex-end returns both to PASS."
+  }
+}

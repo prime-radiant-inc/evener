@@ -199,7 +199,7 @@ func (s *Session) endDispose() {
 	release()
 }
 
-// envWorkID handles one admission on envWorkWG, so its label can be dropped
+// envWorkID handles one admission in envWork, so its label can be dropped
 // again when the work returns.
 type envWorkID uint64
 
@@ -217,8 +217,10 @@ func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID 
 	if s.envWork == nil {
 		s.envWork = make(map[envWorkID]envWorkRecord)
 	}
+	if len(s.envWork) == 0 {
+		s.envWorkDrained = make(chan struct{})
+	}
 	s.envWork[id] = envWorkRecord{label: label, release: release}
-	s.envWorkWG.Add(1)
 	return id
 }
 
@@ -228,7 +230,7 @@ func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID 
 // delegate's isolation lane and the rollback that undoes it, and the rollback a
 // refused or failed operation owes after its swap has already released the
 // swap's own admission. It is the beginDispose idiom again — the closing check
-// AND the envWorkWG Add happen under one s.mu hold, so a successful Add
+// AND the admission happen under one s.mu hold, so a successful admission
 // happens-before Close()'s join. A true return MUST be paired with a (deferred)
 // endEnvWork().
 //
@@ -238,7 +240,7 @@ func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID 
 //
 // swapEnvAndRefresh calls registerEnvWorkLocked directly rather than this,
 // because it needs the environment it is adopting from out of the same lock
-// hold that reads `closing`; it is the same admission on the same WaitGroup.
+// hold that reads `closing`; it is the same admission Close() joins.
 //
 // A false return means the close was already under way when this work began.
 // There is nothing left to fence it against — the environment it would run on
@@ -285,13 +287,20 @@ func (s *Session) relabelEnvWork(id envWorkID, label string) {
 	}
 }
 
-// endEnvWork releases an admission obtained from beginEnvWork().
+// endEnvWork releases an admission obtained from beginEnvWork(). Ending a
+// handle that already ended releases nothing, so it cannot end the join early
+// while another admission is still live.
 func (s *Session) endEnvWork(id envWorkID) {
 	s.mu.Lock()
-	work := s.envWork[id]
-	delete(s.envWork, id)
+	work, live := s.envWork[id]
+	if live {
+		delete(s.envWork, id)
+		if len(s.envWork) == 0 {
+			close(s.envWorkDrained)
+			s.envWorkDrained = nil
+		}
+	}
 	s.mu.Unlock()
-	s.envWorkWG.Done()
 	if work.release != nil {
 		work.release()
 	}
@@ -365,13 +374,20 @@ func (s *Session) outstandingEnvWork() []string {
 // to reap the process table under whatever is still running, which must not
 // happen silently, so the warning names it.
 func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
-	joined := make(chan struct{})
-	go func() {
-		defer close(joined)
-		s.envWorkWG.Wait()
-	}()
+	s.mu.Lock()
+	drained := s.envWorkDrained
+	s.mu.Unlock()
+	if drained == nil {
+		return
+	}
+	// testOnly seam: see testConfig.closeAwaitingEnvWork. Nil in production.
+	// Only an endEnvWork of the last live admission closes drained, and the
+	// budget is not yet spent, so the select below blocks.
+	if observe := s.cfg.testOnly.closeAwaitingEnvWork; observe != nil && ctx.Err() == nil {
+		observe()
+	}
 	select {
-	case <-joined:
+	case <-drained:
 		return
 	case <-ctx.Done():
 	}
@@ -862,15 +878,13 @@ func (s *Session) discardRestoredCandidate() {
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
 		// The one exception is an allocation this candidate ADOPTED from the
-		// root's durable retention manifest: that directory is referenced on disk
-		// and a later resume reacquires it, so it is retained (lease released)
-		// instead of removed with the mint a fresh restore allocated.
+		// root's durable retention manifest: that directory is referenced on
+		// disk and a later resume reacquires it, so it is retained (lease
+		// released) instead of removed with the mint a fresh restore allocated.
+		// The settle is per kind, so an adopted allocation never holds its
+		// sibling fresh mint open with it (round 83).
 		env := s.environmentOwnedAtTeardown()
-		scratch := disposeChildScratch
-		if s.ownsReferencedRetainedScratch(env) {
-			scratch = retainChildScratch
-		}
-		releaseOwnedChildEnvironment(env, scratch)
+		s.settleOwnedScratchByManifest(env)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

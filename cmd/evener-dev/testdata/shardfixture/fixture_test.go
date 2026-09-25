@@ -35,9 +35,9 @@ func TestMain(m *testing.M) {
 }
 
 // liveShardTimeout bounds how long a shard binary waits for the peers the run
-// should be running beside. It only has to cover process startup, so it is
-// generous; a capped run spends it by design, because the peers it is waiting
-// for are held back.
+// should be running beside, or for word that the runner is holding them back.
+// It only has to cover process startup, and a passing run never spends it: it
+// is the tripwire for a probe that could not measure.
 const liveShardTimeout = 5 * time.Second
 
 // announceLiveShard, when SHARD_FIXTURE_LIVE_DIR is set, records this test
@@ -53,8 +53,10 @@ const liveShardTimeout = 5 * time.Second
 // when the scheduler happened to run each process. Processes that reach the
 // expected count rendezvous on ready.<pid> before any of them exits, so a peer
 // cannot remove its live marker before a slower peer has sampled it. A process
-// that never sees its peers writes a timeout.<pid> marker, so the caller can
-// tell a real low-concurrency observation from a probe that could not measure.
+// that sees SHARD_FIXTURE_RUNNER_WAITING first writes capped.<pid> instead:
+// the runner's cap engaged, so the full count will not arrive. Only a process
+// that sees neither its peers nor that signal writes a timeout.<pid> marker, so
+// the caller can tell a real observation from a probe that could not measure.
 //
 // The observed population goes to seen.<pid> and the marker is removed on exit,
 // so a finished process does not count as live. Inert unless the test asks for
@@ -79,9 +81,18 @@ func announceLiveShard() func() {
 	if err := os.WriteFile(live, []byte("live\n"), 0o644); err != nil {
 		return nil
 	}
+	// SHARD_FIXTURE_RUNNER_WAITING names the file the caller writes when the
+	// runner first blocks for a free slot, and it stays for the rest of the
+	// run. It says the cap engaged in this run, not that this particular shard
+	// is the one being waited on: once the runner has held a shard back, no
+	// shard of the run can count on every peer being live at once, so each one
+	// alive then stops waiting and records a capped marker instead of timing
+	// out. The caller's peak count is what shows how many actually overlapped.
+	runnerWaiting := os.Getenv("SHARD_FIXTURE_RUNNER_WAITING")
 	observed := 1 // this process is live
 	deadline := time.Now().Add(liveShardTimeout)
 	reached := false
+	capped := false
 	for time.Now().Before(deadline) {
 		if n := countMarkers(dir, "live.*"); n > observed {
 			observed = n
@@ -90,7 +101,19 @@ func announceLiveShard() func() {
 			reached = true
 			break
 		}
+		if runnerWaiting != "" {
+			if _, err := os.Stat(runnerWaiting); err == nil {
+				capped = true
+				break
+			}
+		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if capped {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("capped.%d", pid)), []byte("capped\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("seen.%d", pid)),
+			[]byte(strconv.Itoa(observed)+"\n"), 0o644)
+		return func() { _ = os.Remove(live) }
 	}
 	if reached {
 		// Rendezvous before anyone leaves: a peer that reached the barrier and

@@ -3254,9 +3254,13 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-    { method: "evener/thread/forceStop", params: { ref } },
-  ]);
+  // forceStop writes its cancellation durably before the RPC, so the call can
+  // land after the click resolves; wait for it rather than racing the write.
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]),
+  );
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
     expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();

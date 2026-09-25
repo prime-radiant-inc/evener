@@ -373,6 +373,17 @@
   color: var(--ink-mid);
 }
 
+/* The drawn host glyph a host group row leads with (RailRow's HostGlyph):
+ * the same fixed-size inline mark grammar as the watch row's clock - a host
+ * is infrastructure, not triage, so the glyph takes the signal dot's slot
+ * without shifting the label off its sibling rows' title x. */
+.hostGlyph {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mid);
+}
+
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
  * cell (the Task-7 needs-you Badge and "Not started" are the other two;
  * RailRow.tsx renders at most one of the three, and the hover-revealed

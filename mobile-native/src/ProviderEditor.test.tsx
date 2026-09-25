@@ -43,6 +43,7 @@ it("stays open and does not report success when the save is unconfirmed", async 
       onCreate={async () => true}
       onEdit={async () => false}
       disabled={false}
+      canUseConnection={() => true}
       onSaved={onSaved}
       onEndpointConflict={() => {}}
       onCancel={() => {}}
@@ -63,6 +64,7 @@ it("reports success when the save is confirmed", async () => {
       onCreate={async () => true}
       onEdit={async () => true}
       disabled={false}
+      canUseConnection={() => true}
       onSaved={onSaved}
       onEndpointConflict={() => {}}
       onCancel={() => {}}
@@ -71,4 +73,47 @@ it("reports success when the save is confirmed", async () => {
   pressLabel(tree, "Save instance");
   await act(async () => {});
   expect(onSaved).toHaveBeenCalledWith("alpha");
+});
+
+it("keeps the draft when readiness is lost before the save runs", async () => {
+  // The render said ready; readiness is lost before the save runs - the
+  // window every other mutation entry on the providers screen guards at
+  // invocation time (act/whenReady), and the save is the one entry that
+  // trusts only its render-time disabled snapshot.
+  const onEdit = vi.fn(async () => true);
+  const onSaved = vi.fn();
+  let ready = true;
+  const tree = render(
+    <ProviderEditor
+      instance={instance}
+      providers={[]}
+      onCreate={async () => true}
+      onEdit={onEdit}
+      disabled={false}
+      canUseConnection={() => ready}
+      onSaved={onSaved}
+      onEndpointConflict={() => {}}
+      onCancel={() => {}}
+    />,
+  );
+  const baseUrl = tree.root.findByProps({
+    accessibilityLabel: "Base URL (optional)",
+  });
+  act(() => {
+    baseUrl.props.onChangeText("https://changed.example");
+  });
+
+  ready = false;
+  pressLabel(tree, "Save instance");
+  await act(async () => {});
+
+  expect(onEdit).not.toHaveBeenCalled();
+  expect(onSaved).not.toHaveBeenCalled();
+  // Nothing ran, so nothing reports: no failure copy claims a save was
+  // tried, and the draft keeps what was typed for the connection's return.
+  expect(renderedText(tree)).not.toContain("Save could not be confirmed");
+  expect(
+    tree.root.findByProps({ accessibilityLabel: "Base URL (optional)" })
+      .props.value,
+  ).toBe("https://changed.example");
 });

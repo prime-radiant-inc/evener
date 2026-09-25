@@ -16,6 +16,7 @@ type taskToolStateEntry struct {
 	ID      int                `json:"id"`
 	Status  taskpkg.TaskStatus `json:"status"`
 	Started *bool              `json:"started,omitempty"`
+	Settled *bool              `json:"settled,omitempty"`
 }
 
 type taskToolHarness struct {
@@ -182,6 +183,140 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 		}
 		if started := taskStateEntry(t, state, 1).Started; started != nil {
 			t.Fatalf("task 1 marker = %v, want absent for final done status", started)
+		}
+	})
+}
+
+func TestTaskTool_MixedAddAndNonTerminalUpdateCarriesProgress(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "existing"}})
+	result := h.call(t, map[string]any{
+		"add":    []map[string]any{{"description": "new task", "type": "implement", "prompt": "p"}},
+		"update": []map[string]any{{"id": 1, "status": "open", "notes": "reopened with a note"}},
+	})
+	if result.IsError {
+		t.Fatalf("mixed add+update failed: %s", result.Output)
+	}
+	// This call renders a card (its added rows), and the card's footer -
+	// aggregate, meter, and the Open-list affordance - derives from the
+	// Progress footer; every successful mutation output must carry it.
+	if !strings.Contains(result.Output, "Progress:") {
+		t.Fatalf("mixed add+non-terminal update output = %q, want a Progress footer", result.Output)
+	}
+}
+
+func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
+	t.Run("terminal reassertion is not a settle", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "wrap up", Prompt: "wrap up"}})
+		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+			t.Fatalf("complete task: %v", err)
+		}
+
+		result := h.update(t, map[string]any{
+			"id": 1, "status": "done", "notes": "still done",
+		})
+		if result.IsError {
+			t.Fatalf("terminal reassertion failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || *entry.Settled {
+			t.Fatalf("reassertion marker = %v, want explicit false", entry.Settled)
+		}
+	})
+
+	t.Run("status transition into done is a settle", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}})
+		result := h.update(t, map[string]any{"id": 1, "status": "done"})
+		if result.IsError {
+			t.Fatalf("done update failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || !*entry.Settled {
+			t.Fatalf("transition marker = %v, want explicit true", entry.Settled)
+		}
+	})
+
+	t.Run("cancelled swap of a done task is a new settle", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "swap", Prompt: "swap"}})
+		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+			t.Fatalf("complete task: %v", err)
+		}
+
+		result := h.update(t, map[string]any{"id": 1, "status": "cancelled"})
+		if result.IsError {
+			t.Fatalf("cancel update failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || !*entry.Settled {
+			t.Fatalf("terminal-swap marker = %v, want explicit true", entry.Settled)
+		}
+	})
+
+	t.Run("round-trip batch re-settles like the store's stamp", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "bounce", Prompt: "bounce"}})
+		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+			t.Fatalf("complete task: %v", err)
+		}
+
+		result := h.update(t,
+			map[string]any{"id": 1, "status": "open"},
+			map[string]any{"id": 1, "status": "done"},
+		)
+		if result.IsError {
+			t.Fatalf("round-trip update failed: %s", result.Output)
+		}
+		// The store restamps the settle (open cleared the stamp, done minted
+		// a fresh one), so the marker must read as a real transition - a
+		// settled:false here would make the card suppress genuine news.
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || !*entry.Settled {
+			t.Fatalf("round-trip marker = %v, want explicit true", entry.Settled)
+		}
+	})
+
+	t.Run("terminal reassertion neither settles nor steers", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{
+			{Description: "wrapped", Prompt: "wrapped"},
+			{Description: "waiting", Prompt: "waiting"},
+		})
+		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+			t.Fatalf("complete task: %v", err)
+		}
+
+		result := h.update(t, map[string]any{"id": 1, "status": "done", "notes": "still done"})
+		if result.IsError {
+			t.Fatalf("terminal reassertion failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || *entry.Settled {
+			t.Fatalf("reassertion marker = %v, want explicit false", entry.Settled)
+		}
+		// Nothing actually settled, so the annotation must not auto-start
+		// task 2 or emit completion steering as if work had finished.
+		if len(h.steers) != 0 {
+			t.Fatalf("reassertion steered %d times: %q, want none", len(h.steers), h.steers)
+		}
+		if next := taskStateEntry(t, decodeTaskToolState(t, result), 2); next.Status != taskpkg.TaskOpen {
+			t.Fatalf("task 2 status = %q, want still open (no auto-start on an annotation)", next.Status)
+		}
+	})
+
+	t.Run("settle-then-reopen in one batch neither settles nor advances", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "bounce", Prompt: "bounce"}})
+		result := h.update(t,
+			map[string]any{"id": 1, "status": "done"},
+			map[string]any{"id": 1, "status": "open"},
+		)
+		if result.IsError {
+			t.Fatalf("settle-reopen update failed: %s", result.Output)
+		}
+		// The batch nets to no change, so nothing may auto-advance - not
+		// even flipping the reopened task itself back to in_progress.
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Status != taskpkg.TaskOpen {
+			t.Fatalf("task 1 status = %q, want still open (auto-advance must not flip it back)", entry.Status)
+		}
+		if len(h.steers) != 0 {
+			t.Fatalf("net no-op steered %d times: %q, want none", len(h.steers), h.steers)
 		}
 	})
 }

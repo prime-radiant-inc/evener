@@ -111,6 +111,13 @@ type Session struct {
 	// adoption or release. It is an atomic pointer (a single swapped reference,
 	// never held across work), so it is not a sampling-relevant mutex.
 	retainedScratch atomic.Pointer[retainedScratchPool]
+	// retainedScratchSealed is set once the terminal scratch release begins,
+	// before the pool is detached: a refresh pass still mid-install at that
+	// point must decline its seed publish and hand its reacquired leases back
+	// rather than leave a pool nothing will ever sweep. It only ever
+	// transitions false→true (a session is sealed at most once) and is read
+	// after the publish CAS, so a plain atomic Bool is sufficient.
+	retainedScratchSealed atomic.Bool
 	// scratchRetentionErr records the first sticky scratch-retention
 	// publication failure this session observed after an environment swap: the
 	// durable manifest diverged from the live environment and no later swap
@@ -387,8 +394,8 @@ type Session struct {
 	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
 	disposeRetirement             []func()                             // anonymous same-session admissions; guarded by mu, including work begun before controller attachment
 	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
-	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
-	envWork                       map[envWorkID]envWorkRecord          // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	envWork                       map[envWorkID]envWorkRecord          // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; admitted under mu gated on closing so the admission happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using. Each record's label lets a close whose bounded join gives up name what it walked past; guarded by mu
+	envWorkDrained                chan struct{}                        // closed when the last envWork admission ends, and nil while none is live, so Close()'s join waits on exactly the admissions envWork records; guarded by mu
 	abandonedEnvs                 []*execenv.LocalExecutionEnvironment // environments swapped away from that are neither current nor parked (the clone between two enters); a child sharing one can still mint scratch on it, so close retains each; one entry per environment; guarded by mu
 	envWorkSeq                    uint64                               // last envWork handle issued; guarded by mu
 	laneSweepTimer                clock.Timer                          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
@@ -890,6 +897,9 @@ type Session struct {
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
+	// attentionFoldCursor is the incremental fold of this Session's own
+	// transcript behind its attention reads. Guarded by attentionMu.
+	attentionFoldCursor delegateAttentionFoldCursor
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
@@ -948,22 +958,6 @@ type Session struct {
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
 	pendingTranscriptTurns []schema.Turn
-
-	// restoredTranscript holds the decoded transcript a RESUME read while
-	// validating the session it was asked to restore: the header (with its
-	// SessionID already checked against this session's id) and the retained
-	// entries. It exists so serve's app-identity projection can reuse that
-	// one strict decode instead of re-reading and re-decoding the whole
-	// append-only file; it is populated only on the restore path, after any
-	// delegate-delivery refresh, and is never updated after construction.
-	// Guarded by s.mu.
-	restoredTranscriptHeader transcript.Header
-	restoredTranscript       []transcript.Entry
-
-	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
-	// whether restore opened a transcript, captured at the open so a later
-	// refresh cannot flip it. Guarded by s.mu.
-	restoredTranscriptOpened bool
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -2457,30 +2451,4 @@ func (s *Session) TranscriptPath() string {
 		return ""
 	}
 	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-}
-
-// setRestoredTranscript installs the final restore-time transcript view. It
-// runs once, at the end of restore construction, with the entry list that any
-// delegate-delivery replay already refreshed from disk. opened reports
-// whether restore opened a transcript at all, independent of the entry
-// slice's emptiness.
-func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
-	s.mu.Lock()
-	s.restoredTranscriptHeader = header
-	s.restoredTranscript = entries
-	s.restoredTranscriptOpened = opened
-	s.mu.Unlock()
-}
-
-// RestoredTranscript returns the header and decoded entry list this resume
-// validated, for a caller (serve's app-identity projection) that would
-// otherwise re-read the transcript file. ok is true exactly when restore
-// opened a transcript, including a header-only one; the slice aliases
-// retained state and must be treated as read-only.
-func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
-	s.mu.Lock()
-	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
-	opened := s.restoredTranscriptOpened
-	s.mu.Unlock()
-	return header, entries, opened
 }

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/doctor"
@@ -57,11 +58,30 @@ const (
 	// proving retirement does not sweep unrelated processes off the machine.
 	daemonRetirementDetachedHelperVar = "DAEMON_RETIREMENT_DETACHED_HELPER"
 
-	// daemonRetirementWatchdog is a hang tripwire, never the pacing mechanism:
-	// every wait below is released by an inherited-pipe acknowledgement, a
-	// process exit, or a settlement event.
+	// daemonRetirementWatchdog is the floor of the family's hang tripwire,
+	// never the pacing mechanism: every wait below is released by an
+	// inherited-pipe acknowledgement, a process exit, or a settlement event.
 	daemonRetirementWatchdog = 90 * time.Second
+	// daemonRetirementWatchdogGrowth multiplies the slowest reaction the
+	// fixture has observed to size that tripwire. A loaded runner reacts slowly
+	// but correctly, so the tripwire is at least this many times the slowest
+	// step it has already completed rather than a fixed budget a slow reaction
+	// trips anyway (CI run 36012099049 failed exactly that way).
+	daemonRetirementWatchdogGrowth = 10
+	// daemonRetirementWatchdogCeiling bounds the scaled tripwire well under the
+	// test binary's timeout, so a daemon that is genuinely wedged still fails as
+	// a named watchdog deadline rather than a package panic.
+	daemonRetirementWatchdogCeiling = 4 * daemonRetirementWatchdog
 )
+
+// daemonRetirementScaleBudget sizes the family's hang tripwire: never below the
+// floor, never below a multiple of the slowest per-step reaction the fixture has
+// observed, and never above the ceiling. The wait itself is still released only
+// by the awaited event -- this only decides how long a silent stream is treated
+// as a hang rather than a slow runner.
+func daemonRetirementScaleBudget(base, slowest time.Duration) time.Duration {
+	return max(base, min(daemonRetirementWatchdogGrowth*slowest, daemonRetirementWatchdogCeiling))
+}
 
 // daemonRetirementProcessEvent mirrors the event line the cmd/evener helper
 // writes. The JSON field names are the wire contract between the two test
@@ -190,17 +210,54 @@ type daemonRetirementProcessEvents struct {
 	notify  chan struct{}
 	stopped chan struct{}
 	err     error
+
+	// slowestReaction is the slowest per-step reaction the fixture has observed
+	// on this stream. A loaded runner reacts slowly but correctly, so the family
+	// watchdog scales its hang tripwire to this observation rather than tripping
+	// on a fixed budget.
+	slowestReaction time.Duration
+	// carriedReaction is the slowest reaction a prior daemon of the same fixture
+	// demonstrated. A replacement stream starts from it, so a resume after a slow
+	// predecessor does not fall back to the bare floor.
+	carriedReaction time.Duration
+	// lastEventAt stamps the previous arrival, so every inter-event gap the
+	// daemon completes is itself an observed reaction.
+	lastEventAt time.Time
+	// waiting counts the waits currently blocked on this stream. Only a gap
+	// observed while a wait is outstanding is a daemon reaction; a gap spanning
+	// fixture-side work is not, and must not size the tripwire.
+	waiting int
+
+	// testOnlyBaseBudget lowers the hang-tripwire floor so a test can prove the
+	// tripwire's response to an injected slow reaction without stalling for the
+	// production daemonRetirementWatchdog. Zero means the production floor.
+	testOnlyBaseBudget time.Duration
+	// testOnlyAppendDelay, when non-nil, reports an artificial reaction delay for
+	// an event before it becomes observable, standing in for a loaded runner
+	// whose daemon reacts slowly. Nil in every other test.
+	testOnlyAppendDelay func(daemonRetirementProcessEvent) time.Duration
 }
 
 func newDaemonRetirementProcessEvents() *daemonRetirementProcessEvents {
 	return &daemonRetirementProcessEvents{
-		notify:  make(chan struct{}, 1),
-		stopped: make(chan struct{}),
+		notify:      make(chan struct{}, 1),
+		stopped:     make(chan struct{}),
+		lastEventAt: time.Now(),
 	}
 }
 
 func (e *daemonRetirementProcessEvents) add(ev daemonRetirementProcessEvent) {
+	if delay := e.testOnlyAppendDelay; delay != nil {
+		if d := delay(ev); d > 0 {
+			time.Sleep(d)
+		}
+	}
+	now := time.Now()
 	e.mu.Lock()
+	if e.waiting > 0 {
+		e.observeReactionLocked(now.Sub(e.lastEventAt))
+	}
+	e.lastEventAt = now
 	e.all = append(e.all, ev)
 	e.mu.Unlock()
 	select {
@@ -220,6 +277,55 @@ func (e *daemonRetirementProcessEvents) close(err error) {
 
 func (e *daemonRetirementProcessEvents) closed() <-chan struct{} { return e.stopped }
 
+// noteReaction records one observed per-step reaction of the daemon this stream
+// belongs to. The family watchdog scales its tripwire to the slowest one.
+func (e *daemonRetirementProcessEvents) noteReaction(d time.Duration) {
+	e.mu.Lock()
+	e.observeReactionLocked(d)
+	e.mu.Unlock()
+}
+
+// observeReactionLocked keeps the slowest reaction seen; the caller holds e.mu.
+func (e *daemonRetirementProcessEvents) observeReactionLocked(d time.Duration) {
+	if d > e.slowestReaction {
+		e.slowestReaction = d
+	}
+}
+
+// observedReaction is the slowest per-step reaction this stream has seen.
+func (e *daemonRetirementProcessEvents) observedReaction() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.slowestReaction
+}
+
+// daemonRetirementCarriedReaction is the slowest per-step reaction among prior
+// streams: the observation a replacement daemon's stream starts from.
+func daemonRetirementCarriedReaction(prior []*daemonRetirementProcessEvents) time.Duration {
+	var slowest time.Duration
+	for _, events := range prior {
+		slowest = max(slowest, events.observedReaction())
+	}
+	return slowest
+}
+
+// watchdogBudget is the hang-tripwire budget for a wait on this stream.
+func (e *daemonRetirementProcessEvents) watchdogBudget() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.budgetLocked()
+}
+
+// budgetLocked sizes the tripwire from the current observation; the caller
+// holds e.mu.
+func (e *daemonRetirementProcessEvents) budgetLocked() time.Duration {
+	base := daemonRetirementWatchdog
+	if e.testOnlyBaseBudget > 0 {
+		base = e.testOnlyBaseBudget
+	}
+	return daemonRetirementScaleBudget(base, max(e.slowestReaction, e.carriedReaction))
+}
+
 func (e *daemonRetirementProcessEvents) history() []daemonRetirementProcessEvent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -234,7 +340,16 @@ func (e *daemonRetirementProcessEvents) waitFor(what string, pred func(daemonRet
 // caller can wait for an event that follows a specific earlier one rather than
 // matching a repeated kind from an earlier phase.
 func (e *daemonRetirementProcessEvents) waitForIndexed(what string, pred func(int, daemonRetirementProcessEvent) bool) (daemonRetirementProcessEvent, error) {
-	deadline := time.Now().Add(daemonRetirementWatchdog)
+	started := time.Now()
+	e.mu.Lock()
+	e.waiting++
+	e.lastEventAt = started
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.waiting--
+		e.mu.Unlock()
+	}()
 	for {
 		e.mu.Lock()
 		for i, ev := range e.all {
@@ -244,8 +359,9 @@ func (e *daemonRetirementProcessEvents) waitForIndexed(what string, pred func(in
 			}
 		}
 		history := append([]daemonRetirementProcessEvent(nil), e.all...)
+		budget := e.budgetLocked()
 		e.mu.Unlock()
-		remaining := time.Until(deadline)
+		remaining := time.Until(started.Add(budget))
 		if remaining <= 0 {
 			return daemonRetirementProcessEvent{}, fmt.Errorf("%s: watchdog deadline with events %+v", what, history)
 		}
@@ -294,6 +410,118 @@ func readDaemonRetirementProcessEvents(r *os.File) *daemonRetirementProcessEvent
 		events.close(scanner.Err())
 	}()
 	return events
+}
+
+// TestDaemonRetirementWatchdogScalesWithObservedReaction is the fault-injection
+// proof that the family's hang tripwire is load-aware. CI cannot summon a
+// loaded runner on demand, so the delay is injected into the fixture's own
+// event stream -- the exact join a slow-but-correct runner stalls on -- under
+// testing/synctest, whose bubble makes both the injected reaction and the
+// tripwire's clock deterministic. The production scaling constants are used
+// unchanged; only the tripwire floor is lowered so the proof is instant.
+//
+// The stream first observes one slow-but-correct step (an event lands after a
+// delayed reaction), exactly the way the production fixture observes reactions.
+// The next reaction is then delayed past the fixed floor: a fixed budget (the
+// pre-scaling behavior) trips on it, while a budget scaled to the observed
+// per-step reaction absorbs it.
+func TestDaemonRetirementWatchdogScalesWithObservedReaction(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		events := newDaemonRetirementProcessEvents()
+		const fixedFloor = 200 * time.Millisecond
+		const observedReaction = 100 * time.Millisecond
+		const injectedReaction = 500 * time.Millisecond
+		events.testOnlyBaseBudget = fixedFloor
+		events.testOnlyAppendDelay = func(ev daemonRetirementProcessEvent) time.Duration {
+			if ev.Kind == "beat" && ev.Name == "claim_consumed" {
+				return injectedReaction
+			}
+			return 0
+		}
+		// The stream observes a slow step: disarmed lands observedReaction after
+		// armed. Under the fixed floor that evidence was inert.
+		go func() {
+			events.add(daemonRetirementProcessEvent{Kind: "armed"})
+			time.Sleep(observedReaction)
+			events.add(daemonRetirementProcessEvent{Kind: "disarmed"})
+		}()
+		if _, err := events.waitFor("observed slow step", func(ev daemonRetirementProcessEvent) bool {
+			return ev.Kind == "disarmed"
+		}); err != nil {
+			t.Fatalf("observed slow step: %v", err)
+		}
+		// The next reaction is delayed past the fixed floor, so only the budget
+		// scaled to the observed step can absorb it.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			events.add(daemonRetirementProcessEvent{Kind: "beat", Name: "claim_consumed"})
+		}()
+		_, err := events.waitFor("retirement beat claim_consumed", func(ev daemonRetirementProcessEvent) bool {
+			return ev.Kind == "beat" && ev.Name == "claim_consumed"
+		})
+		// Let the injected reaction land so the bubble drains before the
+		// assertion; a bare failure would otherwise leave the producer blocked.
+		<-done
+		if err != nil {
+			t.Fatalf("the scaled watchdog tripped on a slow-but-correct reaction: %v", err)
+		}
+	})
+}
+
+// TestDaemonRetirementWatchdogCarriesReactionToReplacementStream proves a
+// replacement daemon's stream does not fall back to the bare floor: the fixture
+// seeds it with the slowest reaction a prior daemon demonstrated, so a resume
+// after a slow predecessor keeps the load-aware tripwire. Without the carry the
+// replacement's first event wait would trip on this delayed reaction exactly
+// like the fixed budget it replaced.
+func TestDaemonRetirementWatchdogCarriesReactionToReplacementStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const floor = 200 * time.Millisecond
+		const priorReaction = 100 * time.Millisecond
+		const injectedReaction = 500 * time.Millisecond
+		prior := newDaemonRetirementProcessEvents()
+		prior.noteReaction(priorReaction)
+		replacement := newDaemonRetirementProcessEvents()
+		replacement.testOnlyBaseBudget = floor
+		replacement.carriedReaction = daemonRetirementCarriedReaction([]*daemonRetirementProcessEvents{prior})
+		replacement.testOnlyAppendDelay = func(ev daemonRetirementProcessEvent) time.Duration {
+			if ev.Kind == "beat" && ev.Name == "claim_consumed" {
+				return injectedReaction
+			}
+			return 0
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			replacement.add(daemonRetirementProcessEvent{Kind: "beat", Name: "claim_consumed"})
+		}()
+		_, err := replacement.waitFor("replacement stream claim_consumed", func(ev daemonRetirementProcessEvent) bool {
+			return ev.Kind == "beat" && ev.Name == "claim_consumed"
+		})
+		<-done
+		if err != nil {
+			t.Fatalf("the replacement stream did not inherit the family observation: %v", err)
+		}
+	})
+}
+
+// TestDaemonRetirementWatchdogIgnoresIdleGaps pins that only reactions the
+// fixture actually waits on size the tripwire: a gap that spans fixture-side
+// work with no waiter (a restart, a file read) is not the daemon reacting, and
+// must not inflate the budget toward the ceiling.
+func TestDaemonRetirementWatchdogIgnoresIdleGaps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const floor = 500 * time.Millisecond
+		events := newDaemonRetirementProcessEvents()
+		events.testOnlyBaseBudget = floor
+		events.add(daemonRetirementProcessEvent{Kind: "armed"})
+		time.Sleep(3 * time.Second) // fixture-side idle work; no waiter outstanding
+		events.add(daemonRetirementProcessEvent{Kind: "disarmed"})
+		if got := events.watchdogBudget(); got != floor {
+			t.Fatalf("an idle gap inflated the tripwire: budget = %v, want the floor %v", got, floor)
+		}
+	})
 }
 
 // daemonRetirementProcessFixture owns the private roots, the Hub spawner, the
@@ -463,6 +691,7 @@ func (f *daemonRetirementProcessFixture) launchCommand(_ string, args, env []str
 		}
 		return cmd.Process.Kill()
 	}
+	handle.events.carriedReaction = f.observedSlowestReactionLocked()
 	f.handles = append(f.handles, handle)
 	return cmd
 }
@@ -514,7 +743,7 @@ func (f *daemonRetirementProcessFixture) launchRequest() hubcore.SpawnRequest {
 
 func (f *daemonRetirementProcessFixture) launchInitial() error {
 	before := f.handleCount()
-	ctx, cancel := context.WithTimeout(context.Background(), daemonRetirementWatchdog)
+	ctx, cancel := context.WithTimeout(context.Background(), f.watchdogBudget())
 	defer cancel()
 	entry, err := f.hub.Spawn(ctx, f.launchRequest())
 	if err != nil {
@@ -559,6 +788,38 @@ func (f *daemonRetirementProcessFixture) currentHandle() (*daemonRetirementProce
 	return f.handleAt(f.handleCount() - 1)
 }
 
+// watchdogBudget is the family's current hang-tripwire budget: the floor,
+// raised to the slowest per-step reaction any of its daemons has demonstrated.
+// Every real-process wait in the family sizes its tripwire from this instead of
+// the bare daemonRetirementWatchdog const.
+func (f *daemonRetirementProcessFixture) watchdogBudget() time.Duration {
+	f.mu.Lock()
+	handles := append([]*daemonRetirementProcessHandle(nil), f.handles...)
+	f.mu.Unlock()
+	budget := daemonRetirementWatchdog
+	for _, handle := range handles {
+		budget = max(budget, handle.events.watchdogBudget())
+	}
+	return budget
+}
+
+// observedSlowestReactionLocked collects this fixture's daemon streams for
+// daemonRetirementCarriedReaction. Callers must hold f.mu.
+func (f *daemonRetirementProcessFixture) observedSlowestReactionLocked() time.Duration {
+	streams := make([]*daemonRetirementProcessEvents, 0, len(f.handles))
+	for _, handle := range f.handles {
+		streams = append(streams, handle.events)
+	}
+	return daemonRetirementCarriedReaction(streams)
+}
+
+// observedSlowestReaction is observedSlowestReactionLocked without the lock.
+func (f *daemonRetirementProcessFixture) observedSlowestReaction() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.observedSlowestReactionLocked()
+}
+
 // advance drives the daemon's fake clock and waits for the pipe
 // acknowledgement, which carries the post-command armed state.
 func (f *daemonRetirementProcessFixture) advance(d time.Duration) error {
@@ -570,6 +831,7 @@ func (f *daemonRetirementProcessFixture) advance(d time.Duration) error {
 	f.advanceSeq++
 	seq := f.advanceSeq
 	f.mu.Unlock()
+	sent := time.Now()
 	if err := writeDaemonRetirementProcessCommand(handle.ctlW, daemonRetirementProcessCommand{
 		Cmd: "advance", Nanos: int64(d), Seq: seq,
 	}); err != nil {
@@ -581,6 +843,9 @@ func (f *daemonRetirementProcessFixture) advance(d time.Duration) error {
 	if err != nil {
 		return err
 	}
+	// The acknowledgement is the daemon's per-step reaction to this advance;
+	// recording it lets a loaded runner's slower steps size later tripwires.
+	handle.events.noteReaction(time.Since(sent))
 	f.mu.Lock()
 	f.lastAdvance = ack
 	f.haveAdvance = true
@@ -637,7 +902,7 @@ func (f *daemonRetirementProcessFixture) awaitStartup() error {
 // means to probe is the one after that churn. The loop condition-watches the
 // daemon's published state with the watchdog as a tripwire, never as pacing.
 func (f *daemonRetirementProcessFixture) awaitSettled() error {
-	deadline := time.Now().Add(daemonRetirementWatchdog)
+	deadline := time.Now().Add(f.watchdogBudget())
 	var last string
 	for {
 		if status, err := f.daemonStatus(); err == nil {
@@ -662,10 +927,12 @@ func (f *daemonRetirementProcessFixture) waitDaemonExit() error {
 	if err != nil {
 		return err
 	}
+	timer := time.NewTimer(f.watchdogBudget())
+	defer timer.Stop()
 	select {
 	case <-handle.events.closed():
 		return nil
-	case <-time.After(daemonRetirementWatchdog):
+	case <-timer.C:
 		return fmt.Errorf("daemon pid %d never exited; events %+v", handle.entry.PID, handle.events.history())
 	}
 }
@@ -729,7 +996,7 @@ func (f *daemonRetirementProcessFixture) waitTurnSettled(turnID string) error {
 // itself; the settlement event above proves the turn ended.
 func (f *daemonRetirementProcessFixture) awaitReflected(mutationID string) error {
 	var last string
-	deadline := time.Now().Add(daemonRetirementWatchdog)
+	deadline := time.Now().Add(f.watchdogBudget())
 	for {
 		report, err := f.mutationReport(mutationID)
 		if err == nil {
@@ -809,7 +1076,7 @@ func (f *daemonRetirementProcessFixture) ensureOwner() error {
 		return nil
 	}
 	before := f.handleCount()
-	ctx, cancel := context.WithTimeout(context.Background(), daemonRetirementWatchdog)
+	ctx, cancel := context.WithTimeout(context.Background(), f.watchdogBudget())
 	defer cancel()
 	entry, err := f.hub.Resume(ctx, hubcore.ResumeRequest{
 		SessionID:  f.sessionID,
@@ -852,7 +1119,7 @@ func (f *daemonRetirementProcessFixture) startMutation(id string) (appwire.TurnS
 		if err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), daemonRetirementWatchdog)
+		ctx, cancel := context.WithTimeout(context.Background(), f.watchdogBudget())
 		response, err := client.TurnStart(ctx, params)
 		cancel()
 		_ = client.Close()
@@ -882,7 +1149,7 @@ func (f *daemonRetirementProcessFixture) dialDaemon() (*appwire.Client, error) {
 	if f.entry.HubToken != "" {
 		header.Set("Authorization", "Bearer "+f.entry.HubToken)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), daemonRetirementWatchdog)
+	ctx, cancel := context.WithTimeout(context.Background(), f.watchdogBudget())
 	defer cancel()
 	transport, err := appwire.DialWebSocketWithHeaders(ctx, f.entry.Endpoint, nil, header)
 	if err != nil {
@@ -1131,6 +1398,7 @@ func (f *daemonRetirementProcessFixture) startDirectServe(t *testing.T, timeoutA
 		childEvt: evtW,
 		waitErr:  make(chan error, 1),
 	}
+	handle.events.carriedReaction = f.observedSlowestReaction()
 	handle.kill = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -1162,6 +1430,8 @@ func (f *daemonRetirementProcessFixture) directExitCode(handle *daemonRetirement
 	if handle.waitErr == nil {
 		return -1, errors.New("handle was not started by the fixture")
 	}
+	exitTimer := time.NewTimer(f.watchdogBudget())
+	defer exitTimer.Stop()
 	select {
 	case err := <-handle.waitErr:
 		if err == nil {
@@ -1171,7 +1441,7 @@ func (f *daemonRetirementProcessFixture) directExitCode(handle *daemonRetirement
 			return exitErr.ExitCode(), nil
 		}
 		return -1, err
-	case <-time.After(daemonRetirementWatchdog):
+	case <-exitTimer.C:
 		return -1, fmt.Errorf("direct serve pid %d never exited", handle.entry.PID)
 	}
 }
@@ -1244,6 +1514,37 @@ func TestDaemonRetirementProcessDirectZeroStaysResident(t *testing.T) {
 	}
 	if status.Lifecycle.TimeoutMillis != 0 {
 		t.Fatalf("daemon diagnostics TimeoutMillis = %d, want 0 (disabled)", status.Lifecycle.TimeoutMillis)
+	}
+}
+
+// TestDaemonRetirementProcessHelperExitsWithItsFixture proves the helper does
+// not outlive a test binary that died without cleaning up. Such a death closes
+// the control pipe without the kill a normal cleanup sends first, and a daemon
+// that never retires (0s) would otherwise run on as an orphan: its clock moves
+// only when the fixture advances it.
+func TestDaemonRetirementProcessHelperExitsWithItsFixture(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a real daemon")
+	}
+	f := newDaemonRetirementProcessFixtureNoInitialLaunch(t, DefaultConfig())
+	handle, err := f.startDirectServe(t, "--daemon-idle-timeout", "0s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.awaitStartup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.ctlW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, err := f.directExitCode(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 3 {
+		t.Fatalf("helper exit code after its control pipe closed = %d, want 3", code)
 	}
 }
 
@@ -1804,6 +2105,7 @@ func (f *daemonRetirementProcessFixture) spawnFromStandaloneHubProcess(t *testin
 	}
 	handle.kill = func() error { return daemonRetirementKillPID(result.Entry.PID) }
 	f.mu.Lock()
+	handle.events.carriedReaction = f.observedSlowestReactionLocked()
 	f.handles = append(f.handles, handle)
 	f.entry = result.Entry
 	f.sessionID = result.Entry.SessionID
@@ -1855,6 +2157,11 @@ func TestDaemonRetirementHubLaunchHelper(t *testing.T) {
 		HubToken:            "daemon-retirement-fixture-hub-token",
 		ProvidersConfigPath: req.Providers,
 	}
+	// This re-executed helper has no fixture and so no observed reaction to
+	// scale by, and its caller (TestDaemonRetirementProcessHubExitStillRetires)
+	// has launched nothing yet, so a passed-in budget would be the same floor:
+	// its one spawn handshake keeps the floor, which is its only available
+	// tripwire.
 	ctx, cancel := context.WithTimeout(context.Background(), daemonRetirementWatchdog)
 	defer cancel()
 	entry, spawnErr := spawner.Spawn(ctx, hubcore.SpawnRequest{

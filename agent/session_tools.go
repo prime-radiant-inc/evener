@@ -1397,7 +1397,11 @@ func wireToolDef(td llm.ToolDefinition, nameMap map[string]string, resultToolNam
 	if isResultToolDefinition(canonicalName, td.Name, resultToolName) {
 		return tool.WithoutIntentParameter(td)
 	}
-	return tool.WithIntentParameter(td)
+	// Work tools advertise intent as REQUIRED: the wire schema carries the
+	// mandate. The registry's own validation schema keeps the property-only
+	// form (WithIntentParameter at Register), so a call that omits the
+	// rationale still validates at dispatch.
+	return tool.WithIntentParameterRequired(td)
 }
 
 func isResultToolDefinition(canonicalName, wireName, resultToolName string) bool {
@@ -1482,7 +1486,9 @@ func (s *Session) rebuildToolDefsCache() {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 		} else {
-			defs[i] = tool.WithIntentParameter(defs[i])
+			// Same wire contract as wireToolDef: intent is required in the
+			// advertised schema, optional in the registry's validation schema.
+			defs[i] = tool.WithIntentParameterRequired(defs[i])
 		}
 	}
 

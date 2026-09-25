@@ -735,6 +735,13 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	}
 	h.Headers = mergeStringMap(h.Headers, src.Headers)
 	h.CredentialHeaders = mergeStringMap(h.CredentialHeaders, src.CredentialHeaders)
+	// The per-layer validation cannot see across the fold: a base layer's
+	// "Authorization" and this layer's "authorization" are individually
+	// clean and collide only once merged, which is when the wire would
+	// carry both while resolution picks one.
+	if err := checkCredentialHeaderNames(h.CredentialHeaders, where); err != nil {
+		return err
+	}
 	rec.notes = append(rec.notes, src.notes...)
 	for _, id := range sortedKeys(src.Models) {
 		m := src.Models[id]
@@ -926,12 +933,16 @@ func expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []s
 func (r *Registry) varLookupWith(rec *record, t Transport, warn func(string)) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		if v, ok := rec.userVars[name]; ok {
-			expanded, missing := expandEnv(v, r.env)
-			for _, m := range missing {
-				warn("unresolved variable " + m)
+			expanded, unresolved := expandEnv(v, r.env)
+			for _, u := range unresolved {
+				if u.Command != "" {
+					warn(commandFailurePhrase(u))
+				} else {
+					warn("unresolved variable " + u.Name)
+				}
 			}
 			switch {
-			case len(missing) > 0:
+			case len(unresolved) > 0:
 				return "", false
 			case expanded != "":
 				return expanded, true

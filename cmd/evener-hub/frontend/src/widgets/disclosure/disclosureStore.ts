@@ -5,7 +5,7 @@
 // unmounting the pane tree) inflict (yt2q). Tests that need a clean slate call
 // resetDisclosureStoreForTests; Vitest file isolation keeps this instance from
 // crossing files.
-import { createDisclosureStore, isDisclosureOpenIn } from "@evener/appwire-client";
+import { createDisclosureStore, type DisclosureReadOptions, isDisclosureOpenIn } from "@evener/appwire-client";
 import { useStore } from "zustand";
 
 const store = createDisclosureStore();
@@ -15,9 +15,9 @@ const store = createDisclosureStore();
  * it is only ever called at the top of a component's render (Disclosure). Its
  * name follows the boolean-predicate shape the interface specifies rather than
  * a use- prefix, so biome's hook-name heuristic can't recognize it as a hook. */
-export function isDisclosureOpen(id: string, fallback: boolean): boolean {
+export function isDisclosureOpen(id: string, fallback: boolean, options?: DisclosureReadOptions): boolean {
   // biome-ignore lint/correctness/useHookAtTopLevel: custom hook wrapping useStore; called unconditionally at the top of Disclosure's render, only the non-use- name defeats the heuristic
-  return useStore(store, (s) => isDisclosureOpenIn(s, id, fallback));
+  return useStore(store, (s) => isDisclosureOpenIn(s, id, fallback, options));
 }
 
 export const setDisclosureOpen = store.setOpen;

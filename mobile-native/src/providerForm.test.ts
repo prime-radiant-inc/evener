@@ -41,7 +41,20 @@ it("rejects absent providers, blank names and literal credential headers", () =>
       { ...draft, credentialHeader: "Bearer literal" },
       providers,
     ),
-  ).toThrow("$VARIABLE");
+  ).toThrow(
+    "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
+  );
+});
+
+it("accepts a command expression as credential material", () => {
+  expect(
+    createProviderParams(
+      { ...draft, credentialHeader: "Bearer $(get-work-key)" },
+      providers,
+    ),
+  ).toMatchObject({
+    credentialHeader: "Bearer $(get-work-key)",
+  });
 });
 it("leaves blank optional creation settings inherited", () => {
   expect(

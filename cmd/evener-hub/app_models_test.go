@@ -2,6 +2,10 @@ package hub
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -10,6 +14,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
@@ -112,6 +117,164 @@ func TestFetchLiveModels_CarriesListingCapabilitiesUnchanged(t *testing.T) {
 		t.Fatalf("k3-256k missing from %+v", models)
 	} else if got.ContextWindow == nil || *got.ContextWindow != 123_456 {
 		t.Errorf("k3-256k context_window = %v, want the listing's 123456", got.ContextWindow)
+	}
+}
+
+// The model picker's live pass mints nothing for a command-credentialed
+// instance: the hub executes credential commands never (spec §10.1), so
+// the picker serves that instance's registry rows — every advertised
+// fact, no credential materialized — and leaves its live listing to the
+// child. Those rows pass the same §5 visibility filter the child's own
+// listing applies, so nothing the child hides reaches the picker.
+func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	// The instance bases on a curated provider whose catalog carries
+	// hidden rows (bedrock's non-anthropic ids, §9.3), so its registry
+	// rows include some the child's own listing drops. The base_url
+	// override keeps a misbehaving fetch on the local server, not the
+	// real mantle.
+	cfg := "[providers.gw]\nbase = \"amazon-bedrock\"\nbase_url = \"" + srv.URL + "/anthropic/v1\"\napi_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.vars]\n\"AWS_REGION\" = \"eu-west-1\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(tomlPath),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	// The rows the child's own listing would hide, for the assertion
+	// below: resolved at the facts depth the picker itself resolves,
+	// so the fixture mints nothing either.
+	ids, err := r.ModelIDs("gw")
+	if err != nil {
+		t.Fatalf("model ids: %v", err)
+	}
+	hidden := make(map[string]bool)
+	for _, id := range ids {
+		if row, err := r.ResolveInstanceModelFacts("gw", id); err == nil && row.Model.Hidden {
+			hidden[id] = true
+		}
+	}
+	if len(hidden) == 0 {
+		t.Fatal("fixture setup: the bedrock-based instance carries no hidden rows, so this test guards nothing")
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	// Every other instance the registry knows gets a mute lister so no
+	// test client can reach a real transport.
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			client.Register(&modelMetadataAdapter{name: inst.Name})
+		}
+	}
+	oldLoadClient := liveModelLoadClient
+	liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+	server := NewWebServer(hubcore.WebConfig{})
+	models := server.fetchLiveModels(context.Background())
+	found := false
+	for _, m := range models {
+		if m.Model == "house-model" && m.Provider == "gw" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the picker dropped the command-credentialed instance's registry rows; skipping the live fetch must skip the mint, not the models")
+	}
+	for _, m := range models {
+		if m.Provider == "gw" && hidden[m.Model] {
+			t.Fatalf("the picker served %q, a row the child's own listing hides (spec §5)", m.Model)
+		}
+	}
+	if runs != 0 {
+		t.Fatalf("the model picker executed the credential command %d time(s); the hub never runs credential commands", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the model picker fetched a live listing with a credential it never materialized")
+	}
+}
+
+// A row that pins its own auth scheme reaches the command credential
+// under the row's transport, whatever the provider-level scheme says:
+// the picker must refuse the live fetch on the predicate that sees the
+// override, or the automatic view mints through the row.
+func TestFetchLiveModelsSkipsRowAuthOverrideInstances(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\nprotocol = \"openai-chat\"\nauth = \"none\"\napi_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\nauth = \"bearer\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(tomlPath),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			client.Register(&modelMetadataAdapter{name: inst.Name})
+		}
+	}
+	oldLoadClient := liveModelLoadClient
+	liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+	models := NewWebServer(hubcore.WebConfig{}).fetchLiveModels(context.Background())
+	found := false
+	for _, m := range models {
+		if m.Model == "house-model" && m.Provider == "gw" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the picker dropped the instance's registry rows; refusing the live fetch must refuse the mint, not the models")
+	}
+	if runs != 0 {
+		t.Fatalf("the picker executed the credential command %d time(s) through the row's auth override", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the picker fetched a live listing through the row's auth override")
 	}
 }
 

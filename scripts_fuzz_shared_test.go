@@ -41,7 +41,7 @@ func repoScriptPath(t *testing.T, path string) string {
 }
 
 // gitOutput runs git args... in dir and returns trimmed stdout, failing the
-// test on a nonzero exit. Use this over runGit (runtime_pair_build_test.go)
+// test on a nonzero exit. Use this over runGit (repofixture_test.go)
 // when the assertion needs the command's output, not just its success.
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()

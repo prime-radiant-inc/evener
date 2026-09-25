@@ -1123,3 +1123,30 @@ func TestThreadVisionModelSetParamsDecode(t *testing.T) {
 		t.Fatalf("params = %+v", p)
 	}
 }
+
+// TestEvenerDiagnosticsPluginsJSONPresence pins the plugin inventory's wire
+// contract: a nil inventory (a source that cannot report one) is absent, and an
+// explicit empty inventory is sent as [].
+func TestEvenerDiagnosticsPluginsJSONPresence(t *testing.T) {
+	nilRaw, err := json.Marshal(EvenerDiagnostics{Tools: []EvenerToolInfo{{Name: "shell", Source: "builtin"}}})
+	if err != nil {
+		t.Fatalf("marshal nil plugins: %v", err)
+	}
+	if bytes.Contains(nilRaw, []byte(`"plugins"`)) {
+		t.Fatalf("nil plugin inventory must be absent: %s", nilRaw)
+	}
+	emptyRaw, err := json.Marshal(EvenerDiagnostics{Plugins: []EvenerPluginInfo{}})
+	if err != nil {
+		t.Fatalf("marshal empty plugins: %v", err)
+	}
+	if !bytes.Contains(emptyRaw, []byte(`"plugins":[]`)) {
+		t.Fatalf("empty plugin inventory must be explicit: %s", emptyRaw)
+	}
+	var roundTrip EvenerDiagnostics
+	if err := json.Unmarshal(emptyRaw, &roundTrip); err != nil {
+		t.Fatalf("unmarshal empty plugins: %v", err)
+	}
+	if roundTrip.Plugins == nil || len(roundTrip.Plugins) != 0 {
+		t.Fatalf("empty plugin inventory round trip = %#v", roundTrip.Plugins)
+	}
+}

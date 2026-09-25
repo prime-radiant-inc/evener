@@ -400,7 +400,7 @@ func TestSkillActivation_RecordTurnCopiesTypedState(t *testing.T) {
 		t.Fatal("recordTurn inferred inventory from provisional outcome")
 	}
 	s.Close()
-	data, err := readTranscriptFull(path)
+	data, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}

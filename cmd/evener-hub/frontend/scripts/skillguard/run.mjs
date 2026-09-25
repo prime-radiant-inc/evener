@@ -36,6 +36,7 @@ import {
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
 import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
@@ -71,7 +72,6 @@ const PROSE = {
   attachment: "PROSE_ATTACH_14d inspect the attached image",
   steerTurn: "PROSE_STEER_TURN_14e open a long turn for steering",
   steer: "PROSE_STEER_14e redirect the running turn",
-  capabilityLoss: "PROSE_CAPLOSS_14f aimed at a lost capability",
   failTurn: "PROSE_FAIL_TURN_14g open a long turn for the failing claim",
   fail: "PROSE_FAIL_14h request the missing source",
   delay: "PROSE_DELAY_14i submitted then edited while held",
@@ -237,6 +237,11 @@ export class Driver {
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
     this.milestonePath = milestonePath;
+    // How slow THIS machine has proven to be: every wait's budget is sized
+    // from the slowest reaction a completed wait has already observed, so a
+    // loaded runner gets a proportional hang tripwire instead of the fixed
+    // floor (see budgets.mjs).
+    this.reactions = new ReactionBudget();
     this.failures = [];
     this.chromeBinary = null;
     this.chromeArgv = [];
@@ -661,8 +666,23 @@ export class Driver {
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
     const startedAt = Date.now();
-    let deadline = startedAt + timeoutMs;
+    // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
+    // budget: a run that has already proven this machine slow widens it (up to
+    // the ceiling), so a correct-but-slow reaction under load is not read as a
+    // wedged page. The wait is still released ONLY by the awaited condition --
+    // the budget decides only how long silence is tolerated (see budgets.mjs).
+    const budgetMs = this.reactions.deadline(timeoutMs);
+    let deadline = startedAt + budgetMs;
     let heldSince = null;
+    // A completed wait is the driver's observation of how slow the app is on
+    // this machine. With settleMs the reaction is the time to the FIRST hold --
+    // the settle window that follows is a proof barrier, not a reaction --
+    // and without it the condition held at this poll, which is now.
+    const settled = (value) => {
+      const reactedAt = settleMs > 0 ? heldSince : Date.now();
+      this.reactions.observe(reactedAt - startedAt);
+      return value;
+    };
     let settleAccounted = false;
     // When the previous poll ATTEMPT landed, success or failure: the span a
     // failure excludes from the proof is measured from here.
@@ -688,7 +708,7 @@ export class Driver {
       readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
       if (held) {
-        if (settleMs <= 0) return value;
+        if (settleMs <= 0) return settled(value);
         if (heldSince === null) {
           heldSince = now;
           if (!settleAccounted) {
@@ -696,7 +716,7 @@ export class Driver {
             deadline = Math.max(deadline, now + settleMs);
           }
         }
-        if (now - heldSince >= settleMs) return value;
+        if (now - heldSince >= settleMs) return settled(value);
       } else if (!errored) {
         heldSince = null;
       }
@@ -708,7 +728,7 @@ export class Driver {
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
         const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
         throw new Error(
-          `timed out after ${timeoutMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -1021,8 +1041,8 @@ export class Driver {
   }
 
   // A composer action click is lost when a re-render lands between the mouse
-  // press and release (no click event fires) — the roster refresh after a
-  // daemon death re-renders the shell exactly then. So each attempt is
+  // press and release (no click event fires) — any store update that
+  // re-renders the shell at that moment is enough. So each attempt is
   // verified by an OBSERVABLE effect (composer state changed, the button went
   // disabled, or a toast answered) and re-clicked when nothing happened. A
   // re-click while the first landed is harmless: actionPending disables the
@@ -2043,42 +2063,9 @@ async function runScenariosPart2(driver) {
   });
   await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
-  // ---- scenario: capability loss ----
-  await driver.openSession(driver.sessionB);
-  await driver.focusComposer(driver.sessionB);
-  await driver.typeText(driver.sessionB, PROSE.capabilityLoss);
-  await driver.selectSkillChip(driver.sessionB);
-  const staged = await driver.composerState(driver.sessionB);
-  driver.milestone("caploss-staged", staged);
-  // The Go owner shuts helper B down when it sees that milestone, then
-  // refreshes the real roster. The pane re-renders the thread as ended; the
-  // composer collapses to its follow-up invitation.
-  await driver.waitPage(
-    `(() => { const state = ${driver.composerStateExpr(driver.sessionB)}; return state && state.placeholder === "Send a follow-up…" ? true : null; })()`,
-    { timeoutMs: 30000, label: "session B rendered as ended" },
-  );
-  driver.milestone("caploss-ended", await driver.composerState(driver.sessionB));
-  await driver.focusComposer(driver.sessionB);
-  await driver.clickSubmit(driver.sessionB, draft(PROSE.capabilityLoss));
-  // The refusal keeps the draft: text and chips stay, and NOTHING durable is
-  // written for this mutation.
-  const refused = await driver.composerState(driver.sessionB);
-  check(refused.text.includes(PROSE.capabilityLoss), `draft text lost on refusal: ${JSON.stringify(refused)}`);
-  check(refused.chips.some((c) => c.includes(SKILL_NAME)), `draft chip lost on refusal: ${JSON.stringify(refused)}`);
-  const toast = await evaluate(driver.send, driver.toastExpr());
-  const durableB = await evaluate(driver.send, driver.durableRecordsExpr());
-  driver.milestone("caploss-refused", { ...refused, toast, durable: durableB });
-  // Clean the staged draft so later IndexedDB reads stay unambiguous.
-  await driver.focusComposer(driver.sessionB);
-  await driver.selectAll(driver.sessionB);
-  await driver.press(driver.sessionB, "Backspace");
-  // The refusal toast renders OVER the composer card and swallows clicks
-  // aimed at its buttons; wait for it to dismiss before any later scenario
-  // drives the composer again.
-  await driver.waitPage(
-    `(() => { const toast = document.querySelector("section[aria-label='Notifications']"); return !toast || toast.textContent.trim() === "" ? true : null; })()`,
-    { timeoutMs: 20000, label: "refusal toast dismissed" },
-  );
+  // No capability-loss scenario: see skillGuardAssert in
+  // skill_composer_browser_test.go for why, and for where the composer's
+  // skillInput refusal is covered instead.
 
   // ---- scenario: failed activation + explicit retry ----
   await driver.openSession(driver.sessionA);

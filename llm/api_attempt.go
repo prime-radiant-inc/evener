@@ -104,15 +104,55 @@ func WithAPIAttemptSink(ctx context.Context, sink APIAttemptSink) context.Contex
 }
 
 // APIAttemptContextActive reports whether the caller explicitly supplied both
-// canonical attempt coordination and persistence. Transports use it to leave
-// ordinary calls entirely on their existing client path.
+// canonical attempt coordination and a sink that persists records. Transports
+// use it to leave ordinary calls entirely on their existing client path; a
+// call bound only to the ownership logger, which discards every record, is
+// ordinary too, and reports its protocol through NoteAPIAttemptProtocol. The
+// sink judged is the one BeginAPIAttempt will append to: the group's bound
+// sink once it has one, and the context's sink before that.
 func APIAttemptContextActive(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
 	group, _ := ctx.Value(apiAttemptGroupContextKey{}).(*APIAttemptGroup)
+	if group == nil {
+		return false
+	}
 	state, _ := ctx.Value(apiAttemptSinkContextKey{}).(apiAttemptSinkContext)
-	return group != nil && state.sink != nil
+	group.mu.Lock()
+	sink := group.sinkForLocked(state)
+	group.mu.Unlock()
+	return sinkPersistsRecords(sink)
+}
+
+// sinkPersistsRecords reports whether records appended to sink are kept. The
+// ownership logger discards them, so evidence gathered for it (request and
+// response body copies, a credential-scrubbed record of the whole
+// conversation) would be rebuilt on every model round only to be dropped.
+func sinkPersistsRecords(sink APIAttemptSink) bool {
+	if sink == nil {
+		return false
+	}
+	logger, ok := sink.(*APILogger)
+	return !ok || !logger.discardRecords
+}
+
+// NoteAPIAttemptProtocol records protocol() as the protocol of the attempt
+// begun most recently in the group attached to ctx, for a transport call that
+// keeps no canonical evidence. It is BeginAPIAttempt's protocol stamp alone;
+// protocol is called only when a group is attached, so an ordinary call
+// derives nothing.
+func NoteAPIAttemptProtocol(ctx context.Context, protocol func() string) {
+	group := apiAttemptGroupFromContext(ctx)
+	if group == nil {
+		return
+	}
+	stamped := protocol()
+	group.mu.Lock()
+	if !group.settling {
+		group.finalProtocol = stamped
+	}
+	group.mu.Unlock()
 }
 
 // APIAttemptGroup coordinates attempt identity, append ordering, and final
@@ -244,14 +284,14 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 		group.mu.Unlock()
 		return &APIAttempt{}
 	}
-	// Recorded before the sink nil check below, so a group whose attempts all
-	// went inert for want of a sink still carries the protocol the agent reads
-	// back to stamp the turn.
+	// Recorded before the persisting-sink check below, so a group whose
+	// attempts all went inert (no sink, or one that discards records) still
+	// carries the protocol the agent reads back to stamp the turn.
 	group.finalProtocol = meta.Protocol
 	group.bindSinkLocked(state)
 	group.credentialMaterial = mergeAPILogCredentialMaterial(group.credentialMaterial, meta.CredentialMaterial)
 	meta.CredentialMaterial = group.credentialMaterial
-	if group.sink == nil {
+	if !sinkPersistsRecords(group.sink) {
 		group.mu.Unlock()
 		return &APIAttempt{}
 	}
@@ -481,12 +521,18 @@ func (g *APIAttemptGroup) settle(ctx context.Context, outcome apilog.AttemptOutc
 	}
 }
 
-func (g *APIAttemptGroup) bindSinkLocked(state apiAttemptSinkContext) {
+// sinkForLocked is the sink the group appends to under state: the first sink
+// bound wins, and state's sink is the one binding would take.
+func (g *APIAttemptGroup) sinkForLocked(state apiAttemptSinkContext) APIAttemptSink {
 	if g.sinkBound {
-		return
+		return g.sink
 	}
+	return state.sink
+}
+
+func (g *APIAttemptGroup) bindSinkLocked(state apiAttemptSinkContext) {
+	g.sink = g.sinkForLocked(state)
 	g.sinkBound = true
-	g.sink = state.sink
 }
 
 func (g *APIAttemptGroup) recordFailure(failure APILogFailure) {

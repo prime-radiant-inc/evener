@@ -31,7 +31,6 @@ import {
   fingerprintUnavailable,
   friendlyErrorMessage,
   fromEnvironment,
-  groupByProvider,
   isEndpointConflict,
   isInstanceRemoveApplied,
   safeCredentialTestResult,
@@ -52,21 +51,17 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
-import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
   headerRow: requireClass(styles.headerRow, "CredentialsSection.module.css", "headerRow"),
   error: requireClass(styles.error, "CredentialsSection.module.css", "error"),
-  groups: requireClass(styles.groups, "CredentialsSection.module.css", "groups"),
-  group: requireClass(styles.group, "CredentialsSection.module.css", "group"),
-  groupHeader: requireClass(styles.groupHeader, "CredentialsSection.module.css", "groupHeader"),
-  list: requireClass(styles.list, "CredentialsSection.module.css", "list"),
   diagnostics: requireClass(styles.diagnostics, "CredentialsSection.module.css", "diagnostics"),
   diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
@@ -107,7 +102,7 @@ const ENDPOINT_CHANGED_CONFIRM_ERROR =
 // diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
 // component (this pane's sibling settings section), a flat unordered list
 // with no stable per-entry identity of its own.
-function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
+export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
   if (diagnostics.length === 0) return null;
   return (
     <div className={CLASS.diagnostics} role="status" aria-live="polite">
@@ -507,7 +502,6 @@ export function CredentialsSection({
     if (name !== null) editor(name);
   }
 
-  const groups = groupByProvider(instances);
   // useCallback'd (not a plain inline arrow) so its identity stays stable
   // across CredentialsSection re-renders - DeviceCodeDialog's own poll
   // effect depends on the onSuccess it's given, and an unstable reference
@@ -579,27 +573,15 @@ export function CredentialsSection({
       {loading && instances.length === 0 && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
       {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
+      {/* The provider-grouped listing is shared with the host-scoped view of a
+          remote host's own listing (ProviderInstanceGroups); this surface's
+          rows are the interactive variant. */}
       {instances.length > 0 && (
-        <div className={CLASS.groups}>
-          {groups.map((group) => (
-            <div key={group.providerId} className={CLASS.group}>
-              {/* `name || id`, the same label the Add dialog gives a
-                  provider - one pane must not name a provider two ways. */}
-              <div className={CLASS.groupHeader}>
-                {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
-              </div>
-              <ul className={CLASS.list}>
-                {group.instances.map((instance) => (
-                  <InstanceRow
-                    key={instance.name}
-                    instance={instance}
-                    onSelect={() => setSelectedInstance(instance.name)}
-                  />
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
+        <ProviderInstanceGroups
+          instances={instances}
+          availableProviders={availableProviders}
+          onSelect={setSelectedInstance}
+        />
       )}
 
       <InstanceSheet

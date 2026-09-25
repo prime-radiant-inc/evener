@@ -15,7 +15,11 @@ import {
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
-import type { AnyNotification, InstanceListResponse } from "@evener/appwire-client";
+import type {
+	AnyNotification,
+	ConnectionState,
+	InstanceListResponse,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 // React 19's act() only drives effects when it is told it is inside a test
@@ -159,6 +163,28 @@ export function scriptedClient(
 		},
 	} as ConversationClientLike;
 	return { client, methods, requests, unsubscribes: () => unsubscribes };
+}
+
+/** The connection value the retained-screen suites report through their
+ * mocked ConnectionProvider: the Work hub's profile, its client, the state
+ * the test drives, and the fatal flag and manual retry the retained-screen
+ * wiring reads. One literal where five suites' fixtures matched field for
+ * field (#1942), so the shape the screens read cannot drift between suites -
+ * the test-side twin of the useRetainedScreenConnection wiring the screens
+ * themselves share (#2164). A test whose scenario needs a different hub,
+ * retry or verdict spreads its override over the result, so the outlier
+ * stays visible at its use. */
+export function screenConnection(
+	client: unknown,
+	state: ConnectionState,
+): Record<string, unknown> {
+	return {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client,
+		state,
+		fatal: false,
+		retry: () => {},
+	};
 }
 
 /** Mounts `element` and flushes its effects, returning the test renderer. */

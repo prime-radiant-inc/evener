@@ -11,6 +11,11 @@
 // launchServer.tsx/project.tsx), or the diagnostics panel (launchServer-only,
 // rendered from resolve()/setLayer()'s own returned diagnostics, which this
 // component exposes via onSaved rather than rendering itself).
+//
+// It DOES own the host boundary: `current` and `onSave` both describe the host
+// selected now, and this form is handed a new host - or a re-registered one -
+// without being unmounted, so the draft is reseeded whenever the per-host store
+// INSTANCE behind it changes (see `draftOwner` and the seeding below).
 
 import {
   asEnvObjects,
@@ -37,11 +42,11 @@ import {
   PROMPT_DEPENDENT_WIRE_FIELDS,
   schemaPathKind,
 } from "@evener/appwire-client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
-import { PromptCompositeField, ScalarField } from "./fields";
+import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
 import styles from "./LaunchConfigForm.module.css";
 
 const CLASS = {
@@ -50,6 +55,7 @@ const CLASS = {
   groupHeader: requireClass(styles.groupHeader, "LaunchConfigForm.module.css", "groupHeader"),
   field: requireClass(styles.field, "LaunchConfigForm.module.css", "field"),
   actions: requireClass(styles.actions, "LaunchConfigForm.module.css", "actions"),
+  conflict: requireClass(styles.conflict, "LaunchConfigForm.module.css", "conflict"),
   status: requireClass(styles.status, "LaunchConfigForm.module.css", "status"),
 };
 
@@ -69,6 +75,21 @@ export interface LaunchConfigFormProps {
   resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
+  /** The browse-assisted path fields' helpers for the host whose layer is being
+   * edited (component 07b). A host-scoped pane passes the store bound to its
+   * selected host; omitted = the controller's own helpers (today's behavior). */
+  paths?: LaunchFormPaths;
+  /** The host whose own model catalog the modelPicker/modelList fields offer
+   * (component 07b). Omitted = the local hub, so a direct render is today's. */
+  host?: string;
+  /** The per-host store instance the parent resolved for this host. The form's
+   * draft BELONGS to that instance, not to the host's name: a host removed and
+   * re-added under the same name is a different registration, whose instance
+   * (stores/launchConfig.ts's hostEntry) carries a different `current`,
+   * `onSave` and `paths`, so a draft typed for the old registration is reseeded
+   * rather than written to the new one. A caller with no instance to hand over
+   * (a direct render, a test) keeps the host name as the owner. */
+  draftOwner?: object;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   onSaved?: (resolved: LaunchConfigResolved) => void;
 }
@@ -84,6 +105,32 @@ function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer
   return (resolvedDefaults as Record<string, unknown>)[option.wireField];
 }
 
+/** sameLayerValue compares two launch-config values structurally: a layer's
+ * fields hold JSON scalars, string lists and plain maps/objects, and every read
+ * hands back a FRESH object even when the content is byte-for-byte the same. */
+function sameLayerValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((item, index) => sameLayerValue(item, right[index]));
+  }
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return (
+    keys.length === Object.keys(rightRecord).length &&
+    keys.every((key) => Object.hasOwn(rightRecord, key) && sameLayerValue(leftRecord[key], rightRecord[key]))
+  );
+}
+
+/** sameLayer answers whether two layers carry the same content. A re-read of
+ * the same owner's layer is a new OBJECT every time, so a content comparison is
+ * what tells a real change from a fresh copy of the same values. */
+function sameLayer(left: LaunchConfigLayer, right: LaunchConfigLayer): boolean {
+  return sameLayerValue(left, right);
+}
+
 export function LaunchConfigForm({
   options,
   layer,
@@ -92,18 +139,103 @@ export function LaunchConfigForm({
   resolvedDefaults,
   successToast,
   validatePath,
+  paths,
+  host,
+  draftOwner,
   onSave,
   onSaved,
 }: LaunchConfigFormProps) {
   const supportedOptions = useMemo(() => options.filter((opt) => optionSupportsLayer(opt, layer)), [options, layer]);
-  // Seeded once - this form is mounted fresh per page-load; the parent
-  // doesn't re-fetch `current` mid-session (see this file's own top comment).
-  const [state, setState] = useState<LaunchFormState>(() => buildFormState(supportedOptions, current));
+  // `seed` names what the draft currently belongs to: the owner (the per-host
+  // store instance, or the host name for a caller that has no instance), the
+  // `current` it was built from, and the built form state itself. Keeping the
+  // built baseline lets an UNTOUCHED draft be told from an edited one by object
+  // identity alone - every edit publishes a new LaunchFormState - without
+  // re-deriving the baseline on every render.
+  const [seed, setSeed] = useState<{
+    owner: object | string | undefined;
+    current: LaunchConfigLayer;
+    baseline: LaunchFormState;
+  }>(() => {
+    const baseline = buildFormState(supportedOptions, current);
+    return { owner: draftOwner ?? host, current, baseline };
+  });
+  const [state, setState] = useState<LaunchFormState>(seed.baseline);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  // Whether the host's values moved under an EDITED draft: the draft stays
+  // (it is the user's), and this is what says so instead of leaving a later
+  // Save to overwrite the newer values in silence.
+  const [conflict, setConflict] = useState(false);
+
+  // The draft belongs to ONE per-host store instance. A host-scoped parent
+  // hands this form a different instance - with it a different `current`, a
+  // different `onSave` and a different `paths` - while it stays mounted (the
+  // frame above a real pane remounts the body on a switch, and this form's own
+  // contract has to hold on its own too), and a re-registration under the same
+  // NAME does the same: stores/launchConfig.ts builds a new instance for the new
+  // registration. A draft seeded once would then be shown as the new
+  // registration's settings and submitted to it by Save.
+  //
+  // Reseeded DURING render rather than from an effect, which is what makes the
+  // commit that carries the new owner the first one that renders it: an effect
+  // lands after that commit is painted, leaving a frame in which the old
+  // registration's values stand under the new one. Reset on the OWNER and not on
+  // `current`: a same-host re-read (a refetch, a reconnect) brings a
+  // referentially new `current` from the SAME instance and must not throw away
+  // what is being typed. The host NAME alone is not the owner either - it is
+  // unchanged across a re-registration - so a caller that has the instance hands
+  // it over, and one that does not keeps today's name-keyed behavior.
+  const owner: object | string | undefined = draftOwner ?? host;
   const [status, setStatusText] = useState("");
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
+  if (seed.owner !== owner) {
+    const baseline = buildFormState(supportedOptions, current);
+    setSeed({ owner, current, baseline });
+    setState(baseline);
+    setFieldErrors({});
+    setStatusText("");
+    setConflict(false);
+  } else if (seed.current !== current) {
+    // A same-owner re-read: the pane refreshed this host's layer while the form
+    // stayed mounted. When the host's values did not actually move - every read
+    // hands back a fresh object even of identical content - only the recorded
+    // baseline moves forward. When they DID move, an untouched draft follows the
+    // host and an edited one stays the user's, with the change reported beside
+    // the form rather than applied over what they typed.
+    if (sameLayer(seed.current, current)) {
+      setSeed({ owner, current, baseline: seed.baseline });
+    } else if (state === seed.baseline) {
+      const baseline = buildFormState(supportedOptions, current);
+      setSeed({ owner, current, baseline });
+      setState(baseline);
+      setConflict(false);
+    } else {
+      setSeed({ owner, current, baseline: seed.baseline });
+      setConflict(true);
+    }
+  }
+
+  /** adoptHostValues drops the draft and shows the host's newest values, the
+   * user's own choice from the conflict notice. */
+  function adoptHostValues(): void {
+    const baseline = buildFormState(supportedOptions, seed.current);
+    setState(baseline);
+    setSeed({ owner, current: seed.current, baseline });
+    setConflict(false);
+  }
+
+  // The draft swap above drops the status line, so the self-clear timer it armed
+  // has nothing left to clear - and this is where that teardown lives, not in
+  // the render-phase reseed. A render is not a place for a side effect: React
+  // double-invokes it under StrictMode and may discard a pass outright under
+  // concurrent rendering, so a render-phase clearTimeout can cancel a timer for
+  // a reseed no commit ever carried out. An effect's cleanup also runs on the
+  // edge a render can never reach - the form going away - which is what keeps a
+  // save's timer from outliving the form. It runs exactly once per owner change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: owner is the trigger, not a read - the cleanup it gates clears a timer armed by the owner before it
+  useEffect(() => () => clearTimeout(clearTimerRef.current), [owner]);
 
   function setStatus(text: string): void {
     clearTimeout(clearTimerRef.current);
@@ -194,6 +326,7 @@ export function LaunchConfigForm({
           fileGlobalDefaultHint={globalDefaultHint(spec.fileWire, layer, globalDefaults)}
           textGlobalDefaultHint={globalDefaultHint(spec.textWire, layer, globalDefaults)}
           fileError={fieldErrors[spec.fileWire]}
+          paths={paths}
         />
       );
     }
@@ -208,6 +341,7 @@ export function LaunchConfigForm({
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
+              paths={paths}
               inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
@@ -215,6 +349,7 @@ export function LaunchConfigForm({
           return (
             <ModelListField
               option={opt}
+              host={host}
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
@@ -256,6 +391,8 @@ export function LaunchConfigForm({
         globalDefaultHint={globalDefaultHint(opt.wireField, layer, globalDefaults)}
         error={fieldErrors[opt.wireField]}
         resolvedDefaults={resolvedDefaults}
+        paths={paths}
+        host={host}
       />
     );
   }
@@ -293,6 +430,14 @@ export function LaunchConfigForm({
           ))}
         </div>
       ))}
+      {conflict && (
+        <p className={CLASS.conflict} role="status">
+          These settings changed on the host while you were editing. Saving will overwrite the newer values.{" "}
+          <Button type="button" onClick={() => adoptHostValues()}>
+            Use the host's values
+          </Button>
+        </p>
+      )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
           Save launch defaults

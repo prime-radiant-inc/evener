@@ -1212,7 +1212,7 @@ func TestValidateProviderCredentials_CodexInstanceOAuth(t *testing.T) {
 			reg := newSpawnGateRegistry(t, stateRoot, nil, map[string]registry.Provider{
 				"work": {Base: "openai-codex"},
 			})
-			err := validateProviderCredentials("work", reg)
+			err := validateProviderCredentials("work", "", reg)
 			if tt.hasRecord {
 				if err != nil {
 					t.Fatalf("validateProviderCredentials(work) with auth/work.json: %v", err)
@@ -1239,7 +1239,7 @@ func TestValidateProviderCredentials_AuthSchemesNeedingNothing(t *testing.T) {
 					Transport: registry.Transport{BaseURL: "http://127.0.0.1:11434/v1", Auth: auth},
 				},
 			})
-			if err := validateProviderCredentials("local", reg); err != nil {
+			if err := validateProviderCredentials("local", "", reg); err != nil {
 				t.Fatalf("validateProviderCredentials(local) with auth = %q: %v", auth, err)
 			}
 		})
@@ -1247,7 +1247,7 @@ func TestValidateProviderCredentials_AuthSchemesNeedingNothing(t *testing.T) {
 }
 
 // TestValidateProviderCredentials_ResolvedKeyPasses walks the credential
-// sources a bearer instance can launch with, and the empty environment that
+// sources an instance can launch with, and the empty environment that
 // refuses it.
 func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 	for _, tt := range []struct {
@@ -1261,8 +1261,10 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 			provider: registry.Provider{Base: "anthropic", APIKey: "sk-inline-key"},
 		},
 		{
+			// The credential follows the scheme's auth header, and the
+			// anthropic base sends x-api-key.
 			name:     "credential header",
-			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"x-api-key": "$GATEWAY_KEY"}},
 			env:      map[string]string{"GATEWAY_KEY": "gk"},
 		},
 		{
@@ -1277,13 +1279,37 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 		},
 		{
 			name:     "credential header whose variable is unset",
-			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"x-api-key": "$GATEWAY_KEY"}},
 			wantErr:  true,
+		},
+		{
+			// The credential follows the scheme's auth header: anthropic
+			// sends x-api-key, so an Authorization entry is a plain header
+			// and authors no credential for the gate to pass.
+			name:     "authorization entry under an x-api-key scheme",
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			env:      map[string]string{"GATEWAY_KEY": "gk"},
+			wantErr:  true,
+		},
+		{
+			// The gate judges the launch a bare instance name makes, so the
+			// default model row's auth_header override carries the credential
+			// even when the provider-level header names another slot.
+			name: "default row's auth_header override",
+			provider: registry.Provider{
+				Base:              "anthropic",
+				CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"},
+				DefaultModel:      "house-model",
+				Models: map[string]registry.Model{
+					"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+				},
+			},
+			env: map[string]string{"GATEWAY_KEY": "gk"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := newSpawnGateRegistry(t, t.TempDir(), tt.env, map[string]registry.Provider{"work": tt.provider})
-			err := validateProviderCredentials("work", reg)
+			err := validateProviderCredentials("work", "", reg)
 			if tt.wantErr {
 				assertHubLaunchError(t, err)
 				if !strings.Contains(err.Error(), "work") {
@@ -1306,7 +1332,7 @@ func TestValidateProviderCredentials_EndpointStop(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), env, map[string]registry.Provider{
 		"gateway": {Base: "anthropic", Transport: registry.Transport{BaseURL: "https://gw.example.test/v1"}},
 	})
-	err := validateProviderCredentials("gateway", reg)
+	err := validateProviderCredentials("gateway", "", reg)
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "gateway") {
 		t.Fatalf("the refusal names the gateway instance: %v", err)
@@ -1330,7 +1356,7 @@ func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing
 	} {
 		t.Run(tt.provider, func(t *testing.T) {
 			reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-			err := validateProviderCredentials(tt.provider, reg)
+			err := validateProviderCredentials(tt.provider, "", reg)
 			assertHubLaunchError(t, err)
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("the refusal names the way in (%q): %v", tt.want, err)
@@ -1346,7 +1372,7 @@ func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing
 // has never heard of: the refusal says how to declare it.
 func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-	err := validateProviderCredentials("nowhere", reg)
+	err := validateProviderCredentials("nowhere", "", reg)
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "[providers.nowhere]") {
 		t.Fatalf("the refusal says how to declare the instance: %v", err)
@@ -1358,13 +1384,13 @@ func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 // registry never loaded.
 func TestValidateProviderCredentials_NoRegistryOrProviderSkips(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-	if err := validateProviderCredentials("", reg); err != nil {
+	if err := validateProviderCredentials("", "", reg); err != nil {
 		t.Fatalf("no provider, no gate: %v", err)
 	}
-	if err := validateProviderCredentials("anything", nil); err != nil {
+	if err := validateProviderCredentials("anything", "", nil); err != nil {
 		t.Fatalf("no registry, no gate: %v", err)
 	}
-	if err := validateProviderCredentials("anything", hubcore.NewProviderRegistry(nil)); err != nil {
+	if err := validateProviderCredentials("anything", "", hubcore.NewProviderRegistry(nil)); err != nil {
 		t.Fatalf("a registry that never loaded, no gate: %v", err)
 	}
 }
@@ -1413,6 +1439,74 @@ exit 2
 		WorkingDir: dir,
 	}); err != nil {
 		t.Fatalf("Resume with a credential-less ollama instance: %v", err)
+	}
+}
+
+// A resume's credential gate judges the model the session persisted
+// (resumeRequestForConfig builds it from the session meta), not the
+// per-instance listing: a model row may override the auth scheme, so the
+// instance view can vouch for a launch the resumed session's own model
+// cannot authenticate — the mid-session 401 the gate exists to prevent.
+func TestHubSpawnerResumeJudgesThePersistedModel(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<RENDEZVOUS
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+RENDEZVOUS
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	// The default row carries the credential (the instance view resolves
+	// one); the persisted session's own model resolves none.
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"K": "k-1"}, map[string]registry.Provider{
+		"gw": {
+			Base:     "openai-compatible",
+			Protocol: registry.ProtocolOpenAIChat,
+			Transport: registry.Transport{
+				BaseURL:    "https://gw.internal.example/v1",
+				Auth:       registry.AuthHeader,
+				AuthHeader: "X-Provider-Key",
+			},
+			CredentialHeaders: map[string]string{"Authorization": "$K"},
+			DefaultModel:      "house-model",
+			Models: map[string]registry.Model{
+				"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+				"bare-model":  {},
+			},
+		},
+	})
+	spawner := HubSpawner{
+		Cfg:                 DefaultConfig(),
+		EvenerBinary:        bin,
+		RunDir:              runDir,
+		HubToken:            "generated-token",
+		Registry:            reg,
+		ProvidersConfigPath: filepath.Join(dir, "providers.toml"),
+		CredentialsPath:     filepath.Join(dir, "credentials.toml"),
+	}
+	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME2",
+		Provider:   "gw",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "gw/bare-model"}},
+		WorkingDir: dir,
+	})
+	if err == nil {
+		t.Fatal("Resume succeeded behind a gate the instance view vouched for; the persisted model's own row resolves no credential")
+	}
+	if !strings.Contains(err.Error(), "gw/bare-model") {
+		t.Fatalf("Resume err = %v; want the refusal to name the persisted model", err)
 	}
 }
 

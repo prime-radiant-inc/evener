@@ -272,3 +272,38 @@ test("a failed save while removing a config file toasts failure", async () => {
   // Assert raw JS error text no longer appears in toast
   expect(getToasts().some((t) => t.text.includes("disk full"))).toBe(false);
 });
+
+// The discovered-servers block reads evener/settings/overview, which is this
+// hub's own read (settingsOverview.ts) and is NOT on the proxy allow-list - so
+// it can only ever describe the controller's hub. Under a remote selection it
+// must not be presented as the host's probe.
+test("under a remote host the discovered-servers block is not shown, and this hub's probe is not fetched", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { mcps: [] } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+  const fetchFn = vi.fn(async () => {});
+  const data: SettingsOverviewResponse = {
+    mcpDiscovered: { servers: [{ name: "controller-tool", transport: "stdio", status: "available" }] },
+  };
+  render(<McpSection host="beta" useOverviewStore={overviewHook({ data, fetch: fetchFn })} />);
+  await screen.findByPlaceholderText("name");
+
+  expect(screen.queryByText("Discovered servers")).toBeNull();
+  expect(screen.queryByText(/controller-tool/)).toBeNull();
+  expect(fetchFn).not.toHaveBeenCalled();
+});
+
+test("the local hub still renders the discovered-servers block", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcps: [] }));
+  const data: SettingsOverviewResponse = {
+    mcpDiscovered: { servers: [{ name: "local-tool", transport: "stdio", status: "available" }] },
+  };
+  render(<McpSection useOverviewStore={overviewHook({ data })} />);
+
+  expect(screen.getByText("Discovered servers")).toBeTruthy();
+  expect(screen.getByText(/local-tool/)).toBeTruthy();
+});

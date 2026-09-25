@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -252,10 +253,53 @@ func (s *appTurnSnapshot) Seed(value any) {
 func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.applyLocked(records)
+	s.applyLocked(records, nil)
 }
 
-func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification) {
+// ApplyCommitted applies one committed notification whose params the caller
+// still holds typed. Streamed deltas are read from those params instead of
+// decoding the JSON the notifier just encoded them into: deltas are most of a
+// turn's notifications. Only the string-only delta params are read this way,
+// so the snapshot never aliases slices or pointers the caller owns.
+func (s *appTurnSnapshot) ApplyCommitted(record appserver.SequencedNotification, params any) {
+	if !deltaEncodesVerbatim(params) {
+		params = nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.applyLocked([]appserver.SequencedNotification{record}, params)
+}
+
+// deltaEncodesVerbatim reports whether typed delta params carry a valid UTF-8
+// delta (their IDs are generated, so always valid). Encoding replaces invalid bytes with
+// U+FFFD, and tool output is chunked at byte offsets, so a rune can straddle
+// two deltas; such a delta is read from its encoded JSON so the snapshot
+// matches what clients were sent.
+func deltaEncodesVerbatim(params any) bool {
+	switch p := params.(type) {
+	case appwire.AgentMessageDeltaParams:
+		return utf8.ValidString(p.Delta)
+	case appwire.ReasoningSummaryDeltaParams:
+		return utf8.ValidString(p.Delta)
+	case appwire.ToolOutputDeltaParams:
+		return utf8.ValidString(p.Delta)
+	}
+	return true
+}
+
+// deltaParams fills out from typed when it holds a T, and otherwise decodes
+// raw.
+func deltaParams[T any](typed any, raw json.RawMessage, out *T) bool {
+	if params, ok := typed.(T); ok {
+		*out = params
+		return true
+	}
+	return json.Unmarshal(raw, out) == nil
+}
+
+// applyLocked applies committed records. typed is nil, or the params of the
+// single record before encoding (see ApplyCommitted).
+func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification, typed any) {
 	if len(records) == 0 {
 		return
 	}
@@ -392,6 +436,10 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 		return &turn.Items[len(turn.Items)-1]
 	}
 
+	var typedParams any
+	if len(records) == 1 {
+		typedParams = typed
+	}
 	for _, record := range records {
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
@@ -420,21 +468,21 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			}
 		case appwire.NotifyAgentMessageDelta:
 			var params appwire.AgentMessageDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) == nil {
+			if deltaParams(typedParams, record.Notification.Params, &params) {
 				if item := itemForDelta(params.TurnID, params.ItemID, "agentMessage"); item != nil {
 					item.Text += params.Delta
 				}
 			}
 		case appwire.NotifyReasoningSummaryDelta:
 			var params appwire.ReasoningSummaryDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) == nil {
+			if deltaParams(typedParams, record.Notification.Params, &params) {
 				if item := itemForDelta(params.TurnID, params.ItemID, "reasoning"); item != nil {
 					item.Text += params.Delta
 				}
 			}
 		case appwire.NotifyToolOutputDelta:
 			var params appwire.ToolOutputDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
+			if !deltaParams(typedParams, record.Notification.Params, &params) {
 				continue
 			}
 			itemID := params.ItemID

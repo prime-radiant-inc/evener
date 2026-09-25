@@ -1,15 +1,26 @@
 diff --git a/llm/providers/anthropic/request.go b/llm/providers/anthropic/request.go
-index bc8979ea90..f2b08d1ac9 100644
+index bc8979ea90..6548d2a409 100644
 --- a/llm/providers/anthropic/request.go
 +++ b/llm/providers/anthropic/request.go
-@@ -109,9 +109,7 @@ func reconcileThinkingContract(body map[string]any, req llm.Request, res registr
- 	requestutil.ReconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
- 	if thinkingBudget > 0 {
- 		mt := intFromAny(body["max_tokens"])
+@@ -10,7 +10,6 @@ import (
+ 
+ 	"primeradiant.com/evener/invariant"
+ 	"primeradiant.com/evener/llm"
+-	"primeradiant.com/evener/llm/providers/internal/requestutil"
+ 	"primeradiant.com/evener/llm/registry"
+ )
+ 
+@@ -106,13 +105,6 @@ func normalizeThinkingToolChoice(body map[string]any) {
+ func reconcileThinkingContract(body map[string]any, req llm.Request, res registry.Resolved) error {
+ 	normalizeThinkingToolChoice(body)
+ 	thinkingBudget := finalThinkingBudget(body)
+-	requestutil.ReconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
+-	if thinkingBudget > 0 {
+-		mt := intFromAny(body["max_tokens"])
 -		if mt <= thinkingBudget {
 -			return anthropicThinkingBudgetError(req, res, thinkingBudget+1, mt)
 -		}
-+		_ = mt
- 	}
+-	}
  	if invariant.Enabled {
  		// When the final body carries a positive thinking budget, Anthropic rejects
+ 		// a request that also forces tool use, or whose max_tokens does not

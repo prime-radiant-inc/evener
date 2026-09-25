@@ -27,9 +27,9 @@ import { marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensio
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { connectionStore } from "../../../../stores/connection";
-import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, Sheet, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import {
   MARKETPLACE_SOURCE_OPTIONS,
   type MarketplaceDraft,
@@ -91,7 +91,9 @@ export function MarketplaceSheet({
   connectionClient,
   onAppliedRemoval,
 }: MarketplaceSheetProps) {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces);
+  const store = useExtensionsHostStore();
+  const directory = useHostDirectoryActions();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces);
   const isMobile = useIsMobile();
   const toasts = useToasts();
   const ids = useId();
@@ -194,7 +196,7 @@ export function MarketplaceSheet({
     setSaving(true);
     if (params.newName !== undefined) pendingRename.current = params.newName;
     try {
-      await extensionsStore.getState().editMarketplace(params);
+      await store.getState().editMarketplace(params);
       // Reported wherever the user has navigated to: the write landed, and a
       // sheet that moved on is no reason to leave a completed save unreported.
       toasts.push("success", `Saved ${params.newName ?? entry.name}`);
@@ -219,7 +221,7 @@ export function MarketplaceSheet({
       // expanded. Unconditional, like Refresh's: the tree is the page's, not
       // this sheet's, so a user who has moved on still owes it a catalog.
       if (liveExpanded.current.has(entry.name)) {
-        void extensionsStore.getState().browseMarketplace(params.newName ?? entry.name);
+        void store.getState().browseMarketplace(params.newName ?? entry.name);
       }
       if (params.newName === undefined) {
         // The rename branch's guard applies here too: seeding is cosmetic - it
@@ -227,7 +229,7 @@ export function MarketplaceSheet({
         // would show this marketplace's name and source under another one's
         // title, with Save armed to rename that one to this.
         if (liveName.current === entry.name) {
-          const refreshed = extensionsStore.getState().marketplaces?.find((m) => m.name === entry.name);
+          const refreshed = store.getState().marketplaces?.find((m) => m.name === entry.name);
           if (refreshed !== undefined) seed(refreshed);
         }
       } else if (liveName.current === entry.name) {
@@ -255,8 +257,8 @@ export function MarketplaceSheet({
     if (entry === undefined) return;
     setRefreshing(true);
     try {
-      await extensionsStore.getState().refreshMarketplace(entry.name);
-      if (liveExpanded.current.has(entry.name)) void extensionsStore.getState().browseMarketplace(entry.name);
+      await store.getState().refreshMarketplace(entry.name);
+      if (liveExpanded.current.has(entry.name)) void store.getState().browseMarketplace(entry.name);
       toasts.push("success", `Refreshed ${entry.name}`);
     } catch (err) {
       toasts.push("error", `Refresh failed: ${errorText(err)}`);
@@ -271,7 +273,7 @@ export function MarketplaceSheet({
     const removalClient = connectionClient;
     setRemoveBusy(true);
     try {
-      await extensionsStore.getState().removeMarketplace(removalName);
+      await store.getState().removeMarketplace(removalName);
       // Reported wherever the user has navigated to, like a save's: the
       // removal landed, and a sheet that moved on is no reason to leave it
       // unreported.
@@ -295,11 +297,11 @@ export function MarketplaceSheet({
         // snapshot that already omits the target is the reconciliation, so a
         // retry guard is only needed while the target remains or the list is
         // unavailable.
-        const current = extensionsStore.getState();
+        const current = store.getState();
         const targetPresent = current.marketplaces?.some((marketplace) => marketplace.name === removalName) ?? false;
         if (current.marketplaces === null || targetPresent) {
           onAppliedRemoval(removalName, removalClient, current.marketplacesPublicationVersion);
-          void extensionsStore.getState().fetchMarketplaces();
+          void store.getState().fetchMarketplaces();
         }
         if (liveName.current === removalName) setPendingRemove(false);
         if (outcome.kind === "removed") {
@@ -393,12 +395,12 @@ export function MarketplaceSheet({
                 <FormRow label="Local path" htmlFor={`${ids}-path`}>
                   <PathField
                     ariaLabel="Local path"
-                    directory={directoryActions}
+                    directory={directory}
                     id={`${ids}-path`}
                     value={draft.path}
                     onChange={(value) => update({ path: value })}
                     kind="dir"
-                    complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+                    complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
                     placeholder="/absolute/path"
                     disabled={saving}
                   />

@@ -12689,6 +12689,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthList,
 		appwire.MethodEvenerAuthApiKeySet,
+		appwire.MethodEvenerAuthApiKeyConditionalSet,
 		appwire.MethodEvenerAuthApiKeyClear,
 		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
@@ -12765,6 +12766,9 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerHostStatus,
 		appwire.MethodEvenerHostRemove,
 		appwire.MethodEvenerHostUpdate,
+		// Component 07c's credential push: controller-local like the proxy, so a
+		// peer hub cannot make this hub push its credentials by forwarding it.
+		appwire.MethodEvenerHostPushCredentials,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}

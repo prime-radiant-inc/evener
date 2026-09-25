@@ -40,9 +40,9 @@ export function isAtBottom(metrics: ScrollMetrics, thresholdPx: number = AT_BOTT
  * True when `current` shows content measured in BELOW a transcript that was
  * already at the bottom, in the SAME scroll port, with the offset never moving
  * backwards: the virtualizer correcting its own estimates, not the reader
- * leaving. The geometry half of the bottom-hold correction, shared by the
- * scroll listener and the no-scroll-event re-anchor paths (a late webfont
- * swap, a ResizeObserver tick) so the two can never drift.
+ * leaving. The geometry half of the scroll listener's bottom-hold correction,
+ * where a scroll event may be the reader's own and the change has to be shown
+ * not to be theirs.
  *
  * The caller supplies the "was at bottom" and "no reader gesture" clauses,
  * which are hook state rather than geometry.
@@ -54,6 +54,17 @@ export function contentGrewBelowViewport(previous: ScrollMetrics, current: Scrol
     current.scrollHeight > previous.scrollHeight &&
     current.scrollTop >= previous.scrollTop
   );
+}
+
+/**
+ * True when any of the content's true end sits below the fold - the exact
+ * bottom, with none of isAtBottom's rounding tolerance. The no-scroll-event
+ * re-anchor's condition (useTranscriptScroll's reanchorIfEndLeftView): a reader
+ * following the bottom is pinned to the true end, so a shortfall of even a few
+ * pixels (a pane header growing 4px over the transcript) is one to correct.
+ */
+export function isEndBelowFold(metrics: ScrollMetrics): boolean {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight > 0;
 }
 
 /** True when `scrollTop` is close enough to the top to trigger older-turn paging. */

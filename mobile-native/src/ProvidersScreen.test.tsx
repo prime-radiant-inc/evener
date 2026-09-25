@@ -18,12 +18,14 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderSignIn } from "./providerSignIn";
+import { recordClientReadyHub } from "./connectionIdentity";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProvidersScreen } from "./ProvidersScreen";
 import {
 	alertRequests,
 	render,
 	renderedText,
+	screenConnection,
 	scriptedClient,
 } from "./renderNative.testkit";
 
@@ -97,13 +99,7 @@ function subtreeText(node: ReactTestInstance): string {
 
 it("mounts on a ready client and issues and publishes the listing read", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -121,13 +117,7 @@ it("mounts on a ready client and issues and publishes the listing read", async (
 
 it("ready -> reconnecting keeps the screen tree mounted and shows the banner", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -150,13 +140,7 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 
 it("reconnecting -> ready removes the banner", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -179,13 +163,7 @@ it("reconnecting -> ready removes the banner", async () => {
 
 it("a fatal (protocol) close replaces the mounted list with the wall", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -209,13 +187,7 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 it("keeps the provider wall through a fatal retry until the replacement is ready", async () => {
 	const hub = scriptedClient(rows);
 	const replacement = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -254,13 +226,7 @@ it("keeps the provider wall through a fatal retry until the replacement is ready
 it("keeps the provider editor draft and exposes reconnect inside its modal", async () => {
 	const hub = scriptedClient(rows);
 	const retry = vi.fn();
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry,
-	};
+	harness.connection = { ...screenConnection(hub.client, "ready"), retry };
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -293,13 +259,7 @@ it("keeps the provider editor draft and exposes reconnect inside its modal", asy
 
 it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -381,12 +341,7 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		],
 		"evener/instance/list": [rows, emptied],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -422,12 +377,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 			}),
 		],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -461,12 +411,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 		],
 		"evener/instance/list": [rows, rows],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -520,12 +465,7 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		],
 		"evener/instance/list": [rows, rows],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -573,6 +513,7 @@ it("keeps the create form for a name-collision conflict", async () => {
 			onCreate={create}
 			onEdit={vi.fn(async () => true)}
 			disabled={false}
+			canUseConnection={() => true}
 			onSaved={() => {}}
 			onEndpointConflict={onEndpointConflict}
 			onCancel={() => {}}
@@ -631,13 +572,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 			),
 		],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -699,13 +634,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 		"evener/instance/list": [opened, opened],
 		"evener/instance/edit": [opened],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -757,13 +686,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 
 it("shows the connection status and reconnect inside an open editor modal", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -809,13 +732,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 		intervalSeconds: 5,
 	}));
 	const setConnection = vi.spyOn(ProviderSignIn.prototype, "setConnection");
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: fake as unknown as ConversationClientLike,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -868,13 +785,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 	};
 	const first = new FakeClient("ready");
 	first.on("evener/instance/list", () => oauth);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: first as unknown as ConversationClientLike,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(first as unknown as ConversationClientLike, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -939,13 +850,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	const fakeA = new FakeClient("ready");
 	fakeA.on("evener/instance/list", () => rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: fakeA as unknown as ConversationClientLike,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(fakeA as unknown as ConversationClientLike, "ready");
 	const forHub = (hubId: string) =>
 		({ route: { params: { hubId } } }) as unknown as ComponentProps<
 			typeof ProvidersScreen
@@ -991,4 +896,110 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("from-b");
+});
+
+// Round 63's Medium, the screen half of round 58's High: the display hook's
+// trust arm was client-blind, so a keyed remount onto the previous hub's
+// still-ready client rendered the normal provider surface while the client
+// and readiness hooks refused the pairing - a sign-in opened there had a
+// surface to run from. The display now requires the identity record's
+// verdict before a ready state earns trust, so the window renders the
+// connection wall instead: no affordance mounts and no exchange can run
+// against the previous hub's client. The resume arm's own mechanics stay
+// pinned by the banner-retry test above; the cross-hub window it used to
+// guard alone is now closed before the surface can mount.
+it("walls the re-key window against the previous hub's recorded client", async () => {
+	const oauth: InstanceListResponse = {
+		instances: [
+			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
+		],
+		availableProviders: [],
+	};
+	const stale = new FakeClient("ready");
+	stale.on("evener/instance/list", () => oauth);
+	stale.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-stale",
+		userCode: "WORK-1234",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	// The record's whole content: this client proved ready under hub-1.
+	recordClientReadyHub(stale, "hub-1");
+	const setConnection = vi.spyOn(ProviderSignIn.prototype, "setConnection");
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "New hub" },
+		client: stale as unknown as ConversationClientLike,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-2" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+
+	// The wall replaces the surface: no sign-in affordance mounts and no
+	// exchange runs against the previous hub's client — the strongest form
+	// of the round-58 contract, closed one layer up.
+	expect(renderedText(tree)).toContain("Connect to New hub");
+	expect(
+		tree.root.findAll((node) => typeof node.props.onSignIn === "function"),
+	).toHaveLength(0);
+	expect(
+		stale.calls.map((call) => call.method),
+	).not.toContain("evener/auth/device/start");
+
+	// The connection re-points: its own dial for hub-2 transitions into
+	// ready on the replacement — recorded for hub-2 at ITS dial — and the
+	// surface earns its screen. A sign-in opened now runs on that client
+	// alone.
+	const replacement = new FakeClient("ready");
+	replacement.on("evener/instance/list", () => oauth);
+	replacement.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-live",
+		userCode: "WORK-5678",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	recordClientReadyHub(replacement, "hub-2");
+	harness.connection = {
+		...harness.connection,
+		client: null,
+		state: "reconnecting",
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	harness.connection = {
+		...harness.connection,
+		client: replacement as unknown as ConversationClientLike,
+		state: "ready",
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+
+	// Open a sign-in by invoking the screen's own callback, exactly as the
+	// row's affordance does.
+	const openers = tree.root.findAll(
+		(node) => typeof node.props.onSignIn === "function",
+	);
+	if (openers.length === 0) throw new Error("no onSignIn affordance mounted");
+	act(() => openers[0]!.props.onSignIn("work"));
+	await act(async () => {});
+
+	// The flow receives the re-pointed client and proceeds; the previous
+	// hub's client was never handed over.
+	expect(setConnection).toHaveBeenCalledWith(replacement);
+	expect(setConnection).not.toHaveBeenCalledWith(stale);
+	expect(
+		replacement.calls.map((call) => call.method),
+	).toContain("evener/auth/device/start");
+	expect(renderedText(tree)).toContain("WORK-5678");
+	setConnection.mockRestore();
 });

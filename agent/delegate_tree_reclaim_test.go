@@ -4,8 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -247,7 +253,7 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 	}
 }
 
-func seedDelegateReclaimRuntime(t *testing.T, c *delegateTreeController, id, parentID string, endedAt time.Time, acknowledged, closed bool) *Session {
+func seedDelegateReclaimRuntime(t testing.TB, c *delegateTreeController, id, parentID string, endedAt time.Time, acknowledged, closed bool) *Session {
 	t.Helper()
 	runtime := &Session{id: "child-" + id}
 	seedDelegateReclaimRuntimeSession(t, c, id, parentID, endedAt, acknowledged, closed, runtime)
@@ -257,7 +263,7 @@ func seedDelegateReclaimRuntime(t *testing.T, c *delegateTreeController, id, par
 // seedDelegateReclaimRuntimeSession is seedDelegateReclaimRuntime with a
 // caller-built resident runtime, for a test whose subject is what closing that
 // runtime touches.
-func seedDelegateReclaimRuntimeSession(t *testing.T, c *delegateTreeController, id, parentID string, endedAt time.Time, acknowledged, closed bool, runtime *Session) {
+func seedDelegateReclaimRuntimeSession(t testing.TB, c *delegateTreeController, id, parentID string, endedAt time.Time, acknowledged, closed bool, runtime *Session) {
 	t.Helper()
 	originalNow := c.now
 	c.now = func() time.Time { return endedAt }
@@ -427,21 +433,22 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 		t.Fatal("expected both subtree runtimes resident before the release")
 	}
 	parentSess, grandchildSess := parentLive.runtime, grandchildLive.runtime
-	if got := parentSess.subagents.get(grandchildChildID); got == nil {
+	grandchildSub := parentSess.subagents.get(grandchildChildID)
+	if grandchildSub == nil {
 		t.Fatal("grandchild record missing from the parent runtime's manager before the release")
 	}
+	// The grandchild runs on its own runner; its result reaches the parent
+	// before that runner reports done, which claimSettledIdleSubtree relies on.
+	grandchildSub.mu.Lock()
+	grandchildDone := grandchildSub.done
+	grandchildSub.mu.Unlock()
+	select {
+	case <-grandchildDone:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("grandchild delegate runner did not finish")
+	}
 
-	var claim *delegateRuntimeReclamationClaim
-	// The claim refuses until every member is terminal-idle; poll rather than
-	// assume the finalize tail has fully settled. TRIPWIRE: settle normally
-	// takes milliseconds; 15s only bounds a deadlock.
-	waitForCondition(t, 15*time.Second, "terminal subtree of "+parentRes.DelegateID+" to become claimable", func() bool {
-		claim, _, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
-		if err != nil {
-			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
-		}
-		return claim != nil
-	})
+	claim := claimSettledIdleSubtree(t, tree, parentRes.DelegateID, parentSess, grandchildSess)
 	if got, want := reclamationDelegateIDs(claim), []string{grandchildID, parentRes.DelegateID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claim entries = %v, want leaf-first %v", got, want)
 	}
@@ -481,6 +488,364 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	if err := grandchildSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
 		t.Fatalf("grandchild runtime teardown pass after release: err = %v, want errRetirementTeardownSpent (a depth-2 release must tear the descendant down itself)", err)
 	}
+}
+
+// claimSettledIdleSubtree waits until delegateID's resident subtree has
+// settled and returns the idle-release claim over it, still held; the caller
+// inspects it and aborts it before driving the release under test.
+//
+// Settled is more than claimable. A child's result delivered to a finished
+// parent becomes delegate attention on the parent, and the attention wake
+// drives each owed attention as one more parent generation. Between two of
+// those generations the parent is idle and the subtree is claimable, yet the
+// next owed generation is still coming: once it reserves, the release
+// correctly refuses the subtree as busy. So every member must also owe no
+// delegate attention and pass the release's own pre-gates, which cover the
+// delivery parcels not yet turned into attention. Those checks run BEFORE the
+// claim: a held claim fences the delegate, so polling claims while attention
+// is owed would push the wake into retry backoff instead of letting it run.
+// Nothing can become owed after the checks pass — the callers already waited
+// out every member's runner, and a finished member's deliveries reach their
+// receiver before its runner reports done — so a claim that then succeeds
+// covers a subtree with no generation left to run.
+func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
+	t.Helper()
+	var claim *delegateRuntimeReclamationClaim
+	// TRIPWIRE: the owed generations and the finalize tails settle in well
+	// under a second; 15s only bounds a deadlock.
+	waitForCondition(t, 15*time.Second, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+		for _, member := range members {
+			owed, err := member.pendingDelegateAttentionIDs()
+			if err != nil {
+				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
+			}
+			if len(owed) != 0 || !member.idleReleasePregatesClear() {
+				return false
+			}
+		}
+		var err error
+		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
+		if err != nil {
+			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
+		}
+		return claim != nil
+	})
+	return claim
+}
+
+// wideSubtreeReleaseProbe records what the idle release's member-teardown
+// probes observed over one driven wide-subtree release: which members'
+// teardowns started and settled, in what order, and how many same-depth
+// children were mid-teardown at once.
+type wideSubtreeReleaseProbe struct {
+	parentSess    *Session
+	childRuntimes map[string]*Session
+	childIDs      []string
+	// parentSeq is the claim root's member-teardown start sequence number.
+	parentSeq   uint64
+	parentStart bool
+	maxInFlight int
+	settledAt   map[string]uint64 // keyed by runtime session id
+}
+
+// driveWideSubtreeIdleRelease builds a depth-2 delegate tree — one parent
+// delegate whose single scripted turn spawns wideChildren leaf delegates —
+// waits for every member to finalize, claims the subtree, and drives the
+// parent runtime's own finalize-tail release. The member-teardown probes
+// hold each CHILD's teardown until all wideChildren are in flight or
+// parkDeadline passes, so the concurrency the release chose is observable
+// rather than racy: a wave that launches the whole depth at once reaches
+// the rendezvous, while a serial or capped one burns the deadline batch
+// by batch. Everything the callers assert on is captured after the
+// release fully drained, so the returned state is quiescent.
+func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDeadline time.Duration) *wideSubtreeReleaseProbe {
+	t.Helper()
+
+	workspace := t.TempDir()
+	// The adapter scripts the parent's turn as ONE response carrying
+	// every delegate spawn; each later step is an identical finish. The
+	// spawns all fire inside the parent's first turn, so the tree's SHAPE
+	// is fixed before any follow-up call happens: the parent's post-tool
+	// call and each child's first call consume the interchangeable finish
+	// steps in whatever global order they race, and each ends its
+	// member's turn. Spawning from a finished parent is not an option
+	// (its lease is spent), and spawning one-at-a-time across turns lets
+	// the parent eat a child's finish step — the one-response spawn wave
+	// avoids both.
+	steps := []func(req llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			calls := make([]llm.ToolCallData, wideChildren)
+			for i := range calls {
+				calls[i] = llm.ToolCallData{
+					ID:        fmt.Sprintf("call_spawn_child_%d", i),
+					Name:      "delegate",
+					Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
+					Type:      "function",
+				}
+			}
+			return toolCallResponse(calls...)
+		},
+	}
+	for range wideChildren + 1 {
+		steps = append(steps, func(llm.Request) llm.Response { return finalResponse("member done") })
+	}
+	adapter := &fakeAdapter{name: "openai", steps: steps}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+
+	// The probe's rendezvous state, shared with the teardown goroutines the
+	// release spawns. Everything it touches is mutex- or atomic-guarded.
+	var probeMu sync.Mutex
+	var probeSeq atomic.Uint64
+	var childInFlight, childMaxInFlight int
+	childSessions := make(map[string]bool)
+	startedAt := make(map[string]uint64)
+	settledAt := make(map[string]uint64)
+	memberStarted := func(s *Session) {
+		probeMu.Lock()
+		seq := probeSeq.Add(1)
+		startedAt[s.id] = seq
+		isChild := childSessions[s.id]
+		if isChild {
+			childInFlight++
+			if childInFlight > childMaxInFlight {
+				childMaxInFlight = childInFlight
+			}
+		}
+		probeMu.Unlock()
+		if !isChild {
+			return
+		}
+		// Rendezvous: hold this child's teardown until the whole wave is in
+		// flight. TRIPWIRE: when the release launches the full depth in one
+		// batch the last child arrives within milliseconds, so the wait
+		// costs nothing; a capped or serial release burns parkDeadline per
+		// batch instead, and the callers read the observed concurrency off
+		// maxInFlight either way. waitForCondition cannot run here: the
+		// probe fires on a teardown goroutine, not the test's.
+		deadline := time.Now().Add(parkDeadline)
+		for {
+			probeMu.Lock()
+			inFlight := childInFlight
+			probeMu.Unlock()
+			if inFlight == wideChildren || time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	memberSettled := func(s *Session) {
+		probeMu.Lock()
+		defer probeMu.Unlock()
+		settledAt[s.id] = probeSeq.Add(1)
+		if childSessions[s.id] {
+			childInFlight--
+		}
+	}
+
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 5,
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		testOnly: testConfig{
+			skipGitSnapshot:            true,
+			minimalSystemPrompt:        true,
+			sandboxProber:              bwrapCapableProber(workspace),
+			disableDelegateIdleRelease: true,
+			idleTeardownConcurrency:    &limit,
+			idleTeardownMemberStarted:  memberStarted,
+			idleTeardownMemberSettled:  memberSettled,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	allowance := wideChildren
+	parentRes := sess.createDelegate(context.Background(), delegateArgs{
+		Task:                "spawn leaf children, then finish",
+		DelegationAllowance: &allowance,
+	})
+	if parentRes.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", parentRes.Err, parentRes.Status, parentRes.Reason)
+	}
+	sub := sess.subagents.get(parentRes.ChildSessionID)
+	if sub == nil {
+		t.Fatalf("parent delegate missing from root manager: %+v", parentRes)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second): // TRIPWIRE: the scripted turn takes seconds; this only bounds a deadlock.
+		t.Fatal("parent delegate runner did not finish")
+	}
+
+	// The parent's single scripted turn spawned the whole wave, so the
+	// tree's shape is already fixed; the children finish on their own
+	// runners. Wait for each through the parent runtime's manager.
+	tree := sess.delegateController
+	tree.mu.Lock()
+	parentLive := tree.live[parentRes.DelegateID]
+	var childIDs []string
+	childSessionIDs := make([]string, 0, wideChildren)
+	for id, agg := range tree.durable {
+		if agg.Descriptor.ParentDelegateID == parentRes.DelegateID {
+			childIDs = append(childIDs, id)
+			childSessionIDs = append(childSessionIDs, agg.Descriptor.ChildSessionID)
+			childSessions[agg.Descriptor.ChildSessionID] = true
+		}
+	}
+	tree.mu.Unlock()
+	if parentLive == nil || parentLive.runtime == nil {
+		t.Fatal("expected the parent runtime resident before the children settle")
+	}
+	parentSess := parentLive.runtime
+	if len(childIDs) != wideChildren {
+		t.Fatalf("parent delegate has %d child delegates, want %d (fixture script derailed)", len(childIDs), wideChildren)
+	}
+	for i, csid := range childSessionIDs {
+		childSub := parentSess.subagents.get(csid)
+		if childSub == nil {
+			t.Fatalf("child %s missing from the parent runtime's manager", csid)
+		}
+		childSub.mu.Lock()
+		childDone := childSub.done
+		childSub.mu.Unlock()
+		select {
+		case <-childDone:
+		case <-time.After(20 * time.Second): // TRIPWIRE: the children's scripted turns take seconds; this only bounds a deadlock.
+			t.Fatalf("child delegate runner %d did not finish", i)
+		}
+	}
+
+	childRuntimes := make(map[string]*Session, wideChildren)
+	tree.mu.Lock()
+	for _, id := range childIDs {
+		if live := tree.live[id]; live != nil {
+			childRuntimes[id] = live.runtime
+		}
+	}
+	tree.mu.Unlock()
+	sort.Strings(childIDs)
+	for _, id := range childIDs {
+		if childRuntimes[id] == nil {
+			t.Fatalf("expected child %s runtime resident before the release", id)
+		}
+	}
+
+	members := []*Session{parentSess}
+	for _, id := range childIDs {
+		members = append(members, childRuntimes[id])
+	}
+	claim := claimSettledIdleSubtree(t, tree, parentRes.DelegateID, members...)
+	want := append([]string(nil), childIDs...)
+	want = append(want, parentRes.DelegateID)
+	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, want) {
+		t.Fatalf("claim entries = %v, want leaf-first %v", got, want)
+	}
+	if err := tree.AbortRuntimeReclamation(claim); err != nil {
+		t.Fatalf("AbortRuntimeReclamation: %v", err)
+	}
+
+	// The production entrypoint: the parent runtime's own finalize-tail call.
+	if !parentSess.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("releaseIdleRuntimeAfterFinalize refused the terminal wide subtree")
+	}
+
+	// The release drained before returning (every batch joined), so the
+	// probe state is quiescent.
+	probeMu.Lock()
+	defer probeMu.Unlock()
+	parentSeq, parentStart := startedAt[parentRes.ChildSessionID]
+	return &wideSubtreeReleaseProbe{
+		parentSess:    parentSess,
+		childRuntimes: childRuntimes,
+		childIDs:      childIDs,
+		parentSeq:     parentSeq,
+		parentStart:   parentStart,
+		maxInFlight:   childMaxInFlight,
+		settledAt:     settledAt,
+	}
+}
+
+// assertWideSubtreeReleaseSettled pins the shared post-release contracts:
+// the claim root's teardown ran, every child's teardown settled before the
+// root started (leaf-first held across the wave or batch boundary), and
+// every member's retirement teardown pass is spent — the release tore each
+// member down itself.
+func assertWideSubtreeReleaseSettled(t *testing.T, probe *wideSubtreeReleaseProbe) {
+	t.Helper()
+	if !probe.parentStart {
+		t.Fatal("the claim root's member teardown never started")
+	}
+	for _, id := range probe.childIDs {
+		childSettled, settled := probe.settledAt[probe.childRuntimes[id].id]
+		if !settled {
+			t.Fatalf("child %s teardown never settled", id)
+		}
+		if childSettled >= probe.parentSeq {
+			t.Fatalf("claim root started its teardown at seq %d before descendant %s settled at seq %d: leaf-first violated", probe.parentSeq, id, childSettled)
+		}
+	}
+
+	// Every teardown body ran to completion: each member's pass is spent.
+	if err := probe.parentSess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("parent runtime teardown pass after release: err = %v, want errRetirementTeardownSpent", err)
+	}
+	for _, id := range probe.childIDs {
+		if err := probe.childRuntimes[id].releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+			t.Fatalf("child %s teardown pass after release: err = %v, want errRetirementTeardownSpent", id, err)
+		}
+	}
+}
+
+// TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently pins the
+// bounded-parallel contract of the idle release's member teardown. A member
+// teardown is wait-dominated — the runtime close signals processes and honors
+// bounded waits, and a stdio MCP member's close can take seconds — so a
+// serial release makes a wide subtree's wall clock the member count times one
+// member's close. The four same-depth children here must settle CONCURRENTLY
+// (the probe holds each child's teardown until all four are in flight, so the
+// assertion is a rendezvous, not a scheduling race), while the claim root
+// itself never starts before every descendant settled: the leaf-first
+// ordering the depth-2 contract test pins, held across the wave boundary.
+func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T) {
+	const (
+		wideChildren = 4
+		limit        = wideChildren
+	)
+	probe := driveWideSubtreeIdleRelease(t, wideChildren, limit, 3*time.Second)
+	if probe.maxInFlight != wideChildren {
+		t.Fatalf("idle release settled the same-depth members serially: max concurrent child teardowns = %d, want %d", probe.maxInFlight, wideChildren)
+	}
+	assertWideSubtreeReleaseSettled(t, probe)
+}
+
+// TestDelegateIdleRelease_CapsConcurrentMemberTeardown pins the bound
+// itself: no more than idleTeardownConcurrency same-depth members may be
+// mid-teardown at once. The concurrency test above runs one batch (four
+// members, limit four), which cannot tell a bounded wave from an unbounded
+// one; three same-depth children under a limit of two here force the
+// multi-batch path, and the probe's rendezvous makes the cap observable in
+// both directions — an unbounded wave launches all three before any settles
+// (max in flight 3), while the capped one parks each batch at the rendezvous
+// and never holds more than two. Leaf-first still holds across the batches:
+// the claim root waits for the last batch to drain.
+func TestDelegateIdleRelease_CapsConcurrentMemberTeardown(t *testing.T) {
+	const (
+		wideChildren = 3
+		limit        = 2
+	)
+	probe := driveWideSubtreeIdleRelease(t, wideChildren, limit, 500*time.Millisecond)
+	if probe.maxInFlight > limit {
+		t.Fatalf("idle release tore down %d same-depth members at once, want at most %d", probe.maxInFlight, limit)
+	}
+	assertWideSubtreeReleaseSettled(t, probe)
 }
 
 // TestDelegateIdleReleaseGenerationGuard pins the stale-timer contract: a
@@ -1014,6 +1379,145 @@ func TestDelegateIdleRelease_FiredArmIsNeverInstalled(t *testing.T) {
 	if got := fake.BlockedCount() - timersBefore; got != 0 {
 		t.Fatalf("%d waiters remain after the fired arm stopped", got)
 	}
+}
+
+// TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch pins the scratch
+// continuity of the same-process cold restore: an idle-released delegate's next
+// send must resume in its ORIGINAL scratch directory, artifacts intact, not in
+// a fresh mint. The retained-scratch pool is a snapshot of the root's manifest
+// at init; a delegate created after init never entered it, and the release
+// gives the lease back without the pool learning — so the restore path must
+// converge to the live manifest (the same rows a fresh daemon adopts from)
+// rather than trust the init-time pool alone. The second release/restore cycle
+// additionally pins that a released runtime's stale adoption record cannot
+// strand the delegate: the reacquire proves the record stale and clears it.
+func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
+	// Isolate TMPDIR (this test is not parallel): the sandboxed children mint
+	// their scratch under the ambient base, and this test's root stateDir is a
+	// TempDir that vanishes at cleanup — a child dir left in the SHARED base
+	// would keep a pin pointing at the deleted manifest and trip every later
+	// sweep that validates that base's pins. Under an isolated base the
+	// cleanup removes directory and pin together.
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+	_, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done one") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done two") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done three") },
+	}})
+	shortGrace := 100 * time.Millisecond
+	s := newSession(t, withClient(client), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "scratch-continuity-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:          true,
+			minimalSystemPrompt:      true,
+			noSyncJobStore:           true,
+			sandboxProber:            sandbox.FakeProber{Facts: facts},
+			delegateIdleReleaseDelay: &shortGrace,
+		},
+	}))
+	defer s.Close()
+	tree := s.delegateController
+
+	// TRIPWIRE: scripted adapters plus an in-process sandboxed child; the runs
+	// and releases normally settle in well under a second each. 30s per stage
+	// only bounds a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res := s.createDelegate(ctx, delegateArgs{Task: "own scratch", Sandbox: "workspace-write", DelegationAllowance: new(0)})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	child := s.subagents.get(res.ChildSessionID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", res.ChildSessionID)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("delegate run did not finish: %v", ctx.Err())
+	}
+
+	// The child env owns exactly the sandbox scratch EnableSandbox minted; pin
+	// its identity and leave an artifact in it that only continuity preserves.
+	scratchDir := sandboxedChildScratchDir(t, child.sess)
+	artifact := filepath.Join(scratchDir, "artifact.txt")
+	if err := os.WriteFile(artifact, []byte("durable"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	restoreAndCheck := func(label string, prev *subagent) *subagent {
+		t.Helper()
+		// TRIPWIRE: the 100ms grace normally fires within moments of the run
+		// finishing; 15s only bounds a genuine hang.
+		waitForCondition(t, 15*time.Second, "idle release of "+label, func() bool {
+			tree.mu.Lock()
+			released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
+			tree.mu.Unlock()
+			return released
+		})
+		// TRIPWIRE: the scripted send and restore complete in well under a
+		// second; 30s only bounds a genuine hang.
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer sendCancel()
+		send := (delegateRuntime{owner: s}).send(sendCtx, res.DelegateID, "run "+label, 0).result
+		if send.Err != nil {
+			t.Fatalf("delegate_send after idle release (%s): %+v", label, send)
+		}
+		var restored *subagent
+		// TRIPWIRE: the cold restore normally appears within milliseconds of
+		// the send; 15s only bounds a genuine hang.
+		waitForCondition(t, 15*time.Second, "cold-restored record for "+label, func() bool {
+			restored = s.subagents.get(res.ChildSessionID)
+			return restored != nil && restored != prev && restored.sess != nil
+		})
+		restored.mu.Lock()
+		rdone := restored.done
+		restored.mu.Unlock()
+		select {
+		case <-rdone:
+		case <-sendCtx.Done():
+			t.Fatalf("restored run (%s) did not finish: %v", label, sendCtx.Err())
+		}
+		if got := sandboxedChildScratchDir(t, restored.sess); filepath.Clean(got) != filepath.Clean(scratchDir) {
+			t.Fatalf("restored delegate (%s) resumed in fresh scratch %q, want the retained original %q", label, got, scratchDir)
+		}
+		if data, err := os.ReadFile(artifact); err != nil || string(data) != "durable" {
+			t.Fatalf("restored delegate (%s) lost its scratch artifact: read err = %v", label, err)
+		}
+		return restored
+	}
+	child = restoreAndCheck("first restore", child)
+	_ = restoreAndCheck("second restore", child)
+}
+
+// sandboxedChildScratchDir returns the sandbox scratch directory the child
+// session's own environment holds, the identity a cold restore must preserve.
+func sandboxedChildScratchDir(t *testing.T, sess *Session) string {
+	t.Helper()
+	local, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("child env is not a LocalExecutionEnvironment")
+	}
+	refs, err := local.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatalf("child scratch references: %v", err)
+	}
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			return ref.Dir
+		}
+	}
+	t.Fatal("sandboxed child owns no sandbox scratch")
+	return ""
 }
 
 // TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle

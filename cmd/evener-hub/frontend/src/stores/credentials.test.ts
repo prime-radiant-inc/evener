@@ -3,17 +3,21 @@ import type {
   AuthTestResponse,
   HostForwardedResult,
   HostRequestParams,
+  HostRow,
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import { CONNECTION_REPLACED_ERROR } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { CONNECTION_REPLACED_ERROR, WireError } from "@evener/appwire-client";
+import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
+  connectionGeneration,
   credentialsStore,
+  devicePollOnHost,
+  deviceStartOnHost,
   fetchHost,
   hostInstancesStore,
   hostPartition,
@@ -23,7 +27,9 @@ import {
   StaleListingRefusal,
   staleListingHeld,
   useCredentialsStore,
+  useHostInstances,
 } from "./credentials";
+import { hostsStore } from "./hosts";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 function connectFakeClient(): FakeClient {
@@ -1883,6 +1889,49 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     expect(result.state).toBe("pending");
   });
 
+  test("deviceStartOnHost() routes evener/auth/device/start through evener/host/request for the selected host", async () => {
+    const fake = connectFakeClient();
+    const REMOTE_DEVICE_START = {
+      provider: "codex",
+      flowId: "flow-remote",
+      userCode: "REMOTE-CODE",
+      verificationUrl: "https://verify.example/codex",
+      intervalSeconds: 5,
+    };
+    const forwarded: HostRequestParams[] = [];
+    fake.on("evener/host/request", (params) => {
+      forwarded.push(params);
+      return REMOTE_DEVICE_START;
+    });
+
+    const result = await deviceStartOnHost("beta", "codex");
+
+    // Both the host AND the method are on the wire, so the hub forwards the
+    // start to the host that must actually run the login.
+    expect(forwarded).toEqual([{ host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } }]);
+    expect(result.userCode).toBe("REMOTE-CODE");
+    // A host-scoped start must not ALSO issue the plain, controller-scoped call.
+    expect(fake.calls.some((call) => call.method === "evener/auth/device/start")).toBe(false);
+  });
+
+  test("devicePollOnHost() routes evener/auth/device/poll through evener/host/request for the selected host", async () => {
+    const fake = connectFakeClient();
+    const REMOTE_POLL = { state: "authorized" };
+    const forwarded: HostRequestParams[] = [];
+    fake.on("evener/host/request", (params) => {
+      forwarded.push(params);
+      return REMOTE_POLL;
+    });
+
+    const result = await devicePollOnHost("beta", "codex", "flow-remote");
+
+    expect(forwarded).toEqual([
+      { host: "beta", method: "evener/auth/device/poll", params: { provider: "codex", flowId: "flow-remote" } },
+    ]);
+    expect(result.state).toBe("authorized");
+    expect(fake.calls.some((call) => call.method === "evener/auth/device/poll")).toBe(false);
+  });
+
   test("a pending device poll does not discard an in-flight model refresh", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
@@ -2616,4 +2665,371 @@ describe("notification-triggered refetch", () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(listSpy.mock.calls.length).toBe(readsBefore + 1);
   });
+
+  // A read is stamped with the registry revision it was issued under, so a
+  // snapshot that arrives afterwards - including the registry's FIRST answer -
+  // supersedes it, and nothing read under an older one is ever current.
+  test("a read records the registry revision it was issued under", async () => {
+    const fake = connectFakeClient();
+    serveRemoteList(fake, REMOTE_LIST);
+    hostsStore.getState().resetForTests();
+
+    await fetchHost("buildbox"); // issued while the registry is unread
+    const issued = hostPartition(hostInstancesStore.getState(), "buildbox");
+    expect(issued.registryRevision).toBe(0);
+    expect(hostsStore.getState().revision).toBe(0);
+
+    // The registry answers, naming the host: that is a different answer, so the
+    // revision advances and the rows read before it are no longer current.
+    hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+    expect(hostsStore.getState().revision).toBe(1);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).not.toBe(
+      hostsStore.getState().revision,
+    );
+    hostsStore.getState().resetForTests();
+  });
+});
+
+// registryRow builds one registry row for the invalidation tests below - the
+// same shape stores/hosts.ts publishes in its ready snapshot.
+function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
+  return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
+}
+
+function remoteReads(fake: FakeClient): number {
+  return fake.calls.filter((call) => call.method === "evener/host/request").length;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+// --- The registry-revision rule (round 7 consolidation) ----------------------
+//
+// ONE rule ties every remote listing to the registry: a partition is current only
+// while it was read under the registry's CURRENT revision, and useHostInstances is
+// the one place a host is (re)read - when a consumer watches a host the registry
+// names and there is no partition for the current revision. Every corner below is
+// that same rule, entered by a different door; nothing tracks dropped partitions.
+
+// (a) The name is re-registered as a different machine.
+test("a re-registered host's rows are withheld and re-read", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+
+  // The name now means a different machine, and the new host's listing is held
+  // open so the withholding is observable.
+  const replaced = deferred<HostForwardedResult>();
+  const replacedList: InstanceListResponse = {
+    instances: [{ ...REMOTE_INSTANCE, name: "replaced-anthropic" }],
+    availableProviders: [],
+  };
+  fake.on("evener/host/request", () => replaced.promise);
+  await act(async () => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] },
+    });
+  });
+
+  // The previous registration's rows are not shown, and the store re-reads the
+  // name under the registry's new snapshot.
+  expect(result.current.instances).toEqual([]);
+  expect(remoteReads(fake)).toBe(2);
+
+  await act(async () => replaced.resolve(replacedList as unknown as HostForwardedResult));
+  await waitFor(() => expect(result.current.instances).toEqual(replacedList.instances));
+  hostsStore.getState().resetForTests();
+});
+
+// (b) The host is removed and re-added while a consumer is mounted.
+test("a host removed and re-added while mounted is read again", async () => {
+  const fake = connectFakeClient();
+  let configured = true;
+  fake.on("evener/host/request", () => {
+    if (!configured) throw new WireError("host buildbox is not configured", -32000);
+    return REMOTE_LIST as unknown as HostForwardedResult;
+  });
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+
+  // Removed: its rows are dropped and the hub refuses the name, so nothing is
+  // shown - the old registration is not left on screen.
+  configured = false;
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+  });
+  await waitFor(() => expect(remoteReads(fake)).toBe(2));
+  expect(result.current.instances).toEqual([]);
+
+  // Re-added: the store reads it again, with no remount and no bookkeeping.
+  configured = true;
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+  });
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(3);
+  hostsStore.getState().resetForTests();
+});
+
+// (c) The connection's client is replaced while a registry read is in flight.
+// The superseded client's answer must not publish over the replacement's view.
+test("a registry read in flight across a client swap cannot publish the old hub's hosts", async () => {
+  const a = connectFakeClient();
+  const releaseA = deferRequest<unknown>(a, "evener/host/list");
+  const fromA = hostsStore.getState().fetch();
+  await Promise.resolve();
+
+  // Replaced before A answers, with B's own registry read also still out.
+  const b = connectFakeClient();
+  const releaseB = deferRequest<unknown>(b, "evener/host/list");
+  const fromB = hostsStore.getState().fetch();
+  await Promise.resolve();
+
+  await act(async () => releaseA({ hosts: [registryRow({ name: "oldhub", address: "a.example" })] }));
+  await fromA;
+  const mid = hostsStore.getState().load;
+  expect(mid.phase === "ready" && mid.hosts.some((row) => row.name === "oldhub")).toBe(false);
+
+  await act(async () => releaseB({ hosts: [registryRow({ name: "newhub", address: "b.example" })] }));
+  await fromB;
+  const settled = hostsStore.getState().load;
+  expect(settled.phase === "ready" && settled.hosts.map((row) => row.name)).toEqual(["newhub"]);
+  hostsStore.getState().resetForTests();
+});
+
+// The rule's cost ceiling: an unchanged snapshot advances no revision, so the
+// poll cadence re-reads nothing.
+test("an unchanged registry snapshot never re-reads a host", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  const row = registryRow({ name: "buildbox" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+
+  // Two quiet polls carrying the same registration as fresh arrays, the way the
+  // wire does: the read count must not move.
+  fake.on("evener/host/list", () => ({ hosts: [{ ...row }] }));
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+
+  expect(remoteReads(fake)).toBe(1);
+  expect(result.current.instances).toEqual([REMOTE_INSTANCE]);
+  hostsStore.getState().resetForTests();
+});
+
+// The read waits for a registry read that is already on its way, rather than
+// reading under an answer that is about to be replaced (one wasted request per
+// deep-link otherwise).
+test("a remote host waits for a registry read that is in flight", async () => {
+  const fake = connectFakeClient();
+  const registry = deferRequest<unknown>(fake, "evener/host/list");
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.getState().resetForTests();
+  const reading = hostsStore.getState().fetch();
+  await act(async () => {});
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await act(async () => {});
+  expect(remoteReads(fake)).toBe(0);
+  expect(result.current.instances).toEqual([]);
+
+  await act(async () => {
+    registry({ hosts: [registryRow({ name: "buildbox" })] });
+  });
+  await reading;
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+  hostsStore.getState().resetForTests();
+});
+
+// M1 (round 8): revision 0 means "nothing has been published", not "a published
+// answer at revision 0". A read taken then cannot be accepted once the registry
+// has been consulted and failed, even though the revision never moved.
+test("a read taken while the registry was idle is not current once the registry has failed", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.getState().resetForTests();
+
+  await fetchHost("buildbox"); // the registry is idle: nothing published
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").read).toBe(true);
+
+  // The registry is consulted and fails.
+  hostsStore.setState({ load: { phase: "error", message: "registry unavailable" } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await act(async () => {});
+  expect(result.current.read).toBe(false);
+  expect(result.current.error).toBe("registry unavailable");
+  expect(result.current.instances).toEqual([]);
+  hostsStore.getState().resetForTests();
+});
+
+// M2 (round 8): the registry failed and then came back with the SAME snapshot, so
+// nothing advanced the revision - but the failure is what held the host's read
+// back, so the host is re-read when the registry recovers.
+test("the registry recovering with an unchanged snapshot re-reads the host", async () => {
+  const fake = connectFakeClient();
+  let hostUp = false;
+  fake.on("evener/host/request", () => {
+    if (!hostUp) throw new WireError("host buildbox unreachable", -32000);
+    return REMOTE_LIST as unknown as HostForwardedResult;
+  });
+  const row = registryRow({ name: "buildbox" });
+  fake.on("evener/host/list", () => ({ hosts: [row] }));
+  hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(remoteReads(fake)).toBe(1));
+  await waitFor(() => expect(result.current.error).toBe("host buildbox unreachable"));
+
+  // The registry fails, then comes back with the same snapshot. (Separate acts:
+  // in the app the failure and the later retry are separate events, and this
+  // pins that the hook observes the failed phase.)
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "error", message: "registry unavailable" } });
+  });
+  hostUp = true;
+  await act(async () => {
+    await hostsStore.getState().fetch();
+  });
+
+  // The host is re-read without any revision change, and the listing returns.
+  await waitFor(() => expect(remoteReads(fake)).toBe(2));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  hostsStore.getState().resetForTests();
+});
+
+// A reconnect on the SAME client is not a client replacement, so the registry
+// revision does not move - but the connection did, and the host's listing may
+// have changed with it. The partition is tied to the connection generation it
+// was read under, so a reconnect converges.
+test("a same-client reconnect re-reads a remote host", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+
+  // The SAME client's transport flaps and recovers: no replacement, no registry
+  // change.
+  await act(async () => {
+    connectionStore.setState({ state: "reconnecting" });
+    connectionStore.setState({ state: "ready" });
+    // Let the reconnect's own read land inside this act.
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(remoteReads(fake)).toBe(2));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  hostsStore.getState().resetForTests();
+});
+
+// connectionGeneration is what the push action scopes its own state to
+// (CredentialsHostScope's PushCredentials): it is captured when a push goes out
+// and compared when the answer lands, so an in-flight mutation is dropped
+// exactly when the connection it was issued on is gone. That makes both halves
+// load-bearing - a transition must move it, and a write that is not one must
+// not, or an in-flight push would be orphaned by a handshake's own metadata.
+test("connectionGeneration moves on a connection transition and on nothing else", () => {
+  const fake = connectFakeClient();
+  const connected = connectionGeneration();
+
+  // A handshake's own fields: the same client and wire state, so not a
+  // transition.
+  connectionStore.setState({ serverInfo: { name: "fake-evener-hub", version: "0.0.0" } });
+  expect(connectionStore.getState().client).toBe(fake);
+  expect(connectionGeneration()).toBe(connected);
+
+  // A reconnect on the SAME client: the connection the request went out on
+  // ended, so it is one.
+  connectionStore.setState({ state: "reconnecting" });
+  connectionStore.setState({ state: "ready" });
+  expect(connectionGeneration()).toBe(connected + 2);
+
+  // A replacement client: the other shape of the same event.
+  const replacement = new FakeClient("ready");
+  connectionStore.getState().connect(replacement);
+  expect(connectionStore.getState().client).toBe(replacement);
+  expect(connectionGeneration()).toBe(connected + 3);
+});
+
+// The registry's FIRST answer is an answer even when it names no host: a read
+// taken while the registry was unread must not survive it (an empty first
+// snapshot used to be indistinguishable from "never published").
+test("a read taken while the registry was unread does not survive its first empty answer", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.getState().resetForTests();
+
+  await fetchHost("buildbox");
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).toBe(0);
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  expect(hostsStore.getState().revision).toBe(1);
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).not.toBe(
+    hostsStore.getState().revision,
+  );
+  hostsStore.getState().resetForTests();
+});
+
+// An answer that lands after the registry moved on was issued under the old
+// snapshot: it is committed to the partition but never shown, and the read for
+// the current snapshot is what a consumer sees.
+test("an answer issued under an older registry snapshot is never shown", async () => {
+  const fake = connectFakeClient();
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] } });
+  const answers: Array<(value: HostForwardedResult) => void> = [];
+  fake.on(
+    "evener/host/request",
+    () =>
+      new Promise<HostForwardedResult>((resolve) => {
+        answers.push(resolve);
+      }),
+  );
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await act(async () => {});
+  expect(answers).toHaveLength(1);
+
+  // The registry re-registers the name while that read is out.
+  await act(async () => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] },
+    });
+  });
+  expect(answers).toHaveLength(2);
+
+  // The superseded answer lands, and is withheld.
+  await act(async () => {
+    answers[0]?.(REMOTE_LIST as unknown as HostForwardedResult);
+  });
+  expect(result.current.instances).toEqual([]);
+
+  await act(async () => {
+    answers[1]?.(REMOTE_LIST as unknown as HostForwardedResult);
+  });
+  expect(result.current.instances).toEqual([REMOTE_INSTANCE]);
+  hostsStore.getState().resetForTests();
 });

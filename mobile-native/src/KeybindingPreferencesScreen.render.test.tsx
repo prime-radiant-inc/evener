@@ -8,7 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import { KeybindingPreferencesScreen } from "./KeybindingPreferencesScreen";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
-import { render } from "./renderNative.testkit";
+import { render, renderedText } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
@@ -146,6 +146,36 @@ it("shows and invokes cold-offline discard for an unreadable stored record", () 
 	expect(
 		tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" }),
 	).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("keeps the storage-unavailable diagnostic after a discard-time storage throw", () => {
+	// The probe that classified the record succeeded; the discard itself is
+	// what hits a dead port. The outcome must not read as a successful
+	// discard - the record is still stored and the unreadable-draft block
+	// still offers the action - and the storage-unavailable diagnostic says
+	// why nothing was removed, in the storage seam's own words rather than
+	// the generic action-failed copy.
+	writeDraft(hub.id, "{not json");
+	const tree = render(app());
+	const action = tree.root.findByProps({
+		accessibilityLabel: "Discard unreadable draft",
+	});
+
+	harness.storage.throwKey = draftKey(hub.id);
+	act(() => action.props.onPress());
+
+	expect(harness.values.has(draftKey(hub.id))).toBe(true);
+	expect(
+		tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" }),
+	).toHaveLength(1);
+	const alerts = alertNodes(tree);
+	expect(alerts).toHaveLength(1);
+	const text = renderedText(tree);
+	expect(text).toContain(
+		"Could not read the saved shortcut draft on this phone. Check current shortcuts to retry.",
+	);
+	expect(text).not.toContain("The change could not be completed.");
 	act(() => tree.unmount());
 });
 

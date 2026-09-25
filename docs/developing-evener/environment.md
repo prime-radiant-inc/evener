@@ -9,6 +9,7 @@ help text, and tests should refer to those rows instead of hard-coding names.
 |---|---|
 | `EVENER_ALLOWED_DECISIONS` | Restricts tool-decision modes allowed by the active profile. |
 | `EVENER_CREDENTIALS_CONFIG` | Path to `credentials.toml`. Unset means the sibling of the resolved providers-config path. |
+| `EVENER_HOST_TEMP_BASES` | Replaces the world-usable host temp bases, `/tmp` then `/var/tmp`, with an OS path list (`:`-separated on POSIX) of absolute directories. Session temp containers (see `TMPDIR`) are created in the first entry that serves, and the startup crashed-scratch sweep reclaims abandoned containers only in these bases. Each entry must be an existing world-writable, world-traversable sticky directory, the same test `/tmp` has to pass; an entry that fails it is skipped. Unset means the defaults. A value that is set but empty, or that has an empty or relative entry, is refused rather than replaced by `/tmp` and `/var/tmp`: every `evener` and `evener serve` start prints a warning naming the variable, the sweep skips the host temp bases, and no session temp container is created, so commands keep the inherited `TMPDIR` as they do when no base serves. POSIX platforms only. The test rig (`agent/sandbox/sandboxtest`) sets it so the `evener` processes a test starts stay inside the test's own temp root. |
 | `EVENER_HUB_ADDR` | Default hub address for `evener tui`. |
 | `EVENER_HUB_AUTH_TOKEN` | Hub capability token for `evener tui`. |
 | `EVENER_HUB_BIN` | Path to the `evener hub` binary used by `evener tui` autostart. |
@@ -130,6 +131,7 @@ process environments.
 | Variable | Description |
 |---|---|
 | `EVENER_FLUENCY_MODEL` | Default model for the tool-fluency development harness. |
+| `EVENER_PPROF_ADDR` | Serves live `net/http/pprof` profiles from `evener serve` and `evener hub` on this loopback `host:port`; port `0` picks a free port, logged at startup. Unset disables it; a non-loopback host is refused, and an address that cannot be bound logs a warning and runs without pprof. Hub-spawned daemons inherit it. See [live profiling](performance-profiling.md#live-profiling-of-evener-serve-and-evener-hub). |
 | `EVENER_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. To diagnose traffic on individual browser connections instead, use the hub's [`--appwire-trace` option](../evener-hub.md#trace-browser-appwire-traffic). |
 | `EVENER_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `EVENER_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`EVENER_RECORD_APPWIRE`/`EVENER_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |

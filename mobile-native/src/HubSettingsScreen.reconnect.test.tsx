@@ -24,6 +24,7 @@ import {
 	nativeModuleMock,
 	render,
 	renderedText,
+	screenConnection as connection,
 } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
@@ -77,16 +78,6 @@ const props = {
 	route: { params: { hubId: "hub-1" } },
 	navigation: { navigate: () => {} },
 } as unknown as ComponentProps<typeof HubSettingsScreen>;
-
-function connection(client: unknown, state: ConnectionState) {
-	return {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client,
-		state,
-		fatal: false,
-		retry: () => {},
-	};
-}
 
 it("re-reads the overview once a flap the screen survived is ready again", async () => {
 	const hub = new FakeClient("ready");
@@ -424,4 +415,86 @@ it("still reads on refocus after a replacement recovered while the screen was aw
 	await act(async () => {});
 	expect(reconciles.count).toBe(1);
 	harness.focused = true;
+});
+
+it("recovers the overview while the screen is mounted but not focused", async () => {
+	// An unfocused, mounted settings screen behind another screen can hold a
+	// valid ready connection: the live predicate authorizes, but no focus
+	// effect runs to read with it, and the recovery arm skipped on the
+	// authorization alone - so nothing read until a later focus. The arm must
+	// read exactly when no focus effect handled the same connection.
+	reconciles.count = 0;
+	const hub = new FakeClient("ready");
+	let reads = 0;
+	hub.on("evener/settings/overview", () => {
+		reads += 1;
+		return {
+			hub: {
+				version: reads === 1 ? "1.2.3" : "9.9.9",
+				daemonIdleTimeoutMillis: 3600000,
+			},
+		};
+	});
+	harness.focused = false;
+	harness.connection = connection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	// The mount under an authorized, unfocused screen still reads: no focus
+	// effect exists to owe this screen's first read.
+	expect(reads).toBe(1);
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+
+	// The flap lands entirely in the unfocused stretch; the transition back
+	// to ready is recovered the same way.
+	const conn = harness.connection as { state: ConnectionState };
+	conn.state = "reconnecting";
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	reconciles.count = 0;
+	conn.state = "ready";
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	await act(async () => {});
+	expect(reads).toBe(2);
+	expect(renderedText(tree)).toContain("Evener 9.9.9");
+	expect(reconciles.count).toBeGreaterThan(0);
+	harness.focused = true;
+});
+
+it("recovers a client replaced while the connection stays ready", async () => {
+	const first = new FakeClient("ready");
+	first.on("evener/settings/overview", () => ({
+		hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.focused = true;
+	harness.connection = connection(first, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+
+	// The retry hands the screen a fresh client with the connection never
+	// leaving ready: the readiness never transitions, so a state-keyed
+	// recovery gate never resets - and the new pairing's focus read is
+	// refused while it settles, with no later event to re-run it. The new
+	// client is its own recovery event.
+	const second = new FakeClient("ready");
+	let reads = 0;
+	second.on("evener/settings/overview", () => {
+		reads += 1;
+		return {
+			hub: { version: "9.9.9", daemonIdleTimeoutMillis: 3600000 },
+		};
+	});
+	harness.connection = connection(second, "ready");
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	await act(async () => {});
+	await act(async () => {});
+	expect(reads).toBe(1);
+	expect(renderedText(tree)).toContain("Evener 9.9.9");
 });

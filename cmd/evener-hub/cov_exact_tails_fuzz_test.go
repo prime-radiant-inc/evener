@@ -90,7 +90,7 @@ func FuzzExactTails(f *testing.F) {
 		_, _, _ = prepareResolvedForSpawn(t.TempDir(), appendInline)
 		spawnWriteFile, spawnRemoveAll = oldWriteFile, oldRemoveAll
 
-		_ = validateProviderCredentials("openai", nil)
+		_ = validateProviderCredentials("openai", "", nil)
 
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()

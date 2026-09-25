@@ -15,7 +15,7 @@ import {
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProvidersScreen } from "./ProvidersScreen";
-import { render, renderedText } from "./renderNative.testkit";
+import { render, renderedText, screenConnection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
   connection: {} as Record<string, unknown>,
@@ -87,12 +87,7 @@ function hub(io: { request: (method: string, params: unknown) => Promise<unknown
 
 function mount(io: { request: (method: string, params: unknown) => Promise<unknown> }) {
   const scripted = hub(io);
-  harness.connection = {
-    activeProfile: { id: "hub-1", name: "Work hub" },
-    client: scripted.client,
-    state: "ready",
-    retry: () => {},
-  };
+  harness.connection = screenConnection(scripted.client, "ready");
   const props = {
     route: { params: { hubId: "hub-1" } },
   } as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -321,12 +316,7 @@ it("leaves only the store's own reconcile read after an in-flight write outlives
         : Promise.resolve(listing),
   });
   const second = hub({ request: async () => listing });
-  harness.connection = {
-    activeProfile: { id: "hub-1", name: "Work hub" },
-    client: first.client,
-    state: "ready",
-    retry: () => {},
-  };
+  harness.connection = screenConnection(first.client, "ready");
   const props = {
     route: { params: { hubId: "hub-1" } },
   } as unknown as ComponentProps<typeof ProvidersScreen>;

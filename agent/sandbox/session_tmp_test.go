@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// hostTempForTest points worldTempBases at a base this test owns, made
+// hostTempForTest points the world temp bases at a base this test owns, made
 // world-usable (0777 + sticky) so the selection check accepts it, and returns
 // that base.
 func hostTempForTest(t *testing.T) string {
@@ -33,7 +33,11 @@ func hostTempForTest(t *testing.T) string {
 // purpose — an injected fixture base sits under t.TempDir(), which an arbitrary uid
 // cannot even traverse — so it has to skip rather than fail where none serves.
 func hostHasWorldUsableTempBase() bool {
-	for _, candidate := range append([]string(nil), worldTempBases...) {
+	candidates, err := worldTempBaseCandidates()
+	if err != nil {
+		return false
+	}
+	for _, candidate := range candidates {
 		if _, ok := validWorldTempBase(candidate); ok {
 			return true
 		}
@@ -266,7 +270,7 @@ func TestSessionTmpPrivilegeDropE2E(t *testing.T) {
 	// read and delete the machine's real temp/cache.
 	isolateScratchBases(t)
 	if !hostHasWorldUsableTempBase() {
-		t.Skipf("this host offers no world-usable host temp base (%v)", worldTempBases)
+		t.Skipf("this host offers no world-usable host temp base (%v)", defaultWorldTempBases)
 	}
 	tmp, err := NewSessionTmp()
 	if err != nil {

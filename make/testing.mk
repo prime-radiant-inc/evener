@@ -2,25 +2,29 @@
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
-# the script runs them concurrently with per-check private HOME/TMPDIR/XDG
-# roots; wall time is the slowest one (vitest) instead of the sum. A failure
-# replays exactly the failing check's log.
+# the gate (`evener-dev dev web-checks`, run from the prebuilt evener-dev binary so
+# an interrupt reaches it) runs them concurrently with per-check private
+# HOME/TMPDIR/XDG roots; wall time is the slowest one (vitest) instead of the
+# sum. A failure replays exactly the failing check's log.
 ## The frontend's single gate entry point: typecheck, unit tests, then lint,
 ## run concurrently.
 ## proves: jsdom/unit-level frontend behavior, type safety, and source lint.
 ## trigger: Local pre-merge; required CI web job.
-## requires: Deterministic after Node dependencies are installed; each check
-##   owns a private process home plus temporary/XDG roots and disables
-##   Node's compile cache; no real browser, provider, or network service.
+## requires: The Go toolchain (the gate is the prebuilt evener-dev) and the
+##   installed Node dependencies; deterministic after those. Each check owns a
+##   private process home plus temporary/XDG roots and disables Node's compile
+##   cache; no real browser, provider, or network service.
 ## fails-when: Any of the three streams is nonzero; a missing or unhealthy
 ##   frontend install fails preflight.
-test-web: web-preflight
+test-web: web-preflight build-dev
 	@scripts/web/test-web.sh
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
 # of test-web because jsdom cannot evaluate the CSS cascade or browser geometry.
-# The script runs every guard so one missing browser or failing case does not
-# hide the remaining guard's verdict; exit status is the first nonzero one.
+# The gate (`evener-dev dev web-browser-guards`, run from the prebuilt evener-dev
+# binary so an interrupt reaches it) runs every guard so one missing browser or
+# failing case does not hide the remaining guard's verdict; exit status is the
+# first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
 ## shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
@@ -32,7 +36,8 @@ test-web: web-preflight
 ##   drives the production composer through a REAL hub and two REAL
 ##   `evener serve` daemons with only the LLM provider scripted.
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
-## requires: Chrome/Chromium; each guard gets a private process home,
+## requires: Chrome/Chromium and the Go toolchain (the gate is the prebuilt
+##   evener-dev); each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
@@ -40,7 +45,7 @@ test-web: web-preflight
 ##   and the built frontend (built automatically when dist is missing).
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
-test-web-browser: web-preflight
+test-web-browser: web-preflight build-dev
 	@scripts/web/test-web-browser.sh
 
 # check:scripts is separate from check because they answer different questions
@@ -117,6 +122,16 @@ test-native-bundle: native-preflight
 test-api-package:
 	@cd appwire-client/typescript && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
 
+# The module sets a scope selects, shared by `make test` (TEST_SCOPE) and
+# `make test-race` (RACE_SCOPE). Every set derives from GO_MODULES, so a new
+# module joins each scope it belongs to without an edit here.
+SCOPE_MODULES_all := $(GO_MODULES)
+SCOPE_MODULES_root := .
+SCOPE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
+SCOPE_MODULES_agent := $(filter agent,$(GO_MODULES))
+SCOPE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
+TEST_SCOPE ?= all
+
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
@@ -134,9 +149,13 @@ test-api-package:
 ## requires: Scripted/fake external boundaries for default tests; runs ZERO
 ##   fuzz-family tests, even at reduced depth. WEB=0 skips the frontend
 ##   stream.
+##   TEST_SCOPE picks the Go modules: all (default), root (the root module
+##   alone) or nonroot (every other module); CI runs root and nonroot on
+##   separate runners.
 ## fails-when: Any module, frontend stream, or setup failure is nonzero.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
+	@case "$(TEST_SCOPE)" in all|root|nonroot) ;; *) echo "make test: TEST_SCOPE must be all, root, or nonroot (got $(TEST_SCOPE))" >&2; exit 2;; esac; \
+		MODULES="$(strip $(SCOPE_MODULES_$(TEST_SCOPE)))" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
 ## Alias for `make test`.
 test-short:
@@ -168,26 +187,31 @@ merge-approval-gate:
 # and the frontend suite is unaffected by it, so `make test` owns the web stream
 # instead of paying it twice.
 RACE_SCOPE ?= all
-RACE_MODULES_all := $(GO_MODULES)
-RACE_MODULES_root := .
-RACE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
-RACE_MODULES_agent := $(filter agent,$(GO_MODULES))
-RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
+RACE_ROOT_PART ?= all
 ## The permanent -race gate across every non-fuzz module.
 ## proves: Data races in the non-fuzz modules surface; frontend is
 ##   intentionally not duplicated.
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0,
-##   AGENT_SHARDS=0, HUB_SHARDS=0, CLI_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's
-##   ~10x slowdown. RACE_SCOPE defaults to all; CI uses the
+##   AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's
+##   ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub
+##   shards, no cost survey: under -race the survey costs as much as the run).
+##   RACE_SCOPE defaults to all; CI uses the
 ##   explicit root scope plus agent and nonagent on separate runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
+##   RACE_ROOT_PART (root scope only) splits the root module across runners:
+##   all (default), hub (only cmd/evener-hub's shards), or rest (everything
+##   else in the root module).
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
-		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
+		case "$(RACE_ROOT_PART)" in all) hub=1; cli=1; rest=1;; hub) hub=1; cli=elsewhere; rest=0;; rest) hub=elsewhere; cli=1; rest=1;; *) echo "make test-race: RACE_ROOT_PART must be all, hub, or rest (got $(RACE_ROOT_PART))" >&2; exit 2;; esac; \
+		test "$(RACE_ROOT_PART)" = all || test "$(RACE_SCOPE)" = root || { echo "make test-race: RACE_ROOT_PART=$(RACE_ROOT_PART) needs RACE_SCOPE=root" >&2; exit 2; }; \
+		modules="$(strip $(SCOPE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
-		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 HUB_SHARDS=0 CLI_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short -count=1
+		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 \
+		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
+		scripts/gate/run-module-tests.sh -race -short -count=1
 
 ## go vet across every non-fuzz workspace module.
 ## proves: go vet diagnostics for every module, independent of the tagged

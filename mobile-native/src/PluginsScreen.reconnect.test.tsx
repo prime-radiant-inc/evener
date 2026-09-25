@@ -28,7 +28,12 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { PluginsScreen } from "./PluginsScreen";
 import { createPluginMutationGate } from "./pluginMutationGate";
-import { nativeModuleMock, render, renderedText } from "./renderNative.testkit";
+import {
+	nativeModuleMock,
+	render,
+	renderedText,
+	screenConnection as connection,
+} from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -67,16 +72,6 @@ function plugin(name: string): PluginEntry {
 		installPath: "/plugins",
 		installedAt: 1,
 		lastUpdated: 1,
-	};
-}
-
-function connection(client: unknown, state: ConnectionState) {
-	return {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client,
-		state,
-		fatal: false,
-		retry: () => {},
 	};
 }
 
@@ -178,6 +173,92 @@ it("shows the connection status and reconnect inside an open plugin detail modal
 		).length,
 	).toBeGreaterThan(0);
 	expect(subtreeText(modal)).toContain("Installation details");
+});
+
+it("keeps the last action's notice when a disconnected press never runs the action", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	let upgrades = 0;
+	hub.on("evener/plugin/upgrade", () => {
+		upgrades += 1;
+		return { plugins: [plugin("kept")] };
+	});
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	const row = tree.root.find(
+		(node) =>
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("kept"),
+	);
+	act(() => {
+		row.props.onPress();
+	});
+	await act(async () => {});
+
+	// A successful upgrade leaves its notice in the open modal.
+	await act(async () => {
+		modalContaining(tree, "Installation details")
+			.findByProps({ accessibilityLabel: "Upgrade" })
+			.props.onPress();
+	});
+	await act(async () => {});
+	expect(upgrades).toBe(1);
+	expect(
+		subtreeText(modalContaining(tree, "Installation details")),
+	).toContain("Checked for upgrades.");
+
+	// The connection drops with the modal open: a press now is a no-op the
+	// gate refuses on readiness, and it must not retire the notice the last
+	// real outcome left - the status inside the modal already says why
+	// nothing ran.
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	await act(async () => {
+		modalContaining(tree, "Installation details")
+			.findByProps({ accessibilityLabel: "Upgrade" })
+			.props.onPress();
+	});
+	await act(async () => {});
+	expect(upgrades).toBe(1);
+	expect(
+		subtreeText(modalContaining(tree, "Installation details")),
+	).toContain("Checked for upgrades.");
+});
+
+it("walls a fatal close with the reason its retry cannot clear yet", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("kept");
+
+	// The connection closes fatally - a protocol mismatch. The wall that
+	// replaces the screen must say WHY: without the compatibility copy the
+	// connection carries, the wall's own reconnect reads as ineffective -
+	// nothing says why pressing it changes nothing. With it, the action is
+	// the copy's own last word ("...then reconnect"), the way back once the
+	// app and hub are updated together.
+	harness.connection = {
+		...connection(hub, "closed"),
+		fatal: true,
+		error:
+			"This app and hub need compatible versions. Update them together, then reconnect.",
+	};
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	const walled = renderedText(tree);
+	expect(walled).toContain("Connect to Work hub to manage plugins.");
+	expect(walled).toContain(
+		"This app and hub need compatible versions. Update them together, then reconnect.",
+	);
+	expect(
+		tree.root.findAllByProps({ accessibilityLabel: "Reconnect" }),
+	).toHaveLength(1);
 });
 
 it("shows the connection status and reconnect inside the add-marketplace modal", async () => {

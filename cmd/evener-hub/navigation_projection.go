@@ -164,8 +164,8 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 		p.pinSectionIDs[section.ID] = true
 	}
 
-	buckets := navigationMergeProjectBuckets(navigationProjectBuckets(p.inputs.Tree))
-	if err := ctx.Err(); err != nil {
+	buckets, err := navigationMergeProjectBucketsContext(ctx, navigationProjectBuckets(p.inputs.Tree))
+	if err != nil {
 		return navigationProjection{}, err
 	}
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
@@ -314,8 +314,8 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-// navigationMergeProjectBuckets collapses tree projects that present the same
-// wire Key onto the single catalog entry that Key can address.
+// navigationMergeProjectBucketsContext collapses tree projects that present
+// the same wire Key onto the single catalog entry that Key can address.
 //
 // A project's Key is its address on the wire: the client reads the project
 // detail, and archives, favorites, or deletes the project, by (source, Key).
@@ -352,37 +352,80 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 // bucket, never across them, because each catalog page is validated on its own:
 // a Key repeated in active and archived is two independent, individually valid
 // pages, and collapsing across buckets would empty an unrelated catalog. The
-// per-pair merge rule is documented on navigationMergeProject; this is the
+// fold rule is documented on navigationMergeProjectContext; this is the
 // general "one addressable project per Key per page" rule, not a branch on how
 // many sources exist.
-func navigationMergeProjectBuckets(buckets navigationProjectBucket) navigationProjectBucket {
-	return navigationProjectBucket{
-		active:   navigationMergeProjectGroups(buckets.active),
-		archived: navigationMergeProjectGroups(buckets.archived),
-		testRuns: navigationMergeProjectGroups(buckets.testRuns),
+//
+// This is the bounded form the projection build runs: every loop the merge
+// walks checks ctx, so a canceled build stops inside the merge instead of
+// folding a large duplicate-Key tree to completion.
+func navigationMergeProjectBucketsContext(ctx context.Context, buckets navigationProjectBucket) (navigationProjectBucket, error) {
+	if err := ctx.Err(); err != nil {
+		return navigationProjectBucket{}, err
 	}
+	active, err := navigationMergeProjectGroupsContext(ctx, buckets.active)
+	if err != nil {
+		return navigationProjectBucket{}, err
+	}
+	archived, err := navigationMergeProjectGroupsContext(ctx, buckets.archived)
+	if err != nil {
+		return navigationProjectBucket{}, err
+	}
+	testRuns, err := navigationMergeProjectGroupsContext(ctx, buckets.testRuns)
+	if err != nil {
+		return navigationProjectBucket{}, err
+	}
+	return navigationProjectBucket{active: active, archived: archived, testRuns: testRuns}, nil
 }
 
-// navigationMergeProjectGroups merges the projects that share a Key inside one
-// bucket, keeping the position of each Key's first appearance. A project whose
-// Key is unique is returned unchanged, so the common case keeps the tree's own
-// value - including the private uncapped tier slices that the merge below
-// cannot carry across a rebuilt value.
-func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.TreeProject {
+// navigationMergeProjectGroupsContext merges the projects that share a Key
+// inside one bucket, keeping the position of each Key's first appearance. A
+// project whose Key is unique is returned unchanged, so the common case keeps
+// the tree's own value - including the private uncapped tier slices that the
+// merge below cannot carry across a rebuilt value.
+//
+// The fold is single-pass: all of a Key's colliding groups reach ONE
+// navigationMergeProjectContext call, which unions each tier across every
+// group at once. Folding pair by pair instead re-read, re-appended, and
+// re-sorted the accumulated row's whole tier on every collision, so a Key
+// with k groups paid k re-sorts of a tier that kept growing - quadratic in
+// the colliding groups, which the live "no-project" shape makes unbounded.
+// The two agree on the result: every merged field combines associatively in
+// the tree's own group order, and the tier sort is stable (see
+// navigationMergeProjectContext).
+func navigationMergeProjectGroupsContext(ctx context.Context, projects []hubcore.TreeProject) ([]hubcore.TreeProject, error) {
 	at := make(map[string]int, len(projects))
+	var collisions map[int][]hubcore.TreeProject
 	out := make([]hubcore.TreeProject, 0, len(projects))
 	for _, project := range projects {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if index, ok := at[project.Key]; ok {
-			out[index] = navigationMergeProject(out[index], project)
+			if collisions == nil {
+				collisions = make(map[int][]hubcore.TreeProject)
+			}
+			collisions[index] = append(collisions[index], project)
 			continue
 		}
 		at[project.Key] = len(out)
 		out = append(out, project)
 	}
-	return out
+	for index, groups := range collisions {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		merged, err := navigationMergeProjectContext(ctx, out[index], groups)
+		if err != nil {
+			return nil, err
+		}
+		out[index] = merged
+	}
+	return out, nil
 }
 
-// navigationMergeProject folds next into first, both of which present first.Key.
+// navigationMergeProjectContext folds the groups in next - every one of which
+// presents first.Key - into first, and returns the single row they collapse to.
 //
 // The first group owns the row's rendered identity - Name, WorkingDir, Key, and
 // the IsArchived / IsTestRun flags, which are uniform inside a bucket because
@@ -390,7 +433,7 @@ func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.Tree
 // label and address. Everything else is combined the way the projection's
 // consumers read the struct:
 //
-//   - Current / Recent / Archived are the union of both groups' rows, ordered
+//   - Current / Recent / Archived are the union of every group's rows, ordered
 //     the way hubcore orders its own tiers (most recent first: UpdatedAt desc,
 //     CreatedAt desc, then the title and id tie-break sessionMetaLess uses).
 //     The per-tier overflow counts (MoreCurrent / MoreRecent / MoreArchived)
@@ -412,10 +455,10 @@ func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.Tree
 //     paging and from change detection - the silent session loss this merge
 //     exists to prevent.
 //   - Each tier's synthetic cluster rows are then reconciled across the merged
-//     project by navigationMergeClusterRows, because two groups that share one
-//     Key can mint one cluster id each (see that function): the union keeps one
-//     row per identity, carrying every folded member, instead of concatenating
-//     two rows the client would address as one.
+//     project by navigationMergeClusterRowsContext, because groups that share
+//     one Key can mint one cluster id each (see that function): the union
+//     keeps one row per identity, carrying every folded member, instead of
+//     concatenating two rows the client would address as one.
 //   - LastActivity takes the later moment, and Age comes with it.
 //   - RollupState takes the higher hubapi.RollupRank, and RollupLive / RollupAttn
 //     add, so the merged header still counts every working and awaiting session.
@@ -429,21 +472,49 @@ func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.Tree
 //     the struct carries the count alone, not the paths, so a worktree path two
 //     merged groups share is counted once per group: the merged value is an
 //     upper bound on the distinct paths, not the exact count.
-func navigationMergeProject(first, next hubcore.TreeProject) hubcore.TreeProject {
+//
+// The scalar folds and the tier unions are computed in one pass over the
+// groups, in the tree's own order; folding the same groups pair by pair
+// produces the same value, because every field combines associatively and the
+// stable tier sort keeps tied rows in the order the groups were read in.
+func navigationMergeProjectContext(ctx context.Context, first hubcore.TreeProject, next []hubcore.TreeProject) (hubcore.TreeProject, error) {
 	lastActivity, age := first.LastActivity, first.Age
-	if next.LastActivity.After(lastActivity) {
-		lastActivity, age = next.LastActivity, next.Age
-	}
 	rollupState := first.RollupState
-	if hubapi.RollupRank(next.RollupState) > hubapi.RollupRank(rollupState) {
-		rollupState = next.RollupState
+	rollupLive, rollupAttn := first.RollupLive, first.RollupAttn
+	worktrees, expanded, sources := first.Worktrees, first.Expanded, first.Sources
+	for _, group := range next {
+		if err := ctx.Err(); err != nil {
+			return hubcore.TreeProject{}, err
+		}
+		if group.LastActivity.After(lastActivity) {
+			lastActivity, age = group.LastActivity, group.Age
+		}
+		if hubapi.RollupRank(group.RollupState) > hubapi.RollupRank(rollupState) {
+			rollupState = group.RollupState
+		}
+		rollupLive += group.RollupLive
+		rollupAttn += group.RollupAttn
+		worktrees += group.Worktrees
+		expanded = expanded || group.Expanded
+		sources = navigationMergeProjectSources(sources, group.Sources)
 	}
-	mergedTiers := navigationMergeClusterRows(
-		navigationMergeProjectTier(first, next, "current"),
-		navigationMergeProjectTier(first, next, "recent"),
-		navigationMergeProjectTier(first, next, "archived"),
-	)
-	current, recent, archived := mergedTiers[0], mergedTiers[1], mergedTiers[2]
+	current, err := navigationMergeProjectTierContext(ctx, first, next, "current")
+	if err != nil {
+		return hubcore.TreeProject{}, err
+	}
+	recent, err := navigationMergeProjectTierContext(ctx, first, next, "recent")
+	if err != nil {
+		return hubcore.TreeProject{}, err
+	}
+	archived, err := navigationMergeProjectTierContext(ctx, first, next, "archived")
+	if err != nil {
+		return hubcore.TreeProject{}, err
+	}
+	mergedTiers, err := navigationMergeClusterRowsContext(ctx, current, recent, archived)
+	if err != nil {
+		return hubcore.TreeProject{}, err
+	}
+	current, recent, archived = mergedTiers[0], mergedTiers[1], mergedTiers[2]
 	return hubcore.TreeProject{
 		Name:         first.Name,
 		Key:          first.Key,
@@ -455,65 +526,91 @@ func navigationMergeProject(first, next hubcore.TreeProject) hubcore.TreeProject
 		IsTestRun:    first.IsTestRun,
 		LastActivity: lastActivity,
 		RollupState:  rollupState,
-		RollupLive:   first.RollupLive + next.RollupLive,
-		RollupAttn:   first.RollupAttn + next.RollupAttn,
-		Sources:      navigationMergeProjectSources(first.Sources, next.Sources),
-		Expanded:     first.Expanded || next.Expanded,
-		// The overflow is derived after navigationMergeClusterRows, not per
-		// group: folding colliding cluster rows shortens a tier, and More* must
-		// describe the rows the tier actually holds.
+		RollupLive:   rollupLive,
+		RollupAttn:   rollupAttn,
+		Sources:      sources,
+		Expanded:     expanded,
+		// The overflow is derived after navigationMergeClusterRowsContext, not
+		// per group: folding colliding cluster rows shortens a tier, and More*
+		// must describe the rows the tier actually holds.
 		MoreCurrent:  navigationTierOverflow(len(current), hubcore.SidebarSessionPageSize),
 		MoreRecent:   navigationTierOverflow(len(recent), hubcore.SidebarSessionPageSize),
 		MoreArchived: navigationTierOverflow(len(archived), hubcore.SidebarSessionPageSize),
 		Age:          age,
-		Worktrees:    first.Worktrees + next.Worktrees,
-	}
+		Worktrees:    worktrees,
+	}, nil
 }
 
-// navigationMergeProjectTier returns one tier across two groups that share a
-// Key: the full union in the tree's own order.
+// navigationMergeProjectTierContext returns one tier across every group that
+// shares a Key: the full union in the tree's own order.
 //
 // It reads TierRows rather than the public slice because a tree-built project
 // keeps its overflow in the private uncapped tier, and the merged project must
 // carry that overflow too. The union must then be re-ordered: each group is
 // internally most-recent-first, but appending one group after the other is not
 // globally ordered, so the merge sorts by the field and tie-break the tree and
-// capTier rely on (navigationTreeNodeLess). The rows are returned whole - the
-// caller keeps every one in the public tier, which is what TierRows falls back
-// to - so the caller derives the tier's overflow with navigationTierOverflow
-// once navigationMergeClusterRows has folded any colliding cluster rows away.
-func navigationMergeProjectTier(first, next hubcore.TreeProject, tier string) []hubcore.TreeNode {
+// capTier rely on (navigationTreeNodeLess). Sorting the concatenated union
+// once - rather than re-sorting the accumulated rows after each group folds
+// in - keeps the tier linear in its rows, and matches what folding pair by
+// pair produces, because the sort is stable and the groups concatenate in the
+// tree's own order. The rows are returned whole - the caller keeps every one
+// in the public tier, which is what TierRows falls back to - so the caller
+// derives the tier's overflow with navigationTierOverflow once
+// navigationMergeClusterRowsContext has folded any colliding cluster rows
+// away.
+func navigationMergeProjectTierContext(ctx context.Context, first hubcore.TreeProject, next []hubcore.TreeProject, tier string) ([]hubcore.TreeNode, error) {
 	firstRows, _ := first.TierRows(tier)
-	nextRows, _ := next.TierRows(tier)
-	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
+	size := len(firstRows)
+	for _, group := range next {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rows, _ := group.TierRows(tier)
+		size += len(rows)
+	}
+	rows := make([]hubcore.TreeNode, 0, size)
 	rows = append(rows, firstRows...)
-	rows = append(rows, nextRows...)
+	for _, group := range next {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		groupRows, _ := group.TierRows(tier)
+		rows = append(rows, groupRows...)
+	}
+	// The sort below is the tier's dominant step and cannot observe ctx, so
+	// surface a cancellation that arrived during the concatenation before
+	// starting it, the way the entry checks of the bounded forms do.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sort.SliceStable(rows, func(i, j int) bool { return navigationTreeNodeLess(rows[i], rows[j]) })
-	return rows
+	return rows, nil
 }
 
-// navigationMergeClusterRows folds the synthetic cluster rows a merged project
-// can carry more than once onto one row per identity, across the three tiers.
+// navigationMergeClusterRowsContext folds the synthetic cluster rows a merged
+// project can carry more than once onto one row per identity, across the
+// three tiers.
 //
 // hubcore mints a cluster id from the owning project's display name and the
 // folded title (hubcore tree.go clusterID), and an unresolved group's display
 // name is the basename of its working directory (hubcore tree.go, the
 // "filepath.Base(displayPath)" its accumulator is created with). Two unresolved
 // groups whose directories share a basename therefore mint ONE cluster id for
-// their repeated title, and navigationMergeProjectGroups folds those two groups
-// into one project row: concatenating their tiers would leave that id twice.
+// their repeated title, and navigationMergeProjectGroupsContext folds those
+// two groups into one project row: concatenating their tiers would leave that
+// id twice.
 //
 // The id is an address, not a local label: navigationNodeRef advertises it as
 // the summary Ref, and the normalizer keys the session entity by that ref. Two
 // rows with one id therefore make the project's normalized graph carry two
 // entities with one key, which hubapi.NavigationSnapshot.Validate rejects with
 // "duplicate navigation entity key" - the same "graph" failure
-// navigationMergeProjectBuckets exists to prevent, merely moved from the catalog
-// page to the project detail. The check spans tiers, not just one tier: the
-// project resource normalizes current, recent, and archived into a single
-// document under one resource key, so a pair whose groups classified into
-// different tiers (one group's members older than hubcore's archive window, the
-// other's inside it) collides exactly the same.
+// navigationMergeProjectBucketsContext exists to prevent, merely moved
+// from the catalog page to the project detail. The check spans tiers, not
+// just one tier: the project resource normalizes current, recent, and
+// archived into a single document under one resource key, so a pair whose
+// groups classified into different tiers (one group's members older than
+// hubcore's archive window, the other's inside it) collides exactly the same.
 //
 // Colliding rows are merged, never dropped, on the identity they share: their
 // children combine, their counts add, and the union takes the identity's most
@@ -524,74 +621,107 @@ func navigationMergeProjectTier(first, next hubcore.TreeProject, tier string) []
 //
 // When no identity collides - the common case - the three slices are returned
 // exactly as passed in, so the ordinary merge path allocates nothing new.
-func navigationMergeClusterRows(tiers ...[]hubcore.TreeNode) [][]hubcore.TreeNode {
+func navigationMergeClusterRowsContext(ctx context.Context, tiers ...[]hubcore.TreeNode) ([][]hubcore.TreeNode, error) {
 	merged := make(map[string]hubcore.TreeNode)
-	latest := make(map[string]time.Time)
+	winner := make(map[string]hubcore.TreeNode)
 	winnerTier := make(map[string]int)
 	winnerIndex := make(map[string]int)
+	children := make(map[string][]hubcore.TreeNode)
+	counts := make(map[string]int)
 	collided := false
 	for tierIndex, rows := range tiers {
 		for rowIndex, row := range rows {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if row.Kind != "cluster" || row.ID == "" {
 				continue
 			}
 			previous, seen := merged[row.ID]
 			if !seen {
 				merged[row.ID] = row
-				latest[row.ID] = row.UpdatedAt
+				winner[row.ID] = row
 				winnerTier[row.ID] = tierIndex
 				winnerIndex[row.ID] = rowIndex
 				continue
 			}
 			collided = true
-			merged[row.ID] = navigationMergeClusterRow(previous, row)
-			if row.UpdatedAt.After(latest[row.ID]) {
-				latest[row.ID] = row.UpdatedAt
+			// The members accumulate in encounter order and are ordered once,
+			// when the surviving row is finalized below: folding the rows
+			// pair by pair instead would copy and re-sort the accumulated
+			// members on every collision - quadratic in the groups that can
+			// mint one cluster id (unresolved directories sharing a basename).
+			if children[row.ID] == nil {
+				children[row.ID] = append(make([]hubcore.TreeNode, 0, len(previous.Children)+len(row.Children)), previous.Children...)
+				counts[row.ID] = previous.ClusterCount
+			}
+			children[row.ID] = append(children[row.ID], row.Children...)
+			counts[row.ID] += row.ClusterCount
+			if row.UpdatedAt.After(winner[row.ID].UpdatedAt) {
+				winner[row.ID] = row
 				winnerTier[row.ID] = tierIndex
 				winnerIndex[row.ID] = rowIndex
 			}
 		}
 	}
 	if !collided {
-		return tiers
+		return tiers, nil
 	}
 	out := make([][]hubcore.TreeNode, len(tiers))
 	for tierIndex, rows := range tiers {
 		kept := make([]hubcore.TreeNode, 0, len(rows))
 		for rowIndex, row := range rows {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if row.Kind == "cluster" && row.ID != "" {
 				if winnerTier[row.ID] != tierIndex || winnerIndex[row.ID] != rowIndex {
 					continue // folded into the identity's one surviving row
 				}
-				row = merged[row.ID]
+				if children[row.ID] != nil {
+					finalized, err := navigationFinalizeClusterRowContext(ctx, merged[row.ID], winner[row.ID], children[row.ID], counts[row.ID])
+					if err != nil {
+						return nil, err
+					}
+					row = finalized
+				}
 			}
 			kept = append(kept, row)
 		}
 		out[tierIndex] = kept
 	}
-	return out
+	return out, nil
 }
 
-// navigationMergeClusterRow unions two cluster rows that share one identity:
-// every member of both folds under the surviving row, the member count adds,
-// and the row keeps the more recent moment. Children are re-ordered by
-// navigationTreeNodeLess so the union is most-recent-first the way a single
-// tree-built cluster's members are, instead of one cluster's members followed
-// by the other's. The surviving id is the caller's to keep - it is the row's
+// navigationFinalizeClusterRow assembles the one row that an identity's
+// colliding cluster occurrences collapse to: every member of every occurrence
+// folds under the first occurrence's row, the member count is the occurrences'
+// sum, and the row keeps the identity's most recent moment - the winner
+// occurrence's UpdatedAt and Age, with ties keeping the first occurrence to
+// reach it. The surviving id is the caller's to keep - it is the row's
 // address - and this function never mints one.
+//
+// The members arrive in the encounter order the reconciliation scan collected
+// them in, and are ordered by navigationTreeNodeLess once, here, so the union
+// is most-recent-first the way a single tree-built cluster's members are -
+// instead of one cluster's members followed by another's, or a re-sort of the
+// accumulated members on every collision. The ordering cannot observe ctx, so
+// it checks before it starts, surfacing a cancellation that arrived during the
+// scan rather than after the union has been ordered.
 //
 // Children are unioned rather than deduplicated, matching the rest of the
 // merge: a session belongs to exactly one tree group, so two groups' cluster
 // members cannot share a session id.
-func navigationMergeClusterRow(previous, next hubcore.TreeNode) hubcore.TreeNode {
-	union := previous
-	union.Children = append(append(make([]hubcore.TreeNode, 0, len(previous.Children)+len(next.Children)), previous.Children...), next.Children...)
-	sort.SliceStable(union.Children, func(i, j int) bool { return navigationTreeNodeLess(union.Children[i], union.Children[j]) })
-	union.ClusterCount = previous.ClusterCount + next.ClusterCount
-	if next.UpdatedAt.After(previous.UpdatedAt) {
-		union.UpdatedAt, union.Age = next.UpdatedAt, next.Age
+func navigationFinalizeClusterRowContext(ctx context.Context, first, winner hubcore.TreeNode, members []hubcore.TreeNode, count int) (hubcore.TreeNode, error) {
+	if err := ctx.Err(); err != nil {
+		return hubcore.TreeNode{}, err
 	}
-	return union
+	union := first
+	union.Children = members
+	sort.SliceStable(union.Children, func(i, j int) bool { return navigationTreeNodeLess(union.Children[i], union.Children[j]) })
+	union.ClusterCount = count
+	union.UpdatedAt, union.Age = winner.UpdatedAt, winner.Age
+	return union, nil
 }
 
 // navigationTierOverflow is the per-tier overflow a tree-built project reports

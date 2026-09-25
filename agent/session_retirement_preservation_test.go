@@ -403,7 +403,7 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	}
 
 	rootEnv := execenv.NewLocalExecutionEnvironment(dir)
-	if _, err := root.adoptConsumerScratch(rootEnv, root.id); err != nil {
+	if _, _, err := root.adoptConsumerScratch(rootEnv, root.id); err != nil {
 		t.Fatalf("adopt as root: %v", err)
 	}
 	if got := rootEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
@@ -412,7 +412,7 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	// A DISTINCT consumer of the same binding must resolve the original path
 	// through the borrow branch without taking a second lease.
 	childEnv := execenv.NewLocalExecutionEnvironment(dir)
-	if _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
+	if _, _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
 		t.Fatalf("adopt as child: %v", err)
 	}
 	if got := childEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
@@ -424,7 +424,7 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	}
 	// The distinct consumer resolves the same original allocation idempotently
 	// through the lease-less borrow branch, never by duplicating ownership.
-	if _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
+	if _, _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
 		t.Fatalf("repeat borrow adoption: %v", err)
 	}
 	if got := childEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
@@ -455,10 +455,11 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 // close commits the Released tombstone, so an aged required directory is
 // collected by the ordinary startup sweep, while an unreleased run is not.
 func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
-	// The startup sweep also visits every world-usable host temp base a session temp
-	// container may live in. This test asserts exact collection outcomes, so it must
-	// not reach the machine's real /tmp.
-	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+	// This test asserts exact collection outcomes, so its sweep must see only the
+	// scratch the test itself minted.
+	decoys := plantAmbientScratchDecoys(t)
+	confineSessionScratchSweep(t)
+	t.Cleanup(func() { requireAmbientScratchDecoysUntouched(t, decoys) })
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
@@ -530,6 +531,89 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	}
 	if _, err := os.Stat(unreleasedDir); err != nil {
 		t.Fatalf("unreleased sibling was collected by the same sweep: %v", err)
+	}
+}
+
+// confineSessionScratchSweep gives the test a session scratch namespace of its
+// own, so the startup sweep it drives can neither see nor delete another
+// process's scratch, and its verdict cannot depend on what else is on the host.
+// The sweep walks three kinds of base: the temp dir and the user cache dir,
+// both pointed at directories this test owns (pointScratchBasesAt), and the
+// world-usable host temps a session temp container lives in (/tmp and
+// /var/tmp, which no environment variable moves, so they are dropped). Call it
+// after plantAmbientScratchDecoys when a test proves the confinement.
+func confineSessionScratchSweep(t *testing.T) {
+	t.Helper()
+	pointScratchBasesAt(t, t.TempDir(), t.TempDir())
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+}
+
+// pointScratchBasesAt points the variables os.TempDir and os.UserCacheDir
+// read into temp and cache: TMPDIR, or TMP and TEMP on Windows, for the temp
+// dir; XDG_CACHE_HOME, or LocalAppData on Windows (AppData as a fallback), for
+// the user cache dir. HOME stays as the package TestMain set it, a directory
+// of its own: a per-test HOME would let the session's `go env` launch snapshot
+// start a telemetry sidecar in a TempDir (see
+// TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot). On macOS the
+// user cache dir follows HOME, so there it stays in that package-owned home.
+func pointScratchBasesAt(t *testing.T, temp, cache string) {
+	t.Helper()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	for _, name := range []string{"XDG_CACHE_HOME", "LocalAppData", "AppData"} {
+		t.Setenv(name, cache)
+	}
+}
+
+// plantAmbientScratchDecoys stands in for the host's shared scratch bases as
+// another process left them: it points the temp and user cache dirs
+// (pointScratchBasesAt) at directories this test owns and plants a real
+// session scratch in both the temp dir and the user cache dir,
+// each retained and abandoned by some other session a day ago. That is exactly
+// what the startup sweep is built to reclaim, so a sweep that can see either
+// base will delete its decoy. The decoys' paths are returned for
+// requireAmbientScratchDecoysUntouched.
+func plantAmbientScratchDecoys(t *testing.T) []string {
+	t.Helper()
+	ambientTemp, ambientCache := t.TempDir(), t.TempDir()
+	pointScratchBasesAt(t, ambientTemp, ambientCache)
+	bases := []string{ambientTemp}
+	// Only where the variable moves the user cache dir (not macOS, where it
+	// follows the package's own HOME) is there a per-test cache base to probe.
+	if cache, err := os.UserCacheDir(); err == nil && cache == ambientCache {
+		bases = append(bases, ambientCache)
+	}
+	var decoys []string
+	for _, base := range bases {
+		other, err := sandbox.NewSessionScratch(base, t.TempDir())
+		if err != nil {
+			t.Fatalf("plant ambient scratch decoy in %s: %v", base, err)
+		}
+		if err := other.Retain(); err != nil {
+			t.Fatalf("release ambient scratch decoy lease: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(other.Dir, "other-session.bin"), []byte("not yours"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		aged := time.Now().Add(-48 * time.Hour)
+		if err := os.Chtimes(other.Dir, aged, aged); err != nil {
+			t.Fatal(err)
+		}
+		decoys = append(decoys, other.Dir)
+	}
+	return decoys
+}
+
+// requireAmbientScratchDecoysUntouched fails when a sweep reached a decoy that
+// plantAmbientScratchDecoys left in an ambient scratch base.
+func requireAmbientScratchDecoysUntouched(t *testing.T, decoys []string) {
+	t.Helper()
+	for _, decoy := range decoys {
+		got, err := os.ReadFile(filepath.Join(decoy, "other-session.bin"))
+		if err != nil || string(got) != "not yours" {
+			t.Errorf("the sweep reached another session's scratch in the ambient base %q: %q, %v", decoy, got, err)
+		}
 	}
 }
 
@@ -1388,10 +1472,11 @@ func sharedChildRealMintOnRestored(t *testing.T, env *execenv.LocalExecutionEnvi
 // reference, and R and C share E0/B again; then it retires, ages, sweeps and
 // restores once more. Sandbox and unsandboxed cases both run.
 func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
-	// Same confinement as TestScratchRetentionTerminalReleaseAllowsCollection: the
-	// startup sweep visits the world-usable container bases too, and this test
-	// asserts exact collection and restore outcomes.
-	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+	// Same confinement as TestScratchRetentionTerminalReleaseAllowsCollection: this
+	// test asserts exact collection and restore outcomes.
+	decoys := plantAmbientScratchDecoys(t)
+	confineSessionScratchSweep(t)
+	t.Cleanup(func() { requireAmbientScratchDecoysUntouched(t, decoys) })
 	for _, tc := range []struct {
 		name      string
 		sandboxed bool

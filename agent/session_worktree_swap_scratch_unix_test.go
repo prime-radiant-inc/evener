@@ -513,7 +513,7 @@ func assertMidMoveOutcome(t *testing.T, s *Session, source *execenv.LocalExecuti
 // ENVIRONMENT: whichever of the two records the swap makes for the source — the
 // enter's park or the abandoned set a later enter adds it to — is made under
 // the install's own lock hold, and close is fenced against the swap that makes
-// it (envWorkWG), so a close can never observe an installed target without the
+// it (envWork), so a close can never observe an installed target without the
 // source recorded. Both records are exercised here; both end in a released
 // lease and a kept directory.
 func TestWorktreeSwap_ScratchMintedOnTheSourceMidMoveStaysAccountedFor(t *testing.T) {

@@ -641,7 +641,7 @@ func TestNewRecordLeafWithInvisibleRecords(t *testing.T) {
 
 // TestTranscriptAnchorsZeroSize covers the zero-size path.
 func TestTranscriptAnchorsZeroSize(t *testing.T) {
-	f, err := os.CreateTemp("", "test-*")
+	f, err := os.CreateTemp(t.TempDir(), "test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestTranscriptAnchorsZeroSize(t *testing.T) {
 
 // TestAnchorsMatchObservedEmptyAnchor covers the empty-anchor path.
 func TestAnchorsMatchObservedEmptyAnchor(t *testing.T) {
-	f, err := os.CreateTemp("", "test-*")
+	f, err := os.CreateTemp(t.TempDir(), "test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func TestAnchorsMatchObservedEmptyAnchor(t *testing.T) {
 
 // TestAnchorsMatchObservedReadError covers the path where reading fails.
 func TestAnchorsMatchObservedReadError(t *testing.T) {
-	f, err := os.CreateTemp("", "test-*")
+	f, err := os.CreateTemp(t.TempDir(), "test-*")
 	if err != nil {
 		t.Fatal(err)
 	}

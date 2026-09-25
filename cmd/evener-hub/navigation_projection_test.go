@@ -1,11 +1,14 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1366,5 +1369,350 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 	if cloneNavigationLiveEntries(nil) != nil {
 		t.Fatal("cloneNavigationLiveEntries(nil) must stay nil")
+	}
+}
+
+// The projection build must honor cancellation inside the duplicate-Key merge,
+// not only around it. navigationMergeProjectBucketsContext folds every tree
+// group that collides on a wire Key into one catalog row, and a tree whose
+// groups all present the shared "no-project" Key - the shape one attached host
+// produces - makes that merge the largest walk in the build. A context that
+// goes away mid-merge must surface there, instead of letting the merge fold
+// every group to completion first.
+//
+// The flip point is calibrated the way the sibling tombstone test's is
+// (TestNavigationNextStatesChecksContextWhileCreatingTombstones): on this
+// fixture the pre-merge walks (validate, clone, pin candidates) make 525
+// ctx.Err() calls and the post-merge walks (catalog map, pin sections, location
+// index) make 129, while the merge region between them contributes none of its
+// own - so a limit of 690 can only be reached by checks the merge itself makes.
+// The arithmetic is fixture-coupled on purpose: it pins that the merge carries
+// its own loop-boundary checks rather than leaning on the walks around it.
+func TestNavigationProjectionChecksContextWhileMergingDuplicateKeys(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	const groups = 40
+	projects := make([]hubcore.TreeProject, 0, groups)
+	for index := range groups {
+		updated := now.Add(-time.Duration(index) * time.Minute)
+		projects = append(projects, hubcore.TreeProject{
+			Key:  "no-project",
+			Name: fmt.Sprintf("unresolved-%02d", index),
+			Current: []hubcore.TreeNode{{
+				ID:        fmt.Sprintf("session-merge-cancel-%02d", index),
+				Title:     "row",
+				Project:   "no-project",
+				Kind:      "session",
+				State:     "idle",
+				CreatedAt: updated,
+				UpdatedAt: updated,
+			}},
+		})
+	}
+	inputs := navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Projects: projects}}
+	projection, err := buildNavigationProjection(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged := projection.projects["no-project"]; len(merged.Current) != groups {
+		t.Fatalf("merged project holds %d current rows, want all %d groups folded into one row", len(merged.Current), groups)
+	}
+
+	ctx := &cancelAfterChecksContext{Context: context.Background(), limit: 690}
+	if _, err := buildNavigationProjectionContext(ctx, inputs); !errors.Is(err, context.Canceled) {
+		t.Fatalf("projection error = %v, want cancellation while merging duplicate keys", err)
+	}
+	if got := ctx.checks.Load(); got > ctx.limit+2 {
+		t.Fatalf("projection continued after cancellation: %d checks", got)
+	}
+}
+
+// The four functions below are the merge this file used before the single-pass
+// rewrite, copied verbatim: each later group that collides on a Key folded into
+// the accumulated row one pair at a time. They are the equivalence reference
+// for navigationMergeProjectGroupsContext - production now folds all of a Key's
+// groups in one pass, and
+// TestNavigationMergeProjectGroupsSinglePassMatchesPairwiseFold holds the
+// two to identical output. Keep them in sync with the merge's semantics or
+// delete them together with that test.
+func navigationMergeProjectGroupsPairwiseReference(projects []hubcore.TreeProject) []hubcore.TreeProject {
+	at := make(map[string]int, len(projects))
+	out := make([]hubcore.TreeProject, 0, len(projects))
+	for _, project := range projects {
+		if index, ok := at[project.Key]; ok {
+			out[index] = navigationMergeProjectPairwiseReference(out[index], project)
+			continue
+		}
+		at[project.Key] = len(out)
+		out = append(out, project)
+	}
+	return out
+}
+
+func navigationMergeProjectPairwiseReference(first, next hubcore.TreeProject) hubcore.TreeProject {
+	lastActivity, age := first.LastActivity, first.Age
+	if next.LastActivity.After(lastActivity) {
+		lastActivity, age = next.LastActivity, next.Age
+	}
+	rollupState := first.RollupState
+	if hubapi.RollupRank(next.RollupState) > hubapi.RollupRank(rollupState) {
+		rollupState = next.RollupState
+	}
+	mergedTiers := navigationMergeClusterRowsReference(
+		navigationMergeProjectTierPairwiseReference(first, next, "current"),
+		navigationMergeProjectTierPairwiseReference(first, next, "recent"),
+		navigationMergeProjectTierPairwiseReference(first, next, "archived"),
+	)
+	current, recent, archived := mergedTiers[0], mergedTiers[1], mergedTiers[2]
+	return hubcore.TreeProject{
+		Name:         first.Name,
+		Key:          first.Key,
+		WorkingDir:   first.WorkingDir,
+		Current:      current,
+		Recent:       recent,
+		Archived:     archived,
+		IsArchived:   first.IsArchived,
+		IsTestRun:    first.IsTestRun,
+		LastActivity: lastActivity,
+		RollupState:  rollupState,
+		RollupLive:   first.RollupLive + next.RollupLive,
+		RollupAttn:   first.RollupAttn + next.RollupAttn,
+		Sources:      navigationMergeProjectSources(first.Sources, next.Sources),
+		Expanded:     first.Expanded || next.Expanded,
+		MoreCurrent:  navigationTierOverflow(len(current), hubcore.SidebarSessionPageSize),
+		MoreRecent:   navigationTierOverflow(len(recent), hubcore.SidebarSessionPageSize),
+		MoreArchived: navigationTierOverflow(len(archived), hubcore.SidebarSessionPageSize),
+		Age:          age,
+		Worktrees:    first.Worktrees + next.Worktrees,
+	}
+}
+
+func navigationMergeProjectTierPairwiseReference(first, next hubcore.TreeProject, tier string) []hubcore.TreeNode {
+	firstRows, _ := first.TierRows(tier)
+	nextRows, _ := next.TierRows(tier)
+	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
+	rows = append(rows, firstRows...)
+	rows = append(rows, nextRows...)
+	sort.SliceStable(rows, func(i, j int) bool { return navigationTreeNodeLess(rows[i], rows[j]) })
+	return rows
+}
+
+func navigationMergeClusterRowsReference(tiers ...[]hubcore.TreeNode) [][]hubcore.TreeNode {
+	merged := make(map[string]hubcore.TreeNode)
+	latest := make(map[string]time.Time)
+	winnerTier := make(map[string]int)
+	winnerIndex := make(map[string]int)
+	collided := false
+	for tierIndex, rows := range tiers {
+		for rowIndex, row := range rows {
+			if row.Kind != "cluster" || row.ID == "" {
+				continue
+			}
+			previous, seen := merged[row.ID]
+			if !seen {
+				merged[row.ID] = row
+				latest[row.ID] = row.UpdatedAt
+				winnerTier[row.ID] = tierIndex
+				winnerIndex[row.ID] = rowIndex
+				continue
+			}
+			collided = true
+			merged[row.ID] = navigationMergeClusterRowPairwiseReference(previous, row)
+			if row.UpdatedAt.After(latest[row.ID]) {
+				latest[row.ID] = row.UpdatedAt
+				winnerTier[row.ID] = tierIndex
+				winnerIndex[row.ID] = rowIndex
+			}
+		}
+	}
+	if !collided {
+		return tiers
+	}
+	out := make([][]hubcore.TreeNode, len(tiers))
+	for tierIndex, rows := range tiers {
+		kept := make([]hubcore.TreeNode, 0, len(rows))
+		for rowIndex, row := range rows {
+			if row.Kind == "cluster" && row.ID != "" {
+				if winnerTier[row.ID] != tierIndex || winnerIndex[row.ID] != rowIndex {
+					continue // folded into the identity's one surviving row
+				}
+				row = merged[row.ID]
+			}
+			kept = append(kept, row)
+		}
+		out[tierIndex] = kept
+	}
+	return out
+}
+
+// navigationMergeClusterRowPairwiseReference is the pre-fix pairwise cluster
+// fold, copied verbatim: two colliding rows union into a fresh slice that is
+// copied and re-sorted on every fold.
+func navigationMergeClusterRowPairwiseReference(previous, next hubcore.TreeNode) hubcore.TreeNode {
+	union := previous
+	union.Children = append(append(make([]hubcore.TreeNode, 0, len(previous.Children)+len(next.Children)), previous.Children...), next.Children...)
+	sort.SliceStable(union.Children, func(i, j int) bool { return navigationTreeNodeLess(union.Children[i], union.Children[j]) })
+	union.ClusterCount = previous.ClusterCount + next.ClusterCount
+	if next.UpdatedAt.After(previous.UpdatedAt) {
+		union.UpdatedAt, union.Age = next.UpdatedAt, next.Age
+	}
+	return union
+}
+
+// The single-pass merge must produce exactly the value the pairwise fold did:
+// the rewrite changed the merge's shape - every colliding group now reaches
+// one navigationMergeProjectContext call, so each tier is concatenated and
+// sorted once instead of re-sorted after every fold - but not its output. The
+// fixture covers the shapes where the two could drift apart: cluster ids that
+// collide within a tier and across tiers - three occurrences of one id in one
+// tier, with tied UpdatedAt deciding the surviving row and tied members
+// deciding the folded children's order by encounter order - session rows whose
+// comparator keys tie exactly (so only the stable sort's input order - the
+// tree's own group order - fixes their merged position), a tier that overflows
+// the sidebar cap, scalar folds with LastActivity ties, and a bucket whose
+// Keys are unique (the untouched fast path).
+func TestNavigationMergeProjectGroupsSinglePassMatchesPairwiseFold(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	row := func(id string, age time.Duration) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "no-project", Kind: "session", State: "idle", CreatedAt: now.Add(-age), UpdatedAt: now.Add(-age)}
+	}
+	cluster := func(id string, age time.Duration, members ...hubcore.TreeNode) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: "repeated title", Project: "no-project", Kind: "cluster", State: "idle", ClusterCount: len(members), Children: members, CreatedAt: now.Add(-age), UpdatedAt: now.Add(-age)}
+	}
+	overflow := make([]hubcore.TreeNode, 0, hubcore.SidebarSessionPageSize+10)
+	for index := range hubcore.SidebarSessionPageSize + 10 {
+		overflow = append(overflow, row(fmt.Sprintf("r-%03d", index), time.Duration(25+index)*time.Minute))
+	}
+	buckets := navigationProjectBucket{
+		active: []hubcore.TreeProject{
+			{
+				Key: "no-project", Name: "one", Sources: []string{"b", "a"},
+				RollupState: "idle", RollupLive: 2, RollupAttn: 1, Worktrees: 1,
+				LastActivity: now.Add(-time.Hour), Age: "1h",
+				Current: []hubcore.TreeNode{
+					cluster("cluster-shared", 6*time.Minute, row("c1-a", 7*time.Minute), row("c1-b", 8*time.Minute)),
+					row("tied-row", 10*time.Minute),
+				},
+				Recent: []hubcore.TreeNode{row("a-r0", 26*time.Hour)},
+			},
+			{
+				Key: "no-project", Name: "two", Sources: []string{"a", "c"},
+				RollupState: "warning", RollupLive: 1, RollupAttn: 3, Worktrees: 2, Expanded: true,
+				LastActivity: now.Add(-2 * time.Hour), Age: "2h",
+				Current: []hubcore.TreeNode{
+					cluster("cluster-shared", 5*time.Minute, row("c2-a", 9*time.Minute)),
+					cluster("cluster-shared", 5*time.Minute, row("tied-member", 9*time.Minute)),
+					row("tied-row", 10*time.Minute),
+					row("b-0", 10*time.Minute),
+				},
+				Recent:   overflow,
+				Archived: []hubcore.TreeNode{cluster("cluster-cross", 3*time.Hour, row("c2-ax", 3*time.Hour)), row("b-ax", 4*time.Hour)},
+			},
+			{
+				Key: "no-project", Name: "three", Sources: []string{"b"},
+				// LastActivity ties group one's, so the merged Age must stay
+				// group one's, not this group's.
+				RollupState: "errored", LastActivity: now.Add(-time.Hour), Age: "3h",
+				Current: []hubcore.TreeNode{
+					cluster("cluster-shared", 4*time.Minute, row("c3-m", 12*time.Minute), row("tied-member", 9*time.Minute)),
+					row("c-0", 10*time.Minute),
+				},
+				Recent:   []hubcore.TreeNode{cluster("cluster-cross", 2*time.Hour, row("c3-r", 2*time.Hour))},
+				Archived: []hubcore.TreeNode{cluster("cluster-arch", 3*time.Hour, row("c3-a0", 3*time.Hour))},
+			},
+			{Key: "solo", Name: "solo", Current: []hubcore.TreeNode{row("s-0", time.Minute)}},
+		},
+		archived: []hubcore.TreeProject{
+			{Key: "dupe", Name: "one", IsArchived: true, Current: []hubcore.TreeNode{cluster("arch-cluster", time.Hour, row("z-0", time.Hour))}},
+			{Key: "dupe", Name: "two", IsArchived: true, Current: []hubcore.TreeNode{cluster("arch-cluster", time.Hour, row("z-1", 30*time.Minute)), row("z-2", 45*time.Minute)}},
+		},
+		testRuns: []hubcore.TreeProject{
+			{Key: "test", Name: "only", IsTestRun: true, Current: []hubcore.TreeNode{row("t-0", time.Minute)}},
+		},
+	}
+
+	merged, err := navigationMergeProjectBucketsContext(context.Background(), buckets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The fixture is not vacuous: colliding Keys actually collapsed, the recent
+	// tier overflowed the cap, cluster rows folded across tiers and groups, and
+	// the tied rows kept group order.
+	if len(merged.active) != 2 || len(merged.archived) != 1 || len(merged.testRuns) != 1 {
+		t.Fatalf("bucket sizes = %d/%d/%d, want 2/1/1", len(merged.active), len(merged.archived), len(merged.testRuns))
+	}
+	collapsed := merged.active[0]
+	if collapsed.Key != "no-project" || collapsed.MoreRecent == 0 {
+		t.Fatalf("collapsed row = Key %q MoreRecent %d, want the overflowed no-project union", collapsed.Key, collapsed.MoreRecent)
+	}
+	clusters, tied := 0, 0
+	for _, row := range collapsed.Current {
+		if row.ID == "cluster-shared" {
+			clusters++
+			if row.ClusterCount != 6 {
+				t.Errorf("cluster-shared count = %d, want all 6 members from the three occurrences", row.ClusterCount)
+			}
+			wantMembers := []string{"c1-a", "c1-b", "c2-a", "tied-member", "tied-member", "c3-m"}
+			got := make([]string, len(row.Children))
+			for index, child := range row.Children {
+				got[index] = child.ID
+			}
+			if !reflect.DeepEqual(got, wantMembers) {
+				t.Errorf("cluster-shared members = %v, want %v (recency order, ties keeping encounter order)", got, wantMembers)
+			}
+			if row.UpdatedAt != now.Add(-4*time.Minute) {
+				t.Errorf("cluster-shared UpdatedAt = %s, want the latest occurrence's", row.UpdatedAt)
+			}
+		}
+		if row.ID == "tied-row" {
+			tied++
+		}
+	}
+	if clusters != 1 {
+		t.Errorf("cluster-shared rows = %d, want one reconciled row", clusters)
+	}
+	if tied != 2 {
+		t.Errorf("tied rows = %d, want both retained", tied)
+	}
+	var crossTier string
+	for _, row := range collapsed.Recent {
+		if row.ID == "cluster-cross" {
+			crossTier = "recent"
+		}
+	}
+	for _, row := range collapsed.Archived {
+		if row.ID == "cluster-cross" {
+			crossTier = "archived"
+		}
+	}
+	if crossTier != "recent" {
+		t.Errorf("cluster-cross survived in %q, want recent (the later of the colliding moments)", crossTier)
+	}
+	if collapsed.Age != "1h" {
+		t.Errorf("merged Age = %s, want group one's (LastActivity ties keep the first-seen Age)", collapsed.Age)
+	}
+
+	reference := navigationProjectBucket{
+		active:   navigationMergeProjectGroupsPairwiseReference(buckets.active),
+		archived: navigationMergeProjectGroupsPairwiseReference(buckets.archived),
+		testRuns: navigationMergeProjectGroupsPairwiseReference(buckets.testRuns),
+	}
+	for _, bucket := range []struct {
+		name   string
+		merged []hubcore.TreeProject
+		want   []hubcore.TreeProject
+	}{
+		{"active", merged.active, reference.active},
+		{"archived", merged.archived, reference.archived},
+		{"testRuns", merged.testRuns, reference.testRuns},
+	} {
+		if len(bucket.merged) != len(bucket.want) {
+			t.Fatalf("%s bucket = %d rows, reference fold = %d", bucket.name, len(bucket.merged), len(bucket.want))
+		}
+		for index := range bucket.want {
+			if !reflect.DeepEqual(bucket.merged[index], bucket.want[index]) {
+				t.Fatalf("%s bucket project %d (%q) diverged from the pairwise fold:\nmerged:    %#v\nreference: %#v", bucket.name, index, bucket.want[index].Key, bucket.merged[index], bucket.want[index])
+			}
+		}
 	}
 }

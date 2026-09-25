@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -506,17 +507,20 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 // and a one-CPU cgroup still got one live process per shard.
 //
 // The fixture reports the peak population of live shard binaries and waits for
-// its peers' markers rather than sleeping a fixed time, so the uncapped case
-// reaches both shards' markers and the capped case cannot. A capped run is
-// expected to write timeout markers -- that is the second shard being held back
-// -- while an uncapped run must not, which is what keeps a probe that simply
-// failed to measure from passing as a low-concurrency observation.
+// its peers' markers rather than sleeping a fixed time. Uncapped, both shards
+// reach each other. Capped, the runner itself says when it holds the second
+// shard back: its slotWait seam writes a marker the moment a shard has to wait
+// for a free slot, and a live shard that sees it records a capped observation
+// instead of waiting for a peer that must not come. No time window decides
+// either case: a runner that ignored the cap would never wait for a slot, so
+// both shards would run and the peak would read 2. A timeout marker means the
+// probe could not measure, and fails either case.
 func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		concurrency int
 		wantPeak    int
-		wantTimeout bool
+		wantCapped  bool
 	}{
 		{"uncapped runs every shard at once", 0, 2, false},
 		{"capped serializes the shards", 1, 1, true},
@@ -526,17 +530,22 @@ func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 			cfg.noSurvey = true
 			cfg.concurrency = tc.concurrency
 			liveDir := t.TempDir()
+			runnerWaiting := filepath.Join(liveDir, "runner-waiting")
+			cfg.slotWait = func() { _ = os.WriteFile(runnerWaiting, nil, 0o644) }
 			t.Setenv("SHARD_FIXTURE_LIVE_DIR", liveDir)
 			t.Setenv("SHARD_FIXTURE_LIVE_EXPECT", "2")
+			t.Setenv("SHARD_FIXTURE_RUNNER_WAITING", runnerWaiting)
 			if rc := runShards(cfg); rc != 0 {
 				t.Fatalf("run rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 			}
 			if got := peakLiveShards(t, liveDir); got != tc.wantPeak {
 				t.Fatalf("peak concurrent shard processes = %d, want %d\nstdout:\n%s", got, tc.wantPeak, stdout)
 			}
-			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); (timeouts > 0) != tc.wantTimeout {
-				t.Fatalf("timeout markers = %d, wantTimeout %v; the probe never saw its peers\nstdout:\n%s",
-					timeouts, tc.wantTimeout, stdout)
+			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); timeouts > 0 {
+				t.Fatalf("timeout markers = %d; the probe could not measure\nstdout:\n%s", timeouts, stdout)
+			}
+			if capped := len(globMarkers(t, liveDir, "capped.*")); (capped > 0) != tc.wantCapped {
+				t.Fatalf("capped markers = %d, wantCapped %v\nstdout:\n%s", capped, tc.wantCapped, stdout)
 			}
 		})
 	}
@@ -589,18 +598,38 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	}
 }
 
-// buildEvenerDev compiles the real evener-dev binary (whose `dev` subcommand
-// runs agent-shards) for signal-delivery scenarios.
+// buildEvenerDev returns the evener-dev binary, compiled once per package run
+// into TestMain's directory: the tests that exec it only need the same binary,
+// and linking it again for each cost seconds apiece. The build gets the
+// isolated toolchain env explicitly and always builds in the repo workspace:
+// whichever test builds first must not pass on its own GOWORK (a fixture
+// test's GOWORK=off cannot resolve the workspace's sibling modules). Each
+// caller still isolates its own env for the commands it runs next.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
 	isolateToolchainEnv(t)
-	bin := filepath.Join(t.TempDir(), "evener-dev")
-	cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("building evener-dev: %v\n%s", err, out)
+	evenerDevBuild.once.Do(func() {
+		bin := filepath.Join(evenerDevBinDir, "evener-dev")
+		cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
+		cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			return strings.HasPrefix(kv, "GOWORK=")
+		}), "GOENV=off", "GOFLAGS=")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			evenerDevBuild.err = fmt.Errorf("building evener-dev: %w\n%s", err, out)
+			return
+		}
+		evenerDevBuild.bin = bin
+	})
+	if evenerDevBuild.err != nil {
+		t.Fatal(evenerDevBuild.err)
 	}
-	return bin
+	return evenerDevBuild.bin
+}
+
+var evenerDevBuild struct {
+	once sync.Once
+	bin  string
+	err  error
 }
 
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {

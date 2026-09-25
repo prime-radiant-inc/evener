@@ -210,7 +210,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
 	owner := starts[0].TurnID
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
 	}
 
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}

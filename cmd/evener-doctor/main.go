@@ -18,7 +18,7 @@
 //	evener-doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
 //	evener-doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
 //
-// A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
+// A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id> (searched across buckets). Common flags:
 // --state-dir <path> (overrides EVENER_STATE_DIR / XDG default) and --json.
 package doctor
 
@@ -108,7 +108,7 @@ SUBCOMMANDS:
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "evener-doctor plugins -h")
 
 SELECTOR:
-  "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id>
+  "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id> (searched across buckets)
 
 COMMON FLAGS:
   --state-dir <path>   state root (default: %s, then %s, then ~/.local/state)

@@ -85,6 +85,7 @@ func TestDelegateIsolation_CloseWaitsForTheLaneCreateItRaces(t *testing.T) {
 	root.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
 		cleanedOnce.Do(func() { close(envCleaned) })
 	}
+	closeAwaiting := observeCloseAwaitingEnvWork(root)
 	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		inner := gitRunner(ctx, env)
 		return func(args ...string) (string, error) {
@@ -94,10 +95,8 @@ func TestDelegateIsolation_CloseWaitsForTheLaneCreateItRaces(t *testing.T) {
 					root.Close()
 				}()
 				<-closeBegun
-				select {
-				case <-envCleaned:
+				if closeWalkedPastHeldWork(t, closeAwaiting, envCleaned) {
 					cleanupDuringCreate.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -291,6 +290,7 @@ func TestDelegateIsolation_CloseWaitsForTheRollbackOfAFailedConstruct(t *testing
 	root.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
 		cleanedOnce.Do(func() { close(envCleaned) })
 	}
+	closeAwaiting := observeCloseAwaitingEnvWork(root)
 	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		inner := gitRunner(ctx, env)
 		return func(args ...string) (string, error) {
@@ -300,10 +300,8 @@ func TestDelegateIsolation_CloseWaitsForTheRollbackOfAFailedConstruct(t *testing
 					root.Close()
 				}()
 				<-closeBegun
-				select {
-				case <-envCleaned:
+				if closeWalkedPastHeldWork(t, closeAwaiting, envCleaned) {
 					cleanupDuringRollback.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -346,6 +344,7 @@ func TestDelegateIsolation_CloseBegunBeforeTheRollbackStillFencesIt(t *testing.T
 	closeBegun := make(chan struct{})
 	closeDone := make(chan struct{})
 	envCleaned := make(chan struct{})
+	rollbackHeld := make(chan struct{})
 	var cleanedOnce sync.Once
 	var held, cleanupDuringRollback atomic.Bool
 
@@ -361,18 +360,26 @@ func TestDelegateIsolation_CloseBegunBeforeTheRollbackStillFencesIt(t *testing.T
 		}
 		return nil
 	}
-	root.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	// closing is already set here, so holding the close at its dispose/sweep
+	// join until the rollback's git is held removes nothing this test relies
+	// on. It only keeps the close from arriving at the environment-work join
+	// before the work this test fences exists, where an admission that ended
+	// too early would still be seen blocking the join.
+	root.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+		close(closeBegun)
+		awaitCloseFenceSignal(t, rollbackHeld, "the rollback holding its git")
+	}
 	root.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
 		cleanedOnce.Do(func() { close(envCleaned) })
 	}
+	closeAwaiting := observeCloseAwaitingEnvWork(root)
 	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		inner := gitRunner(ctx, env)
 		return func(args ...string) (string, error) {
 			if len(args) >= 2 && args[0] == "worktree" && args[1] == "unlock" && constructFailed.Load() && held.CompareAndSwap(false, true) {
-				select {
-				case <-envCleaned:
+				close(rollbackHeld)
+				if closeWalkedPastHeldWork(t, closeAwaiting, envCleaned) {
 					cleanupDuringRollback.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -435,13 +442,23 @@ func TestDelegateIsolation_CloseDuringTheLaneCreateStillFencesTheRollback(t *tes
 	closeBegun := make(chan struct{})
 	closeDone := make(chan struct{})
 	envCleaned := make(chan struct{})
+	rollbackHeld := make(chan struct{})
 	var cleanedOnce sync.Once
 	var heldCreate, heldRollback, cleanupDuringRollback atomic.Bool
 
-	root.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	// The close begins under the lane create, and closing is set before this
+	// seam runs. Holding it here until the rollback's git is held keeps it from
+	// arriving at the environment-work join while only the create's own
+	// admission is live: arriving then would prove that admission, not the
+	// outer one this test is about.
+	root.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+		close(closeBegun)
+		awaitCloseFenceSignal(t, rollbackHeld, "the rollback holding its git")
+	}
 	root.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
 		cleanedOnce.Do(func() { close(envCleaned) })
 	}
+	closeAwaiting := observeCloseAwaitingEnvWork(root)
 	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		inner := gitRunner(ctx, env)
 		return func(args ...string) (string, error) {
@@ -453,10 +470,9 @@ func TestDelegateIsolation_CloseDuringTheLaneCreateStillFencesTheRollback(t *tes
 				<-closeBegun
 			}
 			if len(args) >= 2 && args[0] == "worktree" && args[1] == "unlock" && heldRollback.CompareAndSwap(false, true) {
-				select {
-				case <-envCleaned:
+				close(rollbackHeld)
+				if closeWalkedPastHeldWork(t, closeAwaiting, envCleaned) {
 					cleanupDuringRollback.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
