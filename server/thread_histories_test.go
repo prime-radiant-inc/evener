@@ -180,3 +180,28 @@ func TestThreadHistoriesEnsureDescendantOnlyForTheServedTree(t *testing.T) {
 		t.Fatal("the registry holds a replaced tree's descendant")
 	}
 }
+
+// A thread's epochs never go backwards: a history recreated for a thread id
+// (a released delegate read again) starts at the epoch its predecessor ended
+// with.
+func TestThreadHistoriesRecreatedHistoryKeepsItsEpoch(t *testing.T) {
+	r := newTestThreadHistories(t)
+	path := writeDelegateTranscript(t, "child", "c")
+	h := r.ensure("child", "local:child", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	h.mu.Lock()
+	h.epoch = 3
+	h.mu.Unlock()
+	r.drop("child")
+	again := r.ensure("child", "local:child", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	if again == h || again.Epoch() < 3 {
+		t.Fatalf("recreated history at epoch %d, want at least its predecessor's 3", again.Epoch())
+	}
+	// A detach (identity replacement, delegate release) keeps it too.
+	again.mu.Lock()
+	again.epoch = 5
+	again.mu.Unlock()
+	closeHistories([]*threadHistory{r.detach("child")})
+	if third := r.ensureDescendant("", "child", "local:child", path, "1", noopHistoryPublish, noopHistoryResync, nil); third == nil || third.Epoch() < 5 {
+		t.Fatalf("history recreated after a detach = %v", third)
+	}
+}

@@ -1,6 +1,10 @@
 package server
 
 import (
+	"fmt"
+	"os"
+
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -22,9 +26,9 @@ func (h *threadHistory) capture() historyCapture {
 // latest projects the newest limit items after the cut, up to the recorded
 // length, and returns the captured overlay minus the items the overlay no
 // longer holds: a stream, preview or tool state an entry recorded since the
-// cut covered is history in this response. The recorded hook applies an entry
-// to the overlay before the recorded length covers it, so nothing within the
-// projected length is left in both.
+// cut covered is history in this response. The read applies every queued
+// entry within the projected length to the overlay first, so nothing within
+// it is left in both.
 func (h *threadHistory) latest(c historyCapture, threadRef string, limit int) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, overlay []appwire.OverlayItem, err error) {
 	var window transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Index) (err error) {
@@ -77,19 +81,54 @@ func (h *threadHistory) before(threadRef, cursor string, limit int) (turns []app
 	return h.page(window, threadRef)
 }
 
-// read runs fn on the thread's index extended to the recorded length. A
-// failed thread's read is appwire.TranscriptHistoryFailed, naming the entry.
+// read runs fn on the thread's index extended to the recorded length, after
+// applying the entries queued within that length to the overlay.
+//
+// A failed thread's hook no longer tracks the recorded length, so its read
+// takes the length from the append lock. If the read fails it is
+// appwire.TranscriptHistoryFailed, naming the entry; if it succeeds, the
+// transcript is readable again and the history is asked to recover.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
 	h.mu.Lock()
 	failed := h.failed
 	h.mu.Unlock()
+	var length int64
+	var err error
 	if failed != nil {
+		length, err = h.boundaryLength()
+	} else {
+		length, err = h.RecordedLength()
+		h.applyQueued(length)
+	}
+	if err == nil {
+		err = h.readIndex(length, fn)
+	}
+	switch {
+	case failed == nil:
+		return err
+	case err != nil:
 		return appwire.TranscriptHistoryFailed(failed.Ordinal)
 	}
-	length, err := h.RecordedLength()
-	if err != nil {
-		return err
+	h.requestRecovery()
+	return nil
+}
+
+// boundaryLength is the transcript's recorded length, read under its append
+// lock, or its size when no writer in this process has it open.
+func (h *threadHistory) boundaryLength() (int64, error) {
+	var length int64
+	found, err := transcript.AtRecordedBoundary(h.path, func(recordedLength int64) { length = recordedLength })
+	if err != nil || found {
+		return length, err
 	}
+	info, err := os.Stat(h.path)
+	if err != nil {
+		return 0, fmt.Errorf("stat transcript: %w", err)
+	}
+	return info.Size(), nil
+}
+
+func (h *threadHistory) readIndex(length int64, fn func(*transcriptindex.Index) error) error {
 	idx, err := h.cache.Acquire(h.path)
 	if err != nil {
 		return err

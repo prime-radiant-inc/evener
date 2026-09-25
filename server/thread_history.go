@@ -1,12 +1,18 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appoverlay"
@@ -23,25 +29,35 @@ import (
 // production.
 var threadHistoryPublishHook func(threadID string) error
 
-// threadHistoryRebuildHook, when set, runs just before each rebuild attempt.
-// Test seam only; nil in production.
+// threadHistoryRebuildHook, when set, runs just before each rebuild attempt,
+// after the attempt captured its boundary. Test seam only; nil in production.
 var threadHistoryRebuildHook func(threadID string)
 
-// threadHistoryPublishedHook, when set, runs after each projection that
-// advanced what clients hold history through, with the new length. Test seam
-// only; unset in production. It is atomic, unlike the seams above, because
-// tests install it while histories of servers they share a package with may
-// still be projecting.
+// threadHistoryPublishedHook, when set, runs after each projection or
+// recovery that advanced what clients hold history through, with the new
+// length. Test seam only; unset in production. It is atomic, unlike the
+// seams above, because tests install it while histories of servers they
+// share a package with may still be projecting.
 var threadHistoryPublishedHook atomic.Pointer[func(threadID string, length int64)]
 
-// threadHistoryMaxRebuilds is how many rebuilds in a row may fail before the
-// thread's history enters its failed state (spec: "If the rebuild itself
-// fails three times in a row").
+// threadHistoryMaxRebuilds is how many rebuilds in a row may fail, or be
+// overrun by a queue overflow before they catch up, before the thread's
+// history enters its failed state (spec: "If the rebuild itself fails three
+// times in a row").
 const threadHistoryMaxRebuilds = 3
+
+// threadHistoryMaxQueuedBytes bounds one thread's projection queue: the
+// summed Record.Length of the entries it holds (spec: "bounded to 4 MB of
+// queued entries per thread").
+const threadHistoryMaxQueuedBytes = 4 << 20
 
 // errIncarnationRotated reports an index another handle rebuilt under a new
 // incarnation: the history clients merged no longer describes it.
 var errIncarnationRotated = errors.New("transcript index incarnation changed")
+
+// errOverrunByOverflow reports a rebuild the projection queue overflowed
+// before it finished: its boundary no longer covers the dropped entries.
+var errOverrunByOverflow = errors.New("the projection queue overflowed during the rebuild")
 
 // threadHistoryConfig is what one thread's history projection needs.
 type threadHistoryConfig struct {
@@ -64,11 +80,33 @@ type threadHistoryConfig struct {
 	// bootGeneration is the daemon's boot generation, stamped on every
 	// history/updated.
 	bootGeneration string
+	// maxQueuedBytes bounds the projection queue; 0 is
+	// threadHistoryMaxQueuedBytes.
+	maxQueuedBytes int64
 }
 
-// threadHistory is one thread's history projection: the recorded entries the
-// append hook hands it, projected by extending the transcript index in order,
-// and published as history/updated. It holds no history.
+// threadHistory is one thread's history projection. The transcript's
+// recorded-entry hook hands it each recorded entry, in ordinal order, while
+// the append lock is held; the history queues it and wakes its projection
+// goroutine, which projects by extending the transcript index to the recorded
+// length and publishes what changed as history/updated. It holds no history.
+//
+// Lock order: the projection goroutine (the thread's projection
+// serialization) is outermost, then the transcript's append lock, then mu,
+// the queue's mutex, a leaf. The hook takes only mu. The goroutine captures a
+// rebuild's boundary by taking the append lock and then mu
+// (transcript.AtRecordedBoundary), so the boundary and the queue are one
+// snapshot. Nothing takes the append lock while holding mu, and neither mu
+// nor applyMu is held across I/O.
+//
+// The queue holds the entries the overlay has not yet applied (overlay
+// coverage never runs under the append lock): the goroutine, every read
+// (after taking its recorded length) and the event path (before
+// overlay.Event) first apply what is queued, in ordinal order, under applyMu.
+// Projection itself needs only lengths, so a queue that overflows its bound
+// is dropped: the thread is marked for resync, and the goroutine rebuilds
+// through a new boundary and replays the dropped entries into the overlay
+// from the file (the overlay gap).
 type threadHistory struct {
 	threadID, ref, path string
 	cache               *transcriptindex.Cache
@@ -77,19 +115,40 @@ type threadHistory struct {
 	resync              func(epoch uint64)
 	cost                func(model string) *registry.Cost
 	bootGeneration      string
+	maxQueuedBytes      int64
 
-	mu sync.Mutex // leaf: taken by the append hook
+	// mu is the projection queue's mutex, a leaf.
+	mu sync.Mutex
+	// queue is the recorded entries the overlay has not applied, in ordinal
+	// order, and queuedBytes their summed length.
+	queue       []transcript.Record
+	queuedBytes int64
 	// recordedLength is the latest recorded length the hook saw, 0 before
-	// any, and ordinal the entry ordinal that ended there. The goroutine
-	// projects up to recordedLength.
+	// any, and ordinal the entry ordinal that ended there (hooked reports
+	// whether there is one). The goroutine projects up to recordedLength.
 	recordedLength int64
 	ordinal        uint64
+	hooked         bool
 	// published is the length clients hold history through: set to the
 	// first hooked entry's offset (reads cover everything before it), then
 	// advanced by each projection.
 	published int64
 	epoch     uint64
 	failed    *transcriptindex.EntryError
+	// overflowed reports a queue dropped since the goroutine last captured a
+	// boundary: the thread resyncs.
+	overflowed bool
+	// gap is the first entry the overlay has not applied that the queue no
+	// longer holds: the overlay misses every entry from it up to the queue's
+	// head (or the recorded length). Only the goroutine closes it.
+	gap *overlayGap
+	// retry asks a failed history's goroutine to try recovering again.
+	retry  bool
+	closed bool
+
+	// applyMu serializes applying queued entries to the overlay, so they
+	// apply in ordinal order. It is never taken under the append lock.
+	applyMu sync.Mutex
 
 	// incarnation is the index incarnation published history belongs to;
 	// only the projection goroutine touches it.
@@ -101,7 +160,17 @@ type threadHistory struct {
 	closeOnce sync.Once
 }
 
+// overlayGap names an entry by its ordinal and offset.
+type overlayGap struct {
+	ordinal uint64
+	offset  int64
+}
+
 func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
+	maxQueuedBytes := cfg.maxQueuedBytes
+	if maxQueuedBytes == 0 {
+		maxQueuedBytes = threadHistoryMaxQueuedBytes
+	}
 	h := &threadHistory{
 		threadID:       cfg.threadID,
 		ref:            cfg.ref,
@@ -112,6 +181,7 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 		resync:         cfg.resync,
 		cost:           cfg.cost,
 		bootGeneration: cfg.bootGeneration,
+		maxQueuedBytes: maxQueuedBytes,
 		recordedLength: cfg.recordedLength,
 		published:      cfg.recordedLength,
 		epoch:          cfg.epoch,
@@ -124,26 +194,91 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 }
 
 // recorded is the append hook: it runs under the transcript append lock, so
-// it takes only leaf locks, never blocks and does no I/O.
+// it takes only the queue's mutex, never blocks and does no I/O. A failed or
+// closed history takes nothing.
 func (h *threadHistory) recorded(rec transcript.Record) {
 	if !rec.Recorded {
 		return
 	}
-	// Under the append lock, so the overlay sees records in ordinal order;
-	// outside h.mu, so h.mu stays a leaf. Before the recorded length
-	// advances, so a read that projects to a length finds every entry within
-	// it already applied to the overlay (history_read.go).
-	h.overlay.Recorded(rec)
 	h.mu.Lock()
+	if h.failed != nil || h.closed {
+		h.mu.Unlock()
+		return
+	}
 	if h.recordedLength == 0 {
 		h.published = rec.Offset
 	}
-	h.recordedLength, h.ordinal = rec.Offset+rec.Length, rec.Ordinal
+	if len(h.queue) > 0 && h.queuedBytes+rec.Length > h.maxQueuedBytes {
+		h.dropQueueLocked()
+		h.overflowed = true
+	} else {
+		h.queue = append(h.queue, rec)
+		h.queuedBytes += rec.Length
+	}
+	h.recordedLength, h.ordinal, h.hooked = rec.Offset+rec.Length, rec.Ordinal, true
 	h.mu.Unlock()
+	h.wakeUp()
+}
+
+func (h *threadHistory) wakeUp() {
 	select {
 	case h.wake <- struct{}{}:
 	default:
 	}
+}
+
+// dropQueueLocked empties the queue, opening the overlay gap at its head (or
+// at the next entry) unless one is already open. Callers hold mu.
+func (h *threadHistory) dropQueueLocked() {
+	if h.gap == nil {
+		switch {
+		case len(h.queue) > 0:
+			h.gap = &overlayGap{ordinal: h.queue[0].Ordinal, offset: h.queue[0].Offset}
+		case h.hooked:
+			h.gap = &overlayGap{ordinal: h.ordinal + 1, offset: h.recordedLength}
+		}
+	}
+	h.queue, h.queuedBytes = nil, 0
+}
+
+// gapEndLocked is where the overlay gap ends: the queue's head, or the
+// recorded length. Callers hold mu.
+func (h *threadHistory) gapEndLocked() int64 {
+	if len(h.queue) > 0 {
+		return h.queue[0].Offset
+	}
+	return h.recordedLength
+}
+
+// applyQueued applies to the overlay, in ordinal order, every queued entry
+// that ends at or before through. While the overlay gap is open nothing
+// applies: the entries in it come first, and only the goroutine replays them.
+func (h *threadHistory) applyQueued(through int64) {
+	h.applyMu.Lock()
+	defer h.applyMu.Unlock()
+	h.mu.Lock()
+	if h.gap != nil {
+		h.mu.Unlock()
+		return
+	}
+	n := 0
+	for n < len(h.queue) && h.queue[n].Offset+h.queue[n].Length <= through {
+		h.queuedBytes -= h.queue[n].Length
+		n++
+	}
+	batch := slices.Clone(h.queue[:n])
+	h.queue = slices.Delete(h.queue, 0, n)
+	h.mu.Unlock()
+	for _, rec := range batch {
+		h.overlay.Recorded(rec)
+	}
+}
+
+// overlayEvent applies one session event to the overlay, after every entry
+// recorded before it.
+func (h *threadHistory) overlayEvent(ev events.SessionEvent) []appoverlay.Change {
+	h.applyQueued(math.MaxInt64)
+	return h.overlay.Event(ev)
 }
 
 // RecordedLength is the length reads project to: the hook's latest, or the
@@ -180,35 +315,93 @@ func (h *threadHistory) Failed() error {
 	return h.failed
 }
 
-// close stops the projection goroutine and waits for it. Idempotent.
+// requestRecovery asks a failed history's goroutine to try recovering: a
+// read found the transcript readable again.
+func (h *threadHistory) requestRecovery() {
+	h.mu.Lock()
+	h.retry = true
+	h.mu.Unlock()
+	h.wakeUp()
+}
+
+// retire stops the history taking entries and starting a recovery, and
+// returns its epoch, which is then final. A retired history still publishes
+// what it has when it closes.
+func (h *threadHistory) retire() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.closed = true
+	return h.epoch
+}
+
+// close publishes every entry recorded so far, then stops the projection
+// goroutine and waits for it. Idempotent.
 func (h *threadHistory) close() {
-	h.closeOnce.Do(func() { close(h.stop) })
+	h.closeOnce.Do(func() {
+		h.mu.Lock()
+		h.closed = true
+		h.mu.Unlock()
+		close(h.stop)
+	})
 	<-h.done
 }
 
-// run projects each wake's recorded entries until close, or until the
-// history fails.
+// run projects each wake's recorded entries until close. A closing history
+// first projects what is recorded (finish).
 func (h *threadHistory) run() {
 	defer close(h.done)
+	healthy := true
 	for {
 		select {
 		case <-h.stop:
+			h.finish(healthy)
 			return
 		case <-h.wake:
 		}
 		// A wake and a close may both be ready; close wins.
 		if h.stopping() {
+			h.finish(healthy)
 			return
 		}
-		h.mu.Lock()
-		target, published, epoch := h.recordedLength, h.published, h.epoch
-		h.mu.Unlock()
-		if target <= published {
-			continue
-		}
-		if err := h.project(target, published, epoch); err != nil && !h.recover() {
-			return
-		}
+		healthy = h.step()
+	}
+}
+
+// step applies the queue to the overlay and projects what was recorded,
+// recovering when that fails or the queue overflowed. It reports whether the
+// projection is healthy: caught up to a boundary, not failed, not aborted.
+func (h *threadHistory) step() bool {
+	h.applyQueued(math.MaxInt64)
+	h.mu.Lock()
+	failed, retry, overflowed := h.failed != nil, h.retry, h.overflowed
+	h.retry = false
+	target, published, epoch := h.recordedLength, h.published, h.epoch
+	h.mu.Unlock()
+	switch {
+	case failed && !retry:
+		return false
+	case failed || overflowed:
+		return h.recover()
+	case target <= published:
+		return true
+	}
+	if err := h.project(target, published, epoch); err != nil {
+		return h.recover()
+	}
+	return true
+}
+
+// finish is a closing history's last projection: every entry recorded up to
+// the recorded length is published before the goroutine stops. A history
+// that is failed, resyncing or was stopped mid-recovery publishes nothing
+// more; its clients re-read.
+func (h *threadHistory) finish(healthy bool) {
+	h.mu.Lock()
+	target, published, epoch := h.recordedLength, h.published, h.epoch
+	healthy = healthy && h.failed == nil && !h.overflowed
+	h.mu.Unlock()
+	if healthy && target > published {
+		_ = h.project(target, published, epoch)
 	}
 }
 
@@ -276,21 +469,31 @@ func (h *threadHistory) project(target, published int64, epoch uint64) error {
 	return nil
 }
 
-// recover handles a failed projection or publish: it bumps the epoch, pushes
-// a resync carrying it, and rebuilds the index from the file up to the
-// recorded length captured with the new epoch, so a client that re-reads for
-// the resync reads at least that far and entries recorded afterwards are
-// projected after the rebuild. The rebuild mints a new incarnation, so a
-// client that re-read before it finished receives updates under an
-// incarnation it does not hold, and re-reads on that change. A failed
-// rebuild is retried at once unless the history is closing. It reports
-// false when projection stops: on close, or once threadHistoryMaxRebuilds
-// have failed in a row, when the history is failed and one more resync has
-// gone out.
+// recover handles a failed projection or publish, an overflowed queue, or a
+// failed thread a read found readable: it bumps the epoch, pushes a resync
+// carrying it, and rebuilds. Each attempt captures a boundary under the
+// append lock (every entry up to it was handed to the hook, every later one
+// will be), rebuilds the index through exactly that boundary under a new
+// incarnation, and replays into the overlay the entries a dropped queue took
+// from it. Entries after the boundary project on later wakes, so none is
+// published twice and none is skipped; a client that re-read before the
+// rebuild finished receives updates under an incarnation it does not hold,
+// and re-reads on that change.
+//
+// An attempt that fails, or that the queue overflows before it finishes
+// (the boundary no longer covers what was dropped), is retried through a new
+// boundary unless the history is closing. After threadHistoryMaxRebuilds in
+// a row the history is failed: its queue is dropped, the hook stops
+// queueing, and one more resync goes out. recover reports whether the
+// projection caught up.
 func (h *threadHistory) recover() bool {
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return false
+	}
 	h.epoch++
-	epoch, target, ordinal := h.epoch, h.recordedLength, h.ordinal
+	epoch, ordinal := h.epoch, h.ordinal
 	h.mu.Unlock()
 	h.resync(epoch)
 	var err error
@@ -298,10 +501,7 @@ func (h *threadHistory) recover() bool {
 		if attempt > 0 && h.stopping() {
 			return false
 		}
-		if err = h.rebuild(target); err == nil {
-			h.mu.Lock()
-			h.published = target
-			h.mu.Unlock()
+		if err = h.rebuildThroughBoundary(); err == nil {
 			return true
 		}
 	}
@@ -311,6 +511,8 @@ func (h *threadHistory) recover() bool {
 	}
 	h.mu.Lock()
 	h.failed = entryErr
+	h.dropQueueLocked()
+	h.overflowed = false
 	h.epoch++
 	epoch = h.epoch
 	h.mu.Unlock()
@@ -318,12 +520,69 @@ func (h *threadHistory) recover() bool {
 	return false
 }
 
-// rebuild rebuilds the index up to target under a new incarnation, which
-// published history then belongs to.
-func (h *threadHistory) rebuild(target int64) error {
+// rebuildThroughBoundary is one recovery attempt.
+func (h *threadHistory) rebuildThroughBoundary() error {
+	boundary, err := h.captureBoundary()
+	if err != nil {
+		return err
+	}
 	if threadHistoryRebuildHook != nil {
 		threadHistoryRebuildHook(h.threadID)
 	}
+	if err := h.rebuild(boundary); err != nil {
+		return err
+	}
+	if err := h.fillOverlayGap(); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	overrun := h.overflowed
+	if !overrun {
+		h.published = boundary
+	}
+	h.mu.Unlock()
+	if overrun {
+		return errOverrunByOverflow
+	}
+	if hook := threadHistoryPublishedHook.Load(); hook != nil {
+		(*hook)(h.threadID, boundary)
+	}
+	return nil
+}
+
+// captureBoundary takes the rebuild's boundary, the recorded length, under
+// the transcript's append lock, so it and the queue are one snapshot. It
+// clears the overflow it covers and a failed state (the hook queues again),
+// and adopts the length: entries a failed history's hook passed over lie in
+// the overlay gap up to it. A transcript no writer in this process has open
+// cannot grow, and its size is the boundary.
+func (h *threadHistory) captureBoundary() (int64, error) {
+	var boundary int64
+	adopt := func(recordedLength int64) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		boundary = recordedLength
+		h.overflowed = false
+		h.failed = nil
+		h.recordedLength = max(h.recordedLength, recordedLength)
+	}
+	found, err := transcript.AtRecordedBoundary(h.path, adopt)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		info, err := os.Stat(h.path)
+		if err != nil {
+			return 0, fmt.Errorf("stat transcript: %w", err)
+		}
+		adopt(info.Size())
+	}
+	return boundary, nil
+}
+
+// rebuild rebuilds the index up to target under a new incarnation, which
+// published history then belongs to.
+func (h *threadHistory) rebuild(target int64) error {
 	idx, err := h.cache.Acquire(h.path)
 	if err != nil {
 		return err
@@ -338,4 +597,76 @@ func (h *threadHistory) rebuild(target int64) error {
 	}
 	h.incarnation = changes.Incarnation
 	return nil
+}
+
+// fillOverlayGap replays into the overlay, from the file, the entries a
+// dropped queue took from it, then closes the gap so queued entries apply
+// again. The file is read with no lock held; the gap can only grow at its
+// end meanwhile (another overflow), and the loop reads on to its new end.
+func (h *threadHistory) fillOverlayGap() error {
+	for {
+		h.mu.Lock()
+		gap, end := h.gap, h.gapEndLocked()
+		h.mu.Unlock()
+		if gap == nil {
+			return nil
+		}
+		records, err := readRecordedEntries(h.path, *gap, end)
+		if err != nil {
+			return err
+		}
+		h.applyMu.Lock()
+		for _, rec := range records {
+			h.overlay.Recorded(rec)
+		}
+		h.mu.Lock()
+		closed := h.gapEndLocked() == end
+		if closed {
+			h.gap = nil
+		} else {
+			h.gap = &overlayGap{ordinal: gap.ordinal + uint64(len(records)), offset: end}
+		}
+		h.mu.Unlock()
+		h.applyMu.Unlock()
+		if closed {
+			return nil
+		}
+	}
+}
+
+// readRecordedEntries reads the recorded entry lines from from up to end as
+// records, numbering them from from's ordinal. A line that does not decode
+// takes its ordinal and nothing else: the overlay has nothing to learn from
+// it, and the index reports it.
+func readRecordedEntries(path string, from overlayGap, end int64) ([]transcript.Record, error) {
+	if end <= from.offset {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	reader := bufio.NewReaderSize(io.NewSectionReader(f, from.offset, end-from.offset), 64<<10)
+	var records []transcript.Record
+	offset, ordinal := from.offset, from.ordinal
+	for {
+		line, complete, n, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
+		if err != nil {
+			return nil, fmt.Errorf("read transcript: %w", err)
+		}
+		if !complete {
+			return records, nil
+		}
+		start := offset
+		offset += n
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if entry, err := transcript.DecodeEntry(trimmed); err == nil {
+			records = append(records, transcript.Record{Recorded: true, Ordinal: ordinal, Seq: entry.Seq, Offset: start, Length: n, Turn: entry.Turn})
+		}
+		ordinal++
+	}
 }

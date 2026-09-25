@@ -447,7 +447,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		// The overlay's changes commit with the projector's, in the same
 		// order the session emitted the event.
 		if history != nil {
-			for _, change := range history.overlay.Event(event) {
+			for _, change := range history.overlayEvent(event) {
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: change.Method, params: change.Params})
 			}
 		}
@@ -691,7 +691,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		}
 		s.mu.Unlock()
 		if history != nil {
-			for _, change := range history.overlay.Event(event) {
+			for _, change := range history.overlayEvent(event) {
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: change.Method, params: change.Params})
 			}
 			// A delegate whose session closed releases its history: the

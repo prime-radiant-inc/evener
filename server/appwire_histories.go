@@ -57,8 +57,8 @@ func (s *Server) WireTranscriptHistory(sess *agent.Session) {
 // recordTranscriptEntry is the root session's recorded-entry hook: it hands
 // rec to the history of threadID, the session that recorded it. A session
 // whose identity is no longer served has no history, and its records are
-// dropped. It runs under the transcript append lock and takes only the
-// registry's leaf lock.
+// dropped. It runs under the transcript append lock, so it takes only the
+// history's queue mutex: the registry lookup is lock-free.
 func (s *Server) recordTranscriptEntry(threadID string, rec transcript.Record) {
 	if h := s.appHistories.get(threadID); h != nil {
 		h.recorded(rec)
@@ -66,12 +66,16 @@ func (s *Server) recordTranscriptEntry(threadID string, rec transcript.Record) {
 }
 
 // recordDescendantTranscriptEntry is the descendants' recorded-entry hook
-// installed on ownerThreadID's session: it hands rec to threadID's history,
-// ensuring it first. Records from a tree whose root this server no longer
-// serves are dropped. It runs under the child's transcript append lock and
-// takes only leaf locks.
-func (s *Server) recordDescendantTranscriptEntry(ownerThreadID, threadID string, rec transcript.Record) {
-	if h := s.ensureDescendantHistory(ownerThreadID, threadID); h != nil {
+// installed on the owning root's session: it hands rec to threadID's
+// history. It runs under the child's transcript append lock, so it takes only
+// the history's queue mutex: the lookup is lock-free, and a record that finds
+// no history is dropped. The history is created on the event path
+// (RecordDescendantAppEvent), and covers what was recorded before it through
+// its recorded-length source. A detached history (its tree replaced, its
+// delegate released) is no longer found, so a replaced tree's records go
+// nowhere.
+func (s *Server) recordDescendantTranscriptEntry(_, threadID string, rec transcript.Record) {
+	if h := s.appHistories.get(threadID); h != nil {
 		h.recorded(rec)
 	}
 }

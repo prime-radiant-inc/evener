@@ -51,11 +51,15 @@ func TestHistoryMessagesCarryTheBootGeneration(t *testing.T) {
 		t.Fatalf("thread/turns/list boot generation = %q, want 7", page.BootGeneration)
 	}
 
+	// A failed thread whose index cannot be read either.
 	history := srv.appHistoryForID("root")
 	history.mu.Lock()
 	history.failed = &transcriptindex.EntryError{Ordinal: 1, Err: errors.New("unprojectable")}
 	epoch := history.epoch
 	history.mu.Unlock()
+	if err := srv.appHistories.cache.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for label, err := range map[string]error{
 		"thread/read": func() error {
 			_, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: "root", IncludeTurns: true})

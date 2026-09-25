@@ -40,9 +40,26 @@ type historyHarness struct {
 	updates  chan appwire.HistoryUpdatedParams
 	resyncs  chan uint64
 	onRecord func(transcript.Record) // runs in the append hook before the history's
+	// publications wakes awaitPublished.
+	publications *historyPublications
+}
+
+// awaitPublished returns once the history holds clients' history through
+// length, by projection or by a recovery's rebuild. An entry recorded after
+// it is past any rebuild boundary taken so far.
+func (hx *historyHarness) awaitPublished(t *testing.T, length int64) {
+	t.Helper()
+	hx.publications.await(t, hx.history, length)
 }
 
 func newHistoryHarness(t *testing.T) *historyHarness {
+	t.Helper()
+	return newHistoryHarnessWith(t, 0)
+}
+
+// newHistoryHarnessWith is newHistoryHarness with the projection queue
+// bounded to maxQueuedBytes (0: the production bound).
+func newHistoryHarnessWith(t *testing.T, maxQueuedBytes int64) *historyHarness {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "th_history.transcript.jsonl")
 	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: "th_history"})
@@ -58,12 +75,13 @@ func newHistoryHarness(t *testing.T) *historyHarness {
 	overlay := appoverlay.New(appoverlay.NewBudget(1 << 20))
 	t.Cleanup(overlay.Close)
 	hx := &historyHarness{
-		path:    path,
-		writer:  writer,
-		cache:   cache,
-		overlay: overlay,
-		updates: make(chan appwire.HistoryUpdatedParams, 256),
-		resyncs: make(chan uint64, 256),
+		publications: watchHistoryPublications(t),
+		path:         path,
+		writer:       writer,
+		cache:        cache,
+		overlay:      overlay,
+		updates:      make(chan appwire.HistoryUpdatedParams, 256),
+		resyncs:      make(chan uint64, 256),
 	}
 	hx.history = newThreadHistory(threadHistoryConfig{
 		threadID: "th_history",
@@ -75,7 +93,8 @@ func newHistoryHarness(t *testing.T) *historyHarness {
 			hx.updates <- params
 			return nil
 		},
-		resync: func(epoch uint64) { hx.resyncs <- epoch },
+		resync:         func(epoch uint64) { hx.resyncs <- epoch },
+		maxQueuedBytes: maxQueuedBytes,
 	})
 	t.Cleanup(hx.history.close)
 	hx.hook = func(rec transcript.Record) {
@@ -314,6 +333,7 @@ func TestThreadHistoryFailedPublishResyncsAndRebuilds(t *testing.T) {
 	if epoch := hx.nextResync(t); epoch != 1 {
 		t.Fatalf("resync epoch = %d, want 1", epoch)
 	}
+	hx.awaitPublished(t, second.Offset+second.Length)
 	third := hx.record(t, "third")
 	updates := hx.updatesThrough(t, third.Offset+third.Length)
 	if len(updates) != 1 || updates[0].Epoch != 1 {
@@ -348,10 +368,11 @@ func TestThreadHistoryRotatedIncarnationResyncs(t *testing.T) {
 	}
 	hx.cache.Release(idx)
 
-	hx.record(t, "second")
+	second := hx.record(t, "second")
 	if epoch := hx.nextResync(t); epoch != 1 {
 		t.Fatalf("resync epoch = %d, want 1", epoch)
 	}
+	hx.awaitPublished(t, second.Offset+second.Length)
 	third := hx.record(t, "third")
 	after := hx.updatesThrough(t, third.Offset+third.Length)
 	if after[0].Epoch != 1 || after[0].Snapshot.Incarnation == before[0].Snapshot.Incarnation {
@@ -362,8 +383,8 @@ func TestThreadHistoryRotatedIncarnationResyncs(t *testing.T) {
 
 // An entry the index cannot apply fails the projection and every rebuild:
 // after the third failed rebuild the thread's history is failed, naming the
-// entry, a last resync goes out, and projection stops while the writer keeps
-// recording.
+// entry, a last resync goes out, and projection stops (nothing is queued)
+// while the writer keeps recording.
 func TestThreadHistoryThirdFailedRebuildFailsTheThread(t *testing.T) {
 	hx := newHistoryHarness(t)
 	first := hx.record(t, "first")
@@ -381,11 +402,6 @@ func TestThreadHistoryThirdFailedRebuildFailsTheThread(t *testing.T) {
 	if epoch := hx.nextResync(t); epoch != 2 {
 		t.Fatalf("failed-state resync epoch = %d, want 2", epoch)
 	}
-	select {
-	case <-hx.history.done:
-	case <-time.After(historyTestWait):
-		t.Fatal("projection goroutine still running in the failed state")
-	}
 	var entryErr *transcriptindex.EntryError
 	if err := hx.history.Failed(); !errors.As(err, &entryErr) || entryErr.Ordinal != bad.Ordinal {
 		t.Fatalf("Failed() = %v, want an entry error naming ordinal %d", err, bad.Ordinal)
@@ -401,8 +417,11 @@ func TestThreadHistoryThirdFailedRebuildFailsTheThread(t *testing.T) {
 	if later.Ordinal != bad.Ordinal+1 || hx.writer.RecordedLength() != later.Offset+later.Length {
 		t.Fatalf("writer stopped recording: %+v, recorded length %d", later, hx.writer.RecordedLength())
 	}
-	if length, err := hx.history.RecordedLength(); err != nil || length != later.Offset+later.Length {
-		t.Fatalf("RecordedLength() = %d, %v; want %d", length, err, later.Offset+later.Length)
+	hx.history.mu.Lock()
+	queued := len(hx.history.queue)
+	hx.history.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("the failed thread queued %d entries", queued)
 	}
 	hx.expectQuiet(t)
 }
@@ -422,11 +441,6 @@ func TestThreadHistoryFailedStateNamesTheLastAttemptedEntry(t *testing.T) {
 	}
 	if epoch := hx.nextResync(t); epoch != 2 {
 		t.Fatalf("failed-state resync epoch = %d, want 2", epoch)
-	}
-	select {
-	case <-hx.history.done:
-	case <-time.After(historyTestWait):
-		t.Fatal("projection goroutine still running in the failed state")
 	}
 	var entryErr *transcriptindex.EntryError
 	if err := hx.history.Failed(); !errors.As(err, &entryErr) || entryErr.Ordinal != last.Ordinal || entryErr.Err == nil {
@@ -451,10 +465,11 @@ func TestThreadHistoryRebuildFailuresCountInARow(t *testing.T) {
 
 	for round := uint64(1); round <= 2; round++ {
 		repair = hx.corruptNext(t)
-		hx.record(t, fmt.Sprintf("corrupt %d", round))
+		corrupt := hx.record(t, fmt.Sprintf("corrupt %d", round))
 		if epoch := hx.nextResync(t); epoch != round {
 			t.Fatalf("resync epoch = %d, want %d", epoch, round)
 		}
+		hx.awaitPublished(t, corrupt.Offset+corrupt.Length)
 		next := hx.record(t, fmt.Sprintf("after %d", round))
 		updates := hx.updatesThrough(t, next.Offset+next.Length)
 		if updates[len(updates)-1].Epoch != round {
@@ -469,12 +484,12 @@ func TestThreadHistoryRebuildFailuresCountInARow(t *testing.T) {
 	}
 }
 
-// The append hook hands each recorded entry to the thread's overlay: a
+// Each recorded entry reaches the thread's overlay before a later event: a
 // notice raised after it anchors past it.
 func TestThreadHistoryHandsRecordedEntriesToTheOverlay(t *testing.T) {
 	hx := newHistoryHarness(t)
 	rec := hx.record(t, "first")
-	hx.overlay.Event(events.New(events.LoopDetectionData{Message: "loop"}))
+	hx.history.overlayEvent(events.New(events.LoopDetectionData{Message: "loop"}))
 	snapshot := hx.overlay.Snapshot()
 	if len(snapshot) != 1 || snapshot[0].Anchor == nil || snapshot[0].Anchor.Entry != rec.Ordinal+1 {
 		t.Fatalf("overlay snapshot %+v, want one notice anchored at entry %d", snapshot, rec.Ordinal+1)
