@@ -1,10 +1,6 @@
 package server
 
 import (
-	"fmt"
-	"os"
-
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -84,48 +80,19 @@ func (h *threadHistory) before(threadRef, cursor string, limit int) (turns []app
 // read runs fn on the thread's index extended to the recorded length, after
 // applying the entries queued within that length to the overlay.
 //
-// A failed thread's hook no longer tracks the recorded length, so its read
-// takes the length from the append lock. If the read fails it is
-// appwire.TranscriptHistoryFailed, naming the entry; if it succeeds, the
-// transcript is readable again and the history is asked to recover.
+// A read of a failed thread first tries to recover it by rebuilding
+// (recoverForRead); if that fails the read is appwire.TranscriptHistoryFailed,
+// naming the entry, and pushes nothing.
 func (h *threadHistory) read(fn func(*transcriptindex.Index) error) error {
-	h.mu.Lock()
-	failed := h.failed
-	h.mu.Unlock()
-	var length int64
-	var err error
-	if failed != nil {
-		length, err = h.boundaryLength()
-	} else {
-		length, err = h.RecordedLength()
-		h.applyQueued(length)
-	}
-	if err == nil {
-		err = h.readIndex(length, fn)
-	}
-	switch {
-	case failed == nil:
+	if err := h.recoverForRead(); err != nil {
 		return err
-	case err != nil:
-		return appwire.TranscriptHistoryFailed(failed.Ordinal)
 	}
-	h.requestRecovery()
-	return nil
-}
-
-// boundaryLength is the transcript's recorded length, read under its append
-// lock, or its size when no writer in this process has it open.
-func (h *threadHistory) boundaryLength() (int64, error) {
-	var length int64
-	found, err := transcript.AtRecordedBoundary(h.path, func(recordedLength int64) { length = recordedLength })
-	if err != nil || found {
-		return length, err
-	}
-	info, err := os.Stat(h.path)
+	length, err := h.RecordedLength()
 	if err != nil {
-		return 0, fmt.Errorf("stat transcript: %w", err)
+		return err
 	}
-	return info.Size(), nil
+	h.applyQueued(length)
+	return h.readIndex(length, fn)
 }
 
 func (h *threadHistory) readIndex(length int64, fn func(*transcriptindex.Index) error) error {

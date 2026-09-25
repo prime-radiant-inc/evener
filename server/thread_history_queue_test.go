@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -505,4 +506,63 @@ func TestAClosingDelegatePublishesItsLastEntries(t *testing.T) {
 	if !published {
 		t.Fatal("the delegate's last entry did not reach clients before its history closed")
 	}
+}
+
+// A read of a failed thread whose rebuild still fails returns
+// transcriptHistoryFailed and pushes nothing: any number of such reads send
+// no resync.
+func TestThreadHistoryReadsOfAStillBrokenThreadPushNothing(t *testing.T) {
+	hx := newHistoryHarness(t)
+	first := hx.record(t, "first")
+	hx.updatesThrough(t, first.Offset+first.Length)
+	breakProjection(t, nil)
+	bad := hx.record(t, "fails to project")
+	hx.nextResync(t)
+	hx.nextResync(t)
+	for range 5 {
+		_, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) || wireErr.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
+			t.Fatalf("read of a still-broken thread = %v, want transcriptHistoryFailed", err)
+		}
+		if !strings.Contains(wireErr.Message, strconv.FormatUint(bad.Ordinal, 10)) {
+			t.Fatalf("error %q does not name entry %d", wireErr.Message, bad.Ordinal)
+		}
+	}
+	hx.expectQuiet(t)
+	if hx.history.Failed() == nil {
+		t.Fatal("the thread recovered while its rebuild still fails")
+	}
+}
+
+// A read of a failed thread rebuilds first; when that succeeds it un-fails
+// the thread, bumps the epoch, pushes exactly one resync and returns the
+// history. Live updates resume at the new epoch.
+func TestThreadHistoryAReadRebuildsAFailedThread(t *testing.T) {
+	hx := newHistoryHarness(t)
+	first := hx.record(t, "first")
+	hx.updatesThrough(t, first.Offset+first.Length)
+	repair := breakProjection(t, nil)
+	hx.record(t, "fails to project")
+	hx.nextResync(t)
+	if epoch := hx.nextResync(t); epoch != 2 {
+		t.Fatalf("failed-state resync epoch = %d, want 2", epoch)
+	}
+	repair()
+	keys := hx.readKeys(t)
+	if len(keys) != 2 {
+		t.Fatalf("recovering read holds %d items, want 2", len(keys))
+	}
+	if epoch := hx.nextResync(t); epoch != 3 {
+		t.Fatalf("recovery resync epoch = %d, want 3", epoch)
+	}
+	if hx.history.Failed() != nil {
+		t.Fatal("the thread is still failed after a read rebuilt it")
+	}
+	after := hx.record(t, "after recovery")
+	updates := hx.updatesThrough(t, after.Offset+after.Length)
+	if updates[len(updates)-1].Epoch != 3 {
+		t.Fatalf("update after recovery at epoch %d, want 3", updates[len(updates)-1].Epoch)
+	}
+	hx.expectQuiet(t)
 }

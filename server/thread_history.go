@@ -92,13 +92,14 @@ type threadHistoryConfig struct {
 // goroutine, which projects by extending the transcript index to the recorded
 // length and publishes what changed as history/updated. It holds no history.
 //
-// Lock order: the projection goroutine (the thread's projection
-// serialization) is outermost, then the transcript's append lock, then mu,
-// the queue's mutex, a leaf. The hook takes only mu. The goroutine captures a
-// rebuild's boundary by taking the append lock and then mu
-// (transcript.AtRecordedBoundary), so the boundary and the queue are one
-// snapshot. Nothing takes the append lock while holding mu, and neither mu
-// nor applyMu is held across I/O.
+// Lock order: serial (the thread's projection serialization, held by the
+// goroutine's steps and by a read recovering a failed thread) is outermost,
+// then the transcript's append lock, then mu, the queue's mutex, a leaf. The
+// hook takes only mu. A rebuild captures its boundary by taking the append
+// lock and then mu (transcript.AtRecordedBoundary), so the boundary and the
+// queue are one snapshot. Nothing takes serial under the append lock or the
+// append lock while holding mu, and neither mu nor applyMu is held across
+// I/O; serial is held across the projection's own index reads.
 //
 // The queue holds the entries the overlay has not yet applied (overlay
 // coverage never runs under the append lock): the goroutine, every read
@@ -141,11 +142,14 @@ type threadHistory struct {
 	overflowed bool
 	// gap is the first entry the overlay has not applied that the queue no
 	// longer holds: the overlay misses every entry from it up to the queue's
-	// head (or the recorded length). Only the goroutine closes it.
-	gap *overlayGap
-	// retry asks a failed history's goroutine to try recovering again.
-	retry  bool
+	// head (or the recorded length). Only a recovery closes it.
+	gap    *overlayGap
 	closed bool
+
+	// serial is the thread's projection serialization: the goroutine holds it
+	// for each step, and a read that recovers a failed thread for its
+	// rebuild. It is the outermost lock of the history (see threadHistory).
+	serial sync.Mutex
 
 	// applyMu serializes applying queued entries to the overlay, so they
 	// apply in ordinal order. It is never taken under the append lock.
@@ -316,13 +320,48 @@ func (h *threadHistory) Failed() error {
 	return h.failed
 }
 
-// requestRecovery asks a failed history's goroutine to try recovering: a
-// read found the transcript readable again.
-func (h *threadHistory) requestRecovery() {
+// recoverForRead is a read's attempt to recover a failed thread, inside the
+// thread's projection serialization and outside the read's cut: one rebuild
+// through a boundary, first. On success the thread is no longer failed, its
+// epoch is bumped and exactly one resync goes out. On failure the thread
+// stays failed, nothing is pushed, and the read gets
+// appwire.TranscriptHistoryFailed. A thread that is not failed returns nil
+// at once.
+func (h *threadHistory) recoverForRead() error {
 	h.mu.Lock()
-	h.retry = true
+	failed := h.failed
 	h.mu.Unlock()
+	if failed == nil {
+		return nil
+	}
+	h.serial.Lock()
+	defer h.serial.Unlock()
+	h.mu.Lock()
+	failed, closed := h.failed, h.closed
+	h.mu.Unlock()
+	switch {
+	case failed == nil:
+		return nil // another read recovered it meanwhile
+	case closed:
+		return appwire.TranscriptHistoryFailed(failed.Ordinal)
+	}
+	if err := h.rebuildThroughBoundary(); err != nil {
+		h.mu.Lock()
+		// The boundary capture un-failed the thread so the hook queued what
+		// followed it; failing it again drops that queue.
+		h.failed = failed
+		h.dropQueueLocked()
+		h.overflowed = false
+		h.mu.Unlock()
+		return appwire.TranscriptHistoryFailed(failed.Ordinal)
+	}
+	h.mu.Lock()
+	h.epoch++
+	epoch := h.epoch
+	h.mu.Unlock()
+	h.resync(epoch)
 	h.wakeUp()
+	return nil
 }
 
 // retire stops the history taking entries and starting a recovery, and
@@ -371,7 +410,9 @@ func (h *threadHistory) run() {
 			h.finish(healthy)
 			return
 		}
+		h.serial.Lock()
 		healthy = h.step()
+		h.serial.Unlock()
 	}
 }
 
@@ -381,14 +422,13 @@ func (h *threadHistory) run() {
 func (h *threadHistory) step() bool {
 	h.applyQueued(math.MaxInt64)
 	h.mu.Lock()
-	failed, retry, overflowed := h.failed != nil, h.retry, h.overflowed
-	h.retry = false
+	failed, overflowed := h.failed != nil, h.overflowed
 	target, published, epoch := h.recordedLength, h.published, h.epoch
 	h.mu.Unlock()
 	switch {
-	case failed && !retry:
-		return false
-	case failed || overflowed:
+	case failed:
+		return false // a read recovers it (recoverForRead)
+	case overflowed:
 		return h.recover()
 	case target <= published:
 		return true
@@ -404,6 +444,8 @@ func (h *threadHistory) step() bool {
 // that is failed, resyncing or was stopped mid-recovery publishes nothing
 // more; its clients re-read.
 func (h *threadHistory) finish(healthy bool) {
+	h.serial.Lock()
+	defer h.serial.Unlock()
 	h.mu.Lock()
 	target, published, epoch := h.recordedLength, h.published, h.epoch
 	healthy = healthy && h.failed == nil && !h.overflowed
