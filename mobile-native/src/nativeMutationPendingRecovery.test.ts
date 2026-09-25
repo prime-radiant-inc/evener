@@ -16,6 +16,9 @@
 //      identities across restarts.
 
 import { afterEach, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
@@ -268,4 +271,85 @@ test("(4) storage/hub-ref identities stay isolated across a restart", async () =
 	expect(restarted.getState().pendingMutations?.map((row) => row.id)).not.toContain(
 		foreign.clientMutationId,
 	);
+});
+
+test("(restart) a fresh runtime over a reopened database restores the durable rows and reconciles once", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "evener-restart-"));
+	const file = join(dir, "evener-mutations.db");
+	const key = nativeMutationTargetKey("hub-1", "ref-1");
+	try {
+		// ---- first process -------------------------------------------------
+		const opened = openSqliteSyncDouble(file);
+		const first = new NativeMutationRuntime(opened.port, {});
+		const firstClient = new FakeClient("ready");
+		firstClient.on("turn/start", appliedReceipt);
+		first.registerTarget("hub-1", "ref-1", firstClient);
+		await first.start();
+
+		// One mutation still never-attempted, one whose outcome is unknown. The
+		// unknown one is blocked through the runtime's own attempted-then-blocked
+		// path (a non-authoritative read: the server has not vouched for the
+		// mutation state), and the process exits with both rows durable.
+		const acked = await seed(first, key);
+		const unknown = await seed(first, key);
+		await first.storage.markAttempted(unknown.clientMutationId);
+		const blockedRead = first.beginAuthoritativeRead("hub-1", "ref-1", firstClient);
+		await first.reconcileAuthoritativeRead(blockedRead!, readResponse("ref-1", { authoritative: false }));
+		// The blocked head parks the never-attempted record behind it: nothing
+		// left the first process either.
+		expect(turnStarts(firstClient)).toBe(0);
+		await first.stop();
+		opened.database.close();
+
+		// ---- restart: reopen the SAME database file, fresh runtime + client --
+		const reopened = openSqliteSyncDouble(file);
+		const second = new NativeMutationRuntime(reopened.port, {});
+		const secondClient = new FakeClient("ready");
+		secondClient.on("turn/start", appliedReceipt);
+		second.registerTarget("hub-1", "ref-1", secondClient);
+		await second.start();
+
+		const store = createConversationStore();
+		await store.getState().open(fakeService(conversation()) as never, "ref-1");
+		store.getState().bindPendingMutations(createConversationMutationPendingPort(second, key));
+		await flush();
+
+		// Dispatch behavior on boot: nothing leaves the client.
+		expect(turnStarts(secondClient)).toBe(0);
+
+		// Pending-row restoration across the reopen: both durable rows come back,
+		// the unknown one still blocked.
+		const rows = store.getState().pendingMutations ?? [];
+		expect(rows.map((row) => row.id)).toContain(unknown.clientMutationId);
+		expect(rows.find((row) => row.id === unknown.clientMutationId)).toMatchObject({
+			state: "blockedUnknown",
+		});
+		expect(rows.find((row) => row.id === acked.clientMutationId)).toMatchObject({
+			state: "submitting",
+		});
+
+		// Settlement across the restart: the authoritative read that names both
+		// ids settles them exactly once, with no re-dispatch, and a replay does
+		// not resurrect them.
+		const settle = second.beginAuthoritativeRead("hub-1", "ref-1", secondClient);
+		await second.reconcileAuthoritativeRead(
+			settle!,
+			readResponse("ref-1", { ids: [acked.clientMutationId, unknown.clientMutationId] }),
+		);
+		await flush();
+		expect(store.getState().pendingMutations).toEqual([]);
+		expect(turnStarts(secondClient)).toBe(0);
+		await expect(second.storage.getOutbox(acked.clientMutationId)).resolves.toBeUndefined();
+		await expect(second.storage.getOutbox(unknown.clientMutationId)).resolves.toBeUndefined();
+		const replay = second.beginAuthoritativeRead("hub-1", "ref-1", secondClient);
+		await second.reconcileAuthoritativeRead(
+			replay!,
+			readResponse("ref-1", { ids: [acked.clientMutationId, unknown.clientMutationId] }),
+		);
+		await flush();
+		expect(store.getState().pendingMutations).toEqual([]);
+		reopened.database.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
