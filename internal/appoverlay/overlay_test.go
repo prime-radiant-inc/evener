@@ -2,6 +2,8 @@ package appoverlay
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -637,12 +639,73 @@ func TestTrimmedOutputDoesNotPinTheBufferItGrewIn(t *testing.T) {
 	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
 	o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_1"}))
 	o.Event(events.New(events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "c_1", Delta: strings.Repeat("x", 4<<20)}))
-	s := o.slots[o.calls["c_1"].toolKey]
+	c, _ := o.calls.get("c_1")
+	s := o.slots[c.toolKey]
 	if len(s.output) != trimmedRunningOutputBytes || cap(s.output) != len(s.output) {
 		t.Fatalf("running output holds %d bytes in a %d-byte buffer, want %d in a right-sized one", len(s.output), cap(s.output), trimmedRunningOutputBytes)
 	}
 	o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: strings.Repeat("y", 4<<20)}))
 	if len(s.output) != trimmedRunningOutputBytes || cap(s.output) != len(s.output) {
 		t.Fatalf("settled output holds %d bytes in a %d-byte buffer, want %d in a right-sized one", len(s.output), cap(s.output), trimmedRunningOutputBytes)
+	}
+}
+
+func TestTheOverlaysMemoryDoesNotGrowWithHistory(t *testing.T) {
+	o := newOverlay()
+	for i := range 1000 {
+		roundID := fmt.Sprintf("r_%d", i)
+		callID := fmt.Sprintf("c_%d", i)
+		o.Event(events.New(events.RoundStartedData{RoundID: roundID}))
+		o.Event(events.New(events.AssistantTextDeltaData{Delta: "text"}))
+		o.Recorded(assistantRecord(uint64(3*i), "t_1", roundID, textPart("text"), callPart(callID, "shell")))
+		o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: callID}))
+		o.Recorded(toolResultsRecord(uint64(3*i+1), "t_1", callID))
+		o.Event(events.New(events.RoundEndedData{RoundID: roundID}))
+		// Entries of rounds this overlay never runs (restored or forked
+		// history) still cover rounds and teach calls.
+		o.Recorded(assistantRecord(uint64(3*i+2), "t_0", fmt.Sprintf("r_old_%d", i), callPart(fmt.Sprintf("c_old_%d", i), "shell")))
+	}
+	if o.coveredRounds.len() > maxRememberedRounds || o.discardedRounds.len() > maxRememberedRounds || o.calls.len() > maxRememberedCalls {
+		t.Fatalf("overlay remembers %d covered rounds, %d discarded rounds and %d calls; want at most %d, %d and %d",
+			o.coveredRounds.len(), o.discardedRounds.len(), o.calls.len(), maxRememberedRounds, maxRememberedRounds, maxRememberedCalls)
+	}
+	if len(o.slots) != 0 {
+		t.Fatalf("overlay holds %d slots after every round ended", len(o.slots))
+	}
+
+	// Late events after the last round ended bring nothing back.
+	none(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "late"})))
+	none(t, o.Event(events.New(events.ReasoningSummaryDeltaData{Delta: "late"})))
+	none(t, o.Event(events.New(events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "c_999", Delta: "late"})))
+	none(t, o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_999"})))
+	none(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_999"})))
+	none(t, o.Event(events.New(events.CommunicatePreviewStartData{CallID: "c_late"})))
+	if keys := snapshotKeys(o); len(keys) != 0 {
+		t.Fatalf("snapshot after late events = %v, want empty", keys)
+	}
+}
+
+func TestRecentSetForgetsItsOldestPastCapacity(t *testing.T) {
+	set := newRecentSet[int](3)
+	for i := range 5 {
+		set.put(strconv.Itoa(i), i)
+	}
+	set.put("4", 40) // replacing a key keeps its place
+	if set.len() != 3 {
+		t.Fatalf("len = %d, want 3", set.len())
+	}
+	for _, key := range []string{"0", "1"} {
+		if _, ok := set.get(key); ok {
+			t.Fatalf("%s survived past capacity", key)
+		}
+	}
+	if v, ok := set.get("4"); !ok || v != 40 {
+		t.Fatalf("get(4) = %d, %v", v, ok)
+	}
+	set.delete("3")
+	set.put("5", 5)
+	set.put("6", 6)
+	if _, ok := set.get("2"); ok || set.len() != 3 {
+		t.Fatalf("after a delete and two puts: len %d, 2 present %v; want 3 and false", set.len(), ok)
 	}
 }

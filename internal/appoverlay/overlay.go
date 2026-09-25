@@ -26,6 +26,17 @@ import (
 // it to its last trimmedRunningOutputBytes and sends the whole item once;
 // deltas resume until it passes the cap again, so a long-running command
 // costs one full item per 64 KB of output rather than one per delta.
+// The overlay remembers at most this many recent rounds and calls (see
+// Overlay.coveredRounds). Forgetting an old one is harmless: its round has
+// ended, so its overlay/end is sent and clients hold its history. Stream and
+// preview events only ever apply to the open round, and a tool event for a
+// call the overlay no longer knows is dropped unless a round is open (see
+// toolCall), so a late event for an ended round creates nothing.
+const (
+	maxRememberedRounds = 32
+	maxRememberedCalls  = 256
+)
+
 const (
 	maxRunningOutputBytes     = 256 << 10
 	trimmedRunningOutputBytes = 192 << 10
@@ -53,12 +64,17 @@ type Overlay struct {
 	attempt int
 	// coveredRounds are the rounds whose ASSISTANT entry is recorded: their
 	// text and reasoning are history now, so later deltas are dropped.
-	coveredRounds map[string]struct{}
+	coveredRounds recentSet[struct{}]
 	// discardedRounds are rounds whose uncovered streamed text a preview
 	// reset discarded; unless an ASSISTANT entry covers them after all, they
 	// still end interrupted.
-	discardedRounds map[string]struct{}
-	calls           map[string]*call
+	discardedRounds recentSet[struct{}]
+	calls           recentSet[*call]
+	// Round end forgets a round's entries in all three. The caps only bound
+	// what round end never sees: entries of rounds this overlay never runs
+	// (restored or forked history recorded with their round ids) and calls
+	// no round claimed. A thread runs its rounds one after another, so the
+	// rounds and calls still live are always among the most recent.
 	// slots holds the streams, previews and tool states by overlay key.
 	slots    map[string]*slot
 	nextSlot uint64
@@ -110,9 +126,9 @@ func (s *slot) view() appwire.OverlayItem {
 func New(budget *Budget) *Overlay {
 	return &Overlay{
 		budget:          budget,
-		coveredRounds:   map[string]struct{}{},
-		discardedRounds: map[string]struct{}{},
-		calls:           map[string]*call{},
+		coveredRounds:   newRecentSet[struct{}](maxRememberedRounds),
+		discardedRounds: newRecentSet[struct{}](maxRememberedRounds),
+		calls:           newRecentSet[*call](maxRememberedCalls),
 		slots:           map[string]*slot{},
 	}
 }
@@ -125,7 +141,9 @@ func (o *Overlay) Close() {
 	o.closed = true
 	o.notices.releaseAll(o.budget)
 	clear(o.slots)
-	clear(o.calls)
+	o.calls.clear()
+	o.coveredRounds.clear()
+	o.discardedRounds.clear()
 }
 
 // RunningTurnID is the running execution for a thread nothing calls
@@ -254,7 +272,7 @@ func (o *Overlay) coverRound(roundID string) {
 	if roundID == "" {
 		return
 	}
-	o.coveredRounds[roundID] = struct{}{}
+	o.coveredRounds.put(roundID, struct{}{})
 	for key, s := range o.slots {
 		if s.item.Kind == appwire.OverlayStream && s.item.RoundID == roundID {
 			delete(o.slots, key)
@@ -280,12 +298,26 @@ func (o *Overlay) learnCalls(rec transcript.Record) {
 	}
 }
 
+// toolCall is the call a tool event may update: not settled by a recorded
+// entry, and either known or arriving while a round is open. A tool event for
+// an unknown call with no open round belongs to a round that already ended
+// (its overlay/end sent, its memory forgotten or evicted as it aged out), so
+// it must not bring state back; streams and previews follow the same rule
+// by needing an open round.
+func (o *Overlay) toolCall(callID string) (*call, bool) {
+	if _, known := o.calls.get(callID); !known && o.roundID == "" {
+		return nil, false
+	}
+	c := o.call(callID)
+	return c, !c.covered
+}
+
 // call is the overlay's record of callID, created in the open round.
 func (o *Overlay) call(callID string) *call {
-	c, ok := o.calls[callID]
+	c, ok := o.calls.get(callID)
 	if !ok {
 		c = &call{roundID: o.roundID}
-		o.calls[callID] = c
+		o.calls.put(callID, c)
 	}
 	return c
 }
@@ -305,7 +337,7 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 	if text == "" || o.roundID == "" {
 		return nil
 	}
-	if _, covered := o.coveredRounds[o.roundID]; covered {
+	if _, covered := o.coveredRounds.get(o.roundID); covered {
 		return nil
 	}
 	streamID := o.streamID()
@@ -374,10 +406,10 @@ func (o *Overlay) resetPreview(callID string) []Change {
 	// A failed or cancelled input resets its previews before its round
 	// ends, so the text discarded here is the round's partial reply.
 	roundID := preview.item.RoundID
-	if _, covered := o.coveredRounds[roundID]; !covered {
+	if _, covered := o.coveredRounds.get(roundID); !covered {
 		for _, s := range o.slots {
 			if s.item.Kind == appwire.OverlayStream && s.item.StreamID == preview.item.StreamID && s.item.Item.Text != "" {
-				o.discardedRounds[roundID] = struct{}{}
+				o.discardedRounds.put(roundID, struct{}{})
 			}
 		}
 	}
@@ -398,8 +430,8 @@ func (o *Overlay) startTool(ev events.SessionEvent, data events.ToolCallStartDat
 	if data.ToolName == "communicate" {
 		return nil
 	}
-	c := o.call(data.CallID)
-	if c.covered {
+	c, ok := o.toolCall(data.CallID)
+	if !ok {
 		return nil
 	}
 	s := o.toolSlot(data.CallID, c)
@@ -437,7 +469,7 @@ func (o *Overlay) toolSlot(callID string, c *call) *slot {
 // the cap trims it and sends the whole item instead, so clients hold the same
 // tail.
 func (o *Overlay) appendOutput(callID, text string) []Change {
-	c, ok := o.calls[callID]
+	c, ok := o.calls.get(callID)
 	if !ok || text == "" {
 		return nil
 	}
@@ -457,8 +489,8 @@ func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
 	if data.ToolName == "communicate" {
 		return nil
 	}
-	c := o.call(data.CallID)
-	if c.covered {
+	c, ok := o.toolCall(data.CallID)
+	if !ok {
 		return nil
 	}
 	s := o.toolSlot(data.CallID, c)
@@ -491,7 +523,7 @@ func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
 func (o *Overlay) releaseImages(callIDs []string) []Change {
 	var changes []Change
 	for _, callID := range callIDs {
-		c, ok := o.calls[callID]
+		c, ok := o.calls.get(callID)
 		if !ok {
 			continue
 		}
@@ -520,18 +552,14 @@ func (o *Overlay) endRound(roundID string) []Change {
 		}
 		delete(o.slots, key)
 	}
-	for callID, c := range o.calls {
-		if c.roundID == roundID || c.roundID == "" {
-			delete(o.calls, callID)
-		}
-	}
-	if _, discarded := o.discardedRounds[roundID]; discarded {
-		if _, covered := o.coveredRounds[roundID]; !covered {
+	o.calls.deleteFunc(func(_ string, c *call) bool { return c.roundID == roundID || c.roundID == "" })
+	if _, discarded := o.discardedRounds.get(roundID); discarded {
+		if _, covered := o.coveredRounds.get(roundID); !covered {
 			interrupted = true
 		}
 	}
-	delete(o.discardedRounds, roundID)
-	delete(o.coveredRounds, roundID)
+	o.discardedRounds.delete(roundID)
+	o.coveredRounds.delete(roundID)
 	if o.roundID == roundID {
 		o.roundID, o.attempt = "", 0
 	}
