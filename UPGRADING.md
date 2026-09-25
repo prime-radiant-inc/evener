@@ -76,22 +76,23 @@ evener-dev internalcheck
 
 ### Install
 
-`make install` now installs two binaries (`evener`, `evener-dev`) instead of
-five. If you have old binaries on your `PATH`, remove them:
+`make install` now installs `evener` alone instead of five binaries (see
+"`evener-dev` is no longer installed" above). If you have old binaries on
+your `PATH`, remove them:
 
 ```sh
 rm ~/.local/bin/evener-hub ~/.local/bin/evener-tui \
    ~/.local/bin/evener-doctor ~/.local/bin/evener-migrate
 ```
 
-The self-update (`evener upgrade`) path installs both new binaries
+The self-update (`evener upgrade`) path installs the new `evener`
 automatically.
 
 ### Release archives
 
 Release archives now contain two binaries (`evener`, `evener-dev`) instead of
 five. The archive name (`evener_<os>_<arch>.tar.gz`) and directory layout are
-unchanged. `install.sh` reads the new binary list.
+unchanged. `install.sh` installs `evener` from them and skips `evener-dev`.
 
 ### Go version
 
