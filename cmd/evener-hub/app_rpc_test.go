@@ -4288,6 +4288,8 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	srv := httptest.NewUnstartedServer(nil)
 	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	cfg.RelayHooks.RetryWait = retryClock.Wait
+	logged := make(chan string, 16)
+	cfg.Logf = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
@@ -4346,6 +4348,18 @@ func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) 
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
 	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
 	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	// The cause is recorded in the hub's log: the target, how many re-dials
+	// failed, and the last one's error.
+	select {
+	case line := <-logged:
+		for _, want := range []string{"codex:" + threadID, "3", "connection refused (3)"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("give-up log = %q, want it to name %q", line, want)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("give-up logged nothing")
+	}
 	retryClock.releaseWait(t, 400*time.Millisecond)
 
 	// The loop keeps retrying afterward (recovery is still worth having if

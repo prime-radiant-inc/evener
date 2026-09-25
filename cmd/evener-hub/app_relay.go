@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -418,6 +419,7 @@ func relayNotificationRoutingKey(notification appwire.Notification, sourceID str
 }
 
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
+	logf := hubLogfFor(cfg)
 	relayIdleInterval := hubRelayIdleInterval
 	// The relay's background goroutines fence against the lookup captured
 	// here, never the live seam: they outlive the request that started them.
@@ -1797,11 +1799,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// capabilities are the hub's own answer for a session whose daemon is
 			// gone (relayGaveUpCapabilities, the set a past read returns), because
 			// the departing daemon's set describes the turn that is over.
-			giveUpOnRunningTurn := func() {
+			giveUpOnRunningTurn := func(cause error) {
 				if !turnRunning {
 					return
 				}
 				turnRunning = false
+				logf("relay for %s gave up on its running turn after %d failed re-dials: %v", relayKey, consecutiveFailures, cause)
 				server.Broadcast(relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 					ThreadID:     threadID,
 					Ref:          subscribeParams.Ref,
@@ -1813,10 +1816,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					Ref:      subscribeParams.Ref,
 				})
 			}
-			recordFailure := func() {
+			recordFailure := func(cause error) {
 				consecutiveFailures++
 				if consecutiveFailures >= relayGiveUpAfterFailures {
-					giveUpOnRunningTurn()
+					giveUpOnRunningTurn(cause)
 				}
 			}
 			broadcastNotification := func(notification appwire.Notification) {
@@ -1913,14 +1916,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						if isTargetDeletedError(result.err) {
 							return
 						}
-						recordFailure()
+						recordFailure(result.err)
 						if waitForRetry(backoff.Next()) {
 							return
 						}
 						continue
 					}
 					if result.notifications == nil {
-						recordFailure()
+						recordFailure(errors.New("the source returned no notification stream"))
 						if waitForRetry(backoff.Next()) {
 							return
 						}
@@ -1931,7 +1934,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					select {
 					case notification, ok := <-result.notifications:
 						if !ok {
-							recordFailure()
+							recordFailure(errors.New("the source closed its notification stream"))
 							if waitForRetry(backoff.Next()) {
 								return
 							}

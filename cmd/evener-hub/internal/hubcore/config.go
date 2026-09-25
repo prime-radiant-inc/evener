@@ -163,6 +163,10 @@ type WebConfig struct {
 
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
+	// Logf receives the hub's operational log lines. Nil writes them to
+	// stderr with the "[hub] " prefix.
+	Logf func(format string, args ...any)
+
 	// Sandbox seams. Each is nil in production (the real implementation runs);
 	// a fuzz/test sandbox sets them so the matching handler runs without
 	// shelling out, hitting the network, or mutating the real filesystem. These

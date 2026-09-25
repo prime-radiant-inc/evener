@@ -891,6 +891,17 @@ func hubAuthStateRoot(reg *hubcore.ProviderRegistry) string {
 	return cmdutil.DefaultStateRoot()
 }
 
+// hubLogfFor is where the hub's operational log lines go: cfg.Logf, or
+// stderr with the "[hub] " prefix.
+func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
+	if cfg.Logf != nil {
+		return cfg.Logf
+	}
+	return func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	}
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
@@ -927,9 +938,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return navigation.Capability()
 		}
 	}
-	hubLogf := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
-	}
+	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName:           "evener-hub",
 		Version:              Version,
