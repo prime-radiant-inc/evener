@@ -51,6 +51,14 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// unwrapped as the underlying method and is dispatched above — so there is no
 	// case to give it.
 	appwire.NotifyEvenerHostNotification,
+	// Versioned history and the live overlay are not yet emitted by any
+	// daemon; the TUI starts rendering them when it switches to the read
+	// model, and each then gets a case.
+	appwire.NotifyHistoryUpdated,
+	appwire.NotifyOverlayUpserted,
+	appwire.NotifyOverlayDelta,
+	appwire.NotifyOverlayReset,
+	appwire.NotifyOverlayEnd,
 }
 
 // kata e79v: evener/thread/modelRetry was added to the catalog and the TUI ignored
