@@ -223,6 +223,7 @@ var defaultCloseGrace = 5 * time.Second
 // Package vars, not consts, so tests can override and restore them without
 // waiting wall-clock time.
 var (
+	laneClosePassBudgetMu sync.RWMutex
 	// LaneClosePassBudget bounds the P0 close disposal and the P3 close pass
 	// TOGETHER — one shared deadline per close cascade (ensureCloseBudget mints
 	// it), and since #382 it also bounds close's WaitGroup joins. It bounds
@@ -248,6 +249,23 @@ var (
 	// stays untouched until the hand-off window has passed.
 	laneGrace = 30 * time.Minute
 )
+
+func laneClosePassBudget() time.Duration {
+	laneClosePassBudgetMu.RLock()
+	defer laneClosePassBudgetMu.RUnlock()
+	return LaneClosePassBudget
+}
+
+// SetLaneClosePassBudget changes the close-cascade budget and returns its
+// previous value. It is intended for end-to-end tests that need to shorten the
+// shipped budget without racing a close already running in the background.
+func SetLaneClosePassBudget(d time.Duration) (previous time.Duration) {
+	laneClosePassBudgetMu.Lock()
+	defer laneClosePassBudgetMu.Unlock()
+	previous = LaneClosePassBudget
+	LaneClosePassBudget = d
+	return previous
+}
 
 func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Lock()

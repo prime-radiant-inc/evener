@@ -98,9 +98,8 @@ func shrinkDrainStallTimeout(t *testing.T, d time.Duration) {
 // pure waiting. What they assert is that the budget is HONOURED, not its size.
 func shrinkCloseBudget(t *testing.T, d time.Duration) {
 	t.Helper()
-	old := agent.LaneClosePassBudget
-	agent.LaneClosePassBudget = d
-	t.Cleanup(func() { agent.LaneClosePassBudget = old })
+	old := agent.SetLaneClosePassBudget(d)
+	t.Cleanup(func() { agent.SetLaneClosePassBudget(old) })
 }
 
 var wedgeDelegateIDPattern = regexp.MustCompile(`dlg_[A-Za-z0-9_-]+`)

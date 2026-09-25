@@ -1594,7 +1594,7 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), laneClosePassBudget())
 	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()

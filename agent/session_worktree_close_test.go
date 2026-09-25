@@ -56,10 +56,11 @@ func TestCloseStopJoin_HopelessStopLeavesHalfBudget(t *testing.T) {
 	// tolerance is orders of magnitude above any honest scheduling skew
 	// between the two mints — tight enough that an implementation burning 2s
 	// of the 3s budget (reserved ~1s) fails, loose enough to never flake.
-	want := LaneClosePassBudget / 2
+	budget := laneClosePassBudget()
+	want := budget / 2
 	reserved := cascadeDeadline.Sub(stopDeadline)
 	if got := reserved - want; got < -250*time.Millisecond || got > 250*time.Millisecond {
-		t.Fatalf("hopeless stop join reserves %s of a %s cascade budget for the joins that follow it; want %s (LaneClosePassBudget/2) within 250ms", reserved, LaneClosePassBudget, want)
+		t.Fatalf("hopeless stop join reserves %s of a %s cascade budget for the joins that follow it; want %s (LaneClosePassBudget/2) within 250ms", reserved, budget, want)
 	}
 }
 

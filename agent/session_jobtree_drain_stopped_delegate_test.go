@@ -42,9 +42,8 @@ func newWedgedDelegateFixtureIn(t *testing.T, delegateID string, turnEndsProcess
 	// (t.Cleanup is LIFO). A wedged delegate's stop can never settle — that is
 	// the fixture's whole point — so every teardown here would otherwise spend
 	// the full shipped close budget waiting for a stop that cannot complete.
-	oldBudget := LaneClosePassBudget
-	LaneClosePassBudget = 10 * time.Millisecond
-	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+	oldBudget := SetLaneClosePassBudget(10 * time.Millisecond)
+	t.Cleanup(func() { SetLaneClosePassBudget(oldBudget) })
 
 	clk := agenttest.NewFakeClock()
 	root := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true, TurnEndsProcess: turnEndsProcess}))

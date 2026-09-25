@@ -504,7 +504,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 // process table under whatever is still running, so it says what it walked
 // past, by name.
 func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
-	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -523,7 +523,7 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 		<-closeBegun
 		// Stand in for a refresh whose git ignores the cancellation the close
 		// already delivered: outlast the whole budget.
-		time.Sleep(2 * LaneClosePassBudget)
+		time.Sleep(2 * budget)
 	}
 
 	_, err := r.create(t, map[string]any{"name": "lane"})
@@ -555,11 +555,11 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 // and restores it afterwards, so a fence test can watch the join give up
 // without waiting out the production thirty seconds. LaneClosePassBudget is
 // the package var both ensureCloseBudget and worktreeCleanupRun read.
-func shortenCloseCascadeBudget(t *testing.T, d time.Duration) {
+func shortenCloseCascadeBudget(t *testing.T, d time.Duration) time.Duration {
 	t.Helper()
-	old := LaneClosePassBudget
-	LaneClosePassBudget = d
-	t.Cleanup(func() { LaneClosePassBudget = old })
+	old := SetLaneClosePassBudget(d)
+	t.Cleanup(func() { SetLaneClosePassBudget(old) })
+	return d
 }
 
 // collectWarningsUntilClosed drains every EventWarning off sess until its close

@@ -193,7 +193,7 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 	if closeBudgetMintHook != nil {
 		closeBudgetMintHook()
 	}
-	return context.WithTimeout(ctx, LaneClosePassBudget)
+	return context.WithTimeout(ctx, laneClosePassBudget())
 }
 
 // laneCloseReleaseBudget bounds one session's close-time lock-release pass. It
@@ -203,7 +203,7 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 // Halving caps that amplification — a wedged git costs the cascade budget plus
 // (K children + 1) x LaneClosePassBudget/2 rather than (K + 1) x the full
 // budget.
-func laneCloseReleaseBudget() time.Duration { return LaneClosePassBudget / 2 }
+func laneCloseReleaseBudget() time.Duration { return laneClosePassBudget() / 2 }
 
 // closeStopJoinContext reserves half of the shared close budget for the
 // bounded joins and teardown that follow the delegate stop. A stop driver can
@@ -216,7 +216,7 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	budget := LaneClosePassBudget / 2
+	budget := laneClosePassBudget() / 2
 	cascadeDeadline, bounded := ctx.Deadline()
 	if bounded {
 		budget = CloseStopJoinBudget(time.Until(cascadeDeadline))
@@ -237,7 +237,7 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 // wedged-delegate run tests check the close tree against this rule rather
 // than a copy of it that can drift.
 func CloseStopJoinBudget(remaining time.Duration) time.Duration {
-	budget := LaneClosePassBudget / 2
+	budget := laneClosePassBudget() / 2
 	if remaining < budget {
 		budget = remaining / 2
 	}
