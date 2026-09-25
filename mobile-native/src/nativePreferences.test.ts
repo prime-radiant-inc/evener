@@ -3,13 +3,10 @@ import type {
 	AnyNotification,
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
+	TranscriptDisplayStore,
 	TranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
-import {
-	createTranscriptDisplayStore,
-	toWireConfig,
-	WireError,
-} from "@evener/appwire-client";
+import { toWireConfig, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -887,19 +884,27 @@ describe("transcriptMobile projection (A10)", () => {
 	});
 
 	it("generation-aware staleness: a draft composed under generation N does not read current when a replacement hub reuses revision N", async () => {
+		const backend = fakeDraftBackend();
 		const client = fakeClient();
 		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
-		// The exact store nativePreferences constructs for the projection.
-		const store = createTranscriptDisplayStore({ client });
-		store.setSupport("supported");
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", backend),
+		);
+		await model.refresh();
+		await model.editTranscript(proposedConfig);
+		expect(model.getSnapshot().transcriptMobile.conflict).toBe(false);
+		// A native model owns exactly one ready generation (see the constructor
+		// contract), so a replacement hub drives the store instance this model
+		// projects to a new generation rather than a fresh store. Its revision
+		// numbering may restart, so mobile revision 4 is not the 4 the draft was
+		// composed against: the projected conflict field must surface that.
+		const store = (
+			model as unknown as { transcripts: TranscriptDisplayStore }
+		).transcripts;
 		store.beginReadyGeneration();
-		await store.getState().refreshHubDefaults();
-		store.getState().editDraft("mobile", proposedConfig);
-		// A replacement hub (a reconnect to a restarted hub) begins a new ready
-		// generation; its revision numbering may restart, so mobile revision 4
-		// is not the 4 the draft was composed against.
-		store.beginReadyGeneration();
-		await store.getState().refreshHubDefaults();
-		expect(store.getState().draftConflict).toBe(true);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile.conflict).toBe(true);
 	});
 });
