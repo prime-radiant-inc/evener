@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -48,8 +49,24 @@ func (s *Session) beginExecution(name string) {
 	turnID := executionTurnID(name)
 	s.mu.Lock()
 	s.execution = executionState{startedAt: s.sclock().Now(), userInputEntry: s.execution.userInputEntry}
+	// A turn already recorded runs again only when recovery reclaims it: it
+	// reopens, and stays open until its next completion.
+	reopen := s.recordedExecutions[turnID]
 	s.mu.Unlock()
-	s.attachedTranscript().BeginExecution(turnID, false)
+	s.attachedTranscript().BeginExecution(turnID, reopen)
+	if !reopen {
+		return
+	}
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		_, err := s.recordTranscriptLocked(schema.Turn{Kind: schema.TurnReopen, Timestamp: s.sclock().Now().UTC()}, transcript.DoorBuffered, transcript.PlaceSession)
+		return err
+	}()
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	s.surfaceTranscriptWarnings()
 }
 
 // completeExecution records the running execution's completion entry. status
@@ -94,6 +111,12 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 	if !rec.Recorded {
 		return
 	}
+	if rec.Turn.TurnKind == schema.TurnSpanExecution {
+		if s.recordedExecutions == nil {
+			s.recordedExecutions = map[string]bool{}
+		}
+		s.recordedExecutions[rec.Turn.TurnID] = true
+	}
 	switch rec.Turn.Kind {
 	case schema.TurnFailure:
 		s.execution.failed = true
@@ -126,4 +149,62 @@ func (s *Session) roundIDForModelCall() string {
 		s.roundID = identifier.MustNewRoundID()
 	}
 	return s.roundID
+}
+
+// closeCrashedExecutions records an interrupted completion for every
+// execution a crash left open in entries, except the turns pending client
+// work will run again: recovery reclaims those, and they reopen. It runs once
+// at restore, after the writer is attached, and reports whether it recorded
+// anything.
+func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
+	executions := transcript.ExecutionTurns(entries)
+	s.mu.Lock()
+	s.recordedExecutions = make(map[string]bool, len(executions))
+	for turnID := range executions {
+		s.recordedExecutions[turnID] = true
+	}
+	s.mu.Unlock()
+	recorded := false
+	for _, turnID := range closeCrashedExecutionTargets(executions, s.turnsPendingWork()) {
+		now := s.sclock().Now().UTC()
+		turn := schema.Turn{Kind: schema.TurnCompletion, Timestamp: now, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted, CompletedAt: now}}
+		rec, err := func() (transcript.Record, error) {
+			s.attentionMu.Lock()
+			defer s.attentionMu.Unlock()
+			return s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceInTurn(turnID))
+		}()
+		if err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
+		recorded = recorded || rec.Recorded
+	}
+	return recorded
+}
+
+// closeCrashedExecutionTargets is the open executions resume closes: every
+// open one but those pending work names, in TurnID order.
+func closeCrashedExecutionTargets(executions map[string]bool, pending map[string]bool) []string {
+	var targets []string
+	for turnID, open := range executions {
+		if open && !pending[turnID] {
+			targets = append(targets, turnID)
+		}
+	}
+	slices.Sort(targets)
+	return targets
+}
+
+// turnsPendingWork names the turns the client-mutation store still owes a
+// run, which restart recovery reclaims under the same TurnID.
+func (s *Session) turnsPendingWork() map[string]bool {
+	pending := map[string]bool{}
+	if s.clientMutations == nil {
+		return pending
+	}
+	for _, execution := range s.clientMutations.snapshot().PendingExecutions {
+		if execution.TurnID != "" {
+			pending[execution.TurnID] = true
+		}
+	}
+	return pending
 }

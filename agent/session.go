@@ -548,6 +548,10 @@ type Session struct {
 	recoveredTurnID string
 	// execution is the running execution's bookkeeping (session_execution.go).
 	execution executionState
+	// recordedExecutions holds the TurnID of every execution turn this
+	// session's transcript records, so one that runs again reopens; guarded
+	// by mu.
+	recordedExecutions map[string]bool
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
 	roundID string

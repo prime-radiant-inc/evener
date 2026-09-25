@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -1192,8 +1193,18 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 				t.Fatalf("retained entries = %d, on-disk entries = %d; the recovery append must be visible to the retained list", len(entries), len(onDisk.Entries))
 			}
 			// Same count and same last turn: the retained list ends where the
-			// file ends, so serve's projection fence cannot lag the file.
-			lastRetained, lastOnDisk := entries[len(entries)-1], onDisk.Entries[len(onDisk.Entries)-1]
+			// file ends, so serve's projection fence cannot lag the file. The
+			// last turn compared is the last model-history one: the recovered
+			// failure's execution ends with a transcript-only completion.
+			lastHistory := func(entries []transcript.Entry) transcript.Entry {
+				for i := len(entries) - 1; i >= 0; i-- {
+					if !entries[i].Turn.Kind.TranscriptOnly() {
+						return entries[i]
+					}
+				}
+				return transcript.Entry{}
+			}
+			lastRetained, lastOnDisk := lastHistory(entries), lastHistory(onDisk.Entries)
 			if lastRetained.Turn.StableTurnID != lastOnDisk.Turn.StableTurnID ||
 				lastRetained.Turn.Kind != lastOnDisk.Turn.Kind ||
 				lastRetained.Turn.ClientMutationID != lastOnDisk.Turn.ClientMutationID {

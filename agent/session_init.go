@@ -1458,6 +1458,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		restoredTranscriptHeader = refreshed.Header
 		return nil
 	}
+	// An execution the crashed process left open ended when it died: record
+	// it interrupted, unless recovery is about to run it again.
+	if tw != nil && s.closeCrashedExecutions(transcriptEntries) {
+		if err := refreshFromDisk("closing crashed executions"); err != nil {
+			return nil, err
+		}
+	}
 	s.delegateDeliveryMu.Lock()
 	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
 	s.delegateDeliveryMu.Unlock()
