@@ -40,10 +40,11 @@ func newThreadHistories(cacheCapacity, budgetBytes int) *threadHistories {
 // republish; pass 0 when the history's hook is wired before anything is
 // recorded. ensure does no file I/O itself: the cache opens a handle lazily,
 // on the first projection or read, so it is safe to call inside a
-// projection commit.
+// projection commit. epoch is the resync epoch the new history starts at.
 func (r *threadHistories) ensure(
 	threadID, ref, path string,
 	recordedLength int64,
+	epoch uint64,
 	publish func(appwire.HistoryUpdatedParams) error,
 	resync func(epoch uint64),
 	cost func(model string) *registry.Cost,
@@ -63,6 +64,7 @@ func (r *threadHistories) ensure(
 		resync:         resync,
 		cost:           cost,
 		recordedLength: recordedLength,
+		epoch:          epoch,
 	})
 	r.threads[threadID] = h
 	return h
@@ -86,26 +88,40 @@ func (r *threadHistories) drop(threadID string) {
 		delete(r.threads, threadID)
 	}
 	r.mu.Unlock()
-	if !ok {
-		return
+	if ok {
+		closeHistories([]*threadHistory{h})
 	}
-	h.close()
-	h.overlay.Close()
+}
+
+// detachExcept removes every history but keep's from the registry and returns
+// them unclosed. Closing waits on each history's projection goroutine, which
+// may be waiting on a projection commit, so a caller inside a commit detaches
+// there and closes after the commit with closeHistories.
+func (r *threadHistories) detachExcept(keep string) []*threadHistory {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var detached []*threadHistory
+	for threadID, h := range r.threads {
+		if threadID != keep {
+			detached = append(detached, h)
+			delete(r.threads, threadID)
+		}
+	}
+	return detached
 }
 
 // close closes every registered history and its overlay, then the shared
 // cache, and leaves the registry empty.
 func (r *threadHistories) close() {
-	r.mu.Lock()
-	threads := make([]*threadHistory, 0, len(r.threads))
-	for _, h := range r.threads {
-		threads = append(threads, h)
-	}
-	clear(r.threads)
-	r.mu.Unlock()
-	for _, h := range threads {
+	closeHistories(r.detachExcept(""))
+	_ = r.cache.Close()
+}
+
+// closeHistories closes each history and then its overlay. The caller holds
+// nothing a history's publish or resync needs.
+func closeHistories(histories []*threadHistory) {
+	for _, h := range histories {
 		h.close()
 		h.overlay.Close()
 	}
-	_ = r.cache.Close()
 }

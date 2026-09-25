@@ -52,13 +52,13 @@ func TestThreadHistoriesShareOneCache(t *testing.T) {
 	pathA := writeDelegateTranscript(t, "delegate_a", "hello a")
 	pathB := writeDelegateTranscript(t, "delegate_b", "hello b")
 
-	ha := r.ensure("delegate_a", "local:delegate_a", pathA, 0, noopHistoryPublish, noopHistoryResync, nil)
-	hb := r.ensure("delegate_b", "local:delegate_b", pathB, 0, noopHistoryPublish, noopHistoryResync, nil)
+	ha := r.ensure("delegate_a", "local:delegate_a", pathA, 0, 0, noopHistoryPublish, noopHistoryResync, nil)
+	hb := r.ensure("delegate_b", "local:delegate_b", pathB, 0, 0, noopHistoryPublish, noopHistoryResync, nil)
 
 	if ha.cache != r.cache || hb.cache != r.cache {
 		t.Fatalf("delegate histories do not share the registry's cache")
 	}
-	if again := r.ensure("delegate_a", "local:delegate_a", pathA, 0, noopHistoryPublish, noopHistoryResync, nil); again != ha {
+	if again := r.ensure("delegate_a", "local:delegate_a", pathA, 0, 0, noopHistoryPublish, noopHistoryResync, nil); again != ha {
 		t.Fatalf("ensure created a second history for an already-registered thread")
 	}
 	if r.get("delegate_a") != ha || r.get("delegate_b") != hb {
@@ -73,7 +73,7 @@ func TestThreadHistoriesReadOfUnhookedDelegateProjectsWholeFile(t *testing.T) {
 	r := newTestThreadHistories(t)
 	path := writeDelegateTranscript(t, "delegate_x", "first", "second")
 
-	h := r.ensure("delegate_x", "local:delegate_x", path, 0, noopHistoryPublish, noopHistoryResync, nil)
+	h := r.ensure("delegate_x", "local:delegate_x", path, 0, 0, noopHistoryPublish, noopHistoryResync, nil)
 	turns, _, _, _, err := h.latest(h.capture(), "local:delegate_x", 10)
 	if err != nil {
 		t.Fatalf("latest: %v", err)
@@ -91,7 +91,7 @@ func TestThreadHistoriesDropClosesOverlayAndDeregisters(t *testing.T) {
 	r := newTestThreadHistories(t)
 	path := writeDelegateTranscript(t, "delegate_y", "only")
 
-	h := r.ensure("delegate_y", "local:delegate_y", path, 0, noopHistoryPublish, noopHistoryResync, nil)
+	h := r.ensure("delegate_y", "local:delegate_y", path, 0, 0, noopHistoryPublish, noopHistoryResync, nil)
 	h.overlay.Event(events.New(events.WarningData{Message: "careful"}))
 	if len(h.overlay.Snapshot()) == 0 {
 		t.Fatal("overlay has no notice to drop")
@@ -117,7 +117,7 @@ func TestThreadHistoriesSeventyDelegatesLeaveAtMost64OpenHandles(t *testing.T) {
 		threadID := fmt.Sprintf("delegate_%02d", i)
 		ref := "local:" + threadID
 		path := writeDelegateTranscript(t, threadID, "only")
-		h := r.ensure(threadID, ref, path, 0, noopHistoryPublish, noopHistoryResync, nil)
+		h := r.ensure(threadID, ref, path, 0, 0, noopHistoryPublish, noopHistoryResync, nil)
 		if _, _, _, _, err := h.latest(h.capture(), ref, 10); err != nil {
 			t.Fatalf("delegate %d: latest: %v", i, err)
 		}
@@ -125,5 +125,39 @@ func TestThreadHistoriesSeventyDelegatesLeaveAtMost64OpenHandles(t *testing.T) {
 
 	if open := r.cache.OpenHandles(); open > transcriptindex.DefaultCacheCapacity {
 		t.Fatalf("cache holds %d open handles, want at most %d", open, transcriptindex.DefaultCacheCapacity)
+	}
+}
+
+// detachExcept removes every history but keep's from the registry without
+// closing any, so a caller inside a projection commit can defer the closes
+// (which wait on projection goroutines) until the commit is released.
+func TestThreadHistoriesDetachExceptLeavesTheKeptHistoryAndClosesNothing(t *testing.T) {
+	r := newTestThreadHistories(t)
+	root := r.ensure("root", "local:root", writeDelegateTranscript(t, "root", "r"), 0, 0, noopHistoryPublish, noopHistoryResync, nil)
+	child := r.ensure("child", "local:child", writeDelegateTranscript(t, "child", "c"), 0, 0, noopHistoryPublish, noopHistoryResync, nil)
+
+	detached := r.detachExcept("root")
+	if len(detached) != 1 || detached[0] != child {
+		t.Fatalf("detached %v, want only the child's history", detached)
+	}
+	if r.get("child") != nil || r.get("root") != root {
+		t.Fatal("the registry still holds the child, or lost the root")
+	}
+	if child.stopping() {
+		t.Fatal("detach closed the child's history")
+	}
+	closeHistories(detached)
+	if !child.stopping() {
+		t.Fatal("closeHistories left the child's history running")
+	}
+}
+
+// A history ensured at an epoch starts there: a thread whose served identity
+// was replaced under the same ref keeps its epochs increasing.
+func TestThreadHistoriesEnsureStartsAtTheGivenEpoch(t *testing.T) {
+	r := newTestThreadHistories(t)
+	h := r.ensure("root", "local:root", writeDelegateTranscript(t, "root", "r"), 0, 5, noopHistoryPublish, noopHistoryResync, nil)
+	if got := h.Epoch(); got != 5 {
+		t.Fatalf("epoch = %d, want 5", got)
 	}
 }

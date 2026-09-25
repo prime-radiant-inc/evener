@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -25,6 +26,13 @@ var threadHistoryPublishHook func(threadID string) error
 // threadHistoryRebuildHook, when set, runs just before each rebuild attempt.
 // Test seam only; nil in production.
 var threadHistoryRebuildHook func(threadID string)
+
+// threadHistoryPublishedHook, when set, runs after each projection that
+// advanced what clients hold history through, with the new length. Test seam
+// only; unset in production. It is atomic, unlike the seams above, because
+// tests install it while histories of servers they share a package with may
+// still be projecting.
+var threadHistoryPublishedHook atomic.Pointer[func(threadID string, length int64)]
 
 // threadHistoryMaxRebuilds is how many rebuilds in a row may fail before the
 // thread's history enters its failed state (spec: "If the rebuild itself
@@ -51,6 +59,8 @@ type threadHistoryConfig struct {
 	// for a history whose hook is wired from the start, matching the
 	// existing behavior where the first hooked entry sets published.
 	recordedLength int64
+	// epoch is the resync epoch the history starts at.
+	epoch uint64
 }
 
 // threadHistory is one thread's history projection: the recorded entries the
@@ -99,6 +109,7 @@ func newThreadHistory(cfg threadHistoryConfig) *threadHistory {
 		cost:           cfg.cost,
 		recordedLength: cfg.recordedLength,
 		published:      cfg.recordedLength,
+		epoch:          cfg.epoch,
 		wake:           make(chan struct{}, 1),
 		stop:           make(chan struct{}),
 		done:           make(chan struct{}),
@@ -253,6 +264,9 @@ func (h *threadHistory) project(target, published int64, epoch uint64) error {
 	h.mu.Lock()
 	h.published = changes.Length
 	h.mu.Unlock()
+	if hook := threadHistoryPublishedHook.Load(); hook != nil {
+		(*hook)(h.threadID, changes.Length)
+	}
 	return nil
 }
 
