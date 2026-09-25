@@ -161,3 +161,33 @@ func TestExtendedIndexPassesOverTranscriptOnlyEntries(t *testing.T) {
 		}
 	}
 }
+
+// Derived totals (usage, failed tool calls) read every entry line; the
+// transcript-only entries carry no usage and no tool parts, so they add
+// nothing.
+func TestDerivedTotalsIgnoreTranscriptOnlyEntries(t *testing.T) {
+	fixture := transcriptOnlyProjectionFixture()
+	fixture[1].Turn.Usage = llm.Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}
+	failed := toolResultEntry(0, "call_a", "read_file", "boom")
+	failed.Turn.Message.Content[0].ToolResult.IsError = true
+	fixture = append(fixture, failed)
+	for i := range fixture {
+		fixture[i].Seq = i + 1
+	}
+	plain := writeEntries(t, fixture...)
+	interleaved := writeEntries(t, interleavedEntries(fixture)...)
+	wantUsage, wantFailed, err := NewTurnCache().DerivedTotalsFromFile(plain, testMaxLineBytes, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantUsage == nil || wantFailed == 0 {
+		t.Fatalf("the fixture counts nothing (usage %v, failed %d)", wantUsage, wantFailed)
+	}
+	gotUsage, gotFailed, err := NewTurnCache().DerivedTotalsFromFile(interleaved, testMaxLineBytes, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotUsage, wantUsage) || gotFailed != wantFailed {
+		t.Fatalf("totals = (%+v, %d), want (%+v, %d)", gotUsage, gotFailed, wantUsage, wantFailed)
+	}
+}
