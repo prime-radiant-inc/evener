@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -316,9 +317,11 @@ type Writer struct {
 	tail *appendTail
 	// tailMove is the tail's move this writer's handle position reflects:
 	// the file's end as of this writer's own last append or open.
-	tailMove  uint64
-	closeOnce sync.Once
-	closed    atomic.Bool
+	tailMove uint64
+	// releaseTail gives the tail back if the writer is dropped without Close.
+	releaseTail runtime.Cleanup
+	closeOnce   sync.Once
+	closed      atomic.Bool
 	// header is the validated header of the resumed transcript, retained
 	// from the resume scan so callers that already hold the decoded entries
 	// can project them without re-reading the file for its header.
@@ -480,7 +483,15 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 	defer tail.mu.Unlock()
 	// The file was just created (or truncated) with no entries in it.
 	tail.nextSeq = 0
-	return &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}, nil
+	return newWriterOnTail(fs, f, tail, header), nil
+}
+
+// newWriterOnTail builds a writer positioned at the file's end on its shared
+// tail. The caller holds tail.mu.
+func newWriterOnTail(fs afero.Fs, f afero.File, tail *appendTail, header Header) *Writer {
+	w := &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}
+	w.releaseTail = runtime.AddCleanup(w, (*appendTail).release, tail)
+	return w
 }
 
 // Header returns the transcript's validated header: the header this writer
@@ -957,6 +968,7 @@ func (w *Writer) Close() error {
 		if err := w.file.Close(); err != nil && closeErr == nil {
 			closeErr = fmt.Errorf("close transcript file: %w", err)
 		}
+		w.releaseTail.Stop()
 		w.tail.release()
 	})
 	return closeErr
@@ -1028,7 +1040,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	// Another writer still open on the file may have used more of the sequence
 	// than the file shows; never go back below it.
 	tail.nextSeq = max(tail.nextSeq, nextSeq)
-	return &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}, entries, nil
+	return newWriterOnTail(fs, f, tail, header), entries, nil
 }
 
 // scanForResume validates the transcript, truncates any crash tail, positions

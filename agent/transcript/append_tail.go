@@ -45,11 +45,12 @@ type appendTail struct {
 // process has open. A process holds few transcripts open at once, so a linear
 // scan on open is cheap.
 //
-// A tail matches on the path the file was opened by as well as os.SameFile. A
-// writer dropped without Close has its handle closed by the runtime and leaves
-// its tail behind; once its file is removed the filesystem can give the same
-// inode to a new transcript, which must not inherit the dead file's sequence.
-// Every writer on one transcript opens it by the same path.
+// A tail matches on the file's canonical path as well as os.SameFile. A writer
+// dropped without Close gives its hold back only when it is collected, and the
+// runtime may close its handle first; once its file is removed the filesystem
+// can give the same inode to a new transcript, which must not inherit the dead
+// file's sequence. Hard links to one transcript get separate tails; nothing
+// links transcripts.
 var openTails struct {
 	mu    sync.Mutex
 	tails []*appendTail
@@ -69,7 +70,7 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	if !os.SameFile(info, info) {
 		return &appendTail{}, nil
 	}
-	path := filepath.Clean(f.Name())
+	path := canonicalPath(f.Name())
 	openTails.mu.Lock()
 	defer openTails.mu.Unlock()
 	for _, tail := range openTails.tails {
@@ -81,6 +82,20 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	tail := &appendTail{path: path, info: info, refs: 1}
 	openTails.tails = append(openTails.tails, tail)
 	return tail, nil
+}
+
+// canonicalPath names a file by an absolute path with its symlinks resolved,
+// so every spelling of the same path matches. A path that cannot be resolved
+// keeps the form it has; at worst its writer does not share a tail.
+func canonicalPath(name string) string {
+	abs, err := filepath.Abs(name)
+	if err != nil {
+		return filepath.Clean(name)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 // moved records a writer taking the file's end and returns the new move.
