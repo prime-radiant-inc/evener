@@ -790,11 +790,21 @@ func TestExecGuardLauncherPreparesThePrivateGoHome(t *testing.T) {
 					t.Errorf("%s %s was not created: %v", name, want, err)
 				}
 			}
-			// What the guard sees is the helper's value over the inherited one.
-			effective, set := got["GOCACHE"]
-			if !set {
-				effective = os.Getenv("GOCACHE")
+			// Ask go itself, in the environment the guard gets: the helper may
+			// leave GOCACHE to the private copy of the user's go env file
+			// rather than export it. The guard's HOME and XDG_CONFIG_HOME are
+			// left out: they cannot change GOCACHE (GOENV is explicit), and a
+			// go command given a config home forks a telemetry sidecar that
+			// keeps writing there after it exits, racing this test's TempDir
+			// cleanup (#1534).
+			goEnv := exec.Command("go", "env", "GOCACHE")
+			goEnv.Env = os.Environ()
+			for _, entry := range env {
+				if name, _, _ := strings.Cut(entry, "="); name != "HOME" && name != "XDG_CONFIG_HOME" {
+					goEnv.Env = append(goEnv.Env, entry)
+				}
 			}
+			effective := strings.TrimSpace(string(must(goEnv.Output())))
 			if effective != userCache {
 				t.Errorf("the guard's GOCACHE = %q, want the user's own %q", effective, userCache)
 			}
