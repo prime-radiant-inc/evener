@@ -1776,6 +1776,71 @@ describe("ConversationStore", () => {
         createdAt: 7,
       });
     });
+
+    it("a failed open does not leave the retired target's rows visible", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      const failing = new FakeConversationService();
+      failing.open = async () => {
+        throw new Error("open failed");
+      };
+      await store.getState().open(failing, "ref-1");
+      expect(store.getState().status).toBe("error");
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
+
+    it("a same-target reopen keeps the client's submitted-here provenance", async () => {
+      const store = await openStore(authoritativeModel("cmid-7"));
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-7" })],
+      });
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+
+      // Reopen the same target, then rebind with the durable record gone: the
+      // daemon still reports the id, and the carried provenance must survive.
+      const reopen = new FakeConversationService();
+      reopen.openConv = authoritativeModel("cmid-7");
+      await store.getState().open(reopen, "ref-1");
+      const rebound = fakePort({});
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-7",
+        fromThisClient: true,
+        createdAt: 7,
+      });
+    });
+
+    it("a synchronous read throw on a notification keeps the last projection", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      port.read = () => {
+        throw new Error("storage unavailable");
+      };
+      port.publish({});
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+    });
+
+    it("a synchronous read throw on the first read leaves the projection null", async () => {
+      const port = fakePort();
+      port.read = () => {
+        throw new Error("storage unavailable");
+      };
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations ?? null).toBeNull();
+    });
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error

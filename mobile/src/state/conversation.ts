@@ -2148,9 +2148,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // Any thread open retires the bound seam: the port is scoped by the
         // durable target key (hub + ref) and the store cannot see the hub, so a
         // same-ref open through a different hub must not inherit the prior
-        // target's rows. The host rebinds for the conversation it opens.
+        // target's rows. The host rebinds for the conversation it opens. The
+        // carried provenance is NOT forgotten: it is keyed by client mutation id
+        // (unique per submission), it is the only carrier once a record settles
+        // out of storage, and the package store it mirrors never prunes it.
         detachPendingRows();
-        forgetPendingProvenance();
         // Increment conversation generation so late frames from a previous
         // conversation are rejected.
         const gen = ++conversationGen;
@@ -2217,9 +2219,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         suspendedService = null;
         // Same rule as open(): any thread open retires the prior seam and its
         // rows (the durable target key is hub + ref, and the store cannot see
-        // the hub), and the host rebinds for the conversation it opens.
+        // the hub), and the host rebinds for the conversation it opens. The
+        // carried provenance survives, keyed by client mutation id.
         detachPendingRows();
-        forgetPendingProvenance();
         const gen = ++conversationGen;
         // I1: increment the binding epoch and bind service+sink so queued
         // requests from an older binding are suppressed at the boundary.
