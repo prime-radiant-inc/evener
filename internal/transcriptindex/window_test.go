@@ -4,10 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/llm"
 )
 
 func isCursorStale(err error) bool {
@@ -114,5 +119,32 @@ func TestEmptyTranscriptHasNoItems(t *testing.T) {
 	}
 	if len(window.Candidates) != 0 || window.HasOlder {
 		t.Fatalf("empty transcript window = %+v", window)
+	}
+}
+
+// TestInputImagesCarryTheirContentAddress requires a user image to project
+// with the sha and size the hub serves its bytes back by
+// (/s/<session>/images/<sha>): the index strips the bytes, so without them
+// nothing can fetch the image again.
+func TestInputImagesCarryTheirContentAddress(t *testing.T) {
+	pasted := schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "look"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: pngBytes, MediaType: "image/png"}},
+	}})
+	for name, turn := range map[string]schema.Turn{"legacy": pasted, "new format": opens("turn_m1", schema.TurnSpanExecution, pasted)} {
+		fx := fixture{name: name, header: transcript.Header{SessionID: "s"}, lines: []fixtureLine{entryLine(turn)}}
+		x := openIndex(t, writeFixture(t, fx), t.TempDir())
+		window, err := x.Latest(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var images []appwire.InputItem
+		for _, candidate := range window.Candidates {
+			images = append(images, candidate.Item.Images...)
+		}
+		want := map[string]string{"sha": events.ImageSHA(pngBytes), "size": strconv.Itoa(len(pngBytes))}
+		if len(images) != 1 || !reflect.DeepEqual(images[0].Metadata, want) {
+			t.Fatalf("%s: images = %+v, want one carrying %v", name, images, want)
+		}
 	}
 }

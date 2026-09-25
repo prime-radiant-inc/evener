@@ -1693,7 +1693,9 @@ const (
 // an ephemeral notice.
 type OverlayItem struct {
 	// Key identifies this overlay slot: "stream:<streamId>:<agentMessage|reasoning>",
-	// "preview:<callId>", "tool:<historyKey>", or "notice:<n>".
+	// "preview:<callId>", "tool:<historyKey>", or a notice key. Notice keys
+	// are opaque: a daemon's are "notice:<n>", and the hub mints its own
+	// (such as "notice:hub:relay-gave-up").
 	Key        string              `json:"key"`
 	Kind       OverlayKind         `json:"kind"`
 	TurnID     string              `json:"turnId,omitempty"`

@@ -122,7 +122,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	if err != nil {
 		return err
 	}
-	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, maps.Clone(seed), nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, maps.Clone(seed), apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	b.recordNames(entry, seed)
 	for i, item := range items {
 		c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
@@ -395,7 +395,7 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 // item absorb (when set) does not take. seed names the entry's nameless tool
 // results.
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
-	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, seed, nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, seed, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	for i, item := range items {
 		if absorb != nil {
 			absorbed, err := absorb(item)

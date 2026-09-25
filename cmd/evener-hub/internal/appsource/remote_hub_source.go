@@ -630,6 +630,9 @@ type remoteItemPagingState struct {
 	// recognized as a divergent transcript and the incarnation rotates.
 	head    appwire.ThreadItemPosition
 	hasHead bool
+	// history is the history identity the remote read the last page recorded
+	// into the window under; a continuation served from the window carries it.
+	history HistoryIdentity
 }
 
 // remoteItemSpan is one run of retained candidates this source observed as a
@@ -727,7 +730,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 
 	if params.Cursor == "" {
 		remote.Cursor = ""
-		candidates, native, err := s.remoteItemPage(ctx, remote)
+		candidates, native, history, err := s.remoteItemPage(ctx, remote)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
@@ -735,7 +738,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 			return ItemCandidateResult{}, err
 		}
 		identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
-		return s.recordRemoteItemPage(key, identity, candidates, native, head, hasHead, nil)
+		return s.recordRemoteItemPage(key, identity, candidates, native, history, head, hasHead, nil)
 	}
 
 	state, ok := s.itemPaging.peek(key)
@@ -765,7 +768,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 		return ItemCandidateResult{}, err
 	}
 	remote.Cursor = native
-	candidates, next, err := s.remoteItemPage(ctx, remote)
+	candidates, next, history, err := s.remoteItemPage(ctx, remote)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -784,7 +787,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	if _, compatible := remoteMergeCandidates(state.candidates, candidates); !compatible {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
-	return s.recordRemoteItemPage(key, state.identity, candidates, next, state.head, state.hasHead, &before)
+	return s.recordRemoteItemPage(key, state.identity, candidates, next, history, state.head, state.hasHead, &before)
 }
 
 // ReadItemCandidates materializes a remote item-mode thread read into the
@@ -845,24 +848,25 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 		return ItemCandidateResult{}, err
 	}
 	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
-	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, head, hasHead, nil)
+	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, ReadHistoryIdentity(response), head, hasHead, nil)
 }
 
 // remoteItemPage issues one remote item-mode turn page and returns its
-// positioned candidates and the remote cursor for the next older page.
-func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.ThreadTurnsListParams) ([]appitempaging.TranscriptItemCandidate, string, error) {
+// positioned candidates, the remote cursor for the next older page, and the
+// history identity the remote read it under.
+func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.ThreadTurnsListParams) ([]appitempaging.TranscriptItemCandidate, string, HistoryIdentity, error) {
 	var out appwire.ThreadTurnsListResponse
 	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
-		return nil, "", err
+		return nil, "", HistoryIdentity{}, err
 	}
 	candidates, err := appitempaging.CandidatesFromTurns(out.Data)
 	if err != nil {
-		return nil, "", err
+		return nil, "", HistoryIdentity{}, err
 	}
 	if err := validateRemotePagePositions(candidates); err != nil {
-		return nil, "", err
+		return nil, "", HistoryIdentity{}, err
 	}
-	return candidates, out.NextCursor, nil
+	return candidates, out.NextCursor, PageHistoryIdentity(out), nil
 }
 
 // validateRemotePagePositions applies to one remote item page the whole positional
@@ -1004,7 +1008,7 @@ func continueCompleteRemoteItemPage(cursor string, state remoteItemPagingState, 
 			return ItemCandidateResult{}, err
 		}
 	}
-	return ItemCandidateResult{Candidates: window, Identity: state.identity, Exhausted: !hasOlder}, nil
+	return ItemCandidateResult{Candidates: window, Identity: state.identity, Exhausted: !hasOlder, History: state.history}, nil
 }
 
 // remoteContiguousPrefix returns the leading run of retained candidates the
@@ -1439,6 +1443,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	identity appitempaging.CursorIdentity,
 	candidates []appitempaging.TranscriptItemCandidate,
 	native string,
+	history HistoryIdentity,
 	head appwire.ThreadItemPosition,
 	hasHead bool,
 	from *appwire.ThreadItemPosition,
@@ -1475,7 +1480,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		spans = remoteItemSpansAfterObserving(merged, spans, candidates, from)
 	}
 	window := appitempaging.TranscriptItemWindow{Candidates: windowCandidates}
-	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, spans: spans, complete: native == "", head: head, hasHead: hasHead}
+	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, spans: spans, complete: native == "", head: head, hasHead: hasHead, history: history}
 	if native == "" {
 		// The identity is returned even when the page is complete: packing can
 		// still drop the oldest item for size and needs an identity to mint a
@@ -1484,7 +1489,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		// observed under this identity below any unobserved span, can be served
 		// locally.
 		s.itemPaging.put(key, state)
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true, History: history}, nil
 	}
 	if len(windowCandidates) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
@@ -1495,7 +1500,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	}
 	window.OlderCursor = cursor
 	s.itemPaging.put(key, state)
-	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: false}, nil
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: false, History: history}, nil
 }
 
 func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.CursorIdentity {

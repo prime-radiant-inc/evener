@@ -237,30 +237,22 @@ func TestHubRelaySharedSessionAliasesEnrichUntargetedOutputImages(t *testing.T) 
 	}
 	awaitLiveHubSubscriptions(t, appServer, 2)
 
-	started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-		"turnId": "turn-image",
-		"item": appwire.ThreadItem{
-			Type:          "commandExecution",
-			ID:            "item-image",
-			ToolName:      "write_file",
-			CallID:        "call-image",
-			ArgumentsJSON: `{"file_path":"plot.png"}`,
-			Status:        appwire.TurnStatusInProgress,
-		},
-	}).Notification
-	pool.emit(t, *started)
-	completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"turnId": "turn-image",
-		"item": appwire.ThreadItem{
-			Type:     "commandExecution",
-			ID:       "item-image",
-			ToolName: "write_file",
-			CallID:   "call-image",
-			Output:   "wrote",
-			Status:   appwire.TurnStatusCompleted,
-		},
-	}).Notification
-	pool.emit(t, *completed)
+	pool.emit(t, overlayToolNotification(map[string]any{}, appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "item-image",
+		ToolName:      "write_file",
+		CallID:        "call-image",
+		ArgumentsJSON: `{"file_path":"plot.png"}`,
+		Status:        appwire.TurnStatusInProgress,
+	}))
+	pool.emit(t, overlayToolNotification(map[string]any{}, appwire.ThreadItem{
+		Type:     "commandExecution",
+		ID:       "item-image",
+		ToolName: "write_file",
+		CallID:   "call-image",
+		Output:   "wrote",
+		Status:   appwire.TurnStatusCompleted,
+	}))
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 
 	items := aliasCompletedItemsUntilBarrier(t, client, "item-image")
@@ -662,16 +654,22 @@ func aliasCompletedItemsUntilBarrier(t *testing.T, client *appwire.Client, itemI
 			if notification.Method == "test/alias-barrier" {
 				return items
 			}
-			if notification.Method == appwire.NotifyItemCompleted {
-				var params struct {
-					Item appwire.ThreadItem `json:"item"`
-				}
-				if json.Unmarshal(notification.Params, &params) == nil && params.Item.ID == itemID {
-					items = append(items, params.Item)
+			if notification.Method == appwire.NotifyOverlayUpserted {
+				var params appwire.OverlayUpsertedParams
+				if json.Unmarshal(notification.Params, &params) == nil && params.Item.Item.ID == itemID && params.Item.Item.Status == appwire.TurnStatusCompleted {
+					items = append(items, params.Item.Item)
 				}
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for alias delivery barrier")
 		}
 	}
+}
+
+// overlayToolNotification is the overlay/upserted a daemon publishes for a
+// tool call's running state, with fields (a ref, a thread id) naming its
+// target.
+func overlayToolNotification(fields map[string]any, item appwire.ThreadItem) appwire.Notification {
+	fields["item"] = appwire.OverlayItem{Key: "tool:" + item.CallID, Kind: appwire.OverlayTool, CallID: item.CallID, Item: item}
+	return *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, fields).Notification
 }

@@ -52,6 +52,37 @@ type ItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
+	// History is the identity of the history read the candidates came from.
+	History HistoryIdentity
+}
+
+// HistoryIdentity is what a history read was projected under: what the
+// client merges a page by or replaces its history with. The hub's own cursor
+// identity is separate and rotates by its own rule.
+type HistoryIdentity struct {
+	BootGeneration string
+	Epoch          uint64
+	Snapshot       *appwire.SnapshotIdentity
+	Authoritative  bool
+}
+
+// ReadHistoryIdentity is the history identity a thread/read response carries.
+func ReadHistoryIdentity(response appwire.ThreadReadResponse) HistoryIdentity {
+	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative}
+}
+
+// PageHistoryIdentity is the history identity a thread/turns/list page carries.
+func PageHistoryIdentity(response appwire.ThreadTurnsListResponse) HistoryIdentity {
+	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative}
+}
+
+// StampPage gives a page the hub packed the history identity it came from.
+func (h HistoryIdentity) StampPage(response appwire.ThreadTurnsListResponse) appwire.ThreadTurnsListResponse {
+	response.BootGeneration = h.BootGeneration
+	response.Epoch = h.Epoch
+	response.Snapshot = h.Snapshot
+	response.Authoritative = h.Authoritative
+	return response
 }
 
 // ItemCandidateSource exposes positioned item candidates alongside the source
@@ -167,6 +198,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 			ProjectionVersion: localDaemonItemCursorProjectionVersion,
 		},
 		Exhausted: response.OlderCursor == "",
+		History:   ReadHistoryIdentity(response),
 	}, nil
 }
 
@@ -177,6 +209,7 @@ var localDaemonItemIncarnationSequence atomic.Uint64
 type localDaemonItemSnapshot struct {
 	Candidates []appitempaging.TranscriptItemCandidate
 	state      itemSnapshotState
+	history    HistoryIdentity
 }
 
 // ReadItemCandidates reads the daemon's authenticated bounded item view and
@@ -222,7 +255,7 @@ func (s *LocalDaemonSource) ReadItemCandidates(ctx context.Context, params appwi
 	if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
 		return ItemCandidateResult{}, err
 	}
-	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
 }
 
 // ListItemCandidates resolves a hub-owned cursor against the bounded native
@@ -269,7 +302,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
 			return ItemCandidateResult{}, err
 		}
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
 	}
 
 	state, ok := s.itemSnapshots.peek(resolved.pagingRef)
@@ -308,7 +341,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
 			return ItemCandidateResult{}, err
 		}
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
 	}
 	identity := appitempaging.CursorIdentity{
 		ThreadRef:         state.ThreadRef,
@@ -380,6 +413,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: selected},
 		Identity:   identity,
 		Exhausted:  response.NextCursor == "",
+		History:    PageHistoryIdentity(response),
 	}, nil
 }
 
@@ -615,6 +649,7 @@ func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 	current := localDaemonItemSnapshot{
 		Candidates: candidates,
 		state:      next,
+		history:    ReadHistoryIdentity(response),
 	}
 	return current, nil
 }

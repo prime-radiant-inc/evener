@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 type hubRelayHandle struct {
@@ -264,6 +266,27 @@ func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appw
 // every route the relay serves (a read-only child alias shares the root's
 // relay session), and each subscriber acts on the ref it names, so each copy
 // names the subscriber's own.
+// relayGaveUpNotice is the error notice a relay publishes when it gives up
+// on turnID's source: the cause of the last failed re-dial, anchored after
+// entry (an entry position, ordinal + 1). The key is the hub's own, apart from
+// the daemon's numbered notice keys.
+func relayGaveUpNotice(turnID string, entry uint64, cause error) appwire.OverlayItem {
+	const key = "notice:hub:relay-gave-up"
+	// The announcement always has text, so SystemMessage always builds it.
+	item, _ := apptranscript.SystemMessage(apptranscript.NoticeAnnouncement{
+		EventKind:   appwire.ThreadItemEventKindError,
+		Description: "Hub lost the connection to the session",
+		Text:        "Hub lost the connection to the session: " + cause.Error(),
+	}, key, turnID)
+	return appwire.OverlayItem{
+		Key:    key,
+		Kind:   appwire.OverlayNotice,
+		TurnID: turnID,
+		Anchor: &appwire.ThreadItemPosition{Entry: entry, Item: appwire.NoticeAnchorItem},
+		Item:   item,
+	}
+}
+
 func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
 	params, err := json.Marshal(appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref})
 	if err != nil {
@@ -418,6 +441,7 @@ func relayNotificationRoutingKey(notification appwire.Notification, sourceID str
 }
 
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
+	logf := hubLogfFor(cfg)
 	relayIdleInterval := hubRelayIdleInterval
 	// The relay's background goroutines fence against the lookup captured
 	// here, never the live seam: they outlive the request that started them.
@@ -1767,88 +1791,98 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			defer cleanupRelay()
 			argsByCallID := map[string]string{}
 			var backoff relayRetryBackoff
-			// activeTurnID mirrors the thread's in-progress turn, tracked from the
-			// same turn/started + turn/completed notifications this loop already
-			// forwards, so giveUpOnActiveTurn knows whether a re-dial failure is
-			// happening mid-turn (spinner visibly stalled) or between turns
-			// (nothing on screen is waiting, so nothing needs to be told).
-			var activeTurnID string
+			// turnRunning mirrors whether the thread is running a turn, tracked
+			// from the thread/status/changed frames this loop already forwards,
+			// so giveUpOnRunningTurn knows whether a re-dial failure is happening
+			// mid-turn (spinner visibly stalled) or between turns (nothing on
+			// screen is waiting, so nothing needs to be told).
+			var turnRunning bool
+			var runningTurnID string
+			// noticeAnchorEntry is the last relayed entry's ordinal + 1, 0
+			// before any (the spec's notice-anchor rule, appoverlay.go's
+			// anchorEntry): the entry a give-up notice anchors after.
+			var noticeAnchorEntry uint64
 			var consecutiveFailures int
-			trackActiveTurn := func(notification appwire.Notification) {
+			trackRelayedThread := func(notification appwire.Notification) {
 				switch notification.Method {
-				case appwire.NotifyTurnStarted:
-					var params struct {
-						Turn struct {
-							ID string `json:"id"`
-						} `json:"turn"`
-					}
+				case appwire.NotifyThreadStatusChanged:
+					var params appwire.ThreadStatusChangedParams
 					if json.Unmarshal(notification.Params, &params) == nil {
-						activeTurnID = params.Turn.ID
+						turnRunning = params.Status.Type == appwire.ThreadStatusActive
+						runningTurnID = params.ActiveTurnID
 					}
-				case appwire.NotifyTurnCompleted:
-					activeTurnID = ""
+				case appwire.NotifyHistoryUpdated:
+					var params struct {
+						Items []struct {
+							Position *appwire.ThreadItemPosition `json:"position"`
+						} `json:"items"`
+					}
+					if json.Unmarshal(notification.Params, &params) != nil {
+						return
+					}
+					for _, item := range params.Items {
+						if item.Position != nil {
+							noticeAnchorEntry = max(noticeAnchorEntry, item.Position.Entry+1)
+						}
+					}
 				}
 			}
-			// giveUpOnActiveTurn synthesizes the failed turn/completed the daemon
-			// itself can no longer send (it is dead), so TurnFailureEndCap's
-			// existing danger chip + "Reconnect & retry" button light up in place
-			// of the spinner the reader has been watching. It fires at most once
-			// per stall: clearing activeTurnID makes every later call in the same
-			// stall a no-op, so continued backoff never re-broadcasts the same
-			// failure.
+			// giveUpOnRunningTurn tells the reader what the unreachable source can
+			// no longer say: nothing runs the turn any more, and why. It publishes
+			// the idle status, which owns the session status; an error notice in
+			// the running turn naming the last re-dial failure; and a resync, so
+			// the client re-reads: the turn never completed reads as an open turn
+			// with nothing running it. It fires at most once per stall: clearing
+			// turnRunning makes every later call in the same stall a no-op, so
+			// continued backoff never re-broadcasts them.
 			//
-			// Both frames name the relay's target. The synthesized failure is the
-			// turn's; the session STATUS is thread/status/changed's, never
-			// turn/completed's — the daemon's real failure exit emits the same
-			// pair (agent/session_lifecycle.go's endInputAtTurnFailure announces
-			// EventSessionEnd{Reason:"turn_failed"} as
-			// thread/status/changed(idle)). Without the status frame a client
-			// that leaves the status to the status frame, as the shared web and
-			// mobile reducer now does, would keep the session active with Stop
-			// and Steer still showing and Send withheld — the exact stall this
-			// synthesis exists to end. The capabilities are the hub's own answer
-			// for a session whose daemon is gone (relayGaveUpCapabilities, the set
-			// a past read returns), because the departing daemon's set describes
-			// the turn that is over.
-			giveUpOnActiveTurn := func(cause error) {
-				if activeTurnID == "" {
+			// The notice is published live and nowhere else. This loop serves
+			// only sources without an atomic relay session (remote hubs and other
+			// federated sources; a local daemon's death takes the relay session's
+			// DaemonGoneResync path instead), and the client's re-read goes to the
+			// same unreachable source and fails, which leaves its history and
+			// overlay, the notice included, as they were. The notice anchors after
+			// the latest history this relay forwarded, and at the start of history
+			// only when it forwarded none.
+			//
+			// Both frames name the relay's target. Without the status frame the
+			// client would keep the session active with Stop and Steer still
+			// showing and Send withheld — the exact stall this exists to end. The
+			// capabilities are the hub's own answer for a session whose daemon is
+			// gone (relayGaveUpCapabilities, the set a past read returns), because
+			// the departing daemon's set describes the turn that is over.
+			giveUpOnRunningTurn := func(cause error) {
+				if !turnRunning {
 					return
 				}
-				turnID := activeTurnID
-				activeTurnID = ""
-				message := "Hub lost the connection to the session"
-				if cause != nil {
-					message += ": " + cause.Error()
-				}
-				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-					ThreadID: threadID,
-					Ref:      subscribeParams.Ref,
-					Turn: appwire.Turn{
-						ID:     turnID,
-						Status: appwire.TurnStatusFailed,
-						Error: &appwire.TurnError{
-							Message: message,
-							Source:  "hub",
-						},
-					},
-				})
+				turnRunning = false
+				logf("relay for %s gave up on its running turn after %d failed re-dials: %v", relayKey, consecutiveFailures, cause)
 				server.Broadcast(relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 					ThreadID:     threadID,
 					Ref:          subscribeParams.Ref,
 					Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 					Capabilities: relayGaveUpCapabilities(cfg, relayKey, thread),
 				})
+				server.Broadcast(relayKey, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+					ThreadID: threadID,
+					Ref:      subscribeParams.Ref,
+					Item:     relayGaveUpNotice(runningTurnID, noticeAnchorEntry, cause),
+				})
+				server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+					ThreadID: threadID,
+					Ref:      subscribeParams.Ref,
+				})
 			}
 			recordFailure := func(cause error) {
 				consecutiveFailures++
 				if consecutiveFailures >= relayGiveUpAfterFailures {
-					giveUpOnActiveTurn(cause)
+					giveUpOnRunningTurn(cause)
 				}
 			}
 			broadcastNotification := func(notification appwire.Notification) {
 				backoff.Reset()
 				consecutiveFailures = 0
-				trackActiveTurn(notification)
+				trackRelayedThread(notification)
 				if source.ID() == "local" {
 					notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
 				}
@@ -1946,7 +1980,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						continue
 					}
 					if result.notifications == nil {
-						recordFailure(nil)
+						recordFailure(errors.New("the source returned no notification stream"))
 						if waitForRetry(backoff.Next()) {
 							return
 						}
@@ -1957,7 +1991,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					select {
 					case notification, ok := <-result.notifications:
 						if !ok {
-							recordFailure(nil)
+							recordFailure(errors.New("the source closed its notification stream"))
 							if waitForRetry(backoff.Next()) {
 								return
 							}

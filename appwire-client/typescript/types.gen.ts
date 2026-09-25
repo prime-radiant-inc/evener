@@ -2215,7 +2215,9 @@ export interface OverlayEndParams {
 export interface OverlayItem {
   /**
    * Key identifies this overlay slot: "stream:<streamId>:<agentMessage|reasoning>",
-   * "preview:<callId>", "tool:<historyKey>", or "notice:<n>".
+   * "preview:<callId>", "tool:<historyKey>", or a notice key. Notice keys
+   * are opaque: a daemon's are "notice:<n>", and the hub mints its own
+   * (such as "notice:hub:relay-gave-up").
    */
   key: string;
   kind: string;

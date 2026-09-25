@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -629,6 +630,14 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 		return err
 	}
 	if err := removeProjectSessionDir(filepath.Join(sessionsDir, sessionID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// The transcript's index sidecar is derived from it and goes with it; the
+	// hub's cached handle on it is closed first, so nothing keeps the deleted
+	// files open.
+	transcriptPath := filepath.Join(sessionsDir, sessionID+".transcript.jsonl")
+	pastTranscriptIndexes.Forget(transcriptPath)
+	if err := removeProjectSessionDir(transcriptindex.DirFor(transcriptPath)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	for _, path := range []string{
