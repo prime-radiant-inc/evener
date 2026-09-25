@@ -143,7 +143,7 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   scriptNavigationManifest(client);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v5",
+    protocolVersion: "evener-appwire-v6",
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },

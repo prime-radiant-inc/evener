@@ -4,17 +4,30 @@
 // Every function here is pure: given the same inputs, produces the same
 // (possibly reference-equal, for no-op cases) output.
 
+import { compareBootGeneration } from "./bootGeneration";
 import { appendChunk, pendingTextJoined } from "./chunkview";
-import { type ItemImage, type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
+import {
+  type HistoryState,
+  type ItemImage,
+  type ItemModel,
+  SYSTEM_PRELUDE_TURN_ID,
+  type ThreadModel,
+  type TurnModel,
+} from "./model";
 import type {
   AnyNotification,
   EvenerDelegateInfo,
+  HistoryUpdatedParams,
   InputItem,
   OutputImage,
+  OverlayDeltaParams,
+  OverlayItem,
   SandboxEscalationRequested,
   Thread,
   ThreadItem,
+  ThreadItemPosition,
   ThreadReadResponse,
+  ThreadResyncParams,
   ThreadTurnsListResponse,
   Turn,
   WarningParams,
@@ -328,6 +341,11 @@ function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemMode
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
+  // Versioned-history fields, set only when the wire carried them (a v6 read,
+  // history/updated, or an overlay item), so pre-v6 items keep their shape.
+  if (item.version) model.version = item.version;
+  if (item.roundId) model.roundId = item.roundId;
+  if (item.completedAtEntry) model.completedAtEntry = item.completedAtEntry;
   // `item.text !== undefined` (not truthiness): an explicitly provided empty
   // text is authoritative for a reasoning row exactly as it is for assistant
   // text (mergeCompletedText), so it seeds an authoritative EMPTY summary
@@ -472,6 +490,7 @@ function wireToTurnScalars(turn: Turn): Omit<TurnModel, "items"> {
     usage: turn.usage,
     cost: turn.cost,
     error: turn.error,
+    ...(turn.version ? { version: turn.version } : {}),
   };
 }
 
@@ -1235,7 +1254,33 @@ export function imageSessionRouteForSession(sessionId: string): string | undefin
   return encodeURIComponent(sessionId);
 }
 
+// hydrateThread builds a thread's whole model from one read. A v6 read (one
+// that names its snapshot) builds versioned history and the overlay; a pre-v6
+// read keeps the unversioned turns it always had.
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
+  const fields = threadFields(resp, ref, now);
+  const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
+  if (!resp.snapshot) {
+    return {
+      ...fields,
+      turns: mergeToolCallsByCallId((resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
+    };
+  }
+  const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
+  const generation = resp.requestGeneration ?? 0;
+  const history: HistoryState = {
+    ...readIdentity(resp),
+    appliedGeneration: generation,
+    issuedGeneration: generation,
+    deferredPages: [],
+    turns: mergeHistory([], fresh),
+  };
+  return withDisplay({ ...fields, turns: [], ...runningTurn(resp.thread) }, history, overlayRecord(resp.overlay));
+}
+
+// Every field a read sets except the transcript itself (turns, history,
+// overlay and the running turn).
+function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<ThreadModel, "turns"> {
   const thread = resp.thread;
   // The snapshot's own stamped urls already win per-image (url-first
   // precedence); the route only matters for sha-bearing images that arrived
@@ -1247,7 +1292,6 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
   // must not win the fallback and escape to a /s/%20.../images route the hub
   // would 404 on while the trimmed thread id would have served.
   const imageSessionId = thread.sessionId.trim() || thread.id.trim();
-  const imageSessionRoute = imageSessionRouteForSession(imageSessionId);
   return {
     ref,
     threadId: thread.id,
@@ -1268,7 +1312,6 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
-    turns: mergeToolCallsByCallId((thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.evener.queue,
     pendingMutations: thread.evener.pendingMutations ?? [],
@@ -2187,8 +2230,750 @@ export function mergeOlderItemPageWithFolds(model: ThreadModel, resp: ThreadTurn
   };
 }
 
+// mergeOlderItemPage folds one thread/turns/list backfill page into the model.
+// A v6 page into a model holding versioned history merges by version under
+// the snapshot rules below; anything else takes the unversioned merge.
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  if (model.history && resp.snapshot) return mergeVersionedPage(model, model.history, resp, true);
   return mergeOlderItemPageWithFolds(model, resp).model;
+}
+
+// ---------------------------------------------------------------------------
+// Versioned history and the live overlay (evener-appwire-v6; spec
+// docs/superpowers/specs/2026-09-25-transcript-read-model-design.md: "Recorded
+// length", "Reads", "Live history notifications", "The live overlay").
+//
+// model.history.turns holds the recorded turns; model.overlay holds the live
+// overlay; model.turns is derived from both (withDisplay). Recorded items
+// merge by version and are identified by transcriptKey; a merge never removes
+// one. Only a replacement does: another boot generation, a newer epoch or
+// incarnation, a read after invalidation, or an authoritative daemonless read
+// for the position range it returned.
+// ---------------------------------------------------------------------------
+
+const EMPTY_HISTORY: HistoryState = {
+  bootGeneration: "",
+  epoch: 0,
+  length: 0,
+  appliedGeneration: 0,
+  issuedGeneration: 0,
+  deferredPages: [],
+  turns: [],
+};
+
+type ReadIdentity = Pick<HistoryState, "bootGeneration" | "epoch" | "incarnation" | "length">;
+
+function readIdentity(resp: {
+  bootGeneration?: string;
+  epoch?: number;
+  snapshot?: { incarnation: string; length: number };
+}): ReadIdentity {
+  return {
+    bootGeneration: resp.bootGeneration ?? "",
+    epoch: resp.epoch ?? 0,
+    incarnation: resp.snapshot?.incarnation,
+    length: resp.snapshot?.length ?? 0,
+  };
+}
+
+// The running turn a read names. Only evener.activeTurnId counts: a turn the
+// snapshot merely records as inProgress (a crash left it open) is not running.
+function runningTurn(thread: Thread): Pick<ThreadModel, "runningTurnId"> {
+  return thread.evener.activeTurnId ? { runningTurnId: thread.evener.activeTurnId } : {};
+}
+
+function overlayRecord(items: readonly OverlayItem[] | undefined): Record<string, OverlayItem> {
+  const record: Record<string, OverlayItem> = {};
+  for (const item of items ?? []) record[item.key] = item;
+  return record;
+}
+
+function itemIdentity(item: ItemModel): string {
+  return item.transcriptKey ?? item.id;
+}
+
+// Orders by (entry, item, sub). An item with no position sorts after every
+// positioned one.
+function comparePositions(left: ThreadItemPosition | undefined, right: ThreadItemPosition | undefined): number {
+  if (!left || !right) return left ? -1 : right ? 1 : 0;
+  return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+}
+
+// Where a turn sits: its first item's position, or, for a turn that holds no
+// item yet, the entry its version names.
+function turnPosition(turn: TurnModel): ThreadItemPosition | undefined {
+  return turn.items[0]?.position ?? (turn.version === undefined ? undefined : { entry: turn.version, item: 0 });
+}
+
+// The number of items that sort before position: the index a new item at
+// position is inserted at, and one past the last item preceding it.
+function itemsBefore(items: readonly ItemModel[], position: ThreadItemPosition | undefined): number {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (comparePositions(items[mid]?.position, position) < 0) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+// The higher version wins; a held item or turn without a version (an older
+// read's) always yields.
+function supersedes(held: number | undefined, incoming: number | undefined): boolean {
+  return held === undefined || (incoming !== undefined && incoming > held);
+}
+
+interface HistoryFragment {
+  turns: TurnModel[]; // turn scalars, items empty
+  items: ItemModel[];
+}
+
+// Flattens wire turns into turn scalars and the items they carry. An item
+// without its own turnId belongs to the turn that carried it.
+function splitWireTurns(turns: readonly Turn[], imageSessionRoute: string | undefined): HistoryFragment {
+  const fragment: HistoryFragment = { turns: [], items: [] };
+  for (const turn of turns) {
+    fragment.turns.push({ ...wireToTurnScalars(turn), items: [] });
+    for (const wire of turn.items ?? []) {
+      const item = wireItemToModel(wire, imageSessionRoute);
+      if (item.turnId === "") item.turnId = turn.id;
+      fragment.items.push(item);
+    }
+  }
+  return fragment;
+}
+
+function wireFragment(
+  turns: readonly Turn[] | undefined,
+  items: readonly ThreadItem[] | undefined,
+  imageSessionRoute: string | undefined,
+): HistoryFragment {
+  return {
+    turns: (turns ?? []).map((turn) => ({ ...wireToTurnScalars(turn), items: [] })),
+    items: (items ?? []).map((item) => wireItemToModel(item, imageSessionRoute)),
+  };
+}
+
+// Merges a fragment into recorded turns by version. A turn or item history
+// does not hold is added, unless heldOnly (a daemonless read's `changes`,
+// which refresh held items and never add pages the client did not load).
+// Returns turns itself when nothing changed, and keeps every untouched turn
+// by reference.
+function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, heldOnly = false): TurnModel[] {
+  const byId = new Map(turns.map((turn) => [turn.id, turn]));
+  const ownedItems = new Set<string>();
+  let changed = false;
+  for (const incoming of fragment.turns) {
+    if (incoming.id === "") continue;
+    const held = byId.get(incoming.id);
+    if (held ? !supersedes(held.version, incoming.version) : heldOnly) continue;
+    byId.set(incoming.id, { ...incoming, items: held?.items ?? [] });
+    changed = true;
+  }
+  for (const incoming of fragment.items) {
+    // A recorded item always names its turn; one that does not has none to join.
+    if (incoming.turnId === "") continue;
+    const held = byId.get(incoming.turnId);
+    if (!held && heldOnly) continue;
+    const turn = held ?? { id: incoming.turnId, status: "inProgress", items: [] };
+    const identity = itemIdentity(incoming);
+    const index = turn.items.findIndex((item) => itemIdentity(item) === identity);
+    if (index === -1 ? heldOnly : !supersedes(turn.items[index]?.version, incoming.version)) continue;
+    // Copy a turn's items once per merge, then edit the copy in place.
+    const writable = ownedItems.has(turn.id) ? turn : { ...turn, items: [...turn.items] };
+    ownedItems.add(turn.id);
+    if (index === -1) writable.items.splice(itemsBefore(writable.items, incoming.position), 0, incoming);
+    else writable.items[index] = incoming;
+    byId.set(turn.id, writable);
+    changed = true;
+  }
+  if (!changed) return turns;
+  return [...byId.values()].sort((left, right) => comparePositions(turnPosition(left), turnPosition(right)));
+}
+
+// The earliest held item's position: turns are ordered by position, but a
+// turn without items can come first, so every turn's first item counts.
+function earliestPosition(turns: readonly TurnModel[]): ThreadItemPosition | undefined {
+  let earliest: ThreadItemPosition | undefined;
+  for (const turn of turns) {
+    const position = turn.items[0]?.position;
+    if (position && (!earliest || comparePositions(position, earliest) < 0)) earliest = position;
+  }
+  return earliest;
+}
+
+function fragmentRange(items: readonly ItemModel[]): [ThreadItemPosition, ThreadItemPosition] | undefined {
+  let first: ThreadItemPosition | undefined;
+  let last: ThreadItemPosition | undefined;
+  for (const item of items) {
+    if (!item.position) continue;
+    if (!first || comparePositions(item.position, first) < 0) first = item.position;
+    if (!last || comparePositions(item.position, last) > 0) last = item.position;
+  }
+  return first && last ? [first, last] : undefined;
+}
+
+// An authoritative read replaces what it returned: held items in [from, to]
+// (to undefined: through the end of history) are dropped before the read's
+// own items merge in, and a turn left with no items goes with them.
+function dropItemsInRange(turns: TurnModel[], from: ThreadItemPosition, to?: ThreadItemPosition): TurnModel[] {
+  const inRange = (position: ThreadItemPosition | undefined) =>
+    position !== undefined &&
+    comparePositions(position, from) >= 0 &&
+    (to === undefined || comparePositions(position, to) <= 0);
+  let changed = false;
+  const kept: TurnModel[] = [];
+  for (const turn of turns) {
+    const items = turn.items.filter((item) => !inRange(item.position));
+    if (items.length === turn.items.length) {
+      kept.push(turn);
+      continue;
+    }
+    changed = true;
+    if (items.length > 0) kept.push({ ...turn, items });
+  }
+  return changed ? kept : turns;
+}
+
+// Drops the overlay state history now covers: a stream once history holds an
+// item of its round, a preview once history holds the agentMessage of its
+// communicate call, and a tool's execution state once its history item carries
+// the completing TOOL_RESULTS entry. Returns overlay itself when nothing is
+// covered.
+function pruneCoveredOverlay(
+  turns: readonly TurnModel[],
+  overlay: Record<string, OverlayItem>,
+): Record<string, OverlayItem> {
+  if (Object.keys(overlay).length === 0) return overlay;
+  const rounds = new Set<string>();
+  const communicated = new Set<string>();
+  const completed = new Set<string>();
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.roundId) rounds.add(item.roundId);
+      if (item.type === "agentMessage" && item.callId) communicated.add(item.callId);
+      if (item.completedAtEntry && item.transcriptKey) completed.add(item.transcriptKey);
+    }
+  }
+  const covered = (item: OverlayItem): boolean => {
+    switch (item.kind) {
+      case "stream":
+        return item.roundId !== undefined && rounds.has(item.roundId);
+      case "preview":
+        return item.callId !== undefined && communicated.has(item.callId);
+      case "tool":
+        return item.historyKey !== undefined && completed.has(item.historyKey);
+      default:
+        return false;
+    }
+  };
+  return filterOverlay(overlay, covered);
+}
+
+// Drops the overlay items drop names; returns overlay itself when none go.
+function filterOverlay(
+  overlay: Record<string, OverlayItem>,
+  drop: (item: OverlayItem) => boolean,
+): Record<string, OverlayItem> {
+  const entries = Object.entries(overlay);
+  const kept = entries.filter(([, item]) => !drop(item));
+  return kept.length === entries.length ? overlay : Object.fromEntries(kept);
+}
+
+// A display item the overlay contributes on its own: a stream, preview,
+// notice, or a tool whose history item is not held.
+function overlayDisplayItem(overlayItem: OverlayItem, imageSessionRoute: string | undefined): ItemModel {
+  const item = wireItemToModel(overlayItem.item, imageSessionRoute);
+  item.overlayKey = overlayItem.key;
+  if (item.turnId === "" && overlayItem.turnId) item.turnId = overlayItem.turnId;
+  if (overlayItem.anchor) item.position = { ...overlayItem.anchor };
+  return item;
+}
+
+// A tool's execution state laid over its in-progress history item: running
+// output, status and held images. The item keeps its id and version.
+function layOverHistoryItem(item: ItemModel, overlayItem: OverlayItem): ItemModel {
+  return copyItemTextPresence(item, {
+    ...item,
+    output: overlayItem.item.output ?? item.output,
+    status: overlayItem.item.status ?? item.status,
+    outputImages: outputImagesToItemImages(overlayItem.item.outputImages) ?? item.outputImages,
+    overlayKey: overlayItem.key,
+  });
+}
+
+// What produced a display turn that carries overlay items: its recorded turn
+// (undefined for a placeholder) and the overlay items laid into it. A display
+// turn whose inputs are unchanged is reused, so a delta on one turn leaves
+// every other turn's reference alone. A turn with no overlay item is its
+// recorded turn itself and needs no entry.
+interface DisplayTurnSource {
+  recorded: TurnModel | undefined;
+  overlay: readonly OverlayItem[];
+}
+
+const displayTurnSources = new WeakMap<TurnModel, DisplayTurnSource>();
+
+function sameOverlayItems(left: readonly OverlayItem[], right: readonly OverlayItem[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+// The turn holding the recorded item a tool's execution state lays over.
+function toolHistoryTurn(overlayItem: OverlayItem, turns: readonly TurnModel[]): TurnModel | undefined {
+  const holds = (turn: TurnModel) => turn.items.some((item) => item.transcriptKey === overlayItem.historyKey);
+  const hinted = turns.find((turn) => turn.id === overlayItem.turnId);
+  return hinted && holds(hinted) ? hinted : turns.find(holds);
+}
+
+// The turn holding the recorded item that precedes a notice's anchor across
+// every turn (turns can interleave), or undefined when nothing precedes it.
+function noticeHistoryTurn(anchor: ThreadItemPosition, turns: readonly TurnModel[]): TurnModel | undefined {
+  let found: TurnModel | undefined;
+  let preceding: ThreadItemPosition | undefined;
+  for (const turn of turns) {
+    const position = turn.items[itemsBefore(turn.items, anchor) - 1]?.position;
+    if (position && (!preceding || comparePositions(position, preceding) > 0)) {
+      found = turn;
+      preceding = position;
+    }
+  }
+  return found;
+}
+
+// The display turn that shows an overlay item: "" when it names no turn and
+// none is running, and it is not shown.
+function overlayTurnId(
+  overlayItem: OverlayItem,
+  turns: readonly TurnModel[],
+  runningTurnId: string | undefined,
+): string {
+  const fallback = overlayItem.turnId || overlayItem.item.turnId || runningTurnId || "";
+  if (overlayItem.kind === "tool" && overlayItem.historyKey) {
+    return toolHistoryTurn(overlayItem, turns)?.id ?? fallback;
+  }
+  if (overlayItem.kind === "notice" && overlayItem.anchor) {
+    return (noticeHistoryTurn(overlayItem.anchor, turns) ?? turns[0])?.id ?? (fallback || SYSTEM_PRELUDE_TURN_ID);
+  }
+  return fallback;
+}
+
+function buildDisplayTurn(id: string, source: DisplayTurnSource, imageSessionRoute: string | undefined): TurnModel {
+  const laid = new Map<string, OverlayItem>();
+  const trailing: ItemModel[] = [];
+  let items = source.recorded?.items ?? [];
+  let noticeItems: ItemModel[] | undefined;
+  for (const overlayItem of source.overlay) {
+    if (overlayItem.kind === "notice") {
+      noticeItems ??= [...items];
+      const notice = overlayDisplayItem(overlayItem, imageSessionRoute);
+      noticeItems.splice(itemsBefore(noticeItems, notice.position), 0, notice);
+    } else if (
+      overlayItem.kind === "tool" &&
+      overlayItem.historyKey &&
+      source.recorded?.items.some((item) => item.transcriptKey === overlayItem.historyKey)
+    ) {
+      laid.set(overlayItem.historyKey, overlayItem);
+    } else {
+      trailing.push(overlayDisplayItem(overlayItem, imageSessionRoute));
+    }
+  }
+  items = noticeItems ?? items;
+  if (laid.size > 0) {
+    items = items.map((item) => {
+      const overlayItem = item.transcriptKey === undefined ? undefined : laid.get(item.transcriptKey);
+      return overlayItem && !item.completedAtEntry ? layOverHistoryItem(item, overlayItem) : item;
+    });
+  }
+  const turn: TurnModel = {
+    ...(source.recorded ?? { id, status: "inProgress" }),
+    items: trailing.length > 0 ? [...items, ...trailing] : items,
+  };
+  displayTurnSources.set(turn, source);
+  return turn;
+}
+
+// The display turns for recorded turns and an overlay: recorded turns in
+// order, then a placeholder turn for each turn the overlay shows that history
+// does not hold yet. previous is the model's current display, reused where a
+// turn's inputs did not change.
+function displayTurns(
+  recorded: TurnModel[],
+  overlay: Record<string, OverlayItem>,
+  previous: readonly TurnModel[],
+  imageSessionRoute: string | undefined,
+  runningTurnId: string | undefined,
+): TurnModel[] {
+  const byTurn = new Map<string, OverlayItem[]>();
+  for (const overlayItem of Object.values(overlay)) {
+    const id = overlayTurnId(overlayItem, recorded, runningTurnId);
+    if (id === "") continue;
+    const list = byTurn.get(id);
+    if (list) list.push(overlayItem);
+    else byTurn.set(id, [overlayItem]);
+  }
+  if (byTurn.size === 0) return recorded;
+  const previousById = new Map(previous.map((turn) => [turn.id, turn]));
+  const display = (id: string, recordedTurn: TurnModel | undefined): TurnModel => {
+    const overlayItems = byTurn.get(id);
+    if (!overlayItems && recordedTurn) return recordedTurn;
+    const source: DisplayTurnSource = { recorded: recordedTurn, overlay: overlayItems ?? [] };
+    const prior = previousById.get(id);
+    const priorSource = prior && displayTurnSources.get(prior);
+    if (
+      prior &&
+      priorSource &&
+      priorSource.recorded === recordedTurn &&
+      sameOverlayItems(priorSource.overlay, source.overlay)
+    ) {
+      return prior;
+    }
+    return buildDisplayTurn(id, source, imageSessionRoute);
+  };
+  const turns = recorded.map((turn) => display(turn.id, turn));
+  const held = new Set(recorded.map((turn) => turn.id));
+  for (const id of byTurn.keys()) {
+    if (!held.has(id)) turns.push(display(id, undefined));
+  }
+  return turns;
+}
+
+function modelImageSessionRoute(model: ThreadModel): string | undefined {
+  return imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
+}
+
+// Sets a model's history and overlay and derives its display turns. The
+// overlay first loses whatever the history now covers.
+//
+// Cost: coverage and placement scan every held item (and toolHistoryTurn once
+// per tool overlay not laid over a held item), so each history/updated, read
+// and overlay upsert is O(held items x tool overlays). Deltas skip this
+// (applyOverlayDelta). If long transcripts get sluggish, start here.
+function withDisplay<M extends ThreadModel>(
+  model: M,
+  history: HistoryState,
+  overlay: Record<string, OverlayItem>,
+): M & { history: HistoryState } {
+  const shown = pruneCoveredOverlay(history.turns, overlay);
+  return {
+    ...model,
+    history,
+    overlay: shown,
+    turns: displayTurns(history.turns, shown, model.turns, modelImageSessionRoute(model), model.runningTurnId),
+  };
+}
+
+// The read identity a history update, resync push or page names. A resync the
+// hub pushes itself names no epoch.
+interface HistorySignal {
+  bootGeneration?: string;
+  epoch?: number;
+  incarnation?: string;
+}
+
+// What a signal does to held history. It compares against what an invalid
+// thread awaits (the newest generation and epoch that invalidated it), so a
+// signal re-arms an invalid thread only when it is newer still, and repeated
+// updates from the awaited generation do not. "apply" on an invalid thread
+// still means nothing merges.
+function classifySignal(held: HistoryState, signal: HistorySignal): "ignore" | "apply" | "invalidate" {
+  const awaited = held.awaited ?? { bootGeneration: held.bootGeneration, epoch: held.epoch };
+  const action =
+    signal.bootGeneration === undefined
+      ? "apply"
+      : compareBootGeneration(awaited.bootGeneration, signal.bootGeneration);
+  if (action === "ignore") return "ignore";
+  if (action === "replace" || signal.epoch === undefined || signal.epoch > awaited.epoch) return "invalidate";
+  if (signal.epoch < awaited.epoch) return "ignore";
+  // Another incarnation invalidates a live thread. An invalid thread already
+  // awaits a replacement, and pages from any incarnation but the pending one
+  // are discarded.
+  const live = held.invalidatedAtGeneration === undefined;
+  return live && signal.incarnation !== undefined && signal.incarnation !== held.incarnation ? "invalidate" : "apply";
+}
+
+// Marks a thread invalid, or re-arms an invalid one: nothing merges until a
+// latest-window response to a generation issued after this point replaces its
+// whole history. Every invalidation moves the threshold to the newest issued
+// generation, so a read in flight across a second resync is dropped too.
+function invalidated(history: HistoryState, signal: HistorySignal = {}): HistoryState {
+  const awaited = history.awaited ?? { bootGeneration: history.bootGeneration, epoch: history.epoch };
+  const bootGeneration = signal.bootGeneration ?? awaited.bootGeneration;
+  // Epochs count again from zero in each boot generation.
+  const sameBoot = compareBootGeneration(awaited.bootGeneration, bootGeneration) === "apply";
+  const newIncarnation = signal.incarnation !== undefined && signal.incarnation !== history.incarnation;
+  return {
+    ...history,
+    invalidatedAtGeneration: history.issuedGeneration,
+    awaited: { bootGeneration, epoch: signal.epoch ?? (sameBoot ? awaited.epoch : 0) },
+    ...(newIncarnation ? { pendingIncarnation: signal.incarnation } : {}),
+  };
+}
+
+/**
+ * Marks the thread invalid so the next latest-window response (one issued
+ * after this call) replaces its whole history instead of merging. A store
+ * calls it on reconnect, then issues that read. The model's own extras and any
+ * deferred pages are kept.
+ */
+export function invalidateHistory<M extends ThreadModel>(model: M): ThreadModel & ModelExtras<M> {
+  return publicModel<M>({ ...model, history: invalidated(model.history ?? EMPTY_HISTORY) });
+}
+
+function historyIsLive(history: HistoryState | undefined): history is HistoryState {
+  return history !== undefined && history.invalidatedAtGeneration === undefined;
+}
+
+/**
+ * Records a new latest-window thread/read for the thread and returns the
+ * request generation it carries (ThreadReadParams.requestGeneration). The
+ * counter is per thread and never resets. A store keeps one latest-window read
+ * per thread in flight; applyReadResponse drops any response to a generation
+ * older than the newest issued, or issued before the thread was invalidated.
+ * Backfill pages (thread/turns/list) carry no generation.
+ */
+export function issueLatestWindowRead<M extends ThreadModel>(
+  model: M,
+): { model: ThreadModel & ModelExtras<M>; requestGeneration: number } {
+  const history = model.history ?? EMPTY_HISTORY;
+  const requestGeneration = history.issuedGeneration + 1;
+  return {
+    model: publicModel<M>({ ...model, history: { ...history, issuedGeneration: requestGeneration } }),
+    requestGeneration,
+  };
+}
+
+/**
+ * Records that the latest-window read issued as requestGeneration failed with
+ * ErrorTranscriptHistoryFailed (errors.ts's isTranscriptHistoryFailedError).
+ * The held history stays as it is and `history.failed` carries the one
+ * diagnostic to show; nothing merges or replaces until a latest-window read
+ * succeeds, while the overlay keeps updating. The error's generation and epoch
+ * are never adopted. A failure that applies ends the thread's invalid state
+ * (and what it awaited), so a store does not re-issue the read in a loop; the
+ * next read comes from the next event (a resync, a reconnect, the user).
+ * A failure of a superseded read (older than the newest issued, or issued
+ * before the thread was last invalidated) is ignored and returns model itself,
+ * so the read a later invalidation asked for is still issued.
+ */
+export function applyHistoryReadFailure<M extends ThreadModel>(
+  model: M,
+  diagnostic: string,
+  requestGeneration: number,
+): ThreadModel & ModelExtras<M> {
+  const held = model.history ?? EMPTY_HISTORY;
+  const superseded =
+    requestGeneration < held.issuedGeneration ||
+    (held.invalidatedAtGeneration !== undefined && requestGeneration <= held.invalidatedAtGeneration);
+  if (superseded) return publicModel<M>(model);
+  const { invalidatedAtGeneration: _ended, awaited: _awaited, ...history } = held;
+  return publicModel<M>({ ...model, history: { ...history, failed: diagnostic } });
+}
+
+type ReadDisposition = "discard" | "replace" | "merge";
+
+// What a latest-window response does to held history. Request generations
+// decide whether it applies at all; then the generation token, the epoch and
+// the incarnation decide between replacing the whole history and merging.
+function readDisposition(held: HistoryState, resp: ThreadReadResponse): ReadDisposition {
+  const generation = resp.requestGeneration ?? 0;
+  if (generation < held.issuedGeneration) return "discard";
+  const identity = readIdentity(resp);
+  if (held.invalidatedAtGeneration !== undefined) {
+    if (generation <= held.invalidatedAtGeneration) return "discard";
+    const { bootGeneration, epoch } = identity;
+    return classifySignal(held, { bootGeneration, epoch }) === "ignore" ? "discard" : "replace";
+  }
+  const action = compareBootGeneration(held.bootGeneration, identity.bootGeneration);
+  if (action !== "apply") return action === "ignore" ? "discard" : "replace";
+  if (identity.epoch < held.epoch) return "discard";
+  if (identity.epoch > held.epoch || identity.incarnation !== held.incarnation) return "replace";
+  return identity.length < held.length ? "discard" : "merge";
+}
+
+/**
+ * Applies a latest-window thread/read response (one issued through
+ * issueLatestWindowRead) to a model holding versioned history:
+ * - a response to an older request generation than the newest issued, or to one
+ *   issued before the thread was invalidated, is discarded;
+ * - a lower boot generation, an older epoch, or the same incarnation with a
+ *   shorter length is discarded;
+ * - an invalid thread, another generation token, a newer epoch or another
+ *   incarnation replaces the whole history, then applies any pages deferred
+ *   for that incarnation;
+ * - otherwise it merges by version; an authoritative (daemonless) response
+ *   first drops every held item from its first position on; `changes` (held
+ *   items and turns outside the window whose version grew) merge into held
+ *   history only.
+ * The thread's own fields, the overlay (resp.overlay) and the running turn are
+ * always the response's, and a successful read ends a failed-history state.
+ * A discarded response returns model itself.
+ */
+export function applyReadResponse<M extends ThreadModel>(
+  model: M,
+  resp: ThreadReadResponse,
+  now: number,
+): ThreadModel & ModelExtras<M> {
+  const held = model.history ?? EMPTY_HISTORY;
+  const disposition = readDisposition(held, resp);
+  if (disposition === "discard") return publicModel<M>(model);
+  const fields = threadFields(resp, model.ref, now);
+  const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
+  const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
+  let turns: TurnModel[];
+  let olderCursor = resp.olderCursor;
+  if (disposition === "replace") {
+    turns = mergeHistory([], fresh);
+  } else {
+    const window = fragmentRange(fresh.items);
+    turns = resp.authoritative ? dropItemsInRange(held.turns, window?.[0] ?? { entry: 0, item: 0 }) : held.turns;
+    // Older pages the client holds keep their own cursor.
+    const oldest = earliestPosition(turns);
+    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
+    turns = mergeHistory(turns, fresh);
+    if (resp.changes) {
+      turns = mergeHistory(turns, wireFragment(resp.changes.turns, resp.changes.items, imageSessionRoute), true);
+    }
+  }
+  const generation = resp.requestGeneration ?? 0;
+  const history: HistoryState = {
+    ...readIdentity(resp),
+    appliedGeneration: generation,
+    issuedGeneration: Math.max(held.issuedGeneration, generation),
+    deferredPages: [],
+    turns,
+  };
+  const { runningTurnId: _previous, ...base } = model;
+  let next = withDisplay(
+    { ...base, ...fields, ...runningTurn(resp.thread), olderCursor },
+    history,
+    overlayRecord(resp.overlay),
+  );
+  for (const deferred of held.deferredPages) {
+    if (deferred.snapshot?.incarnation === history.incarnation) {
+      next = mergeVersionedPage(next, next.history, deferred, false);
+    }
+  }
+  return publicModel<M>(next);
+}
+
+type PageDisposition = "discard" | "defer" | "invalidate" | "merge";
+
+// What a backfill page does to held history. Pages carry no request
+// generation: they accumulate within their snapshot in any order, and never
+// replace anything.
+function pageDisposition(held: HistoryState, resp: ThreadTurnsListResponse): PageDisposition {
+  if (held.failed !== undefined) return "discard";
+  const identity = readIdentity(resp);
+  const signal = classifySignal(held, identity);
+  if (signal !== "apply") return signal === "ignore" ? "discard" : "invalidate";
+  if (held.invalidatedAtGeneration !== undefined) {
+    return identity.incarnation === held.pendingIncarnation ? "defer" : "discard";
+  }
+  return identity.length < held.length ? "discard" : "merge";
+}
+
+function mergeVersionedPage<M extends ThreadModel>(
+  model: M,
+  held: HistoryState,
+  resp: ThreadTurnsListResponse,
+  takeCursor: boolean,
+): M {
+  switch (pageDisposition(held, resp)) {
+    case "discard":
+      return model;
+    case "defer":
+      return { ...model, history: { ...held, deferredPages: [...held.deferredPages, resp] } };
+    case "invalidate": {
+      // A page of the incarnation it just announced waits for that
+      // incarnation's latest window.
+      const history = invalidated(held, readIdentity(resp));
+      const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
+      return {
+        ...model,
+        history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
+      };
+    }
+    case "merge": {
+      const fresh = splitWireTurns(resp.data ?? [], modelImageSessionRoute(model));
+      const range = resp.authoritative ? fragmentRange(fresh.items) : undefined;
+      const turns = mergeHistory(range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns, fresh);
+      const next = takeCursor ? { ...model, olderCursor: resp.nextCursor } : model;
+      return withDisplay(next, { ...held, turns }, model.overlay ?? {});
+    }
+  }
+}
+
+// history/updated: the full current form of every recorded item and turn an
+// entry changed, merged by version under the one generation state machine.
+function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpdatedParams, now: number): M {
+  const held = model.history ?? EMPTY_HISTORY;
+  const live = { ...model, lastFrameAt: now };
+  if (held.failed !== undefined) return live;
+  const signal: HistorySignal = {
+    bootGeneration: params.bootGeneration,
+    epoch: params.epoch,
+    incarnation: params.snapshot.incarnation,
+  };
+  const action = classifySignal(held, signal);
+  if (action === "invalidate") return { ...live, history: invalidated(held, signal) };
+  if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
+  const turns = mergeHistory(held.turns, wireFragment(params.turns, params.items, modelImageSessionRoute(model)));
+  if (turns === held.turns) return live;
+  return withDisplay(live, { ...held, turns }, model.overlay ?? {});
+}
+
+// evener/thread/resync: the server bumped the thread's epoch (or a hub pushed
+// a resync of its own, which names none). A newer epoch or another generation
+// invalidates the thread; the store re-reads its latest window.
+function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams, now: number): M {
+  const held = model.history;
+  if (!held) return model;
+  const live = { ...model, lastFrameAt: now };
+  const signal: HistorySignal = { bootGeneration: params.bootGeneration || undefined, epoch: params.epoch };
+  return classifySignal(held, signal) === "invalidate" ? { ...live, history: invalidated(held, signal) } : live;
+}
+
+// overlay/delta appends to one stream, preview or tool item. Only the display
+// turn showing it is rebuilt. A delta for an item the overlay no longer holds
+// (covered, reset or ended) is ignored.
+function applyOverlayDelta<M extends ThreadModel>(model: M, params: OverlayDeltaParams, now: number): M {
+  const held = model.overlay?.[params.key];
+  const live = { ...model, lastFrameAt: now };
+  if (!held || !historyIsLive(model.history)) return live;
+  const item =
+    params.field === "output"
+      ? { ...held.item, output: (held.item.output ?? "") + params.delta }
+      : { ...held.item, text: (held.item.text ?? "") + params.delta };
+  const next: OverlayItem = { ...held, item };
+  const overlay = { ...model.overlay, [params.key]: next };
+  const index = model.turns.findIndex((turn) => displayTurnSources.get(turn)?.overlay.includes(held));
+  const turn = model.turns[index];
+  const source = turn && displayTurnSources.get(turn);
+  // Every overlay item a display shows is in its turn's source; one that is not
+  // shown yet (no turn found) takes the full derivation.
+  if (!turn || !source) return withDisplay(live, model.history, overlay);
+  const rebuilt = buildDisplayTurn(
+    turn.id,
+    { ...source, overlay: source.overlay.map((overlayItem) => (overlayItem === held ? next : overlayItem)) },
+    modelImageSessionRoute(model),
+  );
+  return { ...live, overlay, turns: model.turns.map((shown, at) => (at === index ? rebuilt : shown)) };
+}
+
+// overlay/upserted, overlay/reset and overlay/end: replace the overlay and
+// re-derive the display. Nothing applies while the thread is invalid.
+function applyOverlayChange<M extends ThreadModel>(
+  model: M,
+  now: number,
+  change: (overlay: Record<string, OverlayItem>) => Record<string, OverlayItem>,
+): M {
+  const live = { ...model, lastFrameAt: now };
+  if (!historyIsLive(model.history)) return live;
+  const current = model.overlay ?? {};
+  const overlay = change(current);
+  if (overlay === current) return live;
+  return withDisplay(live, model.history, overlay);
 }
 
 // Removes one pending escalation by id, returning the same reference when the
@@ -2756,7 +3541,11 @@ export function applyNotification<M extends ThreadModel>(
   // the completion of the model's own output item — otherwise a provider
   // grinding through retries looks like the indicator vanished for no reason.
   const turnBoundary = n.method === "turn/completed" || n.method === "turn/started";
-  const modelOutputCompleted = n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type);
+  const modelOutputCompleted =
+    (n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type)) ||
+    (n.method === "history/updated" &&
+      next.history?.turns !== model.history?.turns &&
+      (n.params.items ?? []).some((item) => MODEL_OUTPUT_ITEM_TYPES.has(item.type)));
   if (!turnBoundary && !modelOutputCompleted) return publicModel<M>(next);
   const cleared = { ...next };
   delete cleared.modelRetry;
@@ -3022,6 +3811,41 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       };
     }
 
+    case "history/updated": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return applyHistoryUpdated(model, n.params, now);
+    }
+
+    case "evener/thread/resync": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return applyResync(model, n.params, now);
+    }
+
+    case "overlay/upserted": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const item = n.params.item;
+      return applyOverlayChange(model, now, (overlay) => ({ ...overlay, [item.key]: item }));
+    }
+
+    case "overlay/delta": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return applyOverlayDelta(model, n.params, now);
+    }
+
+    case "overlay/reset": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const streamId = n.params.streamId;
+      return applyOverlayChange(model, now, (overlay) => filterOverlay(overlay, (item) => item.streamId === streamId));
+    }
+
+    case "overlay/end": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const roundId = n.params.roundId;
+      return applyOverlayChange(model, now, (overlay) =>
+        filterOverlay(overlay, (item) => item.kind !== "notice" && item.roundId === roundId),
+      );
+    }
+
     case "thread/queueChanged": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, queue: n.params.queue, lastFrameAt: now };
@@ -3030,8 +3854,12 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "thread/status/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       const status = n.params.status;
+      // The running turn is the frame's activeTurnId, and none when it names
+      // none: an idle frame ends the running turn.
+      const { runningTurnId: _previous, ...rest } = model;
       return {
-        ...model,
+        ...(rest as M),
+        ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to
         // refresh it, so a cold-hydrated live anchor would keep clocking
@@ -3199,7 +4027,11 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // persisted at all (internal/apptranscript has no warning-item
       // conversion), so the next snapshot would not carry it either. Drop
       // it client-side; only the liveness signal survives.
-      if (!activeTurnId) return { ...model, lastFrameAt: now };
+      // A v6 model shows warnings as overlay notices, and its display turns
+      // are derived, so a minted item would vanish at the next derivation. The
+      // hub's own relay-attach warning (cmd/evener-hub/app_rpc.go) still comes
+      // as this notification and needs a v6 home before Task 20 deletes it.
+      if (!activeTurnId || model.history) return { ...model, lastFrameAt: now };
       const params = n.params;
       const folded = foldWarningParams(params);
       return {
