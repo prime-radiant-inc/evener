@@ -13,10 +13,12 @@ import (
 // it announces: the transcript could not be created, its writer is poisoned,
 // or a COMMUNICATE entry — a message already on its way to the user — was not
 // recorded. Failing closed interrupts the running execution, refuses every
-// later input, and shows one diagnostic, so history is never missing what a
-// client was shown and nothing accumulates in memory that restart would lose.
-// Any other append that is not recorded leaves the session running: nothing
-// was announced, so nothing is missing.
+// later input, and shows one diagnostic, so history is never missing a message
+// a client was shown and nothing accumulates in memory that restart would
+// lose. Any other append that is not recorded leaves the session running, with
+// the write's warning. That includes a presentational notice: its live event
+// is shown as an ephemeral notice, as it always was, and only COMMUNICATE is
+// announced as history before it is recorded.
 //
 // It applies to served sessions only (those a daemon consumes events from),
 // decided at the moment of failure: an unserved session keeps

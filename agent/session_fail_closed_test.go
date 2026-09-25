@@ -125,6 +125,59 @@ func (f communicateRefusingFile) Write(p []byte) (int, error) {
 	return f.File.Write(p)
 }
 
+// toolResultsTearingFs is the real filesystem whose files write only half of
+// a TOOL_RESULTS entry and then fail: the partial line poisons the writer.
+type toolResultsTearingFs struct{ afero.Fs }
+
+func (fs toolResultsTearingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return toolResultsTearingFile{File: f}, nil
+}
+
+type toolResultsTearingFile struct{ afero.File }
+
+func (f toolResultsTearingFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"TOOL_RESULTS"`)) {
+		n, _ := f.File.Write(p[:len(p)/2])
+		return n, errors.New("injected torn write")
+	}
+	return f.File.Write(p)
+}
+
+// A real append that tears its line poisons the writer: a served session
+// fails closed, once, and refuses what comes next.
+func TestAPoisonedWriterFailsAServedSessionClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	w, _, err := transcript.OpenWriterForSessionWithFS(toolResultsTearingFs{Fs: afero.NewOsFs()}, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	previous := s.transcript
+	s.transcript = w
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = previous.Close() })
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(false, "working"), nil
+	})
+	if _, err := s.ProcessInput(context.Background(), "tear", nil); err == nil {
+		t.Fatal("the input completed on a poisoned transcript")
+	}
+	if !w.Poisoned() {
+		t.Fatal("setup: the torn write did not poison the writer")
+	}
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("input after the poisoning = %v, want the fail-closed refusal", err)
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
 // refuseCommunicateEntries swaps s's writer for one on the same file whose
 // COMMUNICATE appends fail.
 func refuseCommunicateEntries(t *testing.T, s *Session) {
