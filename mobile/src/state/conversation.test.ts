@@ -28114,6 +28114,103 @@ describe("ConversationStore", () => {
       store.getState().setDisplayConfig(fullConfig);
       expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
     });
+
+    // RoboRev panel: the rehydrate bound against its level-projected window
+    // too — a rehydrate at a coarse level skeletonized the turns it hid, so
+    // the switch back to full rendered them empty. The keep-window is the
+    // level-independent union at this site as well.
+    it("a rehydrate at a coarse level keeps the hidden turn's payload", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("u1", "hi")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The older page lands at the show-everything default: its payload
+      // is retained, and the turn is PAGE HISTORY now — the rehydrate's
+      // merge path runs over it.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "r1",
+                turnId: "t0",
+                type: "reasoning",
+                text: "the thought",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(intentConfig);
+      // The rehydrate re-reads at the coarse level; the level-hidden turn's
+      // payload must survive the merge's bound.
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // RoboRev panel: the loadOlder bound against its level-projected window
+    // as well. The page's own accounting (the admitted item keys, F8/F10's
+    // inputs) is level-independent; only the payload bound was not.
+    it("an older page loaded at a coarse level keeps the hidden turn's payload", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("u1", "hi")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.getState().setDisplayConfig(intentConfig);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "r1",
+                turnId: "t0",
+                type: "reasoning",
+                text: "the thought",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      // The level-hidden turn's payload survives the merge.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
   });
 
   // A page load republishes every retained row through the same bound. The row

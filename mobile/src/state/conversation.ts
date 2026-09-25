@@ -1624,7 +1624,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // reaches farther down the timeline. At the null config the level IS
   // show-everything, so the publish's own rows are the window.
   function retentionWindowItems(
-    model: MobileConversation,
+    model: ThreadModel,
     levelItems: MobileTimelineItem[],
     config: TranscriptDisplayConfigV1 | null,
   ): MobileTimelineItem[] {
@@ -3518,16 +3518,22 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // this seated window, so hoist it — a notice the window kept
             // survives the commit even when the bound sheds the turn its
             // anchor row came from.
+            const rehydrateModel = { ...merged, turns: mergedTurns };
             const rehydrateSeated = seatTransientWarnings(
-              projectTimeline(
-                { ...merged, turns: mergedTurns },
-                undefined,
-                projectConfig,
-              ),
+              projectTimeline(rehydrateModel, undefined, projectConfig),
             );
+            // RoboRev panel: the keep-window is level-independent at this
+            // merge too — a coarse rehydrate must not shed the payloads of
+            // the turns the level hides (retentionWindowItems unions the
+            // show-everything cap; the null config keeps the seated window
+            // alone).
             mergedTurns = boundRetainedTurns(
               mergedTurns,
-              capItems(rehydrateSeated),
+              retentionWindowItems(
+                rehydrateModel,
+                capItems(rehydrateSeated),
+                projectConfig ?? null,
+              ),
               mergedItemFoldIdentities,
               conversation.activeTurnId,
             );
@@ -3896,9 +3902,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
             // whose payloads left the keep-window to the compact set.
+            // RoboRev panel: the keep-window is level-independent at this
+            // merge too (retentionWindowItems unions the show-everything
+            // cap; the null config keeps pageMerged alone) — a coarse page
+            // load must not shed the payloads of the turns the level hides.
+            // The F8/atCap inputs read mergedInput above, which this does
+            // not touch: the honest stop is level-independent already.
             const boundedTurns = boundRetainedTurns(
               strippedPageTurns,
-              pageMerged,
+              retentionWindowItems(mergedModel, pageMerged, get().displayConfig),
               mergedItemFoldIdentities,
               currentConv.activeTurnId,
             );
