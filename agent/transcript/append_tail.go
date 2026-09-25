@@ -33,6 +33,9 @@ type appendTail struct {
 	// every recorded entry line.
 	nextOrdinal    uint64
 	recordedLength int64
+	// turns is the file's turn placement state: the running execution, the
+	// open gap turn and the prelude. See Placement.
+	turns turnPlacement
 	// move counts the times a writer positioned its handle at the file's end
 	// to append (or opened the file). A writer whose last recorded move is
 	// not the current one may have a handle position behind the end.

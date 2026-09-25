@@ -114,7 +114,3 @@ func (w *Writer) RecordedLength() int64 {
 	defer w.tail.mu.Unlock()
 	return w.tail.recordedLength
 }
-
-// Placement names the turn an appended entry joins. Its zero value stamps
-// nothing: the entry is written exactly as given.
-type Placement struct{}

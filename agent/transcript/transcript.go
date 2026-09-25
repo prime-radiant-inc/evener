@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -488,6 +489,11 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 	}
 	tail.mu.Lock()
 	defer tail.mu.Unlock()
+	if tail.recordedLength == 0 {
+		// A new file's tail: the transcript is fresh, so its startup entries
+		// form the prelude until the first execution begins.
+		tail.turns.prelude = true
+	}
 	// Never below what a shared tail already holds; see resumeWriter.
 	tail.recordedLength = max(tail.recordedLength, int64(len(data)+1))
 	return newWriterOnTail(fs, f, tail, header), nil
@@ -650,6 +656,20 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 	if len(turns) == 0 {
 		return nil, firstSeq, nil, nil
 	}
+	// Place every turn against a copy of the tail's turn state; the copy
+	// becomes the tail's state only if the batch is recorded.
+	placed := w.tail.turns
+	turns = slices.Clone(turns)
+	for i := range turns {
+		skip, placeErr := placed.place(&turns[i], place)
+		if placeErr != nil {
+			return nil, firstSeq, nil, placeErr
+		}
+		if skip {
+			w.tail.turns = placed // what there was to end is over
+			return nil, firstSeq, nil, nil
+		}
+	}
 	if w.tailMove != w.tail.move {
 		// Another writer on this file moved its end since this one last wrote,
 		// so this handle's position is behind it.
@@ -701,6 +721,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 		if hard != nil {
 			return nil, firstSeq, nil, hard
 		}
+		w.commitBatchLocked(batch, placed)
 		return batch, firstSeq, retained, nil
 	}
 	w.dirty = true
@@ -710,12 +731,13 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 			if hard != nil {
 				return nil, firstSeq, nil, hard
 			}
+			w.commitBatchLocked(batch, placed)
 			return batch, firstSeq, retained, nil
 		}
 		w.lastSync = time.Now()
 		w.dirty = false
 	}
-	w.commitBatchLocked(batch)
+	w.commitBatchLocked(batch, placed)
 	return batch, firstSeq, nil, nil
 }
 
@@ -759,7 +781,6 @@ func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOff
 	}
 	// The whole buffer is a record every reader will find: count it, keep it as
 	// unsynced debt the next fsync settles, and report the failure as a warning.
-	w.commitBatchLocked(batch)
 	retained = fmt.Errorf("%s: %w", operation, cause)
 	if queueRetained {
 		w.queueWarningLocked(retained)
@@ -770,8 +791,10 @@ func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOff
 // commitBatchLocked records a batch whose whole buffer is in the file: each
 // line takes the next entry ordinal and its place in the recorded length, and
 // counts the failures it settles — the bookkeeping a later reader of the file
-// would do. Only a recorded line takes an ordinal. Callers hold the tail.
-func (w *Writer) commitBatchLocked(batch []Record) {
+// would do, and adopts placed, the turn state the batch was placed against.
+// Only a recorded line takes an ordinal. Callers hold the tail.
+func (w *Writer) commitBatchLocked(batch []Record, placed turnPlacement) {
+	w.tail.turns = placed
 	for i := range batch {
 		rec := &batch[i]
 		rec.Ordinal = w.tail.nextOrdinal
