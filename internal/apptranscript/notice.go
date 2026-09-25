@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -12,11 +13,13 @@ import (
 // systemMessage's event kind, description and text. The live projector
 // announces the event and the transcript projects the persisted NOTICE entry
 // through the same builders, so history and live never disagree about a
-// notice.
+// notice. Raw is the structured detail a client draws from instead of
+// re-parsing the text; nil when the notice has none.
 type NoticeAnnouncement struct {
 	EventKind   appwire.ThreadItemEventKind
 	Description string
 	Text        string
+	Raw         json.RawMessage
 }
 
 // CommunicateItem projects a COMMUNICATE entry: the delivered message as an
@@ -53,21 +56,12 @@ func NoticeItem(turnID string, entryIndex int, entry schema.Turn) (appwire.Threa
 	if !ok {
 		return appwire.ThreadItem{}, false
 	}
-	// Trimmed and dropped when empty exactly as the live announcement is.
-	text := strings.TrimSpace(announcement.Text)
-	if text == "" {
+	item, ok := SystemMessage(announcement, fmt.Sprintf("item_%s_%d", announcement.EventKind, entryIndex), turnID)
+	if !ok {
 		return appwire.ThreadItem{}, false
 	}
-	return appwire.ThreadItem{
-		Type:                 "systemMessage",
-		ID:                   fmt.Sprintf("item_%s_%d", announcement.EventKind, entryIndex),
-		TurnID:               turnID,
-		TranscriptEntryIndex: entryIndex,
-		Description:          strings.TrimSpace(announcement.Description),
-		Text:                 text,
-		Status:               appwire.TurnStatusCompleted,
-		EventKind:            announcement.EventKind,
-	}, true
+	item.TranscriptEntryIndex = entryIndex
+	return item, true
 }
 
 func noticeAnnouncement(notice schema.NoticeInfo) (NoticeAnnouncement, bool) {

@@ -36,8 +36,6 @@ type skillActivationCandidate struct {
 	activationName string
 }
 
-var marshalContextCompaction = json.Marshal
-
 type AppEventProjector struct {
 	threadID string
 	ref      string
@@ -788,7 +786,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Output:        data.Output,
 			Error:         data.Error,
 			PrevalOnly:    data.PrevalOnly,
-			OutputImages:  projectOutputImages(data.OutputImages),
+			OutputImages:  apptranscript.LiveOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
 			// Carry the call's intent onto the completed item too (#26):
@@ -1019,7 +1017,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventLoopDetection:
 		p.clearSkillCandidate()
 		data := eventData[events.LoopDetectionData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindLoopDetection, "Loop detection", data.Message)
+		return p.noticeAnnouncement(apptranscript.LoopDetectionAnnouncement(data))
 	case events.EventGoalEnded:
 		p.clearSkillCandidate()
 		data := eventData[events.GoalEndedData](event.Data)
@@ -1055,12 +1053,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		return p.noticeAnnouncement(apptranscript.ContextCompactionAnnouncement(data))
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
-		summary := pluginLoadedAnnouncement(data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindPluginLoaded, summary, "", pluginLoadedRaw(data))
+		return p.noticeAnnouncement(apptranscript.PluginLoadedAnnouncement(data))
 	case events.EventHookStart:
 		return nil
 	case events.EventHookEnd:
@@ -1070,15 +1067,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventForkSummary:
 		p.clearSkillCandidate()
 		data := eventData[events.ForkSummaryData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindForkSummary, "Fork summary", forkSummaryAnnouncement(data))
+		return p.noticeAnnouncement(apptranscript.ForkSummaryAnnouncement(data))
 	case events.EventPromptLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PromptLoadedData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindPromptLoaded, "Prompt loaded", promptLoadedAnnouncement(data))
+		return p.noticeAnnouncement(apptranscript.PromptLoadedAnnouncement(data))
 	case events.EventRoundTimings:
 		p.clearSkillCandidate()
 		data := eventData[events.RoundTimings](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data))
+		return p.noticeAnnouncement(apptranscript.RoundTimingsAnnouncement(data))
 	case events.EventQueueChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
@@ -1567,16 +1564,7 @@ func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEvent
 // persists as a NOTICE entry, built by the same function the transcript
 // projects that entry with.
 func (p *AppEventProjector) noticeAnnouncement(announcement apptranscript.NoticeAnnouncement) []AppNotification {
-	return p.systemAnnouncement(announcement.EventKind, announcement.Description, announcement.Text)
-}
-
-// systemAnnouncementWithRaw renders a lifecycle system one-liner like
-// systemAnnouncement, additionally attaching structured detail to the item's
-// Raw field. The web can then surface that detail (e.g. a compaction
-// before→after expand, mockup #17 Alt A) from real numbers instead of
-// re-parsing the prose text.
-func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage) []AppNotification {
-	return p.systemAnnouncementItem(eventKind, description, text, raw, nil)
+	return p.systemAnnouncementItem(announcement.EventKind, announcement.Description, announcement.Text, announcement.Raw, nil)
 }
 
 // systemAnnouncementWithExitCode renders a lifecycle system one-liner like
@@ -1591,29 +1579,20 @@ func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind appwire.Thr
 }
 
 func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
-	description = strings.TrimSpace(description)
-	text = strings.TrimSpace(text)
-	if text == "" && eventKind != appwire.ThreadItemEventKindPluginLoaded {
-		return nil
-	}
-	if description == "" && text == "" {
+	announcement := apptranscript.NoticeAnnouncement{EventKind: eventKind, Description: description, Text: text, Raw: raw}
+	// Built before the id and turn are chosen: a dropped announcement must
+	// spend neither.
+	item, ok := apptranscript.SystemMessage(announcement, "", "")
+	if !ok {
 		return nil
 	}
 	turnID := p.activeTurnID
 	if turnID == "" {
 		turnID = p.preTurnAnnouncementTurnID()
 	}
-	item := appwire.ThreadItem{
-		Type:        "systemMessage",
-		ID:          p.nextItemID(string(eventKind)),
-		TurnID:      turnID,
-		Description: description,
-		Text:        text,
-		Status:      appwire.TurnStatusCompleted,
-		Raw:         raw,
-		EventKind:   eventKind,
-		ExitCode:    exitCode,
-	}
+	item.ID = p.nextItemID(string(eventKind))
+	item.TurnID = turnID
+	item.ExitCode = exitCode
 	if p.activeTurnID == "" {
 		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
@@ -1663,93 +1642,6 @@ func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem 
 	return out
 }
 
-// projectOutputImages returns nil, never empty, when nothing survives: an item whose descriptors were all unusable never showed images to remove.
-func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
-	if len(images) == 0 {
-		return nil
-	}
-	out := make([]appwire.OutputImage, 0, len(images))
-	for _, img := range images {
-		if img.URL == "" && img.SHA == "" {
-			continue
-		}
-		out = append(out, appwire.OutputImage{
-			Source:    img.Source,
-			Name:      img.Name,
-			MediaType: img.MediaType,
-			Size:      img.Size,
-			URL:       img.URL,
-			SHA:       img.SHA,
-			Path:      img.Path,
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// contextCompactionRaw marshals the structured compaction numbers under a
-// "compaction" key on the system item's Raw field. The web reads these to draw
-// an honest before→after expand (mockup #17 Alt A) from real numbers. Returns
-// nil when there is nothing to carry so the item stays clean.
-func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
-	if data.Layer == "" && data.TurnsBefore == 0 && data.TurnsAfter == 0 &&
-		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
-		return nil
-	}
-	raw, err := marshalContextCompaction(map[string]any{"compaction": data})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func contextCompactionAnnouncement(data events.ContextCompactionData) string {
-	var lines []string
-	if strings.TrimSpace(data.Layer) != "" {
-		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
-	}
-	if data.TurnsBefore > 0 || data.TurnsAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", data.TurnsBefore, data.TurnsAfter))
-	}
-	if data.EstTokensBefore > 0 || data.EstTokensAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", data.EstTokensBefore, data.EstTokensAfter))
-	}
-	if len(lines) == 0 {
-		return "Context compaction ran"
-	}
-	return strings.Join(lines, "\n")
-}
-
-func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {
-	raw, err := json.Marshal(map[string]any{
-		"pluginLoaded": struct {
-			Name       string `json:"name"`
-			SkillCount int    `json:"skillCount"`
-			AgentCount int    `json:"agentCount"`
-			MCPCount   int    `json:"mcpCount"`
-		}{
-			Name:       strings.TrimSpace(data.Name),
-			SkillCount: data.SkillCount,
-			AgentCount: data.AgentCount,
-			MCPCount:   data.MCPCount,
-		},
-	})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func pluginLoadedAnnouncement(data events.PluginLoadedData) string {
-	name := strings.TrimSpace(data.Name)
-	if name == "" {
-		return fmt.Sprintf("Loaded plugin (%d skills, %d agents, %d MCP servers)", data.SkillCount, data.AgentCount, data.MCPCount)
-	}
-	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
-}
-
 // hookEndAnnouncement renders a live hook completion through the same builder
 // the persisted entry uses (schema.HookInfo.Announcement), so the line a
 // watching reader sees and the line a returning one sees cannot drift apart
@@ -1768,58 +1660,6 @@ func hookInfoFromEvent(data events.HookEndData) schema.HookInfo {
 		ExitCode:   data.ExitCode,
 		DurationMS: data.DurationMS,
 	}
-}
-
-func forkSummaryAnnouncement(data events.ForkSummaryData) string {
-	if data.Turn > 0 {
-		return fmt.Sprintf("Fork summary captured at transcript turn %d", data.Turn)
-	}
-	return "Fork summary captured"
-}
-
-func promptLoadedAnnouncement(data events.PromptLoadedData) string {
-	label := fallbackLabel(data.Label, "prompt")
-	if data.Size > 0 {
-		return fmt.Sprintf("Loaded prompt %s (%d B)", label, data.Size)
-	}
-	return "Loaded prompt " + label
-}
-
-// roundTimingsRaw marshals the structured per-phase durations under a
-// "roundTimings" key on the system item's Raw field. The web reads these to
-// draw a rounded, prioritized summary (kata 7zkv) instead of re-parsing the
-// nanosecond-precision prose roundTimingsAnnouncement produces.
-func roundTimingsRaw(data events.RoundTimings) json.RawMessage {
-	raw, err := json.Marshal(map[string]any{"roundTimings": data})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func roundTimingsAnnouncement(data events.RoundTimings) string {
-	parts := []string{
-		fmt.Sprintf("Round %d", data.Round),
-		"total=" + data.TotalRound.String(),
-		"llm=" + data.LLMCall.String(),
-		"context=" + data.ContextMgmt.String(),
-		"tools=" + data.ToolExec.String(),
-		"prompt=" + data.SystemPrompt.String(),
-		"history=" + data.HistoryExpand.String(),
-		"tool_defs=" + data.ToolDefs.String(),
-		"persistence=" + data.Persistence.String(),
-		"after_action=" + data.AfterAction.String(),
-		"overhead=" + data.LoopOverhead.String(),
-	}
-	return strings.Join(parts, " ")
-}
-
-func fallbackLabel(value, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value != "" {
-		return value
-	}
-	return fallback
 }
 
 // holdUnfetchableToolResultImages takes off a settling tool item the image
@@ -1843,7 +1683,7 @@ func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.Thread
 	}
 	fetchable := make([]appwire.OutputImage, 0, len(item.OutputImages))
 	for _, image := range item.OutputImages {
-		if image.Source == events.OutputImageSourceToolResult && image.URL == "" {
+		if apptranscript.UnfetchableUntilRecorded(image) {
 			continue
 		}
 		fetchable = append(fetchable, image)

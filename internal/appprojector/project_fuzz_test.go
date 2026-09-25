@@ -3,7 +3,6 @@ package appprojector
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -272,13 +271,6 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 	project(events.EventToolCallStart, events.ToolCallStartData{ToolName: "use_skill", ArgumentsJSON: "{"})
 	project(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "use_skill"})
 	project(events.EventToolCallStart, events.ToolCallStartData{ToolName: "use_skill", ArgumentsJSON: `{}`})
-
-	oldMarshal := marshalContextCompaction
-	defer func() { marshalContextCompaction = oldMarshal }()
-	marshalContextCompaction = func(any) ([]byte, error) { return nil, errors.New("injected marshal failure") }
-	if raw := contextCompactionRaw(events.ContextCompactionData{Layer: "layer"}); raw != nil {
-		t.Fatalf("marshal failure returned raw payload: %s", raw)
-	}
 }
 
 func applyEvent(t *testing.T, p *AppEventProjector, kindIdx int, payload []byte, record int) {
