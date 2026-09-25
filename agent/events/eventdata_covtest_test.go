@@ -20,6 +20,10 @@ func TestCovNewEventPayloads(t *testing.T) {
 		{"ReasoningEffortChanged", ReasoningEffortChangedData{ReasoningEffort: "high"}, EventReasoningEffortChanged},
 		{"SandboxEscalationRequested", SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "workspace-write", Tool: "write_file", Kind: "write", DeniedPath: "/outside/file", Command: "write", OutputSoFar: "partial", PartiallyRan: true}, EventSandboxEscalationRequested},
 		{"SandboxEscalationResolved", SandboxEscalationResolvedData{EscalationID: "esc_1"}, EventSandboxEscalationResolved},
+		{"RoundStarted", RoundStartedData{RoundID: "r_1"}, EventRoundStarted},
+		{"RoundEnded", RoundEndedData{RoundID: "r_1"}, EventRoundEnded},
+		{"ExecutionStarted", ExecutionStartedData{TurnID: "t_1"}, EventExecutionStarted},
+		{"ExecutionEnded", ExecutionEndedData{TurnID: "t_1", Status: "completed"}, EventExecutionEnded},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

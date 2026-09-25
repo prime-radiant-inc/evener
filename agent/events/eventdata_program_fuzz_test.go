@@ -107,7 +107,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ContextCompactionData{Layer: text, TurnsBefore: n, TurnsAfter: n}, EventContextCompaction},
 		{CompactionTurnData{Kind: text, Text: text}, EventCompactionTurn},
 		{WarningData{Message: text, Source: text, ApproxTokens: n}, EventWarning},
-		{ErrorData{Error: text, Source: text, Cause: &ErrorCause{Kind: text, Status: n}}, EventError},
+		{ErrorData{Error: text, Source: text, Cause: &ErrorCause{Kind: text, Status: n}, Recorded: flag}, EventError},
 		{JobStartedData{JobID: text, JobType: text, Status: text, Background: flag, ParentDelegateID: text}, EventJobStarted},
 		{JobFinishedData{JobID: text, JobType: text, Status: text, Reason: text, ExitCode: &exitCode, ParentDelegateID: text}, EventJobFinished},
 		{DelegateUpdatedData{DelegateID: text, OwnerSessionID: text, RootSessionID: text, ChildSessionID: text, TranscriptRef: text, Type: "delegate", Lifecycle: text, Phase: text, Status: text, Resumable: flag, ProjectionRevision: uint64(n), Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null")}, EventDelegateUpdated},
@@ -127,5 +127,9 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{UrlsUpdatedData{URLs: []SessionURLData{{ID: text, URL: text, Label: text, AddedBy: text, AddedAt: int64(n)}}}, EventUrlsUpdated},
 		{SandboxEscalationRequestedData{EscalationID: text, Mode: text, Tool: text, PartiallyRan: flag}, EventSandboxEscalationRequested},
 		{SandboxEscalationResolvedData{EscalationID: text}, EventSandboxEscalationResolved},
+		{RoundStartedData{RoundID: text}, EventRoundStarted},
+		{RoundEndedData{RoundID: text}, EventRoundEnded},
+		{ExecutionStartedData{TurnID: text}, EventExecutionStarted},
+		{ExecutionEndedData{TurnID: text, Status: text}, EventExecutionEnded},
 	}
 }

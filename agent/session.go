@@ -571,6 +571,20 @@ type Session struct {
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
 	roundID string
+	// lastRoundID is the latest round the session opened, and lastRoundEnded
+	// whether its EventRoundEnded was emitted; guarded by mu.
+	lastRoundID    string
+	lastRoundEnded bool
+	// sessionStarted is set once SESSION_START is emitted; guarded by mu.
+	// Restore can run an execution before then; it is recorded whole before
+	// any consumer learns the session exists, so it is not announced.
+	sessionStarted bool
+	// executionStarted is called with each execution's TurnID before its
+	// first entry is recorded; guarded by mu. See SetExecutionStartedFunc.
+	executionStarted func(turnID string)
+	// transcriptRecorded is the recorded-entry hook installed on every writer
+	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
+	transcriptRecorded func(transcript.Record)
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -2383,7 +2397,7 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.mu.Lock()
-	s.transcript = w
+	s.setTranscriptLocked(w)
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil

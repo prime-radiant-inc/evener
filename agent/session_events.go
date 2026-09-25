@@ -157,6 +157,9 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emit(events.EventSessionStart, start)
 		return nil
 	})
+	s.mu.Lock()
+	s.sessionStarted = true
+	s.mu.Unlock()
 	// Collected transcript-health failures (NewSession's transcript create, and
 	// attachTranscript's held-turn flush) are genuine, model-facing warnings —
 	// unlike the diagnostic buffers below, they run through emit (not
@@ -261,8 +264,10 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 // failure a returning user reads can never disagree with the one a watching
 // user saw. Turn cancellations do NOT come through here — they are not
 // failures (the interrupted SessionEnd owns that turn's terminal state), and
-// callers on the cancellation path emit the bare event instead.
+// callers on the cancellation path emit the bare event instead. The event is
+// marked Recorded: history shows the failure, so a live view need not keep it.
 func (s *Session) emitTurnFailure(data events.ErrorData) {
+	data.Recorded = true
 	s.emit(events.EventError, data)
 	s.recordTurnFailure(data, false)
 }
@@ -282,6 +287,7 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // recordFailedSteeringSelection (session_queue.go) without going through
 // this function, gated by the same answering check.
 func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
+	data.Recorded = true
 	s.emit(events.EventError, data)
 	s.recordTurnFailure(data, true)
 }

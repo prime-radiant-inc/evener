@@ -25,6 +25,11 @@ import (
 type executionState struct {
 	// running is set from the execution's admission to its completion.
 	running bool
+	// turnID is the TurnID the execution runs under.
+	turnID string
+	// announced records that EventExecutionStarted announced the execution,
+	// so its end is announced too.
+	announced bool
 	// startedAt is when the execution was admitted, for its DurationMS.
 	startedAt time.Time
 	// failed records a TURN_FAILURE recorded during the execution: its
@@ -44,15 +49,24 @@ func executionTurnID(name string) string {
 }
 
 // beginExecution admits an execution named name (see executionTurnID) on the
-// session's transcript, before any of its entries is recorded.
+// session's transcript, before any of its entries is recorded. The
+// execution-started func and EventExecutionStarted learn its TurnID first.
 func (s *Session) beginExecution(name string) {
 	turnID := executionTurnID(name)
 	s.mu.Lock()
-	s.execution = executionState{running: true, startedAt: s.sclock().Now()}
+	announced := s.sessionStarted
+	s.execution = executionState{running: true, turnID: turnID, announced: announced, startedAt: s.sclock().Now()}
 	// A turn already recorded runs again only when recovery reclaims it: it
 	// reopens, and stays open until its next completion.
 	reopen := s.recordedExecutions[turnID]
+	started := s.executionStarted
 	s.mu.Unlock()
+	if started != nil {
+		started(turnID)
+	}
+	if announced {
+		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
+	}
 	s.attachedTranscript().BeginExecution(turnID, reopen)
 	if reopen {
 		_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
@@ -62,25 +76,37 @@ func (s *Session) beginExecution(name string) {
 // completeExecution records the running execution's completion entry. status
 // is how the input loop saw the run end; a TURN_FAILURE recorded during the
 // run makes it failed. With no execution running, or one that recorded
-// nothing, there is nothing to complete and nothing is written.
+// nothing, there is nothing to complete and nothing is written. It announces
+// the end of the execution's last round, then, after the completion entry,
+// the end of the execution with the status recorded (status when nothing was).
 func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 	s.mu.Lock()
 	execution := s.execution
 	s.execution = executionState{}
 	s.roundID = ""
 	s.mu.Unlock()
-	if !execution.running || s.attachedTranscript() == nil {
+	s.endLastRound()
+	if !execution.running {
 		return
 	}
-	if execution.failed {
-		status = schema.TurnFailed
+	ended := status
+	if s.attachedTranscript() != nil {
+		if execution.failed {
+			status = schema.TurnFailed
+		}
+		now := s.sclock().Now().UTC()
+		rec := s.recordTranscriptOnlyAt(schema.Turn{
+			Kind:       schema.TurnCompletion,
+			Timestamp:  now,
+			Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)},
+		}, transcript.PlaceCompletion)
+		if rec.Recorded {
+			ended = status
+		}
 	}
-	now := s.sclock().Now().UTC()
-	_ = s.recordTranscriptOnlyAt(schema.Turn{
-		Kind:       schema.TurnCompletion,
-		Timestamp:  now,
-		Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)},
-	}, transcript.PlaceCompletion)
+	if execution.announced {
+		s.emit(events.EventExecutionEnded, events.ExecutionEndedData{TurnID: execution.turnID, Status: string(ended)})
+	}
 }
 
 // noteRecordedLocked keeps the session's bookkeeping of what it recorded: the
@@ -137,13 +163,97 @@ func (s *Session) recordedUserInputTurn(fallback int) int {
 // one ASSISTANT entry (a salvage entry included): its attempts, retries and
 // fallback groups, up to the first recorded one, which closes it. The end of
 // the execution closes it too.
+//
+// Opening a round announces it, after announcing the end of the round before
+// it: a closed round has ended only once the next one opens, because its
+// tools and hooks run between the two.
 func (s *Session) roundIDForModelCall() string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.roundID == "" {
-		s.roundID = identifier.MustNewRoundID()
+	if s.roundID != "" {
+		defer s.mu.Unlock()
+		return s.roundID
 	}
-	return s.roundID
+	previous := s.lastRoundID
+	if s.lastRoundEnded {
+		previous = ""
+	}
+	s.roundID = identifier.MustNewRoundID()
+	s.lastRoundID, s.lastRoundEnded = s.roundID, false
+	roundID := s.roundID
+	s.mu.Unlock()
+	if previous != "" {
+		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: previous})
+	}
+	s.emit(events.EventRoundStarted, events.RoundStartedData{RoundID: roundID})
+	return roundID
+}
+
+// endLastRound announces the end of the latest round the session opened,
+// unless it is already announced.
+func (s *Session) endLastRound() {
+	s.mu.Lock()
+	roundID := s.lastRoundID
+	ended := s.lastRoundEnded
+	s.lastRoundEnded = true
+	s.mu.Unlock()
+	if roundID != "" && !ended {
+		s.emit(events.EventRoundEnded, events.RoundEndedData{RoundID: roundID})
+	}
+}
+
+// SetExecutionStartedFunc installs a callback run in beginExecution before the
+// execution's first entry is recorded, with the execution's TurnID. serve wires
+// it to Server.SetProcessingTurn. Install it before the session runs input.
+func (s *Session) SetExecutionStartedFunc(fn func(turnID string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.executionStarted = fn
+}
+
+// SetTranscriptRecordedFunc installs fn as the transcript's recorded-entry hook
+// (transcript.Writer.OnRecorded) now and on every writer the session attaches
+// or reopens. fn runs under the append lock: see OnRecorded.
+func (s *Session) SetTranscriptRecordedFunc(fn func(transcript.Record)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transcriptRecorded = fn
+	s.transcript.OnRecorded(fn)
+}
+
+// setTranscriptLocked makes w the session's writer, installing the session's
+// recorded-entry hook on it. A writer reopened on the same file shares the
+// file's hook already; installing it again covers a writer that does not.
+// Callers hold s.mu.
+func (s *Session) setTranscriptLocked(w *transcript.Writer) {
+	s.transcript = w
+	if s.transcriptRecorded != nil {
+		w.OnRecorded(s.transcriptRecorded)
+	}
+}
+
+// TranscriptRecordedLength is the recorded length of the session's transcript,
+// 0 when it has none.
+func (s *Session) TranscriptRecordedLength() int64 {
+	return s.attachedTranscript().RecordedLength()
+}
+
+// SetDescendantRecordedFunc installs fn on every descendant session this
+// session spawns, now and later (inherited like the descendant event func):
+// fn(sessionID, record) under that child's append lock.
+func (s *Session) SetDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.spawn.descendantRecorded = fn
+}
+
+// descendantRecordedHook is a descendant's own recorded-entry hook: the
+// inherited descendant func, told the descendant's session id. Nil when no
+// func is inherited.
+func descendantRecordedHook(fn func(sessionID string, rec transcript.Record), sessionID string) func(transcript.Record) {
+	if fn == nil {
+		return nil
+	}
+	return func(rec transcript.Record) { fn(sessionID, rec) }
 }
 
 // closeCrashedExecutions records an interrupted completion for every

@@ -608,6 +608,10 @@ type ErrorData struct {
 	// instead of substring-matching the Error message (kata ts0x). A nil
 	// Cause means the failure source is unknown (back-compat default).
 	Cause *ErrorCause `json:"cause,omitempty"`
+	// Recorded reports that the session recorded this error as a
+	// TURN_FAILURE entry, so history shows it; an error not recorded is
+	// shown only live.
+	Recorded bool `json:"recorded,omitempty"`
 }
 
 // ErrorCause describes a structured root cause for an EventError. Today the
@@ -848,6 +852,30 @@ type EnvironmentData struct {
 // TurnEndedData is the payload for an EventTurnEnded event.
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`
+}
+
+// RoundStartedData is the payload for an EventRoundStarted event.
+type RoundStartedData struct {
+	RoundID string `json:"round_id"`
+}
+
+// RoundEndedData is the payload for an EventRoundEnded event.
+type RoundEndedData struct {
+	RoundID string `json:"round_id"`
+}
+
+// ExecutionStartedData is the payload for an EventExecutionStarted event.
+type ExecutionStartedData struct {
+	TurnID string `json:"turn_id"`
+}
+
+// ExecutionEndedData is the payload for an EventExecutionEnded event.
+type ExecutionEndedData struct {
+	TurnID string `json:"turn_id"`
+	// Status is how the execution ended: completed, failed or interrupted —
+	// the status its completion entry records, or the status the input loop
+	// saw when no completion entry was recorded.
+	Status string `json:"status"`
 }
 
 // TurnStartedData is the payload for an EventTurnStarted event.
