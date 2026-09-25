@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package dev
 
 import (
@@ -134,13 +136,5 @@ func TestGroupedGuardDrainTermsALeftoverFirst(t *testing.T) {
 	awaitGone(t, readPid(t, pidFile), "the leftover")
 	if _, err := os.Stat(pidFile + ".term"); err != nil {
 		t.Fatalf("the leftover never got a TERM: %v", err)
-	}
-}
-
-func TestWebChecksRunInTheirOwnProcessGroups(t *testing.T) {
-	for _, check := range webChecks {
-		if !webCheckSpec(check, t.TempDir()).group {
-			t.Errorf("web-%s is not started in its own process group", check)
-		}
 	}
 }

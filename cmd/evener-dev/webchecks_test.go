@@ -118,3 +118,11 @@ func TestWebChecksLaunchEachCheckContained(t *testing.T) {
 		}
 	}
 }
+
+func TestWebChecksRunInTheirOwnProcessGroups(t *testing.T) {
+	for _, check := range webChecks {
+		if !webCheckSpec(check, t.TempDir()).group {
+			t.Errorf("web-%s is not started in its own process group", check)
+		}
+	}
+}
