@@ -97,8 +97,8 @@ func TestSessionWithNoConsumerDropsRatherThanWedging(t *testing.T) {
 }
 
 func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
-	oldBudget := SetLaneClosePassBudget(20 * time.Millisecond)
-	t.Cleanup(func() { SetLaneClosePassBudget(oldBudget) })
+	restoreBudget := SetLaneClosePassBudget(20 * time.Millisecond)
+	t.Cleanup(restoreBudget)
 
 	s := losslessTestSession("close-wedged")
 	s.subagents = newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
@@ -279,8 +279,8 @@ func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
 	// session's cleanup runs would spend the shipped budget parked on its own
 	// terminal boundary. What is under test is which deadline owns the event,
 	// not how long the shipped one is.
-	oldBudget := SetLaneClosePassBudget(20 * time.Millisecond)
-	t.Cleanup(func() { SetLaneClosePassBudget(oldBudget) })
+	restoreBudget := SetLaneClosePassBudget(20 * time.Millisecond)
+	t.Cleanup(restoreBudget)
 
 	s := newSession(t, withoutGitSnapshot())
 	s.authoritativeConsumer = true
@@ -346,8 +346,8 @@ func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
 // a context nothing cancels spends its whole timeout inside the shutdown
 // budget, delaying session cleanup and the rendezvous removal behind it.
 func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
-	oldBudget := SetLaneClosePassBudget(20 * time.Millisecond)
-	t.Cleanup(func() { SetLaneClosePassBudget(oldBudget) })
+	restoreBudget := SetLaneClosePassBudget(20 * time.Millisecond)
+	t.Cleanup(restoreBudget)
 
 	s := newSession(t, withoutGitSnapshot())
 	marker := t.TempDir() + "/hook-running"

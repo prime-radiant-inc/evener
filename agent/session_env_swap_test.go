@@ -553,12 +553,12 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 
 // shortenCloseCascadeBudget cuts the shared close-cascade budget for one test
 // and restores it afterwards, so a fence test can watch the join give up
-// without waiting out the production thirty seconds. LaneClosePassBudget is
-// the package var both ensureCloseBudget and worktreeCleanupRun read.
+// without waiting out the production thirty seconds. The close-budget accessor
+// is what both ensureCloseBudget and worktreeCleanupRun read.
 func shortenCloseCascadeBudget(t *testing.T, d time.Duration) time.Duration {
 	t.Helper()
-	old := SetLaneClosePassBudget(d)
-	t.Cleanup(func() { SetLaneClosePassBudget(old) })
+	restore := SetLaneClosePassBudget(d)
+	t.Cleanup(restore)
 	return d
 }
 

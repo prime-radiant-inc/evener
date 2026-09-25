@@ -98,8 +98,8 @@ func shrinkDrainStallTimeout(t *testing.T, d time.Duration) {
 // pure waiting. What they assert is that the budget is HONOURED, not its size.
 func shrinkCloseBudget(t *testing.T, d time.Duration) {
 	t.Helper()
-	old := agent.SetLaneClosePassBudget(d)
-	t.Cleanup(func() { agent.SetLaneClosePassBudget(old) })
+	restore := agent.SetLaneClosePassBudget(d)
+	t.Cleanup(restore)
 }
 
 var wedgeDelegateIDPattern = regexp.MustCompile(`dlg_[A-Za-z0-9_-]+`)
@@ -273,7 +273,7 @@ func observeCloseStopJoins(t *testing.T) *closeStopJoinObservations {
 
 // assertHalfReserved checks the close tree's wiring off the deadlines: at
 // least one stop join was minted after the drain returned, and every one left
-// half of what the cascade had -- LaneClosePassBudget/2 from a fresh budget,
+// half of what the cascade had -- close-cascade budget/2 from a fresh budget,
 // half the remainder for a nested close -- for the joins that follow it. The
 // 250ms tolerance is scheduling skew between two back-to-back mints, orders
 // of magnitude above honest skew and far below a stop join that took the
@@ -377,7 +377,7 @@ func TestRunExitsWithALiveDelegateItNeverStopped(t *testing.T) {
 }
 
 // TestCloseStopJoinReservationFollowsTheHelpersRule pins the check against
-// closeStopJoinContext's own rule. The stop join takes LaneClosePassBudget/2
+// closeStopJoinContext's own rule. The stop join takes close-cascade budget/2
 // of a cascade with at least that much left, and half of what is left below
 // it; so a close whose preamble spent part of the budget before the join --
 // remaining in [L/2, L) -- reserves remaining - L/2, less than remaining/2. A
