@@ -619,8 +619,10 @@ func TestThreeRebuildFailuresEnterTheFailedState(t *testing.T) {
 	})
 	bad := st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("bad")))
 	<-attemptStarted
-	history.serial.Lock()
-	history.serial.Unlock()
+	func() {
+		history.serial.Lock()
+		defer history.serial.Unlock()
+	}()
 
 	var entryErr *transcriptindex.EntryError
 	if err := history.Failed(); !errors.As(err, &entryErr) || entryErr.Ordinal != bad.Ordinal {
