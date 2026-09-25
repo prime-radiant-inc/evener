@@ -793,3 +793,52 @@ it.each(
 	);
 	expect(nativeVisible).toBe(sharedVisible);
 });
+
+// --- D24-4: the presentation layer owns no event-kind vocabulary or gate row --
+//
+// The parity table above drives a systemMessage-DERIVED row; this drives a
+// notice ROW directly. The presentation layer must not carry a second event
+// classification: a notice row is shown or hidden by exactly the shared
+// projector's verdict, because native's row filter consumes project.ts's
+// systemEventVisible (which asks projectThread). The kinds here are exactly the
+// ones a hand-kept native table got wrong - notes-context (absent from its set)
+// and environment/round_timings/hook_completed (gated by an advanced flag) - so
+// reinstating such a table turns this red while the shared verdict stays right.
+const NATIVE_TABLE_GAP_CASES: { eventKind?: string; exitCode?: number }[] = [
+	{ eventKind: "notes-context" },
+	{ eventKind: "environment" },
+	{ eventKind: "round_timings" },
+	{ eventKind: "hook_completed", exitCode: 0 },
+	{ eventKind: "hook_completed", exitCode: 3 },
+	{ eventKind: "error" },
+	{ eventKind: "future-event" },
+	{},
+];
+
+it.each(
+	NATIVE_TABLE_GAP_CASES.flatMap((kind) =>
+		GATE_CONFIGS.map((gate) => ({
+			title: `${kind.eventKind ?? "(none)"} exit=${kind.exitCode ?? "-"} gate=${gate.name}`,
+			...kind,
+			config: gate.config,
+		})),
+	),
+)("shows notice row $title exactly as the shared projector", ({ eventKind, exitCode, config }) => {
+	const notice: MobileTimelineItem = {
+		kind: "notice",
+		id: "notice",
+		origin: "system",
+		family: "unknown-system",
+		tone: "system",
+		text: "",
+		...(eventKind ? { eventKind } : {}),
+		...(exitCode !== undefined ? { exitCode } : {}),
+	};
+	const nativeVisible = projectNativeTranscript(conversation([notice]), config).items.some(
+		(item) => item.id === "notice",
+	);
+	const sharedVisible = sharedProjectThread(systemEventProbe(eventKind, exitCode), config).turns.some(
+		(turn) => turn.entries.some((entry) => entry.id === "system-event-probe"),
+	);
+	expect(nativeVisible).toBe(sharedVisible);
+});
