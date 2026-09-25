@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -191,6 +192,31 @@ func refuseCommunicateEntries(t *testing.T, s *Session) {
 	s.transcript = w
 	s.mu.Unlock()
 	t.Cleanup(func() { _ = previous.Close() })
+}
+
+// A served session with no transcript refuses a client turn at its claim, and
+// shows its one diagnostic there too: the claim path runs no turn loop.
+func TestAFailedClosedSessionAnnouncesAtAClientClaim(t *testing.T) {
+	s, _ := newFailClosedSession(t, func(point string) error {
+		if point == "new_transcript" {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	served := serveFailClosedSession(s)
+	s.SetClientMutationStartWakeFunc(func() {})
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-on-a-dead-transcript", ExpectedInstanceID: s.ID(),
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("claim on a failed-closed session = %v, want the fail-closed refusal", err)
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
 }
 
 // A communicate message whose entry is not recorded is never announced: the

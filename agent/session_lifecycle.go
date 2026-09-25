@@ -1756,14 +1756,18 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 // poisoning can land between this read and that gate, which is why both callers
 // also give the claim back when the loop refuses.
 //
-// Unlike the loop's gate it settles nothing and emits nothing: at these entry
-// points no turn has begun and no input has been published, so there is no
-// processing boundary to close and no subscriber waiting to hear this input end.
-// Its callers only reach it when they have work in hand, so an idle wake against
-// a dead transcript still stands down quietly.
+// Unlike the loop's gate it settles nothing and emits no end of input: at these
+// entry points no turn has begun and no input has been published, so there is
+// no processing boundary to close and no subscriber waiting to hear this input
+// end. A session that failed closed does show its one diagnostic here, since a
+// refused claim never reaches the loop's gate. Its callers only reach it when
+// they have work in hand, so an idle wake against a dead transcript still
+// stands down quietly.
 func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
 	s.failClosedOnUnhealthyTranscript()
-	return s.refuseOnUnhealthyTranscript(s.attachedTranscript())
+	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
+	s.announceFailClosed()
+	return refusal
 }
 
 // refuseOnUnhealthyTranscript is refuseBeforeClaimingOnUnhealthyTranscript for a
