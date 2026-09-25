@@ -451,50 +451,73 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 		return nil, fmt.Errorf("create transcript dir: %w", err)
 	}
 
-	// Create truncates. Truncating a transcript another writer in this process
-	// has open would cut its records out from under it. No caller does; this
-	// catches that mistake, and does not hold off a writer opening the file
-	// concurrently with the create.
+	f, tail, err := createTranscriptFile(fs, path)
+	if err != nil {
+		return nil, err
+	}
+	w, err := writeTranscriptHeader(fs, f, tail, header, sync)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the header error is what matters
+		tail.release()
+		return nil, err
+	}
+	return w, nil
+}
+
+// createMu makes creating a transcript one step in this process: the check
+// that no writer has the file open, the create that truncates it, and the
+// registration of its tail. Of two creates racing on one path exactly one
+// wins, and the file is never truncated under a writer this process has open.
+var createMu sync.Mutex
+
+func createTranscriptFile(fs afero.Fs, path string) (afero.File, *appendTail, error) {
+	createMu.Lock()
+	defer createMu.Unlock()
 	if openInProcess(path) {
-		return nil, fmt.Errorf("create transcript file: %s is open in this process", path)
+		return nil, nil, fmt.Errorf("create transcript file: %s is open in this process", path)
 	}
 	f, err := fs.Create(path)
 	if err != nil {
-		return nil, fmt.Errorf("create transcript file: %w", err)
+		return nil, nil, fmt.Errorf("create transcript file: %w", err)
 	}
+	tail, err := acquireAppendTail(f)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the stat error is what matters
+		return nil, nil, err
+	}
+	return f, tail, nil
+}
 
+// writeTranscriptHeader writes a created transcript's header. Its tail is
+// registered first, so a writer that opens the file once the header lands
+// joins that tail and may append before this writer does. This writer starts
+// at move 0, the new tail's count before any writer positioned on it, so its
+// first append re-seeks to the end if one has since.
+func writeTranscriptHeader(fs afero.Fs, f afero.File, tail *appendTail, header Header, sync bool) (*Writer, error) {
 	data, err := json.Marshal(header)
 	if err != nil {
-		_ = f.Close() // cleanup on error path; the marshal error is what matters
 		return nil, fmt.Errorf("marshal transcript header: %w", err)
 	}
 
 	if _, err := f.Write(append(data, '\n')); err != nil {
-		_ = f.Close() // cleanup on error path; the write error is what matters
 		return nil, fmt.Errorf("write transcript header: %w", err)
 	}
 
 	if sync {
 		if err := f.Sync(); err != nil {
-			_ = f.Close() // cleanup on error path; the sync error is what matters
 			return nil, fmt.Errorf("sync transcript header: %w", err)
 		}
 	}
 
-	tail, err := acquireAppendTail(f)
-	if err != nil {
-		_ = f.Close() // cleanup on error path; the stat error is what matters
-		return nil, err
-	}
 	tail.mu.Lock()
 	defer tail.mu.Unlock()
-	return newWriterOnTail(fs, f, tail, header), nil
+	return newWriterOnTail(fs, f, tail, header, 0), nil
 }
 
-// newWriterOnTail builds a writer positioned at the file's end on its shared
-// tail. The caller holds tail.mu.
-func newWriterOnTail(fs afero.Fs, f afero.File, tail *appendTail, header Header) *Writer {
-	w := &Writer{fs: fs, file: f, tail: tail, tailMove: tail.moved(), lastSync: time.Now(), header: header}
+// newWriterOnTail builds a writer on its shared tail whose handle position
+// reflects the tail's move tailMove. The caller holds tail.mu.
+func newWriterOnTail(fs afero.Fs, f afero.File, tail *appendTail, header Header, tailMove uint64) *Writer {
+	w := &Writer{fs: fs, file: f, tail: tail, tailMove: tailMove, lastSync: time.Now(), header: header}
 	w.releaseTail = runtime.AddCleanup(w, (*appendTail).release, tail)
 	return w
 }
@@ -1046,7 +1069,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	// Another writer still open on the file may have used more of the sequence
 	// than the file shows; never go back below it.
 	tail.nextSeq = max(tail.nextSeq, nextSeq)
-	return newWriterOnTail(fs, f, tail, header), entries, nil
+	return newWriterOnTail(fs, f, tail, header, tail.moved()), entries, nil
 }
 
 // scanForResume validates the transcript, truncates any crash tail, positions
