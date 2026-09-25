@@ -42,7 +42,10 @@ import { createConversationService } from "../../mobile/src/services/conversatio
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import {
+	createConversationMutationPendingPort,
+	type ConversationMutationSubmitter,
+} from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -78,7 +81,10 @@ import {
 	createDurableSubmitter,
 	type NativeMutationHost,
 } from "./nativeMutationHost";
-import { getNativeMutationRuntime } from "./nativeMutationRuntime";
+import {
+	getNativeMutationRuntime,
+	nativeMutationTargetKey,
+} from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -1056,10 +1062,34 @@ export function ConversationScreen({
 	// child or editor must reacquire this screen's stream and current snapshot.
 	useEffect(() => {
 		if (!service || !connected || !focused) return;
+		let cancelled = false;
+		let unbindPending: (() => void) | undefined;
 		void store
 			.getState()
-			.resumeProjected(service, activitySink, route.params.ref);
+			.resumeProjected(service, activitySink, route.params.ref)
+			.then(() => {
+				if (cancelled) return;
+				// The store retires its durable pending-row seam on any thread
+				// open; rebind it once the open/reconnect has installed the
+				// projection, so the in-flight rows the screen follows are the
+				// target's durable outbox/optimistic records. A rebind re-reads
+				// storage and follows it, so a mutation enqueued before a restart
+				// is still shown after it.
+				try {
+					unbindPending = store.getState().bindPendingMutations(
+						createConversationMutationPendingPort(
+							getNativeMutationRuntime(),
+							nativeMutationTargetKey(route.params.hubId, route.params.ref),
+						),
+					);
+				} catch {
+					// The mutations database could not be opened. The conversation
+					// stays usable; a later reconnect or remount retries.
+				}
+			});
 		return () => {
+			cancelled = true;
+			unbindPending?.();
 			store.getState().suspendProjected();
 			service.close();
 		};
