@@ -83,6 +83,12 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 			// keeps model-visible steering after the matching result on the wire.
 			out = append(out, turn)
 		default:
+			if turn.Kind.TranscriptOnly() {
+				// Never model history; resume keeps these out. One that got
+				// here interrupts no tool round.
+				out = append(out, turn)
+				continue
+			}
 			flushPending()
 			out = append(out, turn)
 		}
