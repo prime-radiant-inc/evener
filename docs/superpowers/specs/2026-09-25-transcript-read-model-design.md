@@ -1,6 +1,6 @@
 # Transcript as the Only History Read Model
 
-Status: proposed, revision 5 (2026-09-25). Supersedes the eviction approach in
+Status: accepted for implementation, revision 6 (2026-09-25). Supersedes the eviction approach in
 the closed PR #2251.
 
 Revision history:
@@ -20,6 +20,17 @@ Revision history:
   - the index is seekable on disk
   - the read switch is folded into activation
   - the new entry kinds stay out of in-memory history
+- **Revision 6** followed the final review round, which found the model
+  converged. It fixed the remaining local gaps:
+  - positions and keys use the entry ordinal, because real transcripts contain
+    duplicate `Seq`s
+  - the registry serializes appends
+  - the index records item contributors and turn summaries
+  - replacement is scoped to a window and a snapshot
+  - communicate previews, `roundID`, resume startup and async writes get exact
+    rules
+  - resync delivery failure ends the subscription
+  - boundary tests gate activation
 
 ## Problem
 
@@ -52,7 +63,8 @@ later file projection"). Restarting a daemon already changes what clients see.
    reasoning, running tool state, communicate previews and ephemeral notices
    live in memory, separate from history, and never claim history identity.
 3. **Merges are versioned and upsert-only.** Every history item and turn carries
-   a version: the highest `Seq` of the entries that contributed to it. The
+   a version: the highest entry ordinal (below) among the entries that
+   contributed to it. The
    higher version wins.
    - Applying a fact twice changes nothing.
    - A file read that is ahead of the live stream changes nothing.
@@ -72,7 +84,7 @@ What is deleted:
 
 ## Design
 
-### Recorded length and Seq
+### Recorded length, entry ordinals and Seq
 
 The writer has three doors today:
 - **`Append`** is buffered. It fsyncs at most once per `SyncInterval`, which is 1s
@@ -89,15 +101,25 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   through any door, the writer publishes its recorded length under its lock. The
   entry is handed to the server only after that. The durable door rolls back
   before publishing, so the recorded length never includes rolled-back bytes.
-- **The per-process registry.** Every writer in the process registers its file
-  in one registry, cold writers and mid-session reopens included. The registry
-  holds the file's recorded length and its next `Seq`.
+- **The per-process registry serializes appends.** Every writer in the process
+  appends to a file through one registry entry for that file, cold writers and
+  mid-session reopens included. The registry entry owns the append lock, the next
+  `Seq`, the recorded length and the next entry ordinal. So two writers can never
+  append at a stale offset or with a stale counter.
+
+  Real transcripts written before this change contain duplicate `Seq`s. For
+  example, lines 9391–9394 of a local 134 MB coordinator transcript carry seq
+  9390, 9391, 9390, 9391. Two writers were open on one file without `O_APPEND`,
+  and the buffered door never seeks (`agent/transcript/transcript.go:647-653,
+  962, 981`). The registry fix ships ahead of phase 1 as its own PR.
   - In-process reads never go past the recorded length.
-  - A writer opening a file takes `nextSeq = max(file max Seq + 1, registry
-    nextSeq)`, which covers reopens such as `reopenAttentionTranscriptDurably`
-    and `stabilizeAttentionForStop` (`agent/session_attention.go:1401-1446`).
   - A rolled-back append still consumes its `Seq`.
-  - So a `Seq` is never reused within one daemon run.
+- **Entry ordinal.** Identity and order use the **entry ordinal**, not `Seq`. The
+  entry ordinal is the 0-based index of an entry line in the file, excluding the
+  header. It is unique and increasing by construction, including across legacy
+  duplicate `Seq`s. The registry knows it for every append in-process. A reader
+  counts lines. `Seq` keeps its existing uses and nothing new depends on it being
+  unique.
 - **Reads from another process.** A reader with no writer for the file in its
   process reads to end of file and drops an incomplete last line, as today. The
   hub reading a daemonless session is the main case. Such reads are
@@ -139,8 +161,11 @@ it is the steer mutation's own ID and is never a turn ID
 - **`gap`**: standalone entries recorded between executions, such as hooks,
   model switch, environment and persisted notices. The session mints one gap turn
   for each run of such entries. This keeps today's grouping of a burst of
-  announcements into one turn (`appwire_projection.go:2160-2198`). Startup
-  entries use the prelude turn.
+  announcements into one turn (`appwire_projection.go:2160-2198`).
+- **The prelude turn** holds startup entries only before the first execution of
+  a fresh session. Startup entries written on resume, such as held SessionStart
+  hooks (`agent/session_events.go:340-345`), go to a gap turn, as they do live
+  today (`appwire_projection.go:72-77, 2186-2191`).
 - **`delivery`**: an entry from a cold writer. Attention delivery, watch sends
   and shell repair have no session (`agent/session_attention.go:351-397`,
   `agent/delegate_delivery.go:106`, `agent/delegate_tree_watch.go:478`,
@@ -152,10 +177,19 @@ it is the steer mutation's own ID and is never a turn ID
   Live never shows them at all. Showing each delivery as its own turn is an
   intended, visible change for new-format sessions.
 
+**Asynchronous writes through the session's own writer.** These arrive from
+delivery and stop goroutines at any time: model-bound attention STEERING
+(`agent/session_attention.go:541-545`) and ATTENTION_RESOLUTION (`:1382, 1489,
+1532`).
+- If an execution is running, they take the running execution's `TurnID`.
+- Otherwise they take a `delivery` turn of their own.
+- They never take the ID of a turn that has already completed.
+- A turn's completion entry is written as the last entry of its execution span.
+
 **Turn membership** comes from `TurnID`, not from entry-kind adjacency.
 
-**Item key.** `transcriptKey = apptranscript-item-v2:<turnID>:<Seq>:<part>`.
-- `Seq` is the entry that opens the item.
+**Item key.** `transcriptKey = apptranscript-item-v2:<turnID>:<ordinal>:<part>`.
+- `ordinal` is the entry ordinal of the entry that opens the item.
 - `part` is the index of the entry content part the item comes from, counted
   over the entry's content parts, not over the items it projects. Hidden or
   omitted parts still occupy their index, so the same part always gets the same
@@ -167,8 +201,9 @@ it is the steer mutation's own ID and is never a turn ID
   call ID harmless.
 - Item `id` derives from the key and keeps today's kind prefixes.
 
-**Position.** Every entry, legacy and new, uses `{entry: Seq + 1, item: part}`.
-Header-derived prelude items use `{entry: 0}`.
+**Position.** Every entry, legacy and new, uses `{entry: ordinal + 1, item:
+part}`. Header-derived prelude items use `{entry: 0}`. A turn is displayed at the
+position of its first item.
 
 **Format marker.** Every new entry carries an explicit format version, so the
 projector never infers the format from which fields are present. `StableTurnID`
@@ -179,8 +214,8 @@ and `OwningTurnID` already appear on legacy steering entries
 - They keep today's turn IDs (`turn_<entryIndex>`), adjacency grouping and
   inferred status: completed by default, failed or interrupted from their entries
   (`logical_turn.go:185-218`).
-- Their positions move to the `Seq` scheme. Cursors go stale once, at the
-  projection version bump.
+- Their positions move to the entry-ordinal scheme. Cursors go stale once, at
+  the projection version bump.
 - A resumed legacy session is self-consistent. New entries carry new identity,
   and legacy turns are never rewritten.
 
@@ -189,9 +224,9 @@ and `OwningTurnID` already appear on legacy steering entries
 Status is derived from persisted facts:
 - **Gap, delivery and prelude turns** are always complete.
 - **An execution turn's status is its latest completion entry:** completed,
-  failed or interrupted, as recorded. If entries of the same turn follow its
-  latest completion, the turn is open again until the next completion. This
-  covers a turn that recovery reclaims and re-runs under the same ID
+  failed or interrupted, as recorded. A turn reopens only when recovery reclaims
+  and re-runs it under the same ID. That case writes a reopen marker, and the
+  turn is open until its next completion
   (`agent/session.go:530-548`; `agent/session_client_mutation.go:408-415,
   575-599`).
 - **An execution turn with no completion** is open.
@@ -203,8 +238,9 @@ execution turn it finds open, except a turn it is about to reclaim and re-run.
 **Running state lives in the overlay.** A client shows an open turn as running
 while the overlay says it is running, and as interrupted otherwise. That is a
 display rule: it is never stored or merged as a fact. A daemonless past session
-has an empty overlay, so a turn that a crash left open displays as interrupted,
-which is what the hub shows today.
+has an empty overlay, so a turn that a crash left open displays as interrupted.
+Today the hub shows such a turn as completed (`logical_turn.go:188`), so this is
+an intended visible change for new-format sessions.
 
 ### The projector
 
@@ -235,10 +271,13 @@ The projector is one pure function over (entries, header). It has one
     (`agent/session_tools.go:1021-1090`).
   - The ASSISTANT entry's communicate call part is hidden, but it still occupies
     its part index.
+  - If the COMMUNICATE append is not recorded, the session treats it as writer
+    failure and fails closed (see Writer failure). A delivered message is never
+    silently missing from history.
   - No history item is ever removed.
 - **Fold copies.** A fold re-appends entries after its markers
-  (`agent/session_compaction.go:146-154`). The copies carry `OriginalSeq`, and
-  they are neither projected nor announced.
+  (`agent/session_compaction.go:146-154`). The copies carry the original's entry
+  ordinal in `OriginalOrdinal`, and they are neither projected nor announced.
 
 **Incremental use.** For live notifications, the daemon keeps a projection state
 for each thread:
@@ -276,8 +315,12 @@ file.
 3. It rebuilds the projection state from the file.
 
 A client that receives the resync, or that later reads and sees a newer epoch
-than it holds, replaces that thread's history instead of merging. Every
-subscriber recovers on its own, and the epoch never needs clearing.
+than it holds, replaces that thread's history instead of merging. The epoch never
+needs clearing.
+
+If a resync push cannot be delivered to a subscriber, the server ends that
+subscription. The client's reconnect then starts from a fresh read with the
+current epoch. Every subscriber recovers.
 
 ### The live overlay
 
@@ -285,14 +328,23 @@ The overlay is per thread and in memory. It holds four kinds of state.
 
 **Streams.**
 - Each model response attempt has its own `streamID`, carrying `roundID` and an
-  attempt number. `roundID` is one per model round, across retries and fallback
-  groups.
+  attempt number.
+- **What a `roundID` spans.** A `roundID` covers the model requests that can
+  record one ASSISTANT or salvage entry: the attempts, retries and fallback groups
+  up to the first recorded ASSISTANT or salvage entry.
+  - Any model call after that point gets a new `roundID`. That includes the
+    pause_turn continuation and the bare-text retry, which record an ASSISTANT
+    entry and then call the model again (`agent/session_lifecycle.go:2338-2345,
+    2384-2392`).
+  - Projected ASSISTANT and salvage items carry their `roundID` on the wire.
+  - Once a round's entry is recorded, the server emits no further overlay events
+    for that round.
 - `overlay/reset(streamID)` discards one attempt when it is retried
   (`appwire_projection.go:549-575`). The next attempt has a new `streamID`, so
   its output is never mistaken for the discarded one.
 - The ASSISTANT entry, or the salvage entry, written for the round records its
-  `roundID`. When that entry is in history, all of the round's streams are
-  covered and dropped, whichever attempt or fallback group
+  `roundID`. When that entry is in history, the round's text and reasoning
+  streams are covered and dropped, whichever attempt or fallback group
   (`agent/session_model_call.go:1215-1230, 1295-1306`) the recorded content came
   from. This covers `BestSalvage` picking an earlier group
   (`agent/session_events.go:692`).
@@ -300,9 +352,11 @@ The overlay is per thread and in memory. It holds four kinds of state.
   recorded collapses into one interrupted notice. That happens after a
   reasoning-only round (`agent/session_lifecycle.go:958-960`), a closing session,
   the content filter, or empty salvage (`agent/session_events.go:679-707`).
-- A communicate preview is a stream item. It is covered by the COMMUNICATE entry
-  when the message is delivered, and dropped by the round's `overlay/end` if the
-  call failed.
+- **Communicate previews are exempt from round coverage.** A preview stays on
+  screen after the ASSISTANT entry is recorded, through hooks and slow sibling
+  tools, as it does today (`appwire_projection.go:644-656, 685-690`). It is
+  covered only by its COMMUNICATE entry. If the call failed, the round's
+  `overlay/end` drops it.
 - Stream content is bounded by the provider's maximum output for one response.
 
 **Tool execution state.** Tools run after the ASSISTANT entry holding their
@@ -324,7 +378,7 @@ calls is recorded (`agent/session_model_call.go:994-996`).
   interrupted notices.
 - Each thread keeps a ring of 50 `round_timings`, 50 of everything else, and
   64 KB in total. A daemon-wide cap of 16 MB evicts the oldest first.
-- Each notice is anchored at `{entry: Seq + 1 of the preceding entry, item:
+- Each notice is anchored at `{entry: ordinal + 1 of the preceding entry, item:
   1<<30, sub: n}`. The item value sits past every real part index, and `sub` is a
   new position component that orders notices among themselves.
 - Notices survive a browser refresh while the daemon lives and vanish on
@@ -369,7 +423,7 @@ File consumers learn to skip them:
 
 ### Writer failure
 
-The writer API returns either `recorded Seq` or `not recorded`. Today `Append`
+The writer API returns either `recorded (ordinal, Seq)` or `not recorded`. Today `Append`
 and `AppendDurable` return nil with Seq 0 for both a missing and a closed writer
 (`agent/transcript/transcript.go:606-627`).
 
@@ -404,15 +458,47 @@ already recorded, and the recorded length is published before the entry is
 announced.
 
 `thread/turns/list` pages come from the file, and the same merge applies to the
-open turn's page. A thread with no runtime has an empty overlay. The hub serves a
-daemonless session from the file as an authoritative replacement.
+open turn's page. A thread with no runtime has an empty overlay.
+
+**Authoritative replacement is scoped.** The hub serves a daemonless session from
+the file. Every read response, live or daemonless, carries its **snapshot
+identity**: the index incarnation plus the recorded length it read. A daemonless
+response is authoritative for the position range it returned:
+- The client replaces its items in that range and keeps pages outside it.
+- A page from an older snapshot than the one the client already holds is
+  rejected with `TranscriptItemCursorStale`, and the client re-reads the latest
+  window.
+- Pages from the same snapshot accumulate.
+
+So backfill never discards newer pages. A record that another process rolled back
+disappears the next time its range is read.
 
 ### Index
 
-The index is a seekable on-disk file of fixed-size records sorted by position.
-Each record holds the position, the key, the turn, and the entry's byte offset
-and length. A window read binary-searches the records with `ReadAt` and projects
-only the entries it needs. There is no full decode per read.
+The index is a derived sidecar file. It is rebuilt whenever validation fails, and
+it holds two tables of fixed-size records.
+
+- **Item records**, sorted by position. Each one holds:
+  - the position and key
+  - a slot reference to its turn's summary record
+  - its contributors: the byte offset and length of the entry that opens the
+    item, and of the entry that completes it (for a tool item, the TOOL_RESULTS
+    entry)
+  - its version
+- **Turn summary records.** Each one holds:
+  - the first entry's offset
+  - the latest completion entry's offset and status
+  - usage totals and timestamps
+  - the turn's version
+
+An append updates records in place: it fills in a completer or rewrites a turn
+summary, both at fixed offsets, and appends new item and turn records.
+
+A window read binary-searches item records with `ReadAt`. It projects each item
+from its contributor entries and stamps each turn from its summary record. It
+never decodes a whole turn or the whole file. Today's index projects whole groups
+instead (`turn_index.go:1134-1165`; `item_paging.go:302-352`), and one real turn
+spans 72 MB and 8,882 entries.
 
 This replaces the JSON index that today is unmarshalled whole or held in a cache
 (`internal/apptranscript/turn_index.go:91-119, 551-553`;
@@ -464,8 +550,8 @@ an older hub cannot read a transcript containing new fields. All new entry
 fields therefore ship in one release (phase 2):
 - the format marker
 - `TurnID` and `TurnKind`
-- `roundID`
-- `OriginalSeq`
+- `roundID` (on the ASSISTANT and salvage entries)
+- `OriginalOrdinal`
 - the per-entry model
 - the completion, COMMUNICATE and presentational entries
 - timing fields
@@ -523,8 +609,11 @@ Each phase ships on its own and keeps main green.
      phase that removes it. It fails on a new divergence, and on a listed
      divergence that no longer occurs.
    - A prototype of the seekable index measures file-window reads on a copy of
-     the 95 MB root transcript against the latency criteria. If the criteria are
-     not met, stop and redesign the index before phase 2.
+     the 95 MB root transcript and on the 134 MB coordinator transcript, against
+     the latency criteria. It has to build complete turns and items (status,
+     usage, tool results) that equal the whole-file projection before any timing
+     counts. If the criteria are not met, stop and redesign the index before
+     phase 2.
 2. **Write the new fields.**
    - Writers write every new field and entry kind. The consumers listed above
      skip the new kinds, and the new kinds stay out of in-memory history. Every
@@ -557,6 +646,15 @@ Each phase ships on its own and keeps main green.
    must switch together. Keeping snapshot reads in between would need a
    throwaway versioned snapshot. The acceptance criteria are measured before
    merge.
+
+   Deterministic boundary tests are activation prerequisites, alongside
+   final-state parity. Each one pauses the system at a synchronization boundary:
+   - a read between the ASSISTANT and the COMMUNICATE entry
+   - a paginated read that overlaps a cross-process rollback
+   - a failed history publication, and a failed resync delivery
+   - a read that overlaps a retry reset and the next attempt's deltas
+   - a turn that recovery reclaims
+   - an async attention write after a turn's completion
 4. **Cleanup and docs.** Remove dead code and tests. Amend the atomic paging spec
    and `docs/appwire-protocol.md`.
 
@@ -567,6 +665,8 @@ previous phase has landed.
 
 - **The mobile app must update** after phase 3.
 - **Old cursors and stored anchors** go stale or miss once.
+- **Duplicate `Seq`s in existing transcripts** are handled by the entry ordinal.
+  Nothing new depends on `Seq` uniqueness.
 - **Read latency moves to disk.** The phase 1 gate bounds it before anything
   irreversible ships.
 - **Phase 3 is large.** It stays reviewable as a stack of commits, and the parity
