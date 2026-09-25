@@ -38,6 +38,7 @@ func withCompaction(turns []schema.Turn) []schema.Turn {
 	return append(out, turns[2:]...)
 }
 
+// entriesOf wraps turns in transcript entries at consecutive sequence numbers.
 func entriesOf(turns []schema.Turn) []transcript.Entry {
 	entries := make([]transcript.Entry, len(turns))
 	for i, turn := range turns {

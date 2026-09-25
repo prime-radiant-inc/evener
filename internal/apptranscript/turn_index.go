@@ -859,6 +859,9 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 	var readBytes int64
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
+	// prevKind is the kind of the latest record that takes part in grouping:
+	// transparent records never change it.
+	prevKind := lastGroupedKind(*index)
 	headerRead := index.Header.Kind != ""
 	if headerRead {
 		if err := transcript.ValidateHeader(index.Header); err != nil {
@@ -905,71 +908,67 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
-			if record.transparent() {
-				record.VisibleIndex = visibleRecords
-				appended = append(appended, record)
-				offset += length
-				index.CompleteSize = offset
-				index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, framedLine)
-				continue
-			}
-			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
-			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
-			// Logical-group bookkeeping runs BEFORE projection: the entry is
-			// projected under its group's turn id (the opener's), exactly
-			// the way the range reader names it, so the index scan and the
-			// projection cannot disagree (kata: one name per entry).
-			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
-			owner := ""
-			if entry.Turn.Kind == schema.TurnSteering && !record.GoalContinuation {
-				owner = entry.Turn.OwningTurnID
-			}
-			if owner != "" {
-				record.TurnID = owner
-				if openTurnID == "" {
+			// A transparent record (a transcript-only entry) keeps its place in
+			// the record list and takes part in nothing else.
+			if !record.transparent() {
+				record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
+				record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
+				// Logical-group bookkeeping runs BEFORE projection: the entry is
+				// projected under its group's turn id (the opener's), exactly
+				// the way the range reader names it, so the index scan and the
+				// projection cannot disagree (kata: one name per entry).
+				record.TurnID = persistedTurnID(entry.Turn, entryIndex)
+				owner := ""
+				if entry.Turn.Kind == schema.TurnSteering && !record.GoalContinuation {
+					owner = entry.Turn.OwningTurnID
+				}
+				if owner != "" {
+					record.TurnID = owner
+					if openTurnID == "" {
+						openTurnID, openCalls = openGroupState(*index)
+					}
+				}
+				grouper := TurnGrouper{Open: groupOpenAfter(prevKind), TurnID: openTurnID}
+				prevKind = record.TurnKind
+				_, record.StartsGroup = grouper.Place(&entry.Turn, entryIndex)
+				if record.StartsGroup {
+					openTurnID = record.TurnID
+					openCalls = map[string]bool{}
+				} else if openCalls == nil || openTurnID == "" {
+					// Continues a group whose opener lives in the previously
+					// indexed prefix: reconstruct its id and accumulated calls.
 					openTurnID, openCalls = openGroupState(*index)
 				}
-			}
-			prevKind := lastGroupedKind(appended, *index)
-			grouper := TurnGrouper{Open: groupOpenAfter(prevKind), TurnID: openTurnID}
-			_, record.StartsGroup = grouper.Place(&entry.Turn, entryIndex)
-			if record.StartsGroup {
-				openTurnID = record.TurnID
-				openCalls = map[string]bool{}
-			} else if openCalls == nil || openTurnID == "" {
-				// Continues a group whose opener lives in the previously
-				// indexed prefix: reconstruct its id and accumulated calls.
-				openTurnID, openCalls = openGroupState(*index)
-			}
-			var projectedItems []appwire.ThreadItem
-			if project != nil {
-				recordNames := cloneToolNames(record.ToolSeed)
-				projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
-				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
-					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
+				var projectedItems []appwire.ThreadItem
+				if project != nil {
+					recordNames := cloneToolNames(record.ToolSeed)
+					projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
+					if uint64(len(projectedItems)) > uint64(^uint32(0)) {
+						return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
+					}
 				}
-			}
-			for _, change := range record.ToolChanges {
-				if change.Lookup {
-					continue
+				for _, change := range record.ToolChanges {
+					if change.Lookup {
+						continue
+					}
+					if _, recorded := resolverUndo[change.ID]; recorded {
+						continue
+					}
+					if resolverUndo == nil {
+						resolverUndo = make(map[string]resolverValue)
+					}
+					name, present := projectNames[change.ID]
+					resolverUndo[change.ID] = resolverValue{name: name, present: present}
 				}
-				if _, recorded := resolverUndo[change.ID]; recorded {
-					continue
+				applyToolNameChanges(projectNames, record.ToolChanges)
+				record.ItemCount = uint32(len(projectedItems))
+				contribution, introduced := mergedContribution(projectedItems, openCalls)
+				record.GroupItems = uint32(contribution)
+				record.GroupCalls = introduced
+				record.Visible = record.ItemCount > 0
+				if record.Visible {
+					visibleRecords++
 				}
-				if resolverUndo == nil {
-					resolverUndo = make(map[string]resolverValue)
-				}
-				name, present := projectNames[change.ID]
-				resolverUndo[change.ID] = resolverValue{name: name, present: present}
-			}
-			applyToolNameChanges(projectNames, record.ToolChanges)
-			record.ItemCount = uint32(len(projectedItems))
-			contribution, introduced := mergedContribution(projectedItems, openCalls)
-			record.GroupItems = uint32(contribution)
-			record.GroupCalls = introduced
-			record.Visible = record.ItemCount > 0
-			if record.Visible {
-				visibleRecords++
 			}
 			record.VisibleIndex = visibleRecords
 			appended = append(appended, record)
@@ -1857,15 +1856,10 @@ func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[strin
 	return clone
 }
 
-// lastGroupedKind is the turn kind of the latest record that takes part in
-// grouping — appended ones first, then the indexed prefix — skipping the
-// transparent records of transcript-only entries. "" when there is none.
-func lastGroupedKind(appended []indexedTurn, index turnIndexDisk) schema.TurnKind {
-	for i := len(appended) - 1; i >= 0; i-- {
-		if !appended[i].transparent() {
-			return appended[i].TurnKind
-		}
-	}
+// lastGroupedKind is the turn kind of the index's latest record that takes
+// part in grouping, skipping the transparent records of transcript-only
+// entries. "" when there is none.
+func lastGroupedKind(index turnIndexDisk) schema.TurnKind {
 	for i := index.recordCount() - 1; i >= 0; i-- {
 		if record := index.recordAt(i); !record.transparent() {
 			return record.TurnKind

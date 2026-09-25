@@ -1666,6 +1666,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 	}
 
 	for i, t := range historyTurns {
+		if t.Kind.TranscriptOnly() {
+			// Never sent to the model, and interrupts no tool round.
+			continue
+		}
 		inFlight := scope.active() && i >= scope.InFlightFrom
 		switch t.Kind {
 		case schema.TurnSteering:
@@ -1723,11 +1727,6 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// never sent to the model.
 			endToolRound()
 		default:
-			if t.Kind.TranscriptOnly() {
-				// Transcript-only entries are never sent to the model and
-				// interrupt no tool round.
-				continue
-			}
 			endToolRound()
 			history = append(history, scope.projectTurnMessage(t, inFlight))
 		}

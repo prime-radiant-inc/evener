@@ -28,10 +28,10 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 	for _, entry := range entries {
 		t := entry.Turn
 		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch, schema.TurnFailure:
+		case schema.TurnHookCompleted, schema.TurnModelSwitch, schema.TurnFailure:
 			continue
 		}
-		if t.Kind.TranscriptOnly() {
+		if !publicTranscriptKind(t.Kind) {
 			continue // never conversation
 		}
 		// Copy conversation and content provenance, without adopting the
