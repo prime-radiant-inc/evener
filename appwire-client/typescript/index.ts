@@ -344,6 +344,7 @@ export {
   applyNotification,
   applyReadResponse,
   collectAuthoritativeMutationIds,
+  comparePositions,
   copyItemTextPresence,
   foldWarningParams,
   hasWarningText,

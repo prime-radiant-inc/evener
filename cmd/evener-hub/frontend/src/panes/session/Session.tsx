@@ -595,7 +595,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               now={now}
               active={model.status.type === "active"}
               sessionRef={ref}
-              turnId={model.activeTurnId}
+              // runningTurnId is the live-updated field (spec "Turn status":
+              // running state lives in the overlay/status frames, not a
+              // one-time read) - a v6 thread's activeTurnId is only ever
+              // refreshed by a fresh thread/read, so it can go stale between
+              // reads. Falls back to activeTurnId for a thread that has not
+              // (yet) hydrated through the v6 path, where runningTurnId is
+              // never set.
+              turnId={model.runningTurnId ?? model.activeTurnId}
               retry={model.modelRetry}
               primaryModel={model.model}
             />
