@@ -154,10 +154,10 @@ func (fs afterOpenFs) OpenFile(name string, flag int, perm os.FileMode) (afero.F
 func TestCreateCannotTruncateATranscriptBeingResumed(t *testing.T) {
 	path := newSharedFileTranscript(t)
 	fs := afterOpenFs{Fs: afero.NewOsFs(), afterOpen: func() {
-		if !createMu.TryLock() {
+		if !attachMu.TryLock() {
 			return
 		}
-		createMu.Unlock()
+		attachMu.Unlock()
 		if created, err := NewWriterNoSync(path, sharedFileHeader); err == nil {
 			_ = created.Close()
 		}

@@ -1017,7 +1017,7 @@ func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {
 // persistence fuzzer. Production uses openWriter so it can refuse symlinks at
 // the operating-system open boundary.
 func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
-	w, _, err := resumeWriter(fs, func() (afero.File, error) { return fs.OpenFile(path, os.O_RDWR, 0o644) }, "")
+	w, _, err := OpenWriterForSessionWithFS(fs, path, "")
 	return w, err
 }
 
