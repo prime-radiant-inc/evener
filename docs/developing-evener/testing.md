@@ -548,30 +548,23 @@ and `EVENER_SSH_E2E_EVENER_PATH` overrides the host's evener path (default
 What it creates and removes: its own directory on the host
 (`$HOME/evener-session-e2e-<pid>-<timestamp>`), used as the spawned session's
 working directory and removed when the check finishes — unless a session it
-started could not be stopped, in which case it stays. A name that already exists
-is refused before anything is created, so the cleanup cannot adopt a directory
-this run did not make. The removal is registered before that creation runs, and
-what it may do follows what the `mkdir` said: a directory this run watched itself
-create is taken with whatever the session left in it (`rm -rf`); one whose ssh
-response was lost is only reconciled with `rmdir`, so an unproven creation is never
-deleted with its contents; and when the `mkdir` itself refused because the path
-already existed, nothing is removed at all — that directory is not this run's, even
-if it is empty. The stop is registered before the spawn is asked for, so a
-session that came back with a ref this check may stop — one that parses as the
-host's own, never a controller-local or another host's ref — is stopped in band,
-retrying inside one bounded window, and a session that could not be stopped is left
-alone: the **directory
-stays too**, with a failure naming the ref, the directory, and the fact that
-nothing was cleaned up — a directory a running session still references is better
-left than deleted out from under it. When no ref came back the outcome decides: a
-start the host refused as a request — checked against the request this check
-actually sent, which carries no input — never started anything, so the directory
-is removed; anything else — a lost response, a timeout, a dropped connection, or
-any other answered frame — leaves it, and the check does not go looking for the
-session: it says plainly that one may be running under that directory that it
-cannot stop, points at the controller's own fleet view (where the session is
-visible by its working directory) as the place to stop it, and leaves the
-directory in place.
+started could not be stopped, in which case it stays. The removal is registered
+only once the check's own `mkdir` has answered success: the check never deletes a
+directory it cannot prove it made. A `mkdir` that fails — because the name
+already exists, or because ssh never said whether it ran — fails the run before
+the spawn and removes nothing, naming the path. The stop is registered before the
+spawn is asked for, so a session that came back with a ref this check may stop —
+one that parses as the host's own, never a controller-local or another host's
+ref — is stopped in band with one attempt on its own two-minute clock, and a
+session that could not be stopped is left alone: the **directory stays too**,
+with a failure naming the ref, the directory, and the fact that nothing was
+cleaned up — a directory a running session still references is better left than
+deleted out from under it. When no such ref came back — whatever the start's
+failure was — the directory stays as well: no answer the check reads proves
+nothing started, so it does not go looking for the session. It says plainly that
+one may be running under that directory that it cannot stop, points at the
+controller's own fleet view (where such a session is visible by its working
+directory) as the place to stop it, and leaves the directory in place.
 What it cannot remove is the session *record* the host keeps in its own state
 root — `thread/shutdown` stops the daemon, it does not delete the session — and
 the session runs against the host's real provider and credentials. Both are why
