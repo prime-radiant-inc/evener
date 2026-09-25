@@ -122,7 +122,7 @@ func TestHistoryReadErrorCarriesGenerationAndEpoch(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data = %T, want HistoryReadErrorData", err.Data)
 	}
-	if data.EvenerErrorInfo != ErrorTranscriptHistoryFailed || data.BootGeneration != "4" || data.Epoch != 2 {
+	if data.EvenerErrorInfo != ErrorTranscriptHistoryFailed || data.BootGeneration != "4" || data.Epoch == nil || *data.Epoch != 2 {
 		t.Fatalf("data = %+v", data)
 	}
 	raw, marshalErr := json.Marshal(err)
@@ -151,5 +151,22 @@ func TestHistoryReadIdentityKeepsTheErrorsOwnData(t *testing.T) {
 	}
 	if data.EvenerErrorInfo != ErrorTranscriptItemCursorStale || data.RetryDisposition != RetryDispositionAutomatic || data.BootGeneration != DaemonlessBootGeneration {
 		t.Fatalf("data = %+v", data)
+	}
+}
+
+// An error raised before the read found its thread's history carries the
+// boot generation and no epoch.
+func TestReadErrorWithoutAnEpoch(t *testing.T) {
+	err := WithReadBootGeneration(SessionUnavailable("gone"), "4")
+	data, ok := err.Data.(HistoryReadErrorData)
+	if !ok || data.BootGeneration != "4" || data.Epoch != nil || data.EvenerErrorInfo != ErrorSessionUnavailable {
+		t.Fatalf("data = %#v", err.Data)
+	}
+	raw, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if strings.Contains(string(raw), "epoch") {
+		t.Fatalf("error JSON %s carries an epoch it does not know", raw)
 	}
 }

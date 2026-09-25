@@ -132,15 +132,22 @@ func (s *Server) historyPublishers(threadID, ref, bootGeneration string) (func(a
 	return publish, resync
 }
 
-// bootGenerationFor is threadID's boot generation: the served identity's for
-// the root, qualified by the root for a descendant.
+// bootGenerationFor is threadID's boot generation: qualified by the root for
+// a served descendant, the served identity's for the root and for a thread
+// this daemon does not know (the daemon's own generation).
 func (s *Server) bootGenerationFor(threadID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if threadID == s.appThreadID {
-		return s.appBootGeneration
+	if threadID != s.appThreadID && s.appDescendants[threadID] != nil {
+		return s.descendantBootGenerationLocked()
 	}
-	return s.descendantBootGenerationLocked()
+	return s.appBootGeneration
+}
+
+// readError stamps a thread/read or thread/turns/list error raised before the
+// read reached threadID's history with the thread's boot generation.
+func (s *Server) readError(err error, threadID string) error {
+	return appwire.WithReadBootGeneration(appserver.WireError(err), s.bootGenerationFor(threadID))
 }
 
 // descendantBootGenerationLocked is the boot generation every descendant of

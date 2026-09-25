@@ -75,7 +75,7 @@ func TestHistoryMessagesCarryTheBootGeneration(t *testing.T) {
 			t.Fatalf("%s error = %v, want a wire error", label, err)
 		}
 		data, ok := wireErr.Data.(appwire.HistoryReadErrorData)
-		if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed || data.BootGeneration != "7" || data.Epoch != epoch {
+		if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed || data.BootGeneration != "7" || data.Epoch == nil || *data.Epoch != epoch {
 			t.Fatalf("%s error data = %#v, want transcriptHistoryFailed at generation 7, epoch %d", label, wireErr.Data, epoch)
 		}
 	}
@@ -151,4 +151,24 @@ func TestAThreadHistoryWithNoBootGenerationFailsLoudly(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.ReplaceAppIdentity(prepared, nil)
+}
+
+// Read errors outside the history projection carry the boot generation too:
+// invalid params, an unavailable subscription at the cut, an unknown thread.
+func TestEveryReadErrorCarriesTheBootGeneration(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	newServedTranscriptAt(t, srv, "root", "7", schema.NewTurn(schema.TurnUserInput, llm.User("one")))
+	_, subscribeErr := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "nobody", Subscribe: true, IncludeTurns: true})
+	_, invalidErr := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "root", IncludeTurns: true, ItemLimit: 1000})
+	_, unknownErr := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{ThreadID: "nobody"})
+	_, invalidListErr := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{ThreadID: "root", ItemLimit: 1000})
+	for label, err := range map[string]error{"unavailable subscription": subscribeErr, "invalid read": invalidErr, "unknown thread": unknownErr, "invalid page": invalidListErr} {
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) {
+			t.Fatalf("%s error = %v, want a wire error", label, err)
+		}
+		if data, ok := wireErr.Data.(appwire.HistoryReadErrorData); !ok || data.BootGeneration != "7" {
+			t.Fatalf("%s error data = %#v, want boot generation 7", label, wireErr.Data)
+		}
+	}
 }

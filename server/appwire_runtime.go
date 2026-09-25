@@ -1178,7 +1178,7 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
-		return appwire.ThreadReadResponse{}, err
+		return appwire.ThreadReadResponse{}, s.readError(err, s.appThreadIDForRead(params))
 	}
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
@@ -1204,7 +1204,7 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		},
 	)
 	if !captured {
-		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
+		return appwire.ThreadReadResponse{}, s.readError(appwire.SessionUnavailable("thread subscription is unavailable"), threadID)
 	}
 	if threadReadAfterCutHook != nil {
 		threadReadAfterCutHook()
@@ -1301,7 +1301,10 @@ func (s *Server) finishAppThreadRead(params appwire.ThreadReadParams, cut appThr
 		response.Overlay = overlay
 	}
 	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
-		return appwire.ThreadReadResponse{}, err
+		if cut.history != nil {
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), response.BootGeneration, response.Epoch)
+		}
+		return appwire.ThreadReadResponse{}, appwire.WithReadBootGeneration(appserver.WireError(err), response.BootGeneration)
 	}
 	return response, nil
 }
@@ -1454,12 +1457,12 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.
 // handleAppThreadTurnsList pages backward (older) through the thread's
 // history from the transcript.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
+	}
 	if threadID == "" {
-		return appwire.ThreadTurnsListResponse{}, appwire.SessionUnavailable("thread is unavailable")
+		return appwire.ThreadTurnsListResponse{}, s.readError(appwire.SessionUnavailable("thread is unavailable"), threadID)
 	}
 	history := s.appHistoryForID(threadID)
 	if history == nil {
@@ -1478,7 +1481,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 		Snapshot:       &snapshot,
 	}
 	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
+		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}
 	return response, nil
 }
