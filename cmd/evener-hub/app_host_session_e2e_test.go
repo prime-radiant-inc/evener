@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -34,12 +35,22 @@ import (
 // ref only as a spelling this controller could produce.
 const (
 	sessionCheckControllerProvider = "fake"
-	// sessionCleanupBudget bounds the cleanup's in-band stop: long enough for a
-	// reconciliation to catch a session the host registers after a lost start
-	// response, short enough that a wedged host cannot park the run.
-	sessionCleanupBudget = 45 * time.Second
+	// sessionCleanupBudget is the whole cleanup's budget: the direct stop's window
+	// plus the reconciliation's, so a cleanup that has to do both stays bounded.
+	sessionCleanupBudget = 60 * time.Second
+	// sessionDirectStopWindow is the slice of it the direct stop may spend before
+	// the reconciliation takes over. One forwarded thread/shutdown can legitimately
+	// take the host daemon's own drain budget (serve's is 30s), so the window
+	// matches that drain and still leaves room for the retries inside it.
+	sessionDirectStopWindow = 30 * time.Second
+	// sessionReconcileWindow is the rest, and it belongs to the reconciliation:
+	// enough for a session the host registers after a lost start response (polled
+	// every sessionCleanupPollWait) plus retries of its stops. The split is the
+	// fix for one shared context letting the direct stop's retries consume
+	// everything and start the fallback on an expired clock.
+	sessionReconcileWindow = sessionCleanupBudget - sessionDirectStopWindow
 	// sessionCleanupPollWait is the pause between the reconciliation's fleet
-	// reads while that budget lasts.
+	// reads while its window lasts.
 	sessionCleanupPollWait = 2 * time.Second
 	// sessionStopTimeout bounds the STOP assertion's own call. The assertion is
 	// judged on its own clock, not the run's: the outer context has already spent
@@ -156,12 +167,13 @@ func sessionModelAmbiguousWithController(hostResolvedModel, controllerModel stri
 //     assertion is judged on its own clock, not the run's spent budget.
 //
 // Cleanup settles its own question in band: the session is stopped through the
-// controller (retried inside a cleanup budget) and, when that never takes,
-// reconciled by the unique directory this check made. A session that still cannot
-// be stopped leaves that directory in place, with a failure that names the ref,
-// the directory, and the fact that nothing was cleaned up — deleting a directory
-// a running session still references would be the leak this cleanup exists to
-// prevent, one step later.
+// controller (retried inside its own window of the cleanup budget) and, when that
+// never takes, the reconciliation takes over on a live clock of its own —
+// matching this run's directory component-aware and retrying the sessions it
+// finds. A session that still cannot be stopped leaves that directory in place,
+// with a failure naming the ref, the directory, and the fact that nothing was
+// cleaned up — deleting a directory a running session still references would be
+// the leak this cleanup exists to prevent, one step later.
 //
 // What the stop does not remove is the session RECORD the host keeps in its own
 // state root — thread/shutdown stops the daemon, it does not delete the session —
@@ -293,33 +305,40 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// a timeout, a dropped connection — still leaves a session running on the host,
 	// and from here on this run owns whatever is running in hostDir.
 	//
-	// It stops the session by ref when one came back, retrying inside the cleanup
-	// budget, and falls back to the reconciliation when that never takes: the
+	// It stops the session by ref when one came back, retrying inside its own
+	// window, and falls back to the reconciliation when that never takes: the
 	// session is looked up through the controller's own fleet view by the working
-	// directory this check made and stopped in band. If all of that still leaves a
-	// session running, the directory is left in place and the failure says so —
-	// cleanup that deleted the directory anyway would be the leak this exists to
-	// prevent, one step later. No host-side kill, process listing, or pattern ever
-	// enters the picture.
+	// directory this check made and stopped in band, retrying the sessions it finds
+	// until its own window runs out. If all of that still leaves a session running,
+	// the directory is left in place and the failure says so — cleanup that deleted
+	// the directory anyway would be the leak this exists to prevent, one step
+	// later. No host-side kill, process listing, or pattern ever enters the picture.
 	var ref string
 	t.Cleanup(func() {
-		stopCtx, cancelStop := context.WithTimeout(context.Background(), sessionCleanupBudget)
-		defer cancelStop()
+		directWindow, reconcileWindow := sessionCleanupWindows()
 		// why is what the messages below report as the reason the direct stop did
 		// not settle the session; it names the ref whenever there was one.
 		why := "thread/start returned no ref"
 		refStopped := false
 		if ref != "" {
+			// The direct stop gets its own window, not the whole cleanup budget: a ref
+			// that never settles must not consume the window the reconciliation needs.
+			stopCtx, cancelStop := context.WithTimeout(context.Background(), directWindow)
+			defer cancelStop()
 			if err := stopSessionInBand(stopCtx, client, ref); err == nil {
 				refStopped = true
 			} else {
-				why = fmt.Sprintf("thread/shutdown of %s kept failing (%v) through the cleanup budget", ref, err)
+				why = fmt.Sprintf("thread/shutdown of %s kept failing (%v) for its %s window", ref, err, directWindow)
 			}
 		}
 		if refStopped {
 			return
 		}
-		reconciled := reconcileSessionInDir(stopCtx, client, hostDir)
+		// The reconciliation runs on its own live clock — the rest of the cleanup
+		// budget — so the direct stop's failure cannot leave it inert.
+		reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), reconcileWindow)
+		defer cancelReconcile()
+		reconciled := reconcileSessionInDir(reconcileCtx, client, hostDir)
 		switch judgeSessionCleanup(refStopped, reconciled.looked, reconciled.matched, reconciled.stopped) {
 		case sessionCleanupSettled:
 			if reconciled.matched > 0 {
@@ -511,6 +530,14 @@ func judgeSessionCleanup(refStopped, looked bool, matched, stopped int) sessionC
 	return sessionCleanupSettled
 }
 
+// sessionCleanupWindows splits the cleanup budget between its two arms, in the
+// order they are spent: the window the direct stop may use, then the window the
+// reconciliation gets. The reconciliation must always get a real one — it exists
+// for exactly the case where the direct stop could not settle.
+func sessionCleanupWindows() (direct, reconcile time.Duration) {
+	return sessionDirectStopWindow, sessionReconcileWindow
+}
+
 // stopSessionInBand stops one session through the controller, retrying while the
 // context's budget lasts: one refusal can be a transient transport or an
 // unsettled daemon, and the cleanup's job is to settle the question rather than
@@ -541,6 +568,15 @@ type sessionReconciliation struct {
 	stopped int
 }
 
+// sessionReconcilerOps is the reconciliation's two calls, injectable so its retry
+// and deadline rules are pinned without a host or ssh (TestSessionReconcileRetries).
+type sessionReconcilerOps struct {
+	// list reads the controller's fleet view.
+	list func(context.Context) ([]appwire.Thread, error)
+	// stop stops one session in band through the controller.
+	stop func(context.Context, string) error
+}
+
 // reconcileSessionInDir stops sessions this run started whose start response
 // never named them, so their refs were never known. The only handle on such a
 // session is the directory this check made and spawned in — the spawn carried
@@ -548,34 +584,67 @@ type sessionReconciliation struct {
 // controller's own fleet view is searched for sessions whose records place them
 // in that directory, and each match is stopped in band through the controller,
 // the same thread/shutdown a user's client would send.
-//
-// The search repeats while the budget lasts, because a response lost during the
-// start can arrive before the host registered the session: one list immediately
-// after the failure can legitimately be too early. The caller judges what it
-// established — a match that would not stop is not silently dropped here.
 func reconcileSessionInDir(ctx context.Context, client *appwire.Client, workingDir string) sessionReconciliation {
+	return runSessionReconciliation(ctx, workingDir, sessionCleanupPollWait, sessionReconcilerOps{
+		list: func(ctx context.Context) ([]appwire.Thread, error) {
+			listed, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
+			return listed.Data, err
+		},
+		stop: func(ctx context.Context, ref string) error {
+			_, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref})
+			return err
+		},
+	})
+}
+
+// runSessionReconciliation is the reconciliation loop. It searches while the
+// context lasts, because a response lost during the start can arrive before the
+// host registered the session: one list immediately after the failure can
+// legitimately be too early. It also RETRIES: a match whose stop did not take on
+// one pass is retried on the next, until it stops or the context runs out, which
+// is a different job from waiting for a session to appear.
+//
+// Matched and Stopped therefore count sessions, not passes: a session is counted
+// matched once and stopped once, and a ref that disappears from the listing while
+// still outstanding is not written off — a failed stop plus an absent row is not
+// evidence that the session is gone, so it stays outstanding until the context
+// expires. The caller judges what the loop established (judgeSessionCleanup).
+func runSessionReconciliation(ctx context.Context, workingDir string, pollWait time.Duration, ops sessionReconcilerOps) sessionReconciliation {
 	var out sessionReconciliation
-	deadline := time.Now().Add(sessionCleanupBudget)
+	seen := map[string]bool{}
+	outstanding := map[string]bool{}
 	for {
-		listed, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
+		threads, err := ops.list(ctx)
 		if err != nil {
 			return out
 		}
 		out.looked = true
-		for _, thread := range listed.Data {
+		for _, thread := range threads {
 			if !sessionInDirectory(thread, workingDir) {
 				continue
 			}
-			out.matched++
-			if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: thread.Evener.Ref}); err != nil {
+			ref := thread.Evener.Ref
+			if !seen[ref] {
+				seen[ref] = true
+				out.matched++
+				outstanding[ref] = true
+			}
+			if !outstanding[ref] {
 				continue
 			}
+			if err := ops.stop(ctx, ref); err != nil {
+				continue
+			}
+			delete(outstanding, ref)
 			out.stopped++
 		}
-		if out.matched > 0 || time.Now().After(deadline) || ctx.Err() != nil {
+		if out.matched > 0 && len(outstanding) == 0 {
 			return out
 		}
-		time.Sleep(sessionCleanupPollWait)
+		if ctx.Err() != nil {
+			return out
+		}
+		time.Sleep(pollWait)
 	}
 }
 
@@ -591,17 +660,27 @@ func sessionInDirectory(thread appwire.Thread, workingDir string) bool {
 	return err == nil && parsed.SourceID == hostE2EName
 }
 
-// sameDirectory compares a session's recorded working directory with the one
-// this check addressed. After trimming a trailing separator the two are equal,
-// or one is the other with a prefix in front: a host can record the canonical
-// path of a directory this check addressed through a link (macOS resolves $HOME
-// through one), and the canonical form is the check's path with a prefix ahead of
-// it — so in either direction the shorter path is the tail of the longer one.
+// canonicalPathPrefixes are the prefixes a host inserts when it records the
+// canonical path of a directory this check addressed through the root link:
+// macOS reports /Users/... as /System/Volumes/Data/Users/..., and /tmp, /var and
+// /etc as /private/... . The check addresses its directory through $HOME as a
+// non-interactive shell reports it, so either side of a comparison can carry one
+// of these.
+var canonicalPathPrefixes = []string{"/System/Volumes/Data", "/private"}
+
+// sameDirectory reports whether a session's recorded working directory is the
+// directory this check made: equal after trimming a trailing separator, or one
+// side is the other behind a canonical prefix (either direction — either side may
+// be the one that resolved the link).
 //
-// The comparison is the whole path, not its leaf: a different parent with an
-// equal leaf is no one's tail and does not match. Two different directories
-// sharing the tail this matches would have to share this run's pid and nanosecond
-// timestamp too, which is what makes the tail safe as the key.
+// The comparison is component-aware, not a bare suffix: a sibling whose name
+// merely extends the leaf ("dir" against "dir-old"), a subdirectory, and the same
+// path behind a root that is not a canonical prefix all fail to match. Each of
+// those could otherwise reach a session this run did not start, so the leaf alone
+// is deliberately not the key. What it does not cover is a host canonicalizing
+// through a prefix this list does not name: that spelling no longer matches, and
+// the reconciliation then says nothing is registered under the directory rather
+// than stopping something it cannot account for.
 func sameDirectory(recorded, want string) bool {
 	recorded = strings.TrimRight(strings.TrimSpace(recorded), "/")
 	want = strings.TrimRight(strings.TrimSpace(want), "/")
@@ -611,7 +690,12 @@ func sameDirectory(recorded, want string) bool {
 	if recorded == want {
 		return true
 	}
-	return strings.HasSuffix(recorded, want) || strings.HasSuffix(want, recorded)
+	for _, prefix := range canonicalPathPrefixes {
+		if strings.TrimPrefix(recorded, prefix) == want || strings.TrimPrefix(want, prefix) == recorded {
+			return true
+		}
+	}
+	return false
 }
 
 // TestSessionModelProvenance pins the provenance judgement the live check makes,
@@ -714,6 +798,115 @@ func TestSessionCleanupVerdict(t *testing.T) {
 	}
 }
 
+// TestSessionCleanupWindows pins the budget split the cleanup depends on: the
+// direct stop must not be able to spend the whole budget, or the reconciliation
+// begins on an already-expired context and the fallback is inert in exactly the
+// case it exists for. Both windows must be real, they must add up to the one
+// total budget, and the reconciliation's must outlast a single pass.
+func TestSessionCleanupWindows(t *testing.T) {
+	direct, reconcile := sessionCleanupWindows()
+	if direct <= 0 || reconcile <= 0 {
+		t.Fatalf("cleanup windows = %s direct, %s reconcile: both arms need a real window, or the fallback starts on a spent clock", direct, reconcile)
+	}
+	if got := direct + reconcile; got != sessionCleanupBudget {
+		t.Fatalf("cleanup windows add up to %s, want the cleanup budget %s: the arithmetic must stay visible", got, sessionCleanupBudget)
+	}
+	if reconcile < sessionCleanupPollWait {
+		t.Fatalf("the reconciliation's window %s is shorter than one poll wait %s: it could not complete a single pass", reconcile, sessionCleanupPollWait)
+	}
+}
+
+// TestSessionReconcileRetries pins the reconciliation loop's retry rule, which
+// the cleanup depends on and no ssh-free path reached before: a session that is
+// matched but does not stop on the first attempt must be retried on later passes,
+// the counts must not recount that match on every pass, and the loop stays
+// bounded by its context — including when nothing can be stopped at all.
+func TestSessionReconcileRetries(t *testing.T) {
+	const dir = "/Users/jesse/evener-session-e2e-123-456"
+	one := func(ref string) []appwire.Thread {
+		return []appwire.Thread{{CWD: dir, Evener: appwire.EvenerThread{Ref: ref}}}
+	}
+
+	t.Run("a stop that fails once is retried", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		attempts := 0
+		out := runSessionReconciliation(ctx, dir, time.Millisecond, sessionReconcilerOps{
+			list: func(context.Context) ([]appwire.Thread, error) { return one(hostE2EName + ":t1"), nil },
+			stop: func(context.Context, string) error {
+				attempts++
+				if attempts == 1 {
+					return errors.New("transient refusal")
+				}
+				return nil
+			},
+		})
+		if !out.looked || out.matched != 1 || out.stopped != 1 {
+			t.Fatalf("reconciliation = %+v, want looked with matched 1 and stopped 1: a match whose stop failed once must be retried", out)
+		}
+		if attempts != 2 {
+			t.Fatalf("stop attempts = %d, want 2: the outstanding match must be retried until it stops", attempts)
+		}
+	})
+
+	t.Run("a stop that keeps failing stays bounded and counted once", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+		attempts, lists := 0, 0
+		out := runSessionReconciliation(ctx, dir, time.Millisecond, sessionReconcilerOps{
+			list: func(context.Context) ([]appwire.Thread, error) { lists++; return one(hostE2EName + ":t1"), nil },
+			stop: func(context.Context, string) error { attempts++; return errors.New("always refused") },
+		})
+		if !out.looked || out.matched != 1 || out.stopped != 0 {
+			t.Fatalf("reconciliation = %+v, want looked with matched 1 and stopped 0: one session must not be recounted on every pass", out)
+		}
+		if attempts < 2 {
+			t.Fatalf("stop attempts = %d, want at least 2: an outstanding match must be retried across passes", attempts)
+		}
+		if lists < 2 {
+			t.Fatalf("list calls = %d, want at least 2: retrying needs another pass", lists)
+		}
+	})
+
+	t.Run("a session that registers late is matched", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		lists := 0
+		out := runSessionReconciliation(ctx, dir, time.Millisecond, sessionReconcilerOps{
+			list: func(context.Context) ([]appwire.Thread, error) {
+				lists++
+				if lists < 3 {
+					return nil, nil
+				}
+				return one(hostE2EName + ":t1"), nil
+			},
+			stop: func(context.Context, string) error { return nil },
+		})
+		if !out.looked || out.matched != 1 || out.stopped != 1 {
+			t.Fatalf("reconciliation = %+v, want looked with matched 1 and stopped 1: a session the host registers after a lost response must still be found and stopped", out)
+		}
+	})
+
+	t.Run("an unreadable fleet view returns at once", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		lists := 0
+		out := runSessionReconciliation(ctx, dir, time.Millisecond, sessionReconcilerOps{
+			list: func(context.Context) ([]appwire.Thread, error) { lists++; return nil, errors.New("unreachable") },
+			stop: func(context.Context, string) error {
+				t.Fatalf("stop must not be called when the fleet view cannot be read")
+				return nil
+			},
+		})
+		if out.looked || out.matched != 0 || out.stopped != 0 {
+			t.Fatalf("reconciliation = %+v, want not-looked: an unreadable fleet view is not evidence of anything", out)
+		}
+		if lists != 1 {
+			t.Fatalf("list calls = %d, want 1: a failed read must not spin", lists)
+		}
+	})
+}
+
 // TestSessionDirectoryMatch pins the reconciliation's matching rule: which
 // listed session the lost-response arm of the cleanup is allowed to stop. The
 // directory is unique to one run, so the rule must match that run's session and
@@ -739,6 +932,13 @@ func TestSessionDirectoryMatch(t *testing.T) {
 		{"/Users/other/evener-session-e2e-123-456", dir, false},
 		{dir, "/Users/other/evener-session-e2e-123-456", false},
 		{"/Users/jesse/evener-session-e2e-123-457", dir, false},
+		// A sibling whose name merely extends the leaf is not this directory.
+		{dir + "-old", dir, false},
+		{dir, dir + "-old", false},
+		// A different root in front of the same path is not a canonical prefix:
+		// only the prefixes a host actually inserts may differ.
+		{"/other/root" + dir, dir, false},
+		{dir, "/other/root" + dir, false},
 		{dir + "/sub", dir, false},
 		{"/Users/jesse", dir, false},
 		{"", dir, false},

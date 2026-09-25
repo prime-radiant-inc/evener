@@ -549,14 +549,16 @@ is refused before anything is created, so the cleanup cannot adopt a directory
 this run did not make. The stop is registered before the spawn is asked for, so a
 start whose response is lost is still cleaned up: with no ref to address, the
 check looks the session up in the controller's fleet view by that directory and
-stops it in band. A session that still cannot be stopped is left alone and the
-**directory stays too**, with a failure naming the ref, the directory, and the
-fact that nothing was cleaned up — a directory a running session still references
-is better left than deleted out from under it. What it cannot remove is the
-session *record* the host keeps in its own state root — `thread/shutdown` stops
-the daemon, it does not delete the session — and the session runs against the
-host's real provider and credentials. Both are why this gate asks for a
-**disposable** host, the same contract the deploy check states.
+stops it in band. The direct stop and that reconciliation each get their own
+window inside one cleanup budget, and both retry while their window lasts, so
+neither can starve the other. A session that still cannot be stopped is left
+alone and the **directory stays too**, with a failure naming the ref, the
+directory, and the fact that nothing was cleaned up — a directory a running
+session still references is better left than deleted out from under it. What it
+cannot remove is the session *record* the host keeps in its own state root —
+`thread/shutdown` stops the daemon, it does not delete the session — and the
+session runs against the host's real provider and credentials. Both are why this
+gate asks for a **disposable** host, the same contract the deploy check states.
 
 It sends no input items, so **no turn runs and no completion is requested**. That
 is narrower than it sounds: resolving the spawn still makes the host enumerate its
