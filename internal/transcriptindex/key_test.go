@@ -48,6 +48,12 @@ func TestParseItemKeyRejectsMalformedKeys(t *testing.T) {
 		"apptranscript-item-v2:turn_4:-1:0", // negative ordinal
 		"apptranscript-item-v2:prelude:header:x",
 		"apptranscript-item-v2:prelude:header:-1",
+		"apptranscript-item-v2:turn_4:007:0",                 // leading zero, non-canonical
+		"apptranscript-item-v2:turn_4:4:007",                 // leading zero, non-canonical
+		"apptranscript-item-v2:prelude:header:007",           // leading zero, non-canonical
+		"apptranscript-item-v2:turn_4:4:4294967296",          // part exceeds MaxUint32
+		"apptranscript-item-v2:prelude:header:4294967296",    // header part exceeds MaxUint32
+		"apptranscript-item-v2:turn_4:9223372036854775808:0", // ordinal at 2^63 would wrap Entry (ordinal+1) past uint64
 	} {
 		if _, _, err := ParseItemKey(key); err == nil {
 			t.Fatalf("ParseItemKey(%q) succeeded, want a malformed-key error", key)

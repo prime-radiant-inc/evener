@@ -1186,7 +1186,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		childID, err = hubForkSession(stateDir, sessionID, turn, params.EditedInput, params.Label)
 	}
 	if err != nil {
-		return appwire.ThreadForkResponse{}, err
+		return appwire.ThreadForkResponse{}, forkDivergencePositionWireError(err)
 	}
 	if cfg.Past != nil {
 		_, _ = cfg.Past.Rebuild()
@@ -1574,6 +1574,20 @@ func parseSourceItemKey(raw string) (int, error) {
 		return 0, errors.New("sourceItemKey names the transcript header, which is not a turn")
 	}
 	return int(position.Entry), nil
+}
+
+// forkDivergencePositionWireError maps agent.ErrDivergencePositionOutOfRange
+// and agent.ErrDivergencePositionNotUserInput to appwire.InvalidParams: the
+// sourceItemKey named an entry the parent transcript doesn't have, or one
+// that isn't a USER_INPUT entry. Both are refusals of the client's chosen
+// item, not a hub failure, so they must not fall through to InternalError.
+// Any other error (a missing parent, an I/O failure, ...) is returned
+// unchanged.
+func forkDivergencePositionWireError(err error) error {
+	if errors.Is(err, agent.ErrDivergencePositionOutOfRange) || errors.Is(err, agent.ErrDivergencePositionNotUserInput) {
+		return appwire.InvalidParams(err.Error())
+	}
+	return err
 }
 
 // readSpawnedLocalThread keeps pre-admission reads in the same recovery scope

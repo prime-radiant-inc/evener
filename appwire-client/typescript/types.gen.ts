@@ -2886,14 +2886,15 @@ export interface ThreadForkParams {
   aside?: boolean;
   /**
    * SourceItemKey names the divergence position as an item key
-   * (transcriptindex.ItemKey): a 1-based entry ordinal into the parent
+   * (transcriptindex.ItemKey): a 0-based entry ordinal into the parent
    * transcript's ENTRY list — every entry, not just the ones that opened a
-   * turn — plus the content part that opened the item. Despite embedding a
-   * turn id, it is NOT read as one: the hub parses it with
-   * parseSourceItemKey and hands the entry index straight to
-   * agent.ForkSessionAtUserTurn. Send ThreadItem.TranscriptKey, never
-   * Turn.ID; the entry ordinal a live turn's own id implies coincides with
-   * its transcript entry index only on a transcript replayed from disk,
+   * turn — plus the content part that opened the item. The hub parses it
+   * with parseSourceItemKey, which turns the ordinal into the matching
+   * 1-based entry index and hands that straight to
+   * agent.ForkSessionAtUserTurn. Despite embedding a turn id, the key is
+   * NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
+   * the entry ordinal a live turn's own id implies coincides with its
+   * transcript entry index only on a transcript replayed from disk,
    * because every live turn minter numbers turns off its own counter (kata
    * 0jhh). Required unless Aside.
    */

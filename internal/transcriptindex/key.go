@@ -63,7 +63,7 @@ func ParseItemKey(key string) (turnID string, position appwire.ThreadItemPositio
 	}
 
 	if headerRest, ok := strings.CutPrefix(rest, headerKeyPrefix); ok {
-		part, perr := parseKeyUint(headerRest)
+		part, perr := parseCanonicalUint(headerRest, 32)
 		if perr != nil {
 			return malformed()
 		}
@@ -83,23 +83,30 @@ func ParseItemKey(key string) (turnID string, position appwire.ThreadItemPositio
 	if turnID == "" {
 		return malformed()
 	}
-	ordinal, err := parseKeyUint(ordinalStr)
+	// 63 bits, not 64: Entry is ordinal + 1, and this keeps that add from
+	// wrapping back to 0 — which ParseItemKey would otherwise return as a
+	// well-formed header position for a garbage ordinal near MaxUint64.
+	ordinal, err := parseCanonicalUint(ordinalStr, 63)
 	if err != nil {
 		return malformed()
 	}
-	part, err := parseKeyUint(partStr)
+	// 32 bits: Item is uint32, so a part beyond its range must be rejected
+	// here rather than silently truncated by a uint32 conversion.
+	part, err := parseCanonicalUint(partStr, 32)
 	if err != nil {
 		return malformed()
 	}
 	return turnID, appwire.ThreadItemPosition{Entry: ordinal + 1, Item: uint32(part)}, nil
 }
 
-// parseKeyUint parses a key segment as a non-negative integer. strconv.Atoi
-// alone accepts a leading "+" and would silently misparse "prelude:header:+3"
-// as 3; ItemKey never emits a sign, so any sign is malformed.
-func parseKeyUint(s string) (uint64, error) {
-	if s == "" || s[0] == '+' || s[0] == '-' {
-		return 0, fmt.Errorf("transcriptindex: not a non-negative integer: %q", s)
+// parseCanonicalUint parses s as the decimal, non-negative, bitSize-bounded
+// integer ItemKey emits. strconv.ParseUint already rejects a leading sign and
+// an out-of-range value; the leading-zero check on top of it rejects a
+// numeral ItemKey would never produce (e.g. "007"), so no two differently
+// spelled keys can ever name the same position.
+func parseCanonicalUint(s string, bitSize int) (uint64, error) {
+	if len(s) > 1 && s[0] == '0' {
+		return 0, fmt.Errorf("transcriptindex: non-canonical integer %q", s)
 	}
-	return strconv.ParseUint(s, 10, 64)
+	return strconv.ParseUint(s, 10, bitSize)
 }

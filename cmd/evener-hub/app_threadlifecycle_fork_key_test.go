@@ -1,7 +1,10 @@
 package hub
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,9 +95,17 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	if childMeta.ParentSessionID != parentID {
 		t.Fatalf("child ParentSessionID=%q, want %q", childMeta.ParentSessionID, parentID)
 	}
+	// "the child holds exactly the entries before it" (task brief): entry 3
+	// is the divergence point, so the child must hold exactly the 2 entries
+	// before it (USER "first task", ASSISTANT "first reply") and no more.
+	if got := countTranscriptEntries(t, filepath.Join(stateDir, "sessions", resp.Thread.ID+".transcript.jsonl")); got != 2 {
+		t.Fatalf("child transcript has %d entries, want 2 (exactly the entries before the forked one)", got)
+	}
 
 	// A key naming the ASSISTANT entry (entry 2) is refused: forking requires a
-	// USER_INPUT entry.
+	// USER_INPUT entry. This is a refusal of the client's chosen item, not a
+	// hub failure, so it must come back as InvalidParams rather than
+	// InternalError — the same is true of the two refusals below.
 	secondEntryKey := transcriptindex.ItemKey("turn_2", appwire.ThreadItemPosition{Entry: 2, Item: 0})
 	_, err = client.ThreadFork(context.Background(), appwire.ThreadForkParams{
 		Ref:           "local:" + parentID,
@@ -107,6 +118,7 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	if !strings.Contains(err.Error(), "not a USER_INPUT turn") {
 		t.Fatalf("ThreadFork(sourceItemKey naming entry 2) error = %v, want a not-a-user-turn refusal", err)
 	}
+	assertInvalidParams(t, err, "sourceItemKey naming entry 2 (not USER_INPUT)")
 
 	// A key whose ordinal names no entry in the parent transcript is refused.
 	unknownEntryKey := transcriptindex.ItemKey("turn_99", appwire.ThreadItemPosition{Entry: 99, Item: 0})
@@ -118,6 +130,7 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	if err == nil {
 		t.Fatal("ThreadFork(sourceItemKey naming entry 99) succeeded; the parent transcript has only 3 entries")
 	}
+	assertInvalidParams(t, err, "sourceItemKey naming entry 99 (out of range)")
 
 	// The header key names no turn at all.
 	headerKey := transcriptindex.ItemKey("turn_1", appwire.ThreadItemPosition{Entry: 0, Item: 0})
@@ -128,6 +141,21 @@ func TestHubRPCThreadForkAtItemKeyCutsThatEntry(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("ThreadFork(sourceItemKey=header key) succeeded; the header names no turn")
+	}
+	assertInvalidParams(t, err, "sourceItemKey=header key")
+}
+
+// assertInvalidParams fails the test unless err decodes to an
+// appwire.WireError carrying appwire.CodeInvalidParams, so a client can tell
+// "you named a bad item" apart from a hub failure (InternalError).
+func assertInvalidParams(t *testing.T, err error, label string) {
+	t.Helper()
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("%s: error %v is not an appwire.WireError", label, err)
+	}
+	if wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("%s: error code = %d, want CodeInvalidParams (%d): %v", label, wireErr.Code, appwire.CodeInvalidParams, err)
 	}
 }
 
@@ -181,6 +209,44 @@ func TestHubRPCThreadForkAtItemKeyCutsNewFormatEntry(t *testing.T) {
 	if childMeta.DivergenceTurn != 3 {
 		t.Fatalf("child DivergenceTurn=%d, want 3", childMeta.DivergenceTurn)
 	}
+	if got := countTranscriptEntries(t, filepath.Join(stateDir, "sessions", resp.Thread.ID+".transcript.jsonl")); got != 2 {
+		t.Fatalf("child transcript has %d entries, want 2 (exactly the entries before the forked one)", got)
+	}
+}
+
+// countTranscriptEntries counts the "entry" records in a transcript file
+// (excluding the header), so a fork test can assert the child holds exactly
+// the entries before its divergence point rather than trusting DivergenceTurn
+// alone.
+func countTranscriptEntries(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open child transcript %s: %v", path, err)
+	}
+	defer f.Close()
+	var record struct {
+		Kind string `json:"kind"`
+	}
+	count := 0
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		record.Kind = ""
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("unmarshal transcript line %q: %v", line, err)
+		}
+		if record.Kind == "entry" {
+			count++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan child transcript %s: %v", path, err)
+	}
+	return count
 }
 
 // writeNewFormatForkParentSession writes a three-entry transcript whose
