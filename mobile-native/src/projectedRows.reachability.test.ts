@@ -1,4 +1,11 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -97,11 +104,15 @@ describe("the deleted private projection family is unreachable", () => {
 		// the guard. The fixture exercises the resolution the real sweep runs
 		// against a smuggled `../conversation/types` — a specifier the old
 		// substring-only match slipped.
-		const root = path.join(
-			process.env.EVENER_SCRATCH_DIR ?? process.env.TMPDIR ?? "/tmp",
-			"reachability-fixture",
+		// A unique root (review round 3): concurrent runs share the scratch
+		// dir — parallel worktrees, CI shards on one host — and a fixed name
+		// lets one run's cleanup delete another run's fixture mid-assertion.
+		const root = mkdtempSync(
+			path.join(
+				process.env.EVENER_SCRATCH_DIR ?? process.env.TMPDIR ?? "/tmp",
+				"reachability-fixture-",
+			),
 		);
-		rmSync(root, { recursive: true, force: true });
 		const stateDir = path.join(root, "mobile", "src", "state");
 		mkdirSync(stateDir, { recursive: true });
 		writeFileSync(

@@ -735,7 +735,10 @@ function clusterFamilyFor(
 // The attachments emitted alongside an entry's row: the item mapping's own
 // rule (itemAttachments) for the kinds that carry them, none for the
 // content-free placeholder and the redacted critical failure.
-function attachmentsFor(entry: ProjectedEntry): AttachmentRef[] | undefined {
+function attachmentsFor(
+	entry: ProjectedEntry,
+	turnStatus: string | undefined,
+): AttachmentRef[] | undefined {
 	switch (entry.kind) {
 		case "item":
 		case "critical":
@@ -744,6 +747,14 @@ function attachmentsFor(entry: ProjectedEntry): AttachmentRef[] | undefined {
 			}
 			return itemAttachments(entry.item);
 		case "intent":
+			// Review round 3 (Low): the attachments ARE output — a settled
+			// summarized call drops its images with its text (the same
+			// summaryOnly condition intentRow applies), while a failed or
+			// still-running call keeps everything per the attention
+			// carve-out.
+			if (!entry.failed && activityState(entry.item, turnStatus) === "completed") {
+				return undefined;
+			}
 			return itemAttachments(entry.item);
 		default:
 			return undefined;
@@ -802,13 +813,13 @@ function rowsForProjectedTurn(
 				type: "activity",
 				item: row,
 				pre: { family: clusterFamilyFor(entry, row), item: row },
-				attachments: attachmentsFor(entry),
+				attachments: attachmentsFor(entry, turn.status),
 			});
 		} else {
 			entries.push({
 				type: "final",
 				item: row,
-				attachments: attachmentsFor(entry),
+				attachments: attachmentsFor(entry, turn.status),
 			});
 		}
 	}

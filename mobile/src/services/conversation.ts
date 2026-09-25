@@ -576,11 +576,11 @@ export function createConversationService<ReadLease = unknown>(
   ConversationRecoveryActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const now = options.now ?? Date.now;
-	// The display config this read's projection runs at, read at projection
-	// time (see the option's own comment). A null/undefined answer keeps the
-	// show-everything default.
-	const displayConfig = (): TranscriptDisplayConfigV1 | undefined =>
-		options.resolveDisplayConfig?.() ?? undefined;
+  // The display config this read's projection runs at, read at projection
+  // time (see the option's own comment). A null/undefined answer keeps the
+  // show-everything default.
+  const displayConfig = (): TranscriptDisplayConfigV1 | undefined =>
+    options.resolveDisplayConfig?.() ?? undefined;
   const activityService = createActivityService();
 
   // Current thread identity and capabilities, set by open() / readProjection().

@@ -1063,7 +1063,12 @@ describe("the timeline projection delegates to the shared projector", () => {
 			// Visibility: every show-everything row survives except the settled
 			// thought r1, which the projector hides while the reasoning flag is
 			// off. The cross-turn r2+r3 cluster cannot form — the projector
-			// reclassifies both members — so r3 becomes its own row here.
+			// reclassifies both members — so r3 becomes its own row here. At
+			// the compact levels the settled c5 is the summarized member of
+			// the running c4's cluster, and its attachments leave with its
+			// output (review round 3: the attachments ARE output — the same
+			// summaryOnly condition drops the images with the text); at the
+			// call levels c5 is an item entry and the row returns.
 			expect(rows.map(rowId)).toEqual([
 				"u1",
 				"u1:attachments",
@@ -1077,7 +1082,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				"unk1",
 				"ask1",
 				"c4",
-				"c5:attachments",
+				...(intentRows ? [] : ["c5:attachments"]),
 				"a2",
 				"r2",
 				"r3",

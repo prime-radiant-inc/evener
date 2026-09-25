@@ -80,6 +80,7 @@ function levelsThread(): Thread {
 				description: "  run the audit  ",
 				argumentsJson: SHELL_ARGS,
 				output: SHELL_OUTPUT,
+				outputImages: [{ source: "screenshot", name: "audit.png", url: "http://x/audit.png" }],
 				status: "completed",
 			}),
 			item({
@@ -87,6 +88,7 @@ function levelsThread(): Thread {
 				type: "commandExecution",
 				toolName: "shell",
 				description: "audit the failure",
+				outputImages: [{ source: "screenshot", name: "failure.png", url: "http://x/failure.png" }],
 				status: "failed",
 				error: "opaque failure text",
 			}),
@@ -243,6 +245,27 @@ describe("the summary-only ruling at compact levels", () => {
 		for (const config of [chat, intent]) {
 			const shown = JSON.stringify(rowsAt(config));
 			expect(shown).not.toContain(SHELL_OUTPUT);
+		}
+	});
+
+	it("a summarized call's output images leave with its output; a failed call's stay", () => {
+		// Review round 3 (Low): the attachments ARE output — a settled
+		// summarized call drops its images with its text at the compact
+		// levels, while the failed call keeps everything per the attention
+		// carve-out, and the settled call's images return at the levels
+		// that show its full detail.
+		const attachmentIdsAt = (config: TranscriptDisplayConfigV1 | null) =>
+			rowsAt(config)
+				.filter((row) => row.kind === "attachments")
+				.flatMap((row) => (row.kind === "attachments" ? row.items.map((ref) => ref.id) : []));
+		for (const config of [chat, intent]) {
+			expect(attachmentIdsAt(config)).not.toContain("c1:out:0");
+		}
+		for (const config of [tools, full]) {
+			expect(attachmentIdsAt(config)).toContain("c1:out:0");
+		}
+		for (const config of [chat, intent, tools, full]) {
+			expect(attachmentIdsAt(config)).toContain("f1:out:0");
 		}
 	});
 });

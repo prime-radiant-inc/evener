@@ -28044,11 +28044,15 @@ describe("ConversationStore", () => {
       ).toBe(true);
     });
 
-    // Review round 2 (Low): the level-change publish runs the same
-    // retained-turn bound every other publish runs — a turn whose every
-    // row the new level hides sheds its payload, exactly as the next
-    // row-changing frame's publish would.
-    it("bounds the retained turns a level change hides", async () => {
+    // Review round 3 (Medium), superseding round 2's Low: the bound RUNS
+    // at every publish (round 2), but its keep-window is LEVEL-INDEPENDENT
+    // — the display level decides what renders, never what payload leaves
+    // the model. A window taken from the level's own rows would shed every
+    // turn the level hides, and the switch back to the richer level could
+    // not rebuild what the re-projection reads: the payloads would be gone
+    // from the model. The show-everything cap is the retention truth; only
+    // the cap window decides what leaves.
+    it("keeps a level-hidden turn's payload for the switch back", async () => {
       const thread = makeThread({
         turns: [
           makeTurn({
@@ -28067,12 +28071,48 @@ describe("ConversationStore", () => {
       // Show-everything keeps both turns' payloads.
       expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
       store.getState().setDisplayConfig(intentConfig);
-      const after = store.getState().conversation;
-      // t0's every row is hidden at intent: the bound sheds its
-      // payload, exactly as a frame's publish would.
-      expect(after?.turns[0]?.items).toEqual([]);
-      // t1's row is visible: its payload stays.
-      expect(after?.turns[1]?.items).toHaveLength(1);
+      // t0's every row is hidden at intent — hidden, not withdrawn: the
+      // payload stays in the model.
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      expect(rowById(store, "r1")).toBeUndefined();
+      // Switch back: the hidden row reappears from the kept payload.
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
+    });
+
+    // Review round 3 (Medium, the frame publish): a row-changing frame
+    // while at a coarse level bounds against the same level-independent
+    // window — the frame must not shed the payload of a turn the level
+    // hides either, or the switch back would lose it the same way.
+    it("a row-changing frame at a coarse level keeps the hidden turn's payload", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            status: "completed",
+            items: [reasoningItem("r1", "the thought")],
+          }),
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [userMessageItem("u1", "hi")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread);
+      store.getState().setDisplayConfig(intentConfig);
+      // A row-changing frame lands at intent: a new turn starts.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
+      store.getState().setDisplayConfig(fullConfig);
+      expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });
     });
   });
 

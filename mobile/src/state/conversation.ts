@@ -1608,6 +1608,30 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // the window moves to pageOwnedCompactTurnIds, which preserveTurnHistory
   // reads together with pageOwnedTurnIds so the compact survivors still cross
   // rehydrates (accounting completeness).
+  // Review round 3 (Medium): a level-carrying publish (the frame publish,
+  // setDisplayConfig) widens the window to level-independent rows — see
+  // retentionWindowItems — so the display level never decides retention.
+  //
+  // The keep-window for a level-carrying publish. The display level decides
+  // what RENDERS, never what payload leaves the model: a window taken from
+  // the level's own rows would shed every turn the level hides — rows that
+  // are hidden, not withdrawn — and the switch back to a richer level could
+  // not rebuild what the re-projection reads, because the payloads would be
+  // gone from the model. The retention truth is the show-everything cap, the
+  // pre-slice rule: only the cap window decides what leaves. The union with
+  // the publish's own rows keeps what the level's deeper cap reach retains —
+  // a coarse level renders fewer rows per turn, so the same row budget
+  // reaches farther down the timeline. At the null config the level IS
+  // show-everything, so the publish's own rows are the window.
+  function retentionWindowItems(
+    model: MobileConversation,
+    levelItems: MobileTimelineItem[],
+    config: TranscriptDisplayConfigV1 | null,
+  ): MobileTimelineItem[] {
+    if (config === null) return levelItems;
+    return levelItems.concat(capItems(projectConversation(model).items));
+  }
+
   function boundRetainedTurns(
     turns: TurnModel[],
     retainedItems: MobileTimelineItem[],
@@ -2317,17 +2341,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // retires it as if the model had withdrawn the anchor.
         reanchorTransientWarnings(conversation.items, projected.items);
         const bounded = capAndTruncate(projected);
-        // The retained-turn bound every other publish runs: a turn whose
-        // every row the new level hides sheds its payload here too,
-        // exactly as the next row-changing frame's publish would. The
-        // active turn stays exempt inside the helper.
+        // The retained-turn bound every other publish runs, against the
+        // level-independent window (retentionWindowItems): the level
+        // change hides rows without shedding their payloads. The active
+        // turn stays exempt inside the helper.
         set({
           displayConfig: config,
           conversation: {
             ...bounded,
             turns: boundRetainedTurns(
               bounded.turns,
-              bounded.items,
+              retentionWindowItems(conversation, bounded.items, config),
               mergedItemFoldIdentities,
               bounded.activeTurnId,
             ),
@@ -4519,15 +4543,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             const bounded = capAndTruncate(projected);
             // #1919 follow-up: a row-changing frame can repopulate a
             // compacted turn's entire payload (a completion's full view)
-            // with no applier pass left to bound it — the rows the cap kept
-            // are the keep-window, exactly as the rehydrate and loadOlder
-            // merges bound theirs; the active turn is exempted inside the
-            // helper (its payloads are the live working set).
+            // with no applier pass left to bound it — the keep-window is
+            // the level-independent retention set (retentionWindowItems:
+            // the capped level rows plus the show-everything cap), so a
+            // coarse level never sheds a turn it merely hides; the active
+            // turn is exempted inside the helper (its payloads are the
+            // live working set).
             const conversation: MobileConversation = {
               ...bounded,
               turns: boundRetainedTurns(
                 bounded.turns,
-                bounded.items,
+                retentionWindowItems(applied, bounded.items, get().displayConfig),
                 mergedItemFoldIdentities,
                 bounded.activeTurnId,
               ),
