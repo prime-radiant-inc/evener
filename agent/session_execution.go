@@ -61,10 +61,10 @@ func (s *Session) beginExecution(name string) {
 	reopen := s.recordedExecutions[turnID]
 	started := s.executionStarted
 	s.mu.Unlock()
-	if started != nil {
-		started(turnID)
-	}
 	if announced {
+		if started != nil {
+			started(turnID)
+		}
 		s.emit(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: turnID})
 	}
 	s.attachedTranscript().BeginExecution(turnID, reopen)
@@ -204,6 +204,8 @@ func (s *Session) endLastRound() {
 // SetExecutionStartedFunc installs a callback run in beginExecution before the
 // execution's first entry is recorded, with the execution's TurnID. serve wires
 // it to Server.SetProcessingTurn. Install it before the session runs input.
+// It is called exactly for the executions EventExecutionStarted announces:
+// not for one restore runs before SESSION_START.
 func (s *Session) SetExecutionStartedFunc(fn func(turnID string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,7 +214,10 @@ func (s *Session) SetExecutionStartedFunc(fn func(turnID string)) {
 
 // SetTranscriptRecordedFunc installs fn as the transcript's recorded-entry hook
 // (transcript.Writer.OnRecorded) now and on every writer the session attaches
-// or reopens. fn runs under the append lock: see OnRecorded.
+// or reopens. fn runs under the append lock: see OnRecorded. Appenders hold
+// the session's locks around it, so fn must not call back into the session
+// (TranscriptRecordedLength included) or take any lock an appender or the
+// session holds; it may take leaf locks only.
 func (s *Session) SetTranscriptRecordedFunc(fn func(transcript.Record)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -221,9 +226,11 @@ func (s *Session) SetTranscriptRecordedFunc(fn func(transcript.Record)) {
 }
 
 // setTranscriptLocked makes w the session's writer, installing the session's
-// recorded-entry hook on it. A writer reopened on the same file shares the
-// file's hook already; installing it again covers a writer that does not.
-// Callers hold s.mu.
+// recorded-entry hook on it. The hook belongs to the file's shared append
+// tail, and today's reopens (attention recovery) open the new writer while
+// the old one still holds that tail, so it already carries the hook; the
+// install matters for the first attach and for any reopen made after every
+// writer on the file closed, which starts a fresh tail. Callers hold s.mu.
 func (s *Session) setTranscriptLocked(w *transcript.Writer) {
 	s.transcript = w
 	if s.transcriptRecorded != nil {
@@ -239,7 +246,9 @@ func (s *Session) TranscriptRecordedLength() int64 {
 
 // SetDescendantRecordedFunc installs fn on every descendant session this
 // session spawns, now and later (inherited like the descendant event func):
-// fn(sessionID, record) under that child's append lock.
+// fn(sessionID, record) under that child's append lock. The constraints of
+// SetTranscriptRecordedFunc apply: fn must not call back into any session of
+// the tree or take a lock an appender or a session holds.
 func (s *Session) SetDescendantRecordedFunc(fn func(sessionID string, rec transcript.Record)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

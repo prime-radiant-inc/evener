@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -104,23 +105,29 @@ func TestAServedSessionWithNoTranscriptFailsClosed(t *testing.T) {
 	}
 }
 
-// communicateRefusingFs is the real filesystem whose files refuse, writing
-// nothing, every write of a COMMUNICATE entry: that append records nothing and
+// entryRefusingFs is the real filesystem whose files refuse, writing
+// nothing, every write of an entry of kind: that append records nothing and
 // leaves the writer usable, and every other entry records as usual.
-type communicateRefusingFs struct{ afero.Fs }
+type entryRefusingFs struct {
+	afero.Fs
+	kind schema.TurnKind
+}
 
-func (fs communicateRefusingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+func (fs entryRefusingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
 	f, err := fs.Fs.OpenFile(name, flag, perm)
 	if err != nil {
 		return nil, err
 	}
-	return communicateRefusingFile{File: f}, nil
+	return entryRefusingFile{File: f, marker: []byte(`"kind":"` + string(fs.kind) + `"`)}, nil
 }
 
-type communicateRefusingFile struct{ afero.File }
+type entryRefusingFile struct {
+	afero.File
+	marker []byte
+}
 
-func (f communicateRefusingFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte(`"kind":"COMMUNICATE"`)) {
+func (f entryRefusingFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, f.marker) {
 		return 0, errors.New("injected write failure")
 	}
 	return f.File.Write(p)
@@ -183,7 +190,14 @@ func TestAPoisonedWriterFailsAServedSessionClosed(t *testing.T) {
 // COMMUNICATE appends fail.
 func refuseCommunicateEntries(t *testing.T, s *Session) {
 	t.Helper()
-	w, _, err := transcript.OpenWriterForSessionWithFS(communicateRefusingFs{Fs: afero.NewOsFs()}, s.TranscriptPath(), s.ID())
+	refuseEntries(t, s, schema.TurnCommunicate)
+}
+
+// refuseEntries swaps s's writer for one on the same file whose appends of
+// kind fail.
+func refuseEntries(t *testing.T, s *Session, kind schema.TurnKind) {
+	t.Helper()
+	w, _, err := transcript.OpenWriterForSessionWithFS(entryRefusingFs{Fs: afero.NewOsFs(), kind: kind}, s.TranscriptPath(), s.ID())
 	if err != nil {
 		t.Fatal(err)
 	}

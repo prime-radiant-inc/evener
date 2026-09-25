@@ -2184,8 +2184,8 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // (append first, then the entry), for the same publication-transaction
 // wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
 // only when a tool exposes explicitly private evidence; every other caller
-// passes the same turn twice.
-func (s *Session) recordTurn(live, persisted schema.Turn) {
+// passes the same turn twice. It reports the entry's record.
+func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -2194,7 +2194,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.logPairPersistedLocked(persisted)
 	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
-	err := s.writeTranscriptLocked(persisted)
+	rec, err := s.recordTranscriptLocked(persisted, transcript.DoorBuffered, transcript.PlaceSession)
 	if err == nil {
 		s.mu.Lock()
 		s.markLastPairOrdinalLocked()
@@ -2215,6 +2215,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
+	return rec
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its

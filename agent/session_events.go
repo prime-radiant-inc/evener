@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -264,12 +265,12 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 // failure a returning user reads can never disagree with the one a watching
 // user saw. Turn cancellations do NOT come through here — they are not
 // failures (the interrupted SessionEnd owns that turn's terminal state), and
-// callers on the cancellation path emit the bare event instead. The event is
-// marked Recorded: history shows the failure, so a live view need not keep it.
+// callers on the cancellation path emit the bare event instead. The entry is
+// recorded first, and the event is marked Recorded when it was: history then
+// shows the failure, so a live view need not keep it.
 func (s *Session) emitTurnFailure(data events.ErrorData) {
-	data.Recorded = true
+	data.Recorded = s.recordTurnFailure(data, false).Recorded
 	s.emit(events.EventError, data)
-	s.recordTurnFailure(data, false)
 }
 
 // emitSteeringCarrierTurnFailure is emitTurnFailure's steering-carrier
@@ -287,15 +288,15 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // recordFailedSteeringSelection (session_queue.go) without going through
 // this function, gated by the same answering check.
 func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
-	data.Recorded = true
+	data.Recorded = s.recordTurnFailure(data, true).Recorded
 	s.emit(events.EventError, data)
-	s.recordTurnFailure(data, true)
 }
 
 // recordTurnFailure persists the diagnostic of a failed turn as a TurnFailure
 // entry. It enriches the data exactly as the event pipeline does, so the
-// stored source/title/hint match what the live event carried.
-func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) {
+// stored source/title/hint match what the live event carried. It reports the
+// entry's record.
+func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) transcript.Record {
 	enriched := enrichErrorData(data)
 	info := schema.TurnFailureInfo{
 		Message:         strings.TrimSpace(enriched.Error),
@@ -316,7 +317,7 @@ func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool)
 	// turn text still show the failure.
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
 	turn.Error = &info
-	s.recordTurn(turn, turn)
+	return s.recordTurn(turn, turn)
 }
 
 // emitHookCompleted reports a finished hook on both channels a client can
