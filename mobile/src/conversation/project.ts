@@ -3,7 +3,6 @@ import type {
   ItemImage,
   ItemModel,
   ProjectedEntry,
-  ProjectedTurn,
   ThreadItemEventKind,
   ThreadModel,
   TranscriptDisplayConfigV1,
@@ -32,6 +31,7 @@ import type {
 
 import {
   ACTION_SUMMARY_UNAVAILABLE,
+  configFingerprint,
   hasItemFailure,
   hasWarningText,
   isActiveItem,
@@ -886,36 +886,51 @@ interface TurnRows {
   // the calls this turn consumed and whether they were answerable, so the rows
   // are reused only while that still holds. The rows also depend on the config
   // they were projected under — which items exist as entries at all is the
-  // projector's decision at that config — so it is carried by reference: a
-  // caller that changes config identity re-derives every turn rather than
-  // reusing rows built under the old one.
+  // projector's decision at that config — so it is keyed by the config's
+  // value (configFingerprint): a caller re-resolving an equal config per
+  // publish (resolveEffectiveConfig builds a fresh object every call) still
+  // hits the cache, and a config whose value changed re-derives every turn.
   askState: Array<[string, boolean]>;
-  config: TranscriptDisplayConfigV1;
+  configFingerprint: string;
 }
 
 // Per-turn rows, keyed on the TurnModel reference. The reducer hands a turn back
 // UNTOUCHED — by reference — when a frame did not change it (reducer.ts's mapTurn
 // and settleFirstMatchingTurn), so a delta into the newest turn leaves every older
 // turn's rows exactly as they were. Re-deriving them per frame is the transcript's
-// whole width of work, including a JSON parse per ask and two Date.parse calls per
-// timed tool call, for one item's text. A WeakMap so a dropped turn's rows go with
-// it.
+// whole width of work — the shared projector's classification scan for the turn
+// plus this file's row construction, which still pays a JSON parse per ask and
+// two Date.parse calls per timed tool call — for one item's text. A WeakMap so a
+// dropped turn's rows go with it. A cache hit skips BOTH halves for that turn:
+// the turn is projected alone (see rowsForProjectedTurn), so the projector's
+// whole-transcript bookkeeping — anchors, visibleItems, eligibleDisclosureIds —
+// is only ever allocated for turns whose rows are actually being re-derived.
+// That per-turn slicing is sound because the projector's decisions are
+// turn-local (decisionFor reads the item, its turn, and the config); if the
+// projector ever went cross-turn, this cache would need a whole-model call.
 const turnRowCache = new WeakMap<TurnModel, TurnRows>();
 
 function rowsForProjectedTurn(
-  projected: ProjectedTurn,
+  model: ThreadModel,
+  turn: TurnModel,
   asks: ReadonlyMap<string, AskQuestionRef[]>,
   config: TranscriptDisplayConfigV1,
+  fingerprint: string,
 ): Ordered[] {
-  const turn = projected.source;
   const cached = turnRowCache.get(turn);
   if (
     cached !== undefined &&
-    cached.config === config &&
+    cached.configFingerprint === fingerprint &&
     cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
   ) {
     return cached.entries;
   }
+  // Project this turn alone. One turn in, one ProjectedTurn out, carrying the
+  // same entries a whole-model call yields for this turn (the decisions are
+  // turn-local). The slice's entry.sourceIndex restarts at 0 per turn where a
+  // whole-model call counts across turns — the row mapping never reads it.
+  const [projected] = projectThread({ ...model, turns: [turn] }, config).turns;
+  if (projected === undefined) return [];
   const entries: Ordered[] = [];
   const askState: Array<[string, boolean]> = [];
   for (const entry of projected.entries) {
@@ -952,7 +967,7 @@ function rowsForProjectedTurn(
       item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
     });
   }
-  turnRowCache.set(turn, { entries, askState, config });
+  turnRowCache.set(turn, { entries, askState, configFingerprint: fingerprint });
   return entries;
 }
 
@@ -991,11 +1006,14 @@ export function projectTimeline(
   // item, preserving whether it is a final item or a clusterable activity
   // pre-item. Attachments emitted alongside an item follow that item in the
   // timeline. Rows already derived for an unchanged turn come from the cache
-  // above; clustering then runs over the whole result, because a run of
-  // activities can span a turn boundary.
-  const projection = projectThread(model, config);
+  // above — and with them that turn's classification scan, which only a
+  // cache miss pays (see rowsForProjectedTurn); clustering then runs over the
+  // whole result, because a run of activities can span a turn boundary.
+  const fingerprint = configFingerprint(config);
   const ordered: Ordered[] = [];
-  for (const turn of projection.turns) ordered.push(...rowsForProjectedTurn(turn, asks, config));
+  for (const turn of model.turns) {
+    ordered.push(...rowsForProjectedTurn(model, turn, asks, config, fingerprint));
+  }
 
   // Second pass: cluster consecutive activity rows that share a family, then
   // rebuild the timeline in original order.
