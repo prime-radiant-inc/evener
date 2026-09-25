@@ -309,6 +309,9 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 			record := index.recordAt(i)
+			if record.transparent() {
+				continue
+			}
 			raw := make([]byte, record.Length)
 			if _, err := file.ReadAt(raw, record.Offset); err != nil {
 				_ = file.Close()

@@ -307,6 +307,12 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
+		if record.transparent() {
+			if len(groups) > 0 {
+				groups[len(groups)-1].end = i + 1
+			}
+			continue
+		}
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
 		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
@@ -337,6 +343,13 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 		groups = append(groups, group)
 	}
 	return groups
+}
+
+// transparent reports a record of a transcript-only entry. It keeps its place
+// in the record list (one record per entry line), but joins no group, closes
+// none, contributes no items and is never projected.
+func (r indexedTurn) transparent() bool {
+	return r.TurnKind.TranscriptOnly()
 }
 
 // KindTurn reconstructs the record's turn kind from persisted fields (the
@@ -892,6 +905,14 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
+			if record.transparent() {
+				record.VisibleIndex = visibleRecords
+				appended = append(appended, record)
+				offset += length
+				index.CompleteSize = offset
+				index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, framedLine)
+				continue
+			}
 			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			// Logical-group bookkeeping runs BEFORE projection: the entry is
@@ -909,12 +930,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 					openTurnID, openCalls = openGroupState(*index)
 				}
 			}
-			prevKind := schema.TurnKind("")
-			if len(appended) > 0 {
-				prevKind = appended[len(appended)-1].TurnKind
-			} else if n := index.recordCount(); n > 0 {
-				prevKind = index.recordAt(n - 1).TurnKind
-			}
+			prevKind := lastGroupedKind(appended, *index)
 			grouper := TurnGrouper{Open: groupOpenAfter(prevKind), TurnID: openTurnID}
 			_, record.StartsGroup = grouper.Place(&entry.Turn, entryIndex)
 			if record.StartsGroup {
@@ -1177,6 +1193,10 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		// Walk the record list group by group without materializing all
 		// groups: find where this group's span ends, then decide whether to
 		// project it.
+		if index.recordAt(i).transparent() {
+			i++ // before the first group: belongs to none
+			continue
+		}
 		spanEnd := i + 1
 		for spanEnd < n && !index.recordAt(spanEnd).StartsGroup {
 			spanEnd++
@@ -1239,6 +1259,9 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 			return nil, projected, err
 		}
 		record := index.recordAt(i)
+		if record.transparent() {
+			continue
+		}
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
 			return nil, projected, fmt.Errorf("read transcript entry: %w", err)
@@ -1788,6 +1811,9 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 	turnID := ""
 	for i := n - 1; i >= 0; i-- {
 		record := index.recordAt(i)
+		if record.transparent() {
+			continue
+		}
 		for _, id := range record.GroupCalls {
 			calls[id] = true
 		}
@@ -1829,4 +1855,21 @@ func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[strin
 		stats.resolverEntriesCopied += int64(len(names))
 	}
 	return clone
+}
+
+// lastGroupedKind is the turn kind of the latest record that takes part in
+// grouping — appended ones first, then the indexed prefix — skipping the
+// transparent records of transcript-only entries. "" when there is none.
+func lastGroupedKind(appended []indexedTurn, index turnIndexDisk) schema.TurnKind {
+	for i := len(appended) - 1; i >= 0; i-- {
+		if !appended[i].transparent() {
+			return appended[i].TurnKind
+		}
+	}
+	for i := index.recordCount() - 1; i >= 0; i-- {
+		if record := index.recordAt(i); !record.transparent() {
+			return record.TurnKind
+		}
+	}
+	return ""
 }
