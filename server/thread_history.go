@@ -12,6 +12,10 @@ import (
 	"primeradiant.com/evener/internal/transcriptindex"
 )
 
+// The test seams below are package-level and read by the projection
+// goroutine without synchronization: tests that set them must not run in
+// parallel.
+
 // threadHistoryPublishHook, when set, runs just before each history/updated
 // publish; an error it returns fails that publish. Test seam only; nil in
 // production.
@@ -100,8 +104,10 @@ func (h *threadHistory) recorded(rec transcript.Record) {
 		h.published = rec.Offset
 	}
 	h.recordedLength, h.ordinal = rec.Offset+rec.Length, rec.Ordinal
-	h.overlay.Recorded(rec)
 	h.mu.Unlock()
+	// Still under the append lock, so the overlay sees records in ordinal
+	// order; outside h.mu, so h.mu stays a leaf.
+	h.overlay.Recorded(rec)
 	select {
 	case h.wake <- struct{}{}:
 	default:
@@ -159,10 +165,8 @@ func (h *threadHistory) run() {
 		case <-h.wake:
 		}
 		// A wake and a close may both be ready; close wins.
-		select {
-		case <-h.stop:
+		if h.stopping() {
 			return
-		default:
 		}
 		h.mu.Lock()
 		target, published, epoch := h.recordedLength, h.published, h.epoch
@@ -173,6 +177,16 @@ func (h *threadHistory) run() {
 		if err := h.project(target, published, epoch); err != nil && !h.recover() {
 			return
 		}
+	}
+}
+
+// stopping reports whether close has been called.
+func (h *threadHistory) stopping() bool {
+	select {
+	case <-h.stop:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -191,6 +205,10 @@ func (h *threadHistory) project(target, published int64, epoch uint64) error {
 	if err != nil {
 		return err
 	}
+	// The first projection has no earlier publication to compare with and
+	// adopts the index's incarnation. A client whose read came from an
+	// incarnation rotated since sees the new one in the update's snapshot
+	// identity and re-reads, as it does after a rebuild.
 	if h.incarnation != "" && changes.Incarnation != h.incarnation {
 		return errIncarnationRotated
 	}
@@ -226,9 +244,13 @@ func (h *threadHistory) project(target, published int64, epoch uint64) error {
 // a resync carrying it, and rebuilds the index from the file up to the
 // recorded length captured with the new epoch, so a client that re-reads for
 // the resync reads at least that far and entries recorded afterwards are
-// projected after the rebuild. A failed rebuild is retried at once; it
-// reports false once threadHistoryMaxRebuilds have failed in a row: the
-// history is failed, one more resync has gone out, and projection stops.
+// projected after the rebuild. The rebuild mints a new incarnation, so a
+// client that re-read before it finished receives updates under an
+// incarnation it does not hold, and re-reads on that change. A failed
+// rebuild is retried at once unless the history is closing. It reports
+// false when projection stops: on close, or once threadHistoryMaxRebuilds
+// have failed in a row, when the history is failed and one more resync has
+// gone out.
 func (h *threadHistory) recover() bool {
 	h.mu.Lock()
 	h.epoch++
@@ -236,7 +258,10 @@ func (h *threadHistory) recover() bool {
 	h.mu.Unlock()
 	h.resync(epoch)
 	var err error
-	for range threadHistoryMaxRebuilds {
+	for attempt := range threadHistoryMaxRebuilds {
+		if attempt > 0 && h.stopping() {
+			return false
+		}
 		if err = h.rebuild(target); err == nil {
 			h.mu.Lock()
 			h.published = target

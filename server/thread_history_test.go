@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,10 @@ import (
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
+
+// These tests set package-level seams (threadHistoryPublishHook,
+// threadHistoryRebuildHook) that the projection goroutine reads without
+// synchronization, so none of them may use t.Parallel().
 
 // historyTestWait bounds every wait on the projection goroutine; it only
 // fires when the goroutine never delivers what the test awaits.
@@ -85,9 +90,14 @@ func newHistoryHarness(t *testing.T) *historyHarness {
 
 func (hx *historyHarness) record(t *testing.T, text string) transcript.Record {
 	t.Helper()
-	rec, err := hx.writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User(text)), transcript.RecordOptions{})
+	return hx.recordTurn(t, schema.NewTurn(schema.TurnUserInput, llm.User(text)))
+}
+
+func (hx *historyHarness) recordTurn(t *testing.T, turn schema.Turn) transcript.Record {
+	t.Helper()
+	rec, err := hx.writer.Record(turn, transcript.RecordOptions{})
 	if err != nil || !rec.Recorded {
-		t.Errorf("record %q = %+v, %v", text, rec, err)
+		t.Errorf("record %s = %+v, %v", turn.Kind, rec, err)
 	}
 	return rec
 }
@@ -240,6 +250,43 @@ func TestThreadHistoryPublishesConcurrentAppendsInOrdinalOrder(t *testing.T) {
 	if len(turnVersions) == 0 || turnVersions[len(turnVersions)-1] != 20 {
 		t.Fatalf("published turn versions %v do not end at the last entry", turnVersions)
 	}
+
+	// A tool call's item gains a second contributor when its TOOL_RESULTS
+	// lands in a later update: it is published again at the higher version,
+	// and the reduced state (by key, highest version wins) holds it once at
+	// its final form.
+	call := llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.txt"}`)}
+	assistant := hx.recordTurn(t, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}})
+	updates = append(updates, hx.updatesThrough(t, assistant.Offset+assistant.Length)...)
+	results := hx.recordTurn(t, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1", false)))
+	updates = append(updates, hx.updatesThrough(t, results.Offset+results.Length)...)
+	reduced := map[string]appwire.ThreadItem{}
+	publications := 0
+	for _, params := range updates {
+		for _, item := range params.Items {
+			if item.CallID == "call_read" {
+				publications++
+			}
+			if held, ok := reduced[item.TranscriptKey]; !ok || item.Version > held.Version {
+				reduced[item.TranscriptKey] = item
+			}
+		}
+	}
+	var tool []appwire.ThreadItem
+	for _, item := range reduced {
+		if item.CallID == "call_read" {
+			tool = append(tool, item)
+		}
+	}
+	if len(tool) != 1 || tool[0].Version != results.Ordinal+1 || tool[0].Output != "line 1" {
+		t.Fatalf("reduced tool items %+v, want one at version %d with its output", tool, results.Ordinal+1)
+	}
+	if publications != 2 {
+		t.Fatalf("tool item published %d times, want at the call and again at its result", publications)
+	}
+	if len(reduced) != 21 {
+		t.Fatalf("reduced state holds %d items, want 21", len(reduced))
+	}
 	if err := hx.history.Failed(); err != nil {
 		t.Fatalf("Failed() = %v", err)
 	}
@@ -376,7 +423,11 @@ func TestThreadHistoryFailedStateNamesTheLastAttemptedEntry(t *testing.T) {
 	if epoch := hx.nextResync(t); epoch != 2 {
 		t.Fatalf("failed-state resync epoch = %d, want 2", epoch)
 	}
-	<-hx.history.done
+	select {
+	case <-hx.history.done:
+	case <-time.After(historyTestWait):
+		t.Fatal("projection goroutine still running in the failed state")
+	}
 	var entryErr *transcriptindex.EntryError
 	if err := hx.history.Failed(); !errors.As(err, &entryErr) || entryErr.Ordinal != last.Ordinal || entryErr.Err == nil {
 		t.Fatalf("Failed() = %v, want an error naming ordinal %d with its cause", err, last.Ordinal)
@@ -463,6 +514,47 @@ func TestThreadHistoryPublishesFromTheFirstHookedEntry(t *testing.T) {
 	}
 	if got := itemVersions(updates[0]); len(got) != 1 || got[0] != hooked.Ordinal+1 {
 		t.Fatalf("item versions %v, want only the hooked entry's %d", got, hooked.Ordinal+1)
+	}
+}
+
+// Closing while a failing rebuild is being retried stops the retries: close
+// does not wait through every remaining re-parse.
+func TestThreadHistoryCloseDuringRecoveryStopsRetrying(t *testing.T) {
+	hx := newHistoryHarness(t)
+	parked, release := make(chan struct{}), make(chan struct{})
+	var rebuilds int
+	threadHistoryRebuildHook = func(string) {
+		rebuilds++
+		if rebuilds == 1 {
+			close(parked)
+			<-release
+		}
+	}
+	t.Cleanup(func() { threadHistoryRebuildHook = nil })
+	hx.corruptNext(t)
+	hx.record(t, "corrupt")
+	select {
+	case <-parked:
+	case <-time.After(historyTestWait):
+		t.Fatal("no rebuild attempt")
+	}
+	closed := make(chan struct{})
+	go func() {
+		hx.history.close()
+		close(closed)
+	}()
+	<-hx.history.stop // close has signalled before the parked rebuild resumes
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(historyTestWait):
+		t.Fatal("close did not return")
+	}
+	if rebuilds != 1 {
+		t.Fatalf("rebuild attempts = %d after close, want 1", rebuilds)
+	}
+	if err := hx.history.Failed(); err != nil {
+		t.Fatalf("Failed() = %v; a closed history is not a failed one", err)
 	}
 }
 
