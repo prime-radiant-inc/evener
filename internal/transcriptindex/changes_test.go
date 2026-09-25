@@ -171,3 +171,49 @@ func TestAnUnreadableEntryClosesTheLegacyGroup(t *testing.T) {
 		t.Fatalf("legacy entries around the unreadable one in turns %q and %q, want two turns", before, after)
 	}
 }
+
+// TestLatestSinceReadsOneSnapshot requires LatestSince to answer as Latest and
+// ChangedSince do on the same snapshot, and to answer no changes when the held
+// snapshot names another incarnation or predates the kept update log: the
+// caller then sends a full latest-window replacement.
+func TestLatestSinceReadsOneSnapshot(t *testing.T) {
+	previous := updateLogRecords
+	updateLogRecords = 4
+	t.Cleanup(func() { updateLogRecords = previous })
+	path, lines := writeHeaderOnly(t, everything())
+	x := openIndex(t, path, t.TempDir())
+	var held []appwire.SnapshotIdentity
+	for _, line := range lines {
+		appendBytes(t, path, line)
+		catchUp(t, x)
+		held = append(held, appwire.SnapshotIdentity{Incarnation: x.meta.Incarnation, Length: x.meta.Length})
+	}
+	recent := held[len(held)-3]
+	window, changes, err := x.LatestSince(2, recent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWindow, err := x.Latest(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChanges, err := x.ChangedSince(recent.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(window, wantWindow) || changes == nil || !reflect.DeepEqual(*changes, wantChanges) {
+		t.Fatalf("LatestSince = %s, %s\nwant %s, %s", dump(window), dump(changes), dump(wantWindow), dump(wantChanges))
+	}
+	for name, snapshot := range map[string]appwire.SnapshotIdentity{
+		"another incarnation": {Incarnation: "another", Length: recent.Length},
+		"before the kept log": held[0],
+	} {
+		window, changes, err := x.LatestSince(2, snapshot)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(window, wantWindow) || changes != nil {
+			t.Fatalf("%s: LatestSince = %s, %s, want the window and no changes", name, dump(window), dump(changes))
+		}
+	}
+}

@@ -40,10 +40,43 @@ func (x *Index) Latest(limit int) (Window, error) {
 	defer x.mu.Unlock()
 	var window Window
 	err = x.locked(false, func() (err error) {
-		window, err = x.window(x.preludeCount()+x.items.n, limit)
+		window, err = x.latest(limit)
 		return err
 	})
 	return window, err
+}
+
+func (x *Index) latest(limit int) (Window, error) {
+	return x.window(x.preludeCount()+x.items.n, limit)
+}
+
+// LatestSince is Latest together with what changed since held, read under one
+// lock so both describe the same snapshot: a reader that took them apart could
+// miss a change another handle extended over between the two. The changes
+// are nil when held names another incarnation or predates the kept update
+// log; the caller then sends the window as a full replacement.
+func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *Changes, error) {
+	limit, err := appwire.NormalizeTranscriptItemLimit(limit)
+	if err != nil {
+		return Window{}, nil, err
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	var window Window
+	var changes *Changes
+	err = x.locked(false, func() error {
+		window, err = x.latest(limit)
+		if err != nil || held.Incarnation != x.meta.Incarnation {
+			return err
+		}
+		since, err := x.changedSince(held.Length)
+		if errors.Is(err, ErrUpdateLogTruncated) {
+			return nil
+		}
+		changes = &since
+		return err
+	})
+	return window, changes, err
 }
 
 // Incarnation is the index's current incarnation, as the sidecar holds it:
@@ -202,60 +235,65 @@ func (x *Index) ChangedSince(length int64) (Changes, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	var changes Changes
-	err := x.locked(false, func() error {
-		changes = Changes{Incarnation: x.meta.Incarnation, Length: x.meta.Length}
-		if length < x.meta.UpdatesFrom {
-			return ErrUpdateLogTruncated
-		}
-		first, err := x.firstUpdateAt(length)
-		if err != nil {
-			return err
-		}
-		items, turns := map[uint64]bool{}, map[uint64]bool{}
-		buf, err := x.updates.read(first, int(x.updates.n-first))
-		if err != nil {
-			return x.fail(err)
-		}
-		for at := 0; at < len(buf); at += updateRecordSize {
-			switch update := decodeUpdate(buf[at:]); update.Kind {
-			case updatedItem:
-				items[update.Slot] = true
-			case updatedTurn:
-				turns[update.Slot] = true
-			}
-		}
-		firstItem, err := x.firstItemCreatedAt(length)
-		if err != nil {
-			return err
-		}
-		for slot := firstItem; slot < x.items.n; slot++ {
-			items[slot] = true
-		}
-		firstTurn, err := x.firstTurnCreatedAt(length)
-		if err != nil {
-			return err
-		}
-		for slot := firstTurn; slot < x.turns.n; slot++ {
-			turns[slot] = true
-		}
-		r := newReader(x)
-		for _, slot := range slices.Sorted(maps.Keys(items)) {
-			candidates, err := x.span(r, slot, slot+1)
-			if err != nil {
-				return err
-			}
-			changes.Items = append(changes.Items, candidates...)
-		}
-		for _, slot := range slices.Sorted(maps.Keys(turns)) {
-			stamped, err := r.turn(uint32(slot))
-			if err != nil {
-				return x.fail(err)
-			}
-			changes.Turns = append(changes.Turns, stamped.turn)
-		}
-		return nil
+	err := x.locked(false, func() (err error) {
+		changes, err = x.changedSince(length)
+		return err
 	})
 	return changes, err
+}
+
+func (x *Index) changedSince(length int64) (Changes, error) {
+	if length < x.meta.UpdatesFrom {
+		return Changes{}, ErrUpdateLogTruncated
+	}
+	first, err := x.firstUpdateAt(length)
+	if err != nil {
+		return Changes{}, err
+	}
+	items, turns := map[uint64]bool{}, map[uint64]bool{}
+	buf, err := x.updates.read(first, int(x.updates.n-first))
+	if err != nil {
+		return Changes{}, x.fail(err)
+	}
+	for at := 0; at < len(buf); at += updateRecordSize {
+		switch update := decodeUpdate(buf[at:]); update.Kind {
+		case updatedItem:
+			items[update.Slot] = true
+		case updatedTurn:
+			turns[update.Slot] = true
+		}
+	}
+	firstItem, err := x.firstItemCreatedAt(length)
+	if err != nil {
+		return Changes{}, err
+	}
+	for slot := firstItem; slot < x.items.n; slot++ {
+		items[slot] = true
+	}
+	firstTurn, err := x.firstTurnCreatedAt(length)
+	if err != nil {
+		return Changes{}, err
+	}
+	for slot := firstTurn; slot < x.turns.n; slot++ {
+		turns[slot] = true
+	}
+	changes := Changes{Incarnation: x.meta.Incarnation, Length: x.meta.Length}
+	r := newReader(x)
+	for _, slot := range slices.Sorted(maps.Keys(items)) {
+		candidates, err := x.span(r, slot, slot+1)
+		if err != nil {
+			return Changes{}, err
+		}
+		changes.Items = append(changes.Items, candidates...)
+	}
+	for _, slot := range slices.Sorted(maps.Keys(turns)) {
+		stamped, err := r.turn(uint32(slot))
+		if err != nil {
+			return Changes{}, x.fail(err)
+		}
+		changes.Turns = append(changes.Turns, stamped.turn)
+	}
+	return changes, nil
 }
 
 // firstUpdateAt binary-searches the update log for the first update an entry
