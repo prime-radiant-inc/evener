@@ -813,10 +813,12 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	steps[1] = func(llm.Request) llm.Response {
 		requests.Add(1)
 		// The assistant record this response produces is durable and would abort
-		// the turn; aim past it at the buffered tool-results record, whose
-		// failure warns and lets the turn finish — which is how a writer ends up
-		// poisoned with the drain loop still running.
-		armEnvironmentPartialWriteAfter(fs, 1)
+		// the turn, and the COMMUNICATE record goes through the synced door,
+		// which rolls a torn line back; aim past both at the buffered
+		// tool-results record, whose failure warns and lets the turn finish —
+		// which is how a writer ends up poisoned with the drain loop still
+		// running.
+		armEnvironmentPartialWriteAfter(fs, 2)
 		return finalResponse("ok")
 	}
 	sess.FollowUp("runs behind the poisoning")
@@ -851,9 +853,10 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 	fs := attachEnvironmentFailureFS(t, sess)
 	steps[1] = func(llm.Request) llm.Response {
 		requests.Add(1)
-		// Past the durable assistant record, onto the buffered tool-results
-		// one, so this turn finishes with the writer already poisoned.
-		armEnvironmentPartialWriteAfter(fs, 1)
+		// Past the durable assistant record and the synced COMMUNICATE one,
+		// onto the buffered tool-results one, so this turn finishes with the
+		// writer already poisoned.
+		armEnvironmentPartialWriteAfter(fs, 2)
 		return finalResponse("ok")
 	}
 	if err := sess.Enqueue(t.Context(), "waits for the restart"); err != nil {

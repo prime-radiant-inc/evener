@@ -7,12 +7,13 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // A served session fails closed when its transcript can no longer record what
 // it announces: the transcript could not be created, its writer is poisoned,
-// or a COMMUNICATE entry — a message already on its way to the user — was not
-// recorded. Failing closed interrupts the running execution, refuses every
+// or a COMMUNICATE entry (a message already on its way to the user) or a
+// completion entry (a turn's terminal status) was not recorded. Failing closed interrupts the running execution, refuses every
 // later input, and shows one diagnostic, so history is never missing a message
 // a client was shown and nothing accumulates in memory that restart would
 // lose. Any other append that is not recorded leaves the session running, with
@@ -63,6 +64,26 @@ func (s *Session) failClosed(cause error) error {
 		}
 	}
 	return s.failedClosedRefusal()
+}
+
+// failClosedUnlessRecorded fails a served session closed when the write of an
+// entry whose loss a client would see (a COMMUNICATE message, a turn's
+// completion) failed, err being the write's error, and returns the refusal;
+// nil when it was recorded, or when the session is not served. A write the
+// placement declines without an error recorded nothing because there was
+// nothing to record (a completion of an execution that recorded nothing). A
+// closed writer is a session shutting down, not a writer failure. A session
+// with no writer at all is either one with no state directory, which no
+// daemon serves, or one whose transcript could not be created, which failed
+// closed at its first input (failClosedOnUnhealthyTranscript).
+func (s *Session) failClosedUnlessRecorded(rec transcript.Record, err error, what string) error {
+	if rec.Recorded || err == nil {
+		return nil
+	}
+	if writer := s.attachedTranscript(); writer == nil || writer.Closed() {
+		return nil
+	}
+	return s.failClosed(fmt.Errorf("%s was not recorded: %w", what, err))
 }
 
 // failClosedOnUnhealthyTranscript fails a served session closed when its

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -95,13 +94,17 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 			status = schema.TurnFailed
 		}
 		now := s.sclock().Now().UTC()
-		rec := s.recordTranscriptOnlyAt(schema.Turn{
+		rec, err := s.recordTranscriptOnlyThrough(schema.Turn{
 			Kind:       schema.TurnCompletion,
 			Timestamp:  now,
 			Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)},
-		}, transcript.PlaceCompletion)
+		}, transcript.DoorSynced, transcript.PlaceCompletion)
 		if rec.Recorded {
 			ended = status
+		}
+		// A turn's terminal status must never be lost.
+		if s.failClosedUnlessRecorded(rec, err, "a turn completion") != nil {
+			s.announceFailClosed()
 		}
 	}
 	if execution.announced {
@@ -323,13 +326,13 @@ func (s *Session) closeAbandonedExecutions() bool {
 }
 
 // completeTurn records a completion of status for turnID, an execution no
-// running process owns any more.
+// running process owns any more, through the synced door.
 func (s *Session) completeTurn(turnID string, status schema.TurnCompletionStatus) (transcript.Record, error) {
 	now := s.sclock().Now().UTC()
 	turn := schema.Turn{Kind: schema.TurnCompletion, Timestamp: now, Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now}}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	return s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceInTurn(turnID))
+	return s.recordTranscriptLocked(turn, transcript.DoorSynced, transcript.PlaceInTurn(turnID))
 }
 
 // takeOpenPendingExecution reports whether turnID was an open execution that
@@ -383,19 +386,28 @@ type recordedOrdinal struct {
 // placement. It never enters history. A write that fails is reported as a
 // warning.
 func (s *Session) recordTranscriptOnlyAt(turn schema.Turn, place transcript.Placement) transcript.Record {
+	rec, _ := s.recordTranscriptOnlyThrough(turn, transcript.DoorBuffered, place)
+	return rec
+}
+
+// recordTranscriptOnlyThrough is recordTranscriptOnlyAt through door. A
+// COMMUNICATE or completion entry goes through the synced door, so a
+// delivered message or a terminal status survives a crash. It returns the
+// write's error too, already reported as a warning.
+func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.Door, place transcript.Placement) (transcript.Record, error) {
 	if turn.Timestamp.IsZero() {
 		turn.Timestamp = s.sclock().Now().UTC()
 	}
 	rec, err := func() (transcript.Record, error) {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
-		return s.recordTranscriptLocked(turn, transcript.DoorBuffered, place)
+		return s.recordTranscriptLocked(turn, door, place)
 	}()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
-	return rec
+	return rec, err
 }
 
 // recordNotice records a presentational notice, the history form of a live
@@ -411,13 +423,10 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // the refusal; a session with no transcript, or one nobody serves, announces
 // it as it always has.
 func (s *Session) deliverCommunicate(data events.CommunicateData) error {
-	rec := s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
-	// A closed writer is a session shutting down, not a writer failure.
-	if writer := s.attachedTranscript(); !rec.Recorded && writer != nil && !writer.Closed() {
-		if refusal := s.failClosed(errors.New("a communicate message was not recorded")); refusal != nil {
-			s.announceFailClosed()
-			return refusal
-		}
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.DoorSynced, transcript.PlaceSession)
+	if refusal := s.failClosedUnlessRecorded(rec, err, "a communicate message"); refusal != nil {
+		s.announceFailClosed()
+		return refusal
 	}
 	s.emit(events.EventCommunicate, data)
 	return nil

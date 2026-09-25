@@ -317,3 +317,121 @@ func TestAnUnservedSessionDeliversAnUnrecordedCommunicate(t *testing.T) {
 		t.Fatalf("communicate events %d, fail-closed diagnostics %d; want 1 and 0", countKind(got, events.EventCommunicate), failClosedDiagnostics(got))
 	}
 }
+
+// A completion entry that is not recorded fails a served session closed, as
+// an unrecorded COMMUNICATE does: a turn's terminal status is never lost.
+func TestAnUnrecordedCompletionFailsAServedSessionClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	refuseEntries(t, s, schema.TurnCompletion)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "done"), nil
+	})
+	_, _ = s.ProcessInput(context.Background(), "finish", nil)
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("input after an unrecorded completion = %v, want the fail-closed refusal", err)
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// Any other entry whose append rolls back cleanly leaves the writer usable
+// and the served session running: the caller's own error handling applies
+// (an unrecorded USER_INPUT fails its input), and nothing fails closed. Only
+// COMMUNICATE and completions, and a poisoned, missing or never-created
+// writer, fail a served session closed.
+func TestACleanRollbackOfAnOrdinaryEntryKeepsTheSessionRunning(t *testing.T) {
+	s, _ := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	refuseEntries(t, s, schema.TurnUserInput)
+	for _, input := range []string{"first", "second"} {
+		_, err := s.ProcessInput(context.Background(), input, nil)
+		if err == nil || errors.Is(err, errTranscriptFailedClosed) {
+			t.Fatalf("input %q with its USER_INPUT rolled back = %v, want the append's own error", input, err)
+		}
+	}
+	if s.attachedTranscript().Poisoned() {
+		t.Fatal("a clean rollback poisoned the writer")
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 0 {
+		t.Fatalf("%d fail-closed diagnostics, want 0", got)
+	}
+}
+
+// syncTrackingFs is the real filesystem whose files report, for each entry
+// kind, whether a line of that kind was fsynced before the next write.
+type syncTrackingFs struct {
+	afero.Fs
+	mu     *sync.Mutex
+	last   *string
+	synced map[string]bool
+}
+
+func (fs syncTrackingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return syncTrackingFile{File: f, fs: fs}, nil
+}
+
+type syncTrackingFile struct {
+	afero.File
+	fs syncTrackingFs
+}
+
+func (f syncTrackingFile) Write(p []byte) (int, error) {
+	f.fs.mu.Lock()
+	*f.fs.last = ""
+	for _, kind := range []schema.TurnKind{schema.TurnCommunicate, schema.TurnCompletion} {
+		if bytes.Contains(p, []byte(`"kind":"`+string(kind)+`"`)) {
+			*f.fs.last = string(kind)
+		}
+	}
+	f.fs.mu.Unlock()
+	return f.File.Write(p)
+}
+
+func (f syncTrackingFile) Sync() error {
+	f.fs.mu.Lock()
+	if *f.fs.last != "" {
+		f.fs.synced[*f.fs.last] = true
+	}
+	f.fs.mu.Unlock()
+	return f.File.Sync()
+}
+
+// COMMUNICATE and completion entries go through the synced door: each is
+// fsynced as it is recorded, so a delivered message or a terminal status
+// survives a crash. The writer's buffered door is held to an hour here, so
+// only a synced write fsyncs.
+func TestCommunicateAndCompletionEntriesAreSynced(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	tracking := syncTrackingFs{Fs: afero.NewOsFs(), mu: &sync.Mutex{}, last: new(string), synced: map[string]bool{}}
+	w, _, err := transcript.OpenWriterForSessionWithFS(tracking, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SyncInterval = time.Hour
+	s.mu.Lock()
+	previous := s.transcript
+	s.transcript = w
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = previous.Close() })
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "synced"), nil
+	})
+	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
+		t.Fatal(err)
+	}
+	served.settle(s)
+	tracking.mu.Lock()
+	defer tracking.mu.Unlock()
+	for _, kind := range []schema.TurnKind{schema.TurnCommunicate, schema.TurnCompletion} {
+		if !tracking.synced[string(kind)] {
+			t.Errorf("a %s entry was not fsynced as it was recorded", kind)
+		}
+	}
+}
