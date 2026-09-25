@@ -964,6 +964,57 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 	}
 }
 
+// TestAllBuiltinParametersCarryDescriptions is the description audit as a
+// permanent gate: every property the model sees, nested object and array-item
+// properties included, must document itself. A bare parameter name banks on
+// the model's training prior naming it the way we do, and the harvested
+func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
+	defs := []llm.ToolDefinition{
+		DefReadFile(), DefWriteFile(), DefListDir(), DefEditFile(), DefShell(),
+		DefDelegate(nil), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
+		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
+		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
+		DefApplyPatch(), DefWebFetch(), DefWebSearch(), DefCommunicate(),
+		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(),
+		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
+		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
+		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
+	}
+	var missing []string
+	var walk func(prefix string, schema map[string]any)
+	walk = func(prefix string, schema map[string]any) {
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			return
+		}
+		names := make([]string, 0, len(props))
+		for name := range props {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			pm, ok := props[name].(map[string]any)
+			if !ok {
+				continue
+			}
+			path := prefix + name
+			if desc, _ := pm["description"].(string); desc == "" {
+				missing = append(missing, path)
+			}
+			walk(path+".", pm)
+			if items, ok := pm["items"].(map[string]any); ok {
+				walk(path+"[].", items)
+			}
+		}
+	}
+	for _, def := range defs {
+		walk("", WithIntentParameter(def).Parameters)
+	}
+	if len(missing) > 0 {
+		t.Errorf("%d parameters carry no description: %s", len(missing), strings.Join(missing, ", "))
+	}
+}
+
 // TestDefAskUserDescriptionIsSpecVerbatim pins the description to spec §4.4's
 // key contract points: yields the floor, no timeout, batching, the reply
 // contract, and the "no Other option" rule.
