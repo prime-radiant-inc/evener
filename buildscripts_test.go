@@ -81,7 +81,10 @@ func TestWebPreflightRefusesNpmCiThroughASymlink(t *testing.T) {
 // health check, which is how the test sees preflight got past the symlink.)
 func TestWebPreflightAcceptsASharedInstallWithTheSameLockfile(t *testing.T) {
 	frontend, _ := sharedInstallFixture(t, "{}\n", -time.Hour)
-	output, _ := runWebPreflight(t, frontend)
+	output, err := runWebPreflight(t, frontend)
+	if err == nil {
+		t.Fatalf("preflight passed an empty shared install; want the tsc health check to fail; output = %s", output)
+	}
 	if strings.Contains(output, "symlink") {
 		t.Fatalf("preflight refused a shared install built from the same lockfile; output = %s", output)
 	}
