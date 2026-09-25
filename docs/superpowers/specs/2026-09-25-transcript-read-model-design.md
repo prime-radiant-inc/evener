@@ -166,8 +166,8 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   back is gone on the next read.
 - **Crash or power loss** can lose buffered entries whose notifications clients
   already have. Every daemon start mints a **boot generation**, which increases
-  monotonically: a counter persisted in the state directory and incremented
-  under the session ownership lock. Every read
+  monotonically: a per-session counter persisted in the session's own state,
+  and incremented under that session's ownership lock. Every read
   response and every `history/updated` carries it. A client that sees a boot
   generation higher than the one it holds marks that thread invalid. The client
   applies no update for that thread until a fresh latest-window read at the new
@@ -175,9 +175,11 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   still in flight from the old generation is ignored when it returns. Anything
   carrying a lower generation is ignored.
   - **Daemonless reads.** The hub has no running daemon for the session. It
-    stamps boot generation 0, and daemonless replacement follows the incarnation
-    and authoritative-window rules instead. When a daemon later starts for that
-    session, its generation is always higher than 0.
+    stamps the distinguished generation `daemonless` instead of a number.
+    - A `daemonless` latest-window response always replaces the thread's whole
+      history, and it is exempt from the lower-generation rule.
+    - A daemon that later starts for that session has a numeric generation. That
+      numeric generation replaces the `daemonless` history in turn.
   That rule takes precedence over the index incarnation, epoch
   or recorded length say. So entries lost in a crash never survive on a client,
   even when the truncated file happens to match the index's covered length.
@@ -792,6 +794,24 @@ hub along with the daemon.
 - the notifier replay ring (count-bounded; no production reader)
 - the task store
 - the projector's small `delegates` map
+
+## Implementation decisions
+
+These came from the last spec review round and are pinned as tests in the
+phase 3 plan.
+
+- **Incarnations** compare by equality only. A client issues one latest-window
+  read per thread at a time and applies only the newest request generation.
+- **After an incarnation change**, the latest-window response replaces the whole
+  history. The client then backfills older pages again as it needs them.
+- **Queue overflow during a rebuild** restarts the rebuild through a new boundary
+  ordinal. It repeats until the queue is covered.
+- **Completion entries.** An unrecorded completion entry fails the session
+  closed, the same as COMMUNICATE. A turn's terminal status is never silently
+  lost.
+- **Tool items** carry the ordinal of their completing TOOL_RESULTS entry. That
+  makes the rule for dropping overlay execution state decidable from wire data.
+- **The prelude** has its own `TurnKind` value, `prelude`.
 
 ## Acceptance criteria
 
