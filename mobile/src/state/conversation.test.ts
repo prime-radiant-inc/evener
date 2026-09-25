@@ -1984,6 +1984,64 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       expect(store.getState().pendingMutations).toBe(before);
     });
+
+    it("a record the ownership predicate rejects never claims this client's provenance", async () => {
+      const port = fakePort({
+        outbox: [outbox({ clientMutationId: "cmid-4" })],
+      });
+      port.isOwnMutationRecord = () => false;
+      const store = await openStore(authoritativeModel("cmid-4"));
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations?.[0]).toMatchObject({
+        id: "cmid-4",
+        fromThisClient: false,
+      });
+
+      // After the record settles out, the daemon still reports the id: the
+      // rejected predicate must have left nothing in the carried provenance.
+      const rebound = fakePort({});
+      rebound.isOwnMutationRecord = () => false;
+      store.getState().bindPendingMutations(rebound);
+      await yieldMicrotask();
+      const rows = store.getState().pendingMutations;
+      expect(rows?.[0]).toMatchObject({ id: "cmid-4", fromThisClient: false });
+      expect(rows?.[0]?.createdAt).toBeUndefined();
+    });
+
+    it("a conversation write never exposes a stale pending row to a subscriber", async () => {
+      const port = fakePort({ outbox: [outbox()] });
+      const store = await openStore();
+      store.getState().bindPendingMutations(port);
+      await yieldMicrotask();
+      expect(store.getState().pendingMutations).toHaveLength(1);
+
+      // A subscriber must never observe the model reflecting the mutation while
+      // pendingMutations still holds its row: the reconcile rides the same write
+      // as the model commit.
+      let sawStale = false;
+      const unsubscribe = store.subscribe((state) => {
+        const reflected = state.conversation?.queue?.clientMutationIds ?? [];
+        if (
+          reflected.includes("cmid-1") &&
+          (state.pendingMutations ?? []).some((row) => row.id === "cmid-1")
+        ) {
+          sawStale = true;
+        }
+      });
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          queue: { revision: 2, clientMutationIds: ["cmid-1"] },
+        },
+      } as AnyNotification);
+      unsubscribe();
+
+      expect(sawStale).toBe(false);
+      expect(store.getState().pendingMutations).toEqual([]);
+    });
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error

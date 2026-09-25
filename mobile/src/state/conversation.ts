@@ -2072,10 +2072,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // `fromThisClient: false` and misroute tier-6 send/queue availability.
   const pendingSubmittedHere = new Map<string, number>();
 
-  function reconcilePendingMutations(): readonly PendingTurnEntry[] {
+  function reconcilePendingMutations(
+    model: MobileConversation | null | undefined = storeGet?.().conversation,
+  ): readonly PendingTurnEntry[] {
     const port = pendingPort;
     const snapshot = pendingSnapshot;
-    const model = storeGet?.().conversation;
     if (port === null || snapshot === null || !model) return [];
     return reconcilePendingEntries(
       port.targetRef,
@@ -2150,20 +2151,27 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     const set = (partial: Partial<ConversationState>) => {
       if ("pendingMutation" in partial) mutationOwnerRev += 1;
       if ("error" in partial) errorOwnerRev += 1;
-      rawSet(partial);
       // A conversation write is the one model change the reconciliation has to
-      // see: re-project the durable rows against the model just committed, so a
+      // see: re-project the durable rows against the model being committed, so a
       // mutation the model now reflects drops out with no storage round-trip.
+      // The reconcile runs BEFORE the write and rides it in ONE rawSet, so no
+      // subscriber ever observes the intermediate state (model reflects the
+      // mutation, pendingMutations still holds its stale row). A partial that
+      // publishes its own pendingMutations (open/close/reset/unbind) owns that
+      // field and is written as-is.
       if (
         "conversation" in partial &&
+        !("pendingMutations" in partial) &&
         pendingPort !== null &&
         pendingSnapshot !== null
       ) {
-        const next = reconcilePendingMutations();
+        const next = reconcilePendingMutations(partial.conversation);
         if (!samePendingRows(get().pendingMutations, next)) {
-          rawSet({ pendingMutations: next });
+          rawSet({ ...partial, pendingMutations: next });
+          return;
         }
       }
+      rawSet(partial);
     };
     storeGet = get;
     return {
