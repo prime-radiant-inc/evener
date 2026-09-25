@@ -253,3 +253,62 @@ func TestThreadHistoriesReleaseDuringAFailingRecoveryKeepsEpochsMonotonic(t *tes
 		t.Fatalf("recreated history at epoch %d, below the %d a client was sent", again.Epoch(), sent)
 	}
 }
+
+// The same for a read that recovers a failed delegate: released while the
+// read's rebuild runs, the history's epoch stays where it retired, and the
+// recreated history starts at or above every epoch any client was sent.
+func TestThreadHistoriesReleaseDuringAReadRecoveryKeepsEpochsMonotonic(t *testing.T) {
+	r := newTestThreadHistories(t)
+	path := filepath.Join(t.TempDir(), "child.transcript.jsonl")
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	var sentMu sync.Mutex
+	var sent uint64
+	resyncs := make(chan uint64, 16)
+	resync := func(epoch uint64) {
+		sentMu.Lock()
+		sent = max(sent, epoch)
+		sentMu.Unlock()
+		resyncs <- epoch
+	}
+	h := r.ensure("child", "local:child", path, 0, 0, "1", noopHistoryPublish, resync, nil)
+	writer.OnRecorded(h.recorded)
+	parked, release := make(chan struct{}), make(chan struct{})
+	rebuilds := 0
+	var repair func()
+	repair = breakProjection(t, func() {
+		rebuilds++
+		if rebuilds == threadHistoryMaxRebuilds+1 { // the read's rebuild
+			repair()
+			close(parked)
+			<-release
+		}
+	})
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("fails to project")), transcript.RecordOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	<-resyncs
+	<-resyncs // failed
+	read := make(chan error, 1)
+	go func() {
+		_, _, _, _, err := h.latest(h.capture(), "local:child", 10)
+		read <- err
+	}()
+	awaitClosed(t, parked, "the read's rebuild to park")
+	released := r.detach("child")
+	close(release)
+	if err := <-read; err != nil {
+		t.Fatalf("read of the recovering delegate = %v", err)
+	}
+	closeHistories([]*threadHistory{released})
+
+	again := r.ensure("child", "local:child", path, 0, 0, "1", noopHistoryPublish, noopHistoryResync, nil)
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	if again.Epoch() < sent {
+		t.Fatalf("recreated history at epoch %d, below the %d a client was sent", again.Epoch(), sent)
+	}
+}

@@ -146,6 +146,10 @@ type threadHistory struct {
 	// head (or the recorded length). Only a recovery closes it.
 	gap    *overlayGap
 	closed bool
+	// recovering reports a failed thread a read is rebuilding: it stays
+	// failed (so concurrent reads wait on serial for the outcome), while the
+	// hook queues again so nothing after the rebuild's boundary is lost.
+	recovering bool
 
 	// serial is the thread's projection serialization: the goroutine holds it
 	// for each step, and a read that recovers a failed thread for its
@@ -217,7 +221,7 @@ func (h *threadHistory) recorded(rec transcript.Record) {
 		return
 	}
 	h.mu.Lock()
-	if h.failed != nil || h.closed {
+	if (h.failed != nil && !h.recovering) || h.closed {
 		h.mu.Unlock()
 		return
 	}
@@ -332,12 +336,14 @@ func (h *threadHistory) Failed() error {
 }
 
 // recoverForRead is a read's attempt to recover a failed thread, inside the
-// thread's projection serialization and outside the read's cut: one rebuild
-// through a boundary, first. On success the thread is no longer failed, its
-// epoch is bumped and exactly one resync goes out. On failure the thread
-// stays failed, nothing is pushed, and the read gets
-// appwire.TranscriptHistoryFailed. A thread that is not failed returns nil
-// at once.
+// thread's projection serialization and outside the read's cut: a rebuild
+// through a boundary, first (restarted if a queue overflow overruns it).
+// The thread stays failed until the outcome is known, so a concurrent read
+// waits for it on serial. On success the thread is no longer failed, its
+// epoch is bumped and exactly one resync goes out, unless the history was
+// retired meanwhile. On failure the thread stays failed, nothing is pushed,
+// and the read gets appwire.TranscriptHistoryFailed. A thread that is not
+// failed returns nil at once.
 func (h *threadHistory) recoverForRead() error {
 	h.mu.Lock()
 	failed := h.failed
@@ -356,17 +362,37 @@ func (h *threadHistory) recoverForRead() error {
 	case closed:
 		return appwire.TranscriptHistoryFailed(failed.Ordinal)
 	}
-	if err := h.rebuildThroughBoundary(); err != nil {
-		h.mu.Lock()
-		// The boundary capture un-failed the thread so the hook queued what
-		// followed it; failing it again drops that queue.
-		h.failed = failed
+	h.mu.Lock()
+	h.recovering = true
+	h.mu.Unlock()
+	// A queue overflow during the rebuild restarts it through a new
+	// boundary, up to threadHistoryMaxRebuilds, as the goroutine's recovery
+	// does; any other failure ends the attempt.
+	var err error
+	for attempt := range threadHistoryMaxRebuilds {
+		if attempt > 0 && (h.stopping() || h.retired()) {
+			break
+		}
+		if err = h.rebuildThroughBoundary(); err == nil || !errors.Is(err, errOverrunByOverflow) {
+			break
+		}
+	}
+	h.mu.Lock()
+	h.recovering = false
+	if err != nil {
+		// Still failed: what the hook queued meanwhile goes too.
 		h.dropQueueLocked()
 		h.overflowed = false
 		h.mu.Unlock()
 		return appwire.TranscriptHistoryFailed(failed.Ordinal)
 	}
-	h.mu.Lock()
+	h.failed = nil
+	if h.closed {
+		// Retired while rebuilding: its epoch is final (see recover). The
+		// data is still good for this read.
+		h.mu.Unlock()
+		return nil
+	}
 	h.epoch++
 	epoch := h.epoch
 	h.mu.Unlock()
@@ -621,9 +647,9 @@ func (h *threadHistory) rebuildThroughBoundary() error {
 
 // captureBoundary takes the rebuild's boundary, the recorded length, under
 // the transcript's append lock, so it and the queue are one snapshot. It
-// clears the overflow it covers and a failed state (the hook queues again),
-// and adopts the length: entries a failed history's hook passed over lie in
-// the overlay gap up to it. A transcript no writer in this process has open
+// clears the overflow it covers and adopts the length: entries a failed
+// history's hook passed over (before its read set recovering) lie in the
+// overlay gap up to it. A transcript no writer in this process has open
 // cannot grow, and its size is the boundary. With an open writer it also
 // adopts the boundary's last ordinal, which no hook reported while the
 // thread was failed.
@@ -632,7 +658,6 @@ func (h *threadHistory) captureBoundary() (int64, error) {
 	adopt := func(recordedLength int64) {
 		boundary = recordedLength
 		h.overflowed = false
-		h.failed = nil
 		h.recordedLength = max(h.recordedLength, recordedLength)
 	}
 	found, err := transcript.AtRecordedBoundary(h.path, func(recordedLength int64, nextOrdinal uint64) {

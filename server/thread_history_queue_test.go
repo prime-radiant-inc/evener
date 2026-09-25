@@ -633,3 +633,79 @@ func TestThreadHistoryRecoveryAdoptsTheBoundarysOrdinal(t *testing.T) {
 		t.Fatalf("history ordinal after recovery = %d, want the boundary's %d", ordinal, last.Ordinal)
 	}
 }
+
+// A read that arrives while another read's rebuild of a failed thread runs
+// sees the thread failed until the outcome is known: it waits, and when the
+// rebuild fails it gets the error too, never data from a thread that then
+// stays failed with nothing pushed.
+func TestThreadHistoryAReadDuringAFailingReadRecoveryGetsTheError(t *testing.T) {
+	hx := newHistoryHarness(t)
+	first := hx.record(t, "first")
+	hx.updatesThrough(t, first.Offset+first.Length)
+	parked, release := make(chan struct{}), make(chan struct{})
+	rebuilds := 0
+	breakProjection(t, func() {
+		rebuilds++
+		if rebuilds == threadHistoryMaxRebuilds+1 { // the first read's rebuild
+			close(parked)
+			<-release
+		}
+	})
+	hx.record(t, "fails to project")
+	hx.nextResync(t)
+	hx.nextResync(t)
+	read := func(results chan<- error) {
+		_, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10)
+		results <- err
+	}
+	firstRead, secondRead := make(chan error, 1), make(chan error, 1)
+	go read(firstRead)
+	awaitClosed(t, parked, "the first read's rebuild to park")
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOnce) // a failure below must not leave the rebuild parked
+	// Deterministically: while the outcome is unknown the thread reads as
+	// failed, which is what sends a concurrent read to wait for it.
+	if hx.history.Failed() == nil {
+		t.Fatal("the thread reads as recovered before its rebuild's outcome is known")
+	}
+	go read(secondRead)
+	releaseOnce()
+	for label, results := range map[string]chan error{"first": firstRead, "second": secondRead} {
+		var wireErr appwire.WireError
+		if err := <-results; !errors.As(err, &wireErr) || wireErr.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
+			t.Fatalf("%s read = %v, want transcriptHistoryFailed", label, err)
+		}
+	}
+	hx.expectQuiet(t)
+}
+
+// A queue overflow during a read's rebuild restarts it, as it does the
+// goroutine's: the read recovers the thread rather than failing it after one
+// overrun attempt.
+func TestThreadHistoryAReadRecoveryRetriesAnOverrunRebuild(t *testing.T) {
+	var hx *historyHarness
+	rebuilds := 0
+	var repair func()
+	repair = breakProjection(t, func() {
+		rebuilds++
+		if rebuilds == threadHistoryMaxRebuilds+1 { // the read's first attempt
+			repair()
+			for i := range 6 {
+				hx.record(t, padded(fmt.Sprintf("overflow %d", i)))
+			}
+		}
+	})
+	hx = newHistoryHarnessWith(t, smallQueueBytes)
+	hx.record(t, "fails to project")
+	hx.nextResync(t)
+	hx.nextResync(t)
+	if _, _, _, _, err := hx.history.latest(hx.history.capture(), "local:th_history", 10); err != nil {
+		t.Fatalf("read whose rebuild was overrun once = %v, want the recovered history", err)
+	}
+	if rebuilds != threadHistoryMaxRebuilds+2 {
+		t.Fatalf("rebuild attempts = %d, want the overrun one and a restart", rebuilds)
+	}
+	if epoch := hx.nextResync(t); epoch != 3 {
+		t.Fatalf("recovery resync epoch = %d, want 3", epoch)
+	}
+}
