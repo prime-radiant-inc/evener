@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/spf13/afero"
 )
@@ -43,6 +44,11 @@ type appendTail struct {
 	// to append (or opened the file). A writer whose last recorded move is
 	// not the current one may have a handle position behind the end.
 	move uint64
+	// poisoned records a partial line some writer left at the file's end and
+	// could not roll back. Every writer on the tail refuses to append after
+	// it until a resume's scan cuts it off. It changes only under mu; it is
+	// atomic so a writer can report it without waiting out another's append.
+	poisoned atomic.Bool
 
 	// info identifies the file and refs counts the open writers sharing this
 	// tail; both are guarded by openTails.mu. pin is the tail's own handle on
@@ -85,6 +91,50 @@ func acquireAppendTail(f afero.File) (*appendTail, error) {
 	tail := &appendTail{info: info, pin: pin, refs: 1}
 	openTails.tails = append(openTails.tails, tail)
 	return tail, nil
+}
+
+// attachMu serializes, within this process, the two ways a writer comes to a
+// transcript file. A create's check that no writer has the file open, its
+// truncating create, and its tail registration are one step; so are an open's
+// open and tail registration. Of two creates on one path exactly one wins, and
+// a create never truncates a file a writer in this package has open or is
+// opening. It does not cover a create racing the create or open of the same
+// file in another process, or code that opens the file other than through
+// this package.
+var attachMu sync.Mutex
+
+// createAppendTail creates the transcript at path through create and registers
+// its tail, refusing if a writer in this process has the file open.
+func createAppendTail(path string, create func() (afero.File, error)) (afero.File, *appendTail, error) {
+	attachMu.Lock()
+	defer attachMu.Unlock()
+	if openInProcess(path) {
+		return nil, nil, fmt.Errorf("create transcript file: %s is open in this process", path)
+	}
+	return attachLocked(create, "create transcript file")
+}
+
+// openAppendTail opens an existing transcript through open and registers its
+// tail, so no create of the file can truncate it between the two.
+func openAppendTail(open func() (afero.File, error)) (afero.File, *appendTail, error) {
+	attachMu.Lock()
+	defer attachMu.Unlock()
+	return attachLocked(open, "open transcript for resume")
+}
+
+// attachLocked opens a file through open and registers its tail. Callers hold
+// attachMu; what names the step in an open error.
+func attachLocked(open func() (afero.File, error), what string) (afero.File, *appendTail, error) {
+	f, err := open()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", what, err)
+	}
+	tail, err := acquireAppendTail(f)
+	if err != nil {
+		_ = f.Close() // cleanup on error path; the stat error is what matters
+		return nil, nil, err
+	}
+	return f, tail, nil
 }
 
 // openInProcess reports whether a writer in this process has the file at path
