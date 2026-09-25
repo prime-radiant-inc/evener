@@ -108,6 +108,7 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 // USER_INPUT entry's index is what its USER_INPUT event reports. Callers
 // hold s.mu.
 func (s *Session) noteRecordedLocked(rec transcript.Record) {
+	s.lastRecorded = recordedOrdinal{recorded: rec.Recorded, ordinal: rec.Ordinal}
 	if !rec.Recorded {
 		return
 	}
@@ -207,4 +208,10 @@ func (s *Session) turnsPendingWork() map[string]bool {
 		}
 	}
 	return pending
+}
+
+// recordedOrdinal is whether a write was recorded, and at which entry ordinal.
+type recordedOrdinal struct {
+	recorded bool
+	ordinal  uint64
 }

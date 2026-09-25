@@ -548,6 +548,10 @@ type Session struct {
 	recoveredTurnID string
 	// execution is the running execution's bookkeeping (session_execution.go).
 	execution executionState
+	// lastRecorded is the entry ordinal of the session's latest transcript
+	// write, unset when it recorded nothing; guarded by mu and meaningful only
+	// inside the attentionMu hold that made the write.
+	lastRecorded recordedOrdinal
 	// recordedExecutions holds the TurnID of every execution turn this
 	// session's transcript records, so one that runs again reopens; guarded
 	// by mu.
@@ -2061,12 +2065,16 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	// what keeps an owner from discarding its state and re-appending; the
 	// retained diagnostic is on the writer's warning queue, surfaced outside the
 	// lock by the caller's surfaceTranscriptWarnings.
+	s.mu.Lock()
+	s.lastRecorded = recordedOrdinal{}
+	s.mu.Unlock()
 	if err := write(); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
 		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
+	s.markLastPairOrdinalLocked()
 	s.mu.Unlock()
 	return nil
 }
@@ -2077,6 +2085,20 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
+}
+
+// markLastPairOrdinalLocked stamps the most recently logged pair with the
+// entry ordinal its write was recorded at, when it was: the copy a fold
+// re-appends after its markers carries it as OriginalOrdinal. The caller holds
+// s.mu inside the attentionMu hold that cleared lastRecorded before the pair's
+// write, so lastRecorded is that write's own record.
+func (s *Session) markLastPairOrdinalLocked() {
+	n := len(s.persistedAppendLog)
+	if n == 0 || !s.lastRecorded.recorded {
+		return
+	}
+	ordinal := s.lastRecorded.ordinal
+	s.persistedAppendLog[n-1].OriginalOrdinal = &ordinal
 }
 
 // tombstoneLastPairPersistedLocked replaces the most recently logged pair with
@@ -2141,8 +2163,14 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.mu.Lock()
 	s.history = append(s.history, live)
 	s.logPairPersistedLocked(persisted)
+	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
 	err := s.writeTranscriptLocked(persisted)
+	if err == nil {
+		s.mu.Lock()
+		s.markLastPairOrdinalLocked()
+		s.mu.Unlock()
+	}
 	if err != nil {
 		// The write recorded nothing: the ordinary Append door returns an
 		// error only when no complete line was recorded (a whole line that
