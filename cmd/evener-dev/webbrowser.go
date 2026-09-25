@@ -125,11 +125,11 @@ type guardLauncher interface {
 	// BuildFrontend runs the production frontend build, its output in log,
 	// and returns its status.
 	BuildFrontend(log io.Writer) int
-	// PrivateGoHome prepares a private Go home under root and returns the
-	// environment that selects it. It runs to completion: the gate never
-	// interrupts it, so no half-done copy keeps writing into the scratch after
-	// the gate has stopped waiting.
-	PrivateGoHome(root string) ([]string, error)
+	// PrivateGoHome prepares a private Go home under root, its diagnostics in
+	// log, and returns the environment that selects it. It runs to
+	// completion: the gate never interrupts it, so no half-done copy keeps
+	// writing into the scratch after the gate has stopped waiting.
+	PrivateGoHome(root string, log io.Writer) ([]string, error)
 	// Start starts spec with its output in log.
 	Start(spec guardSpec, log *os.File) (guardProcess, error)
 }
@@ -235,6 +235,8 @@ func (g *browserGate) run() (int, bool) {
 			var proc guardProcess
 			if err == nil {
 				proc, err = g.launcher.Start(spec, log)
+			}
+			if log != nil {
 				_ = log.Close()
 			}
 			if err != nil {
@@ -278,8 +280,10 @@ func (g *browserGate) run() (int, bool) {
 	return status, status != 0
 }
 
-// prepare makes guard index's private roots, its private Go home if it needs
-// one, and its log file, and returns how to start it. The log is nil on error.
+// prepare makes guard index's private roots, its log file, and its private Go
+// home if it needs one, and returns how to start it. The log is returned
+// whenever it was created, error or not: a failed setup's diagnostics are in
+// it, for the verdict to replay.
 func (g *browserGate) prepare(index int) (guardSpec, *os.File, error) {
 	guard := browserGuards[index]
 	root := filepath.Join(g.scratch, guard)
@@ -288,17 +292,17 @@ func (g *browserGate) prepare(index int) (guardSpec, *os.File, error) {
 			return guardSpec{}, nil, err
 		}
 	}
-	spec := browserGuardSpec(guard, root)
-	if spec.privateGoHome {
-		env, err := g.launcher.PrivateGoHome(root)
-		if err != nil {
-			return guardSpec{}, nil, fmt.Errorf("private Go home: %w", err)
-		}
-		spec.env = append(env, spec.env...)
-	}
 	log, err := os.Create(filepath.Join(g.scratch, guard+".log"))
 	if err != nil {
 		return guardSpec{}, nil, err
+	}
+	spec := browserGuardSpec(guard, root)
+	if spec.privateGoHome {
+		env, err := g.launcher.PrivateGoHome(root, log)
+		if err != nil {
+			return guardSpec{}, log, fmt.Errorf("private Go home: %w", err)
+		}
+		spec.env = append(env, spec.env...)
 	}
 	return spec, log, nil
 }
@@ -396,9 +400,11 @@ func (execGuardLauncher) BuildFrontend(log io.Writer) int {
 // PrivateGoHome runs scripts/lib/private-go-home.sh, the one definition of the
 // private Go home that the gate scripts share, and returns the variables it
 // exported.
-func (execGuardLauncher) PrivateGoHome(root string) ([]string, error) {
+func (execGuardLauncher) PrivateGoHome(root string, log io.Writer) ([]string, error) {
 	const script = `. scripts/lib/private-go-home.sh && evener_prepare_private_go_home "$1" && env -0`
-	out, err := exec.CommandContext(context.Background(), "bash", "-c", script, "private-go-home", root).Output()
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", script, "private-go-home", root)
+	cmd.Stderr = log
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package dev
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,6 +45,9 @@ type fakeLauncher struct {
 	built       bool
 
 	homeEnv []string
+	// homeFailure, when set, is what PrivateGoHome writes to the guard's log
+	// before it fails.
+	homeFailure string
 	// homeHold, when set, holds PrivateGoHome until it is closed, and
 	// homeEntered is closed once the gate is inside it.
 	homeHold    chan struct{}
@@ -68,7 +72,11 @@ func (l *fakeLauncher) BuildFrontend(log io.Writer) int {
 	return l.buildStatus
 }
 
-func (l *fakeLauncher) PrivateGoHome(string) ([]string, error) {
+func (l *fakeLauncher) PrivateGoHome(_ string, log io.Writer) ([]string, error) {
+	if l.homeFailure != "" {
+		_, _ = io.WriteString(log, l.homeFailure)
+		return nil, errors.New("exit status 1")
+	}
 	if l.homeEntered != nil {
 		close(l.homeEntered)
 	}
@@ -362,6 +370,30 @@ func TestFrontendBuiltNeedsARegularIndex(t *testing.T) {
 	}
 }
 
+// A private Go home that fails to set up fails only its guard, and the
+// setup's own output is what the verdict replays.
+func TestBrowserGateReplaysAFailedGuardSetup(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.homeFailure = "cp: cannot create regular file: No space left on device\n"
+	tg := startTestGate(t, launcher, len(browserGuards), false)
+	for range len(browserGuards) - 1 {
+		launcher.awaitStart(t).exit <- 0
+	}
+	r := tg.await(t)
+	if r.status != 1 || !r.keep {
+		t.Fatalf("result = %+v, want 1 and the scratch kept", r)
+	}
+	if launcher.guard(retirementGuard) != nil {
+		t.Fatal("the retirement guard started without its private Go home")
+	}
+	if !strings.Contains(tg.stdout.String(), "No space left on device") {
+		t.Errorf("the setup's output was not replayed; stdout = %s", tg.stdout.String())
+	}
+	if !strings.Contains(tg.stderr.String(), "FAIL  web-retirementguard (exit 1)") || strings.Contains(tg.stderr.String(), "no such file") {
+		t.Errorf("stderr = %s", tg.stderr.String())
+	}
+}
+
 func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startTestGate(t, launcher, len(browserGuards), false)
@@ -584,5 +616,131 @@ func TestExportedByKeepsOnlyWhatTheStepSet(t *testing.T) {
 	got := exportedBy(before, after)
 	if want := []string{"HOME=/private", "GOCACHE=/cache"}; !slices.Equal(got, want) {
 		t.Fatalf("exportedBy = %q, want %q", got, want)
+	}
+}
+
+// The production launcher, driven with real processes: sh stands in for a
+// guard because the launcher's contract is to run whatever command a spec
+// names, not anything about node or go.
+
+func startExecGuard(t *testing.T, spec guardSpec) (guardProcess, string) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "guard.log")
+	log, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close() //nolint:errcheck // the started process holds its own descriptor
+	proc, err := execGuardLauncher{}.Start(spec, log)
+	if err != nil {
+		t.Fatalf("start %q: %v", spec.argv, err)
+	}
+	return proc, logPath
+}
+
+func readGuardLog(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestExecGuardLauncherRunsTheSpec(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc, logPath := startExecGuard(t, guardSpec{
+		argv: []string{"sh", "-c", `pwd; echo "marker=$GUARD_MARKER"; echo to-stderr >&2; exit 3`},
+		dir:  dir,
+		env:  []string{"GUARD_MARKER=from-the-spec"},
+	})
+	if status := proc.Wait(); status != 3 {
+		t.Fatalf("status = %d, want the command's 3", status)
+	}
+	out := readGuardLog(t, logPath)
+	for _, want := range []string{dir + "\n", "marker=from-the-spec\n", "to-stderr\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestExecGuardLauncherReportsASignalDeathLikeTheShell(t *testing.T) {
+	proc, _ := startExecGuard(t, guardSpec{argv: []string{"sh", "-c", "kill -TERM $$"}, dir: "."})
+	if status := proc.Wait(); status != 143 {
+		t.Fatalf("status = %d, want 128+SIGTERM", status)
+	}
+}
+
+func TestExecGuardLauncherTerminateSendsTERM(t *testing.T) {
+	proc, logPath := startExecGuard(t, guardSpec{
+		argv: []string{"sh", "-c", `trap 'echo got-term; exit 7' TERM; echo ready; while :; do sleep 0.05; done`},
+		dir:  ".",
+	})
+	deadline := time.Now().Add(tripwire)
+	for !strings.Contains(readGuardLog(t, logPath), "ready") {
+		if time.Now().After(deadline) {
+			t.Fatal("the guard never became ready")
+		}
+		time.Sleep(10 * time.Millisecond) // TRIPWIRE-bounded wait for the guard's own ready line
+	}
+	proc.Terminate()
+	if status := proc.Wait(); status != 7 {
+		t.Fatalf("status = %d, want the TERM trap's 7", status)
+	}
+	if out := readGuardLog(t, logPath); !strings.Contains(out, "got-term") {
+		t.Fatalf("the guard never saw TERM:\n%s", out)
+	}
+}
+
+// PrivateGoHome runs the real scripts/lib/private-go-home.sh from the
+// repository root: the guard gets private HOME and XDG roots under its own
+// directory, while the user's Go build cache is kept.
+func TestExecGuardLauncherPreparesThePrivateGoHome(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	root := t.TempDir()
+	var log bytes.Buffer
+	env, err := execGuardLauncher{}.PrivateGoHome(root, &log)
+	if err != nil {
+		t.Fatalf("PrivateGoHome: %v\n%s", err, log.String())
+	}
+	got := map[string]string{}
+	for _, entry := range env {
+		k, v, _ := strings.Cut(entry, "=")
+		got[k] = v
+	}
+	for name, want := range map[string]string{
+		"HOME":            filepath.Join(root, "home"),
+		"XDG_CONFIG_HOME": filepath.Join(root, "xdg-config"),
+		"XDG_CACHE_HOME":  filepath.Join(root, "xdg-cache"),
+		"XDG_STATE_HOME":  filepath.Join(root, "xdg-state"),
+	} {
+		if got[name] != want {
+			t.Errorf("%s = %q, want %q", name, got[name], want)
+		}
+		if info, err := os.Stat(want); err != nil || !info.IsDir() {
+			t.Errorf("%s %s was not created: %v", name, want, err)
+		}
+	}
+	if cache := got["GOCACHE"]; cache == "" || strings.HasPrefix(cache, root) {
+		t.Errorf("GOCACHE = %q, want the user's own build cache kept", cache)
+	}
+}
+
+func TestExecGuardLauncherPrivateGoHomeFailureLeavesItsCauseInTheLog(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	root := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(root, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	if _, err := (execGuardLauncher{}).PrivateGoHome(root, &log); err == nil {
+		t.Fatal("PrivateGoHome under a file succeeded")
+	}
+	if !strings.Contains(log.String(), "not-a-directory") {
+		t.Fatalf("the setup's own error is not in the log: %q", log.String())
 	}
 }
