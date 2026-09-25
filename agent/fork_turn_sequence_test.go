@@ -29,7 +29,7 @@ func TestHighestClientMutationTurnSequence(t *testing.T) {
 		{TurnID: "turn_m2"}, {StableTurnID: "turn_m5"}, {OwningTurnID: "turn_m3"},
 		{TurnID: "t_abc"}, {StableTurnID: "turn_11"}, {StableTurnID: "q_1"},
 	}
-	if got := highestClientMutationTurnSequence(turns); got != 5 {
+	if got := highestClientMutationTurnSequence(entriesOf(turns)); got != 5 {
 		t.Fatalf("highest = %d, want 5", got)
 	}
 }

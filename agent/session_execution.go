@@ -22,14 +22,13 @@ import (
 // executionState is the running execution's bookkeeping on the session,
 // guarded by s.mu.
 type executionState struct {
+	// running is set from the execution's admission to its completion.
+	running bool
 	// startedAt is when the execution was admitted, for its DurationMS.
 	startedAt time.Time
 	// failed records a TURN_FAILURE recorded during the execution: its
 	// completion then records failed whatever the input loop saw.
 	failed bool
-	// userInputEntry is the 1-based entry index of the latest USER_INPUT
-	// entry the session recorded, 0 before one is.
-	userInputEntry int
 }
 
 // executionTurnID is the TurnID an execution runs under: the client-mutation
@@ -48,25 +47,15 @@ func executionTurnID(name string) string {
 func (s *Session) beginExecution(name string) {
 	turnID := executionTurnID(name)
 	s.mu.Lock()
-	s.execution = executionState{startedAt: s.sclock().Now(), userInputEntry: s.execution.userInputEntry}
+	s.execution = executionState{running: true, startedAt: s.sclock().Now()}
 	// A turn already recorded runs again only when recovery reclaims it: it
 	// reopens, and stays open until its next completion.
 	reopen := s.recordedExecutions[turnID]
 	s.mu.Unlock()
 	s.attachedTranscript().BeginExecution(turnID, reopen)
-	if !reopen {
-		return
+	if reopen {
+		s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
 	}
-	err := func() error {
-		s.attentionMu.Lock()
-		defer s.attentionMu.Unlock()
-		_, err := s.recordTranscriptLocked(schema.Turn{Kind: schema.TurnReopen, Timestamp: s.sclock().Now().UTC()}, transcript.DoorBuffered, transcript.PlaceSession)
-		return err
-	}()
-	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-	}
-	s.surfaceTranscriptWarnings()
 }
 
 // completeExecution records the running execution's completion entry. status
@@ -75,55 +64,57 @@ func (s *Session) beginExecution(name string) {
 // nothing, there is nothing to complete and nothing is written.
 func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 	s.mu.Lock()
-	if s.execution.failed {
-		status = schema.TurnFailed
-	}
-	startedAt := s.execution.startedAt
-	s.execution = executionState{userInputEntry: s.execution.userInputEntry}
+	execution := s.execution
+	s.execution = executionState{}
 	s.roundID = ""
 	s.mu.Unlock()
+	if !execution.running || s.attachedTranscript() == nil {
+		return
+	}
+	if execution.failed {
+		status = schema.TurnFailed
+	}
 	now := s.sclock().Now().UTC()
-	turn := schema.Turn{
+	s.recordTranscriptOnlyAt(schema.Turn{
 		Kind:       schema.TurnCompletion,
 		Timestamp:  now,
-		Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(startedAt).Milliseconds(), 0)},
-	}
-	err := func() error {
-		s.attentionMu.Lock()
-		defer s.attentionMu.Unlock()
-		if s.attachedTranscript() == nil {
-			return nil // no transcript, or none attached yet: no execution to end
-		}
-		_, err := s.recordTranscriptLocked(turn, transcript.DoorBuffered, transcript.PlaceCompletion)
-		return err
-	}()
-	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-	}
-	s.surfaceTranscriptWarnings()
+		Completion: &schema.TurnCompletionInfo{Status: status, CompletedAt: now, DurationMS: max(now.Sub(execution.startedAt).Milliseconds(), 0)},
+	}, transcript.PlaceCompletion)
 }
 
-// noteRecordedLocked keeps the execution's bookkeeping of what the session
-// recorded: a TURN_FAILURE marks the running execution failed, and a
-// USER_INPUT entry's index is what its USER_INPUT event reports. Callers
-// hold s.mu.
+// noteRecordedLocked keeps the session's bookkeeping of what it recorded: the
+// write's ordinal (for the pair log), a client-mutation execution's TurnID
+// (the only kind that can run again), a TURN_FAILURE that fails the running
+// execution, and a USER_INPUT entry's index, which its USER_INPUT event
+// reports. Callers hold s.mu.
 func (s *Session) noteRecordedLocked(rec transcript.Record) {
 	s.lastRecorded = recordedOrdinal{recorded: rec.Recorded, ordinal: rec.Ordinal}
 	if !rec.Recorded {
 		return
 	}
 	if rec.Turn.TurnKind == schema.TurnSpanExecution {
-		if s.recordedExecutions == nil {
-			s.recordedExecutions = map[string]bool{}
-		}
-		s.recordedExecutions[rec.Turn.TurnID] = true
+		s.noteRecordedExecutionLocked(rec.Turn.TurnID)
 	}
 	switch rec.Turn.Kind {
 	case schema.TurnFailure:
 		s.execution.failed = true
 	case schema.TurnUserInput:
-		s.execution.userInputEntry = int(rec.Ordinal) + 1
+		s.userInputEntry = int(rec.Ordinal) + 1
 	}
+}
+
+// noteRecordedExecutionLocked remembers that an execution turn is recorded,
+// so that it reopens if it runs again. Only a client-mutation name can run
+// again (every other execution runs under a fresh id), so the set stays
+// bounded by client turns. Callers hold s.mu.
+func (s *Session) noteRecordedExecutionLocked(turnID string) {
+	if _, ok := clientMutationStartSequence(turnID); !ok {
+		return
+	}
+	if s.recordedExecutions == nil {
+		s.recordedExecutions = map[string]bool{}
+	}
+	s.recordedExecutions[turnID] = true
 }
 
 // recordedUserInputTurn is the 1-based transcript entry index of the latest
@@ -132,8 +123,8 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 func (s *Session) recordedUserInputTurn(fallback int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.execution.userInputEntry > 0 {
-		return s.execution.userInputEntry
+	if s.userInputEntry > 0 {
+		return s.userInputEntry
 	}
 	return fallback
 }
@@ -160,9 +151,8 @@ func (s *Session) roundIDForModelCall() string {
 func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	executions := transcript.ExecutionTurns(entries)
 	s.mu.Lock()
-	s.recordedExecutions = make(map[string]bool, len(executions))
 	for turnID := range executions {
-		s.recordedExecutions[turnID] = true
+		s.noteRecordedExecutionLocked(turnID)
 	}
 	s.mu.Unlock()
 	recorded := false
@@ -216,46 +206,48 @@ type recordedOrdinal struct {
 	ordinal  uint64
 }
 
-// recordTranscriptOnly records a transcript-only entry in the running
-// execution, or the gap between executions. It never enters history.
-func (s *Session) recordTranscriptOnly(turn schema.Turn) (transcript.Record, error) {
+// recordTranscriptOnlyAt records a transcript-only entry with the given
+// placement. It never enters history. A write that fails is reported as a
+// warning; nothing else depends on it.
+func (s *Session) recordTranscriptOnlyAt(turn schema.Turn, place transcript.Placement) {
 	if turn.Timestamp.IsZero() {
 		turn.Timestamp = s.sclock().Now().UTC()
 	}
-	rec, err := func() (transcript.Record, error) {
+	err := func() error {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
-		return s.recordTranscriptLocked(turn, transcript.DoorBuffered, transcript.PlaceSession)
+		_, err := s.recordTranscriptLocked(turn, transcript.DoorBuffered, place)
+		return err
 	}()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
-	return rec, err
 }
 
 // recordNotice records a presentational notice, the history form of a live
 // notice a reader would otherwise lose on reload.
 func (s *Session) recordNotice(notice schema.NoticeInfo) {
-	_, _ = s.recordTranscriptOnly(schema.Turn{Kind: schema.TurnNotice, Notice: &notice})
+	s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
 }
 
 // deliverCommunicate delivers a communicate message: it is recorded as a
 // COMMUNICATE entry first, and announced once the entry is recorded, so a
 // delivered message is never missing from history.
 func (s *Session) deliverCommunicate(data events.CommunicateData) {
-	_, _ = s.recordTranscriptOnly(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}})
+	s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
 	s.emit(events.EventCommunicate, data)
 }
 
 // highestClientMutationTurnSequence is the highest turn_m<N> sequence any of
-// turns names, as its TurnID, StableTurnID or OwningTurnID; 0 when none does.
+// entries names, as its TurnID, StableTurnID or OwningTurnID; 0 when none does.
 // A transcript holding copied turns (a fork's prefix) names sequences its own
 // client-mutation store never reserved, and its next reservation must exceed
 // them.
-func highestClientMutationTurnSequence(turns []schema.Turn) uint64 {
+func highestClientMutationTurnSequence(entries []transcript.Entry) uint64 {
 	var highest uint64
-	for _, turn := range turns {
+	for _, entry := range entries {
+		turn := entry.Turn
 		for _, name := range []string{turn.TurnID, turn.StableTurnID, turn.OwningTurnID} {
 			if sequence, ok := clientMutationStartSequence(name); ok {
 				highest = max(highest, sequence)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -1197,9 +1198,9 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			// last turn compared is the last model-history one: the recovered
 			// failure's execution ends with a transcript-only completion.
 			lastHistory := func(entries []transcript.Entry) transcript.Entry {
-				for i := len(entries) - 1; i >= 0; i-- {
-					if !entries[i].Turn.Kind.TranscriptOnly() {
-						return entries[i]
+				for _, entry := range slices.Backward(entries) {
+					if !entry.Turn.Kind.TranscriptOnly() {
+						return entry
 					}
 				}
 				return transcript.Entry{}

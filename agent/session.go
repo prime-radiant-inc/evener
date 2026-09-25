@@ -548,6 +548,9 @@ type Session struct {
 	recoveredTurnID string
 	// execution is the running execution's bookkeeping (session_execution.go).
 	execution executionState
+	// userInputEntry is the 1-based entry index of the latest USER_INPUT
+	// entry the session recorded, 0 before one is; guarded by mu.
+	userInputEntry int
 	// lastRecorded is the entry ordinal of the session's latest transcript
 	// write, unset when it recorded nothing; guarded by mu and meaningful only
 	// inside the attentionMu hold that made the write.
@@ -2174,8 +2177,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 		s.mu.Lock()
 		s.markLastPairOrdinalLocked()
 		s.mu.Unlock()
-	}
-	if err != nil {
+	} else {
 		// The write recorded nothing: the ordinary Append door returns an
 		// error only when no complete line was recorded (a whole line that
 		// landed but did not sync returns nil and is retained), so the pair

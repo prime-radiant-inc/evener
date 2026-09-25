@@ -45,13 +45,11 @@ func TestAsyncAttentionJoinsTheRunningTurnAndNeverACompletedOne(t *testing.T) {
 	<-completing
 	// Sent while the completion was being recorded: the append lock orders it
 	// after the completion.
-	lateDone.Add(1)
-	go func() {
-		defer lateDone.Done()
+	lateDone.Go(func() {
 		if _, err := s.appendDelegateNotificationDurably("delegate:late", "arrived at the turn's end"); err != nil {
 			t.Error(err)
 		}
-	}()
+	})
 	if err := <-processed; err != nil {
 		t.Fatal(err)
 	}

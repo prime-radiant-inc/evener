@@ -18,9 +18,12 @@ import (
 // request answers with a terminal communicate.
 func newIdentitySession(t *testing.T) *Session {
 	t.Helper()
-	done := func(llm.Request) llm.Response { return communicateResponse(true, "done") }
+	steps := make([]func(llm.Request) llm.Response, 8)
+	for i := range steps {
+		steps[i] = func(llm.Request) llm.Response { return communicateResponse(true, "done") }
+	}
 	return newSession(t,
-		withSteps(done, done, done, done, done, done, done, done),
+		withSteps(steps...),
 		withConfig(SessionConfig{
 			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 1,
