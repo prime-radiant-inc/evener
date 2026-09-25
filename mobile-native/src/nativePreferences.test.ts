@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	AnyNotification,
-	KeybindingDraftCheckpoint,
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
+	TranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
 import {
 	createTranscriptDisplayStore,
@@ -402,6 +402,7 @@ it("preserves the hub diagnostic when draft recovery clears its own error", asyn
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	nativeKeybindingDrafts,
+	type NativePreferenceDraftBackend,
 	nativeTranscriptDrafts,
 } from "./nativePreferenceDrafts";
 
@@ -858,6 +859,11 @@ describe("transcriptMobile projection (A10)", () => {
 			revision: 5,
 			config: toWireConfig(proposedConfig),
 		}));
+		// The shared fake's own replaceIf is narrowed to the keybinding
+		// checkpoint, but this port stores the transcript checkpoint: view the
+		// fake through the shape-agnostic base backend it also implements, so
+		// the delegation is typed for the record this port actually writes.
+		const storeBackend: NativePreferenceDraftBackend = backend;
 		const model = new NativePreferences(
 			client,
 			{ keybindingsSettings: false, transcriptDisplaySettings: true },
@@ -866,10 +872,10 @@ describe("transcriptMobile projection (A10)", () => {
 				replaceIf: (key, expected, next) => {
 					writes += 1;
 					if (writes === 1) throw new Error("quota exceeded");
-					return backend.replaceIf(
+					return storeBackend.replaceIf(
 						key,
 						expected,
-						next as KeybindingDraftCheckpoint,
+						next as TranscriptDraftCheckpoint,
 					);
 				},
 			}),
