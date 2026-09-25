@@ -82,6 +82,26 @@ func TestWebPreflightRefusesAnInstallWithNoRealTsc(t *testing.T) {
 	}
 }
 
+// makeDryRun prints make's plan for target without running it. The parent's
+// make control variables are dropped, so a test run under make (its jobserver,
+// -s, -j) cannot reorder or silence the plan.
+func makeDryRun(t *testing.T, target string) string {
+	t.Helper()
+	command := exec.Command("make", "-n", target)
+	for _, entry := range os.Environ() {
+		switch name, _, _ := strings.Cut(entry, "="); name {
+		case "MAKEFLAGS", "GNUMAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES":
+		default:
+			command.Env = append(command.Env, entry)
+		}
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n %s: %v\n%s", target, err, output)
+	}
+	return string(output)
+}
+
 // Every target that builds evener must build the web frontend first, or the
 // binary embeds a stale SPA (or the tracked placeholder): install, and the
 // default build through build-runtime and its build-hub alias. make -n only
@@ -91,12 +111,9 @@ func TestWebPreflightRefusesAnInstallWithNoRealTsc(t *testing.T) {
 func TestMakeBuildsTheWebBeforeTheHub(t *testing.T) {
 	for _, target := range []string{"install", "build", "build-runtime", "build-hub"} {
 		t.Run(target, func(t *testing.T) {
-			output, err := exec.Command("make", "-n", target).CombinedOutput()
-			if err != nil {
-				t.Fatalf("make -n %s: %v\n%s", target, err, output)
-			}
+			output := makeDryRun(t, target)
 			webBuild, hubBuild := -1, -1
-			for i, line := range strings.Split(string(output), "\n") {
+			for i, line := range strings.Split(output, "\n") {
 				if webBuild == -1 && strings.Contains(line, "npm run build") {
 					webBuild = i
 				}
@@ -112,13 +129,13 @@ func TestMakeBuildsTheWebBeforeTheHub(t *testing.T) {
 }
 
 // Releases build through goreleaser, whose before hooks must build the web
-// frontend, for the same reason: goreleaser runs them before any build.
+// frontend, for the same reason: goreleaser runs them before any build. The
+// hook is pinned as exactly `make build-web` on purpose: that target is the one
+// definition of the web build (preflight included), and any other spelling
+// would be a second one.
 func TestReleaseBuildsTheWebFirst(t *testing.T) {
-	output, err := exec.Command("make", "-n", "dist").CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n dist: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), "goreleaser release --snapshot --clean") {
+	output := makeDryRun(t, "dist")
+	if !strings.Contains(output, "goreleaser release --snapshot --clean") {
 		t.Fatalf("make -n dist does not defer to a goreleaser snapshot build; output = %s", output)
 	}
 	data, err := os.ReadFile(".goreleaser.yml")

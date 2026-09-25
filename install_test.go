@@ -1534,7 +1534,7 @@ func isETXTBSYExecFailure(err error, out []byte) bool {
 // npm ci + vite build inside this test — slow, and it would fail entirely in
 // environments without node. This test's subject is install's layout/symlinks,
 // not web freshness; that is pinned separately by
-// TestMakeInstallBuildsTheWebBeforeTheHub in buildscripts_test.go. The shim
+// TestMakeBuildsTheWebBeforeTheHub in buildscripts_test.go. The shim
 // models only the local compiler contract that web-preflight checks: npm ci
 // creates an executable tsc stub, while npm run build remains a no-op and
 // leaves dist exactly as-is. The real go/git must still resolve from the rest
