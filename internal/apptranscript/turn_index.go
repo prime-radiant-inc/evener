@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 16
+	turnIndexVersion        = 17
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -182,6 +182,10 @@ type indexedTurn struct {
 	// prefix, keeping append+read allocations O(1).
 	CommRawArgs       map[string]string `json:"comm_raw_args,omitempty"`
 	LastAssistantText string            `json:"last_assistant_text,omitempty"`
+	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
+	// set LastAssistantText, persisted so bounded reads can scope the echo
+	// check by turn without replaying the prefix.
+	LastAssistantTurnID string `json:"last_assistant_turn_id,omitempty"`
 }
 
 // groupRole classifies a record within its logical turn group.
@@ -923,8 +927,8 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				record.TurnID = owner
 				if openTurnID == "" {
 					openTurnID, openCalls = openGroupState(*index)
-					commRawArgs, lastAssistantText := replayCommRawArgs(file, *index, project)
-					openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText}
+					commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
+					openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
 				}
 			}
 			prevKind := schema.TurnKind("")
@@ -946,13 +950,15 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				// the per-group merge.
 				var commRawArgs map[string]string
 				var lastAssistantText string
+				var lastAssistantTurnID string
 				if openReg != nil {
 					commRawArgs = openReg.CommRawArgs
 					lastAssistantText = openReg.LastAssistantText
+					lastAssistantTurnID = openReg.LastAssistantTurnID
 				} else {
 					commRawArgs = map[string]string{}
 				}
-				openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText}
+				openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
 				// Persist the registry state entering this group so
 				// bounded reads seed the registry from the index record
 				// instead of replaying the prefix. Clone the map: openReg
@@ -961,14 +967,15 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 					record.CommRawArgs = maps.Clone(commRawArgs)
 				}
 				record.LastAssistantText = lastAssistantText
+				record.LastAssistantTurnID = lastAssistantTurnID
 			} else if openCalls == nil || openTurnID == "" {
 				// Continues a group whose opener lives in the previously
 				// indexed prefix: reconstruct its id, accumulated calls,
 				// and deferred communicate bytes (CommRawArgs) by
 				// re-projecting the group's records from the transcript.
 				openTurnID, openCalls = openGroupState(*index)
-				commRawArgs, lastAssistantText := replayCommRawArgs(file, *index, project)
-				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText}
+				commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
+				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
 			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
@@ -1904,6 +1911,7 @@ func seedRegistryFromRecord(reg *ToolCallRegistry, record indexedTurn) {
 		reg.CommRawArgs = maps.Clone(record.CommRawArgs)
 	}
 	reg.LastAssistantText = record.LastAssistantText
+	reg.LastAssistantTurnID = record.LastAssistantTurnID
 }
 
 // replayCommRawArgs re-projects the open group's records from the indexed
@@ -1922,13 +1930,17 @@ func seedRegistryFromRecord(reg *ToolCallRegistry, record indexedTurn) {
 // carry. It is called only on the continuation path (not on StartsGroup, where
 // openReg is fresh by definition), and only when project != nil (the scan is
 // counting items).
-func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryProjector) (map[string]string, string) {
+// groupTurnID is the logical group's turn ID (openTurnID), used for projection
+// so LastAssistantTurnID is set to the same value the main scan uses — a
+// continuation record's own record.TurnID differs from the group's openTurnID,
+// and using it would mis-scope the echo check.
+func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryProjector, groupTurnID string) (map[string]string, string, string) {
 	if project == nil {
-		return map[string]string{}, ""
+		return map[string]string{}, "", ""
 	}
 	n := index.recordCount()
 	if n == 0 {
-		return map[string]string{}, ""
+		return map[string]string{}, "", ""
 	}
 	// Walk back to the group's start record.
 	startIdx := n - 1
@@ -1948,16 +1960,16 @@ func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryP
 		record := index.recordAt(i)
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
-			return reg.CommRawArgs, reg.LastAssistantText
+			return reg.CommRawArgs, reg.LastAssistantText, reg.LastAssistantTurnID
 		}
 		entry, err := transcript.DecodeEntry(raw)
 		if err != nil {
-			return reg.CommRawArgs, reg.LastAssistantText
+			return reg.CommRawArgs, reg.LastAssistantText, reg.LastAssistantTurnID
 		}
 		reg.Names = cloneToolNames(record.ToolSeed)
-		project(entry.Turn, record.TurnID, record.Index, reg)
+		project(entry.Turn, groupTurnID, record.Index, reg)
 	}
-	return reg.CommRawArgs, reg.LastAssistantText
+	return reg.CommRawArgs, reg.LastAssistantText, reg.LastAssistantTurnID
 }
 
 // recordAtKindTurn reconstructs a record's turn kind for the fallback id

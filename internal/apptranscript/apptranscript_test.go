@@ -1151,12 +1151,13 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 
 	// Echo: the communicate message repeats the assistant text. The assistant
 	// turn renders the text agentMessage; the result turn's communicate message
-	// is suppressed by EchoesAssistantText. Both turns share one registry so
-	// LastAssistantText carries across.
+	// is suppressed by EchoesAssistantText when the result turn's turnID
+	// matches the assistant turn's (same logical turn). Both turns share one
+	// registry so LastAssistantText carries across.
 	echoReg := NewToolCallRegistry()
 	echoItems := append(
 		ProjectTurn("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil),
-		ProjectTurn("t2", 1, mkResultTurn("c1"), echoReg, nil, nil)...,
+		ProjectTurn("t1", 1, mkResultTurn("c1"), echoReg, nil, nil)...,
 	)
 	echo := agentMsgs(echoItems)
 	if len(echo) != 1 || echo[0] != "Done." {
@@ -1169,11 +1170,26 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	distinctReg := NewToolCallRegistry()
 	distinctItems := append(
 		ProjectTurn("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil),
-		ProjectTurn("t4", 1, mkResultTurn("c1"), distinctReg, nil, nil)...,
+		ProjectTurn("t3", 1, mkResultTurn("c1"), distinctReg, nil, nil)...,
 	)
 	distinct := agentMsgs(distinctItems)
 	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
 		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
+	}
+
+	// Cross-turn echo: the communicate message repeats the assistant text but
+	// the result turn is in a DIFFERENT logical turn (different turnID). The
+	// echo is NOT suppressed — the communicate is a genuine cross-turn message.
+	// This mirrors the live projector's matchesLastAssistantMessage, which
+	// scopes the echo check to the turn that showed the text.
+	crossReg := NewToolCallRegistry()
+	crossItems := append(
+		ProjectTurn("t5", 0, mkAssistantTurn("Done.", "Done."), crossReg, nil, nil),
+		ProjectTurn("t6", 1, mkResultTurn("c1"), crossReg, nil, nil)...,
+	)
+	cross := agentMsgs(crossItems)
+	if len(cross) != 2 || cross[0] != "Done." || cross[1] != "Done." {
+		t.Fatalf("cross-turn communicate: got agentMessages %q, want [\"Done.\" \"Done.\"]", cross)
 	}
 }
 
