@@ -748,7 +748,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						// within the turn it repeats. A cross-turn healed
 						// communicate with the same text is a genuine
 						// message, not an echo.
-						if msg := CommunicateMessageFromArguments(normalized); msg != "" && !(turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, msg)) {
+						if msg := CommunicateMessageFromArguments(normalized); msg != "" && (turnID != reg.LastAssistantTurnID || !EchoesAssistantText(reg.LastAssistantText, msg)) {
 							items = append(items, appwire.ThreadItem{
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
