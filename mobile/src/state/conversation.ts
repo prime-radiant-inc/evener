@@ -20,6 +20,14 @@
 // refresh path (triggered by the store-owned drain scheduler, not timers).
 
 import { create } from "zustand";
+import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
+import type {
+  MutationAttachmentRef,
+  MutationOptimisticRecord,
+  MutationOutboxRecord,
+  MutationPersistenceSnapshot,
+  PendingTurnEntry,
+} from "@evener/appwire-client/state/mutation";
 import {
   applyNotification,
   copyItemTextPresence,
@@ -87,7 +95,10 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-import type { ConversationMutationSubmitter } from "./conversationMutation";
+import type {
+  ConversationMutationPendingPort,
+  ConversationMutationSubmitter,
+} from "./conversationMutation";
 
 export type ConversationStatus =
   | "idle"
@@ -318,6 +329,10 @@ export interface ConversationState {
   readonly draft: string;
   readonly pendingSend: string | null;
   readonly pendingMutation?: ConversationMutationState | null;
+  // Slice 7a: the durable pending rows a host's bound seam projects. Null until
+  // a seam is bound (LiveConversationState.bindPendingMutations); never a
+  // per-process memory fact, so it survives a cold reopen.
+  readonly pendingMutations?: readonly PendingTurnEntry[] | null;
   readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
 
   // The non-projected compatibility surface, kept for screen test mocks; no
@@ -347,6 +362,12 @@ export interface ConversationState {
 // F2: setCoalescer is removed from the public interface — openProjected
 // creates and binds the coalescer internally.
 export interface LiveConversationState extends ConversationState {
+  // Slice 7a: binds this conversation's durable pending-row seam (the host's
+  // scoped read + storage subscription + client-ownership rule) and follows it
+  // for the binding's lifetime, projecting the durable outbox/optimistic
+  // records as `pendingMutations`. Returns the unbind that stops following and
+  // clears the projection; a later storage change cannot resurrect it.
+  bindPendingMutations(port: ConversationMutationPendingPort): () => void;
   openProjected(
     service: LiveConversationService,
     activitySink: LiveActivitySink,
@@ -2028,6 +2049,52 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     }
   }
 
+  // Slice 7a: the durable pending-row seam. While a host binds one, the store
+  // follows this conversation target's durable outbox/optimistic records and
+  // projects them as pending rows through the shared reconciliation (#2140's
+  // shape) — so an in-flight mutation survives a cold reopen (its record is the
+  // runtime's, not the store's memory), a rejected or reflected one drops out
+  // (no zombie pendings, no double rows), and a settled one clears exactly when
+  // its record leaves storage. The reconciliation always reads the live model:
+  // every durable read re-runs it, and so does every conversation write.
+  let pendingPort: ConversationMutationPendingPort | null = null;
+  let pendingUnsubscribe: (() => void) | null = null;
+  let pendingGeneration = 0;
+  let pendingSnapshot: {
+    outbox: MutationOutboxRecord<MutationAttachmentRef>[];
+    optimistic: MutationOptimisticRecord<MutationAttachmentRef>[];
+  } | null = null;
+  // Every durable record this client submitted, id -> createdAt, carried past
+  // the record's own settle so the reconciliation's provenance rule can still
+  // answer after the durable read reports the id out of storage.
+  const pendingSubmittedHere = new Map<string, number>();
+
+  function reconcilePendingMutations(): readonly PendingTurnEntry[] {
+    const port = pendingPort;
+    const snapshot = pendingSnapshot;
+    const model = storeGet?.().conversation;
+    if (port === null || snapshot === null || !model) return [];
+    return reconcilePendingEntries(
+      port.targetRef,
+      [...snapshot.outbox, ...snapshot.optimistic],
+      model,
+      pendingSubmittedHere,
+      (record) => port.isOwnMutationRecord(record),
+    );
+  }
+
+  // Stops following the bound seam and forgets its snapshot. Never sets state:
+  // the callers that clear the published projection do so through their own
+  // set (close/reset null it, the returned unbind publishes the clear).
+  function detachPendingRows(): void {
+    ++pendingGeneration;
+    pendingUnsubscribe?.();
+    pendingUnsubscribe = null;
+    pendingPort = null;
+    pendingSnapshot = null;
+    pendingSubmittedHere.clear();
+  }
+
   return create<LiveConversationState>((rawSet, get) => {
     // R1: Wrap set so any write to pendingMutation or error increments the
     // corresponding monotonic revision counter — even ABA (same value). This
@@ -2037,6 +2104,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       if ("pendingMutation" in partial) mutationOwnerRev += 1;
       if ("error" in partial) errorOwnerRev += 1;
       rawSet(partial);
+      // A conversation write is the one model change the reconciliation has to
+      // see: re-project the durable rows against the model just committed, so a
+      // mutation the model now reflects drops out with no storage round-trip.
+      if (
+        "conversation" in partial &&
+        pendingPort !== null &&
+        pendingSnapshot !== null
+      ) {
+        rawSet({ pendingMutations: reconcilePendingMutations() });
+      }
     };
     storeGet = get;
     return {
@@ -2056,6 +2133,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       draft: "",
       pendingSend: null,
       pendingMutation: null,
+      pendingMutations: null,
       lastAcceptedMutation: null,
 
       async open(service, ref) {
@@ -3646,6 +3724,55 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         set({ draft: text });
       },
 
+      bindPendingMutations(port) {
+        // One conversation follows one target: release any prior binding first.
+        detachPendingRows();
+        const generation = pendingGeneration;
+        pendingPort = port;
+
+        const read = () => {
+          let pending: Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
+          try {
+            pending = port.read();
+          } catch {
+            // A synchronous refusal is the read's failure: keep the last
+            // durable projection, exactly as an async rejection does.
+            return;
+          }
+          void pending.then(
+            (snapshot) => {
+              if (generation !== pendingGeneration) return;
+              pendingSnapshot = {
+                outbox: snapshot.outbox,
+                optimistic: snapshot.optimistic,
+              };
+              for (const record of [...snapshot.outbox, ...snapshot.optimistic]) {
+                if (port.isOwnMutationRecord(record)) {
+                  pendingSubmittedHere.set(
+                    record.clientMutationId,
+                    record.createdAt,
+                  );
+                }
+              }
+              set({ pendingMutations: reconcilePendingMutations() });
+            },
+            () => {
+              // A failed read leaves the last durable projection standing: the
+              // shared projection fence's own rule, so a storage hiccup never
+              // blanks rows the user is watching. A later read retries.
+            },
+          );
+        };
+
+        pendingUnsubscribe = port.subscribe(read);
+        read();
+        return () => {
+          if (generation !== pendingGeneration) return;
+          detachPendingRows();
+          set({ pendingMutations: null });
+        };
+      },
+
       async send(service, input) {
         const state = get();
         if (state.conversation === null) return;
@@ -4010,6 +4137,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         compactedTurnItems.clear();
         transientWarnings.length = 0;
         releaseBoundedTextCache();
+        detachPendingRows();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -4024,6 +4152,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          pendingMutations: null,
           lastAcceptedMutation: null,
           olderCursor: null,
           loadingOlder: false,
@@ -4190,6 +4319,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         compactedTurnItems.clear();
         transientWarnings.length = 0;
         releaseBoundedTextCache();
+        detachPendingRows();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
@@ -4208,6 +4338,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           draft: "",
           pendingSend: null,
           pendingMutation: null,
+          pendingMutations: null,
           lastAcceptedMutation: null,
           conversationGeneration: conversationGen,
         });
