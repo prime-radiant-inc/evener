@@ -46,6 +46,10 @@ Revision history:
   - tool items and their execution overlay have a display rule
   - the running turn ID lives in the registry entry
   - notices before any entry have an anchor
+  - the registry entry holds the running and open gap turn IDs from admission
+  - COMMUNICATE records its call ID, and the index can find a round's calls
+  - removal happens only by replacement; the registry is a prerequisite, not
+    part of phase 2
 
 ## Problem
 
@@ -83,7 +87,8 @@ later file projection"). Restarting a daemon already changes what clients see.
    higher version wins.
    - Applying a fact twice changes nothing.
    - A file read that is ahead of the live stream changes nothing.
-   - History items are never removed.
+   - A merge never removes a history item. Only a replacement does: a new
+     incarnation, a resync epoch, or an authoritative daemonless read.
 4. **Memory holds only the overlay and bounded per-thread state.** Memory per
    thread no longer depends on the size of its history.
 
@@ -207,8 +212,11 @@ delivery and stop goroutines at any time: model-bound attention STEERING
 - A turn's completion entry is written as the last entry of its execution span.
 - The choice is made inside the registry's append lock. The running execution's
   `TurnID` for the file is held in the registry entry and changes only under
-  that lock: the first entry of an execution sets it, and the completion append
-  clears it. An async write that loses the race to the completion therefore
+  that lock: the session sets it when it admits the execution, before it
+  publishes through `SetProcessingTurn`, and the completion append clears it.
+  The open gap turn ID is held the same way: a standalone entry takes it, or
+  mints one when none is open, and any execution, delivery or prelude entry
+  closes it. An async write that loses the race to the completion therefore
   takes a delivery turn. The append lock is a leaf: no other lock is taken while
   it is held.
 
@@ -390,8 +398,10 @@ The overlay is per thread and in memory. It holds four kinds of state.
 - **Communicate previews are exempt from round coverage.** A preview stays on
   screen after the ASSISTANT entry is recorded, through hooks and slow sibling
   tools, as it does today (`appwire_projection.go:644-656, 685-690`). It is
-  covered only by its COMMUNICATE entry. If the call failed, the round's
-  `overlay/end` drops it.
+  covered only by its COMMUNICATE entry. The preview is keyed by its call ID,
+  and the COMMUNICATE entry records that call ID
+  (`agent/session_tools_communicate.go:73-77` already emits it). If the call
+  failed, the round's `overlay/end` drops it.
 - Stream content is bounded by the provider's maximum output for one response.
 
 **Tool execution state.** Tools run after the ASSISTANT entry holding their
@@ -487,7 +497,8 @@ announced when they are recorded at attach.
 1. Inside `CaptureSubscription`, capture the thread's overlay, its resync epoch
    and the subscription cut.
 2. After releasing the cut, project history up to the recorded length and merge
-   it: history by version, and overlay items minus covered streams.
+   it: history by version, and overlay items minus the streams and previews
+   that this projected history covers.
 
 Notifications delivered after the response merge by the same rules. A later
 `history/updated` at a lower or equal version is ignored, and so are overlay
@@ -545,6 +556,9 @@ it holds two tables of fixed-size records.
   - the latest lifecycle entry's offset and the status it sets: the recorded
     status for a completion entry, open for a reopen marker
   - usage totals and timestamps
+  - the offset of the latest ASSISTANT entry whose tool calls still await their
+    TOOL_RESULTS. Extending over a TOOL_RESULTS entry decodes that one entry to
+    map each result's call ID to its part index, and so to its item record.
   - the turn's version
 
 **Extension.** Index updates are not part of the append. The index header
@@ -684,8 +698,8 @@ Each phase ships on its own and keeps main green.
    - Writers write every new field and entry kind. The consumers listed above
      skip the new kinds, and the new kinds stay out of in-memory history. Every
      projection rule and client-visible behavior stays as it is today.
-   - The registry, `Seq` on rollback, the explicit write result and fork
-     sequence seeding also land here.
+   - `Seq` on rollback, the explicit write result and fork sequence seeding
+     also land here. The registry has already shipped ahead of phase 1.
    - The one intended behavior change in this phase: a served session fails
      closed on writer failure.
    - Each consumer is its own small task, with a test showing that a transcript
