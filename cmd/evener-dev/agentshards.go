@@ -885,9 +885,10 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // owners then fill the bound. An empty ordinary window may expand child
 // diagnostics without that reservation. Source diagnostics are associated
 // with the most recent go test RUN/CONT/NAME frame; a completed child or
-// sibling returns ownership to its parent. If ordinary context exists,
-// expansion requires a parent-owned source diagnostic. When owned ordinary
-// lines overflow their budget, the newest budget-sized tail is kept
+// sibling returns ownership to its parent. If ordinary context owned by the
+// failing test or its descendants exists, expansion requires a parent-owned
+// source diagnostic. When owned ordinary lines overflow their budget, the
+// newest budget-sized tail is kept
 // contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
 // marker.
@@ -994,6 +995,9 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	selectNewest(maxExpandedLines, func(candidate candidate) bool {
 		return !candidate.diagnostic && ownedByFailure(candidate)
 	})
+	if selectedCount == 0 {
+		return nil, false
+	}
 	selected := make([]candidate, 0, selectedCount)
 	for index, candidate := range candidates {
 		if keep[index] {

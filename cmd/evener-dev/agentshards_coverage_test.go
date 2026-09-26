@@ -438,6 +438,24 @@ func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T)
 	}
 }
 
+// TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected covers
+// direct output between a sibling NAME frame and the parent's verdict. There
+// is no failing-test-owned candidate to expand, so the ordinary block must be
+// retained instead of being replaced by a marker-only excerpt.
+func TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected(t *testing.T) {
+	const output = "parent stdout via fmt.Println"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString(output + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, output) {
+		t.Fatalf("sibling-owned ordinary output was dropped from fallback replay: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail covers
 // non-diagnostic sibling output after NAME. A full ordinary tail must not
 // consume the expansion budget before the parent's source diagnostic is
