@@ -221,8 +221,7 @@ func TestNeedsRefreshTreatsZeroExpiryAsStale(t *testing.T) {
 // LoadAuth (so TestStatusExpiredAccessToken* in service_test.go cover the
 // production-reachable half through the real Status() path instead):
 // needsLogin fires only when the access token is expired AND no refresh
-// token would recover it (issue #2468, mirroring cmd/evener-hub's
-// openAIStatusFromRecord fix).
+// token would recover it (issue #2468).
 func TestStatusFromRecordNeedsLoginRequiresBothExpiredAndNoRefreshToken(t *testing.T) {
 	now := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
 	svc := newTestService(now)

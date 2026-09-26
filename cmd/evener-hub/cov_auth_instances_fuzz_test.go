@@ -86,8 +86,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			{expiry: now.Add(-time.Second), wantStatus: authopenai.AuthStatus{Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsLogin: true}, wantNeedsRef: true},
 			// Already expired but a refresh token is on file: ResolveRuntimeCredentials
 			// refreshes it on the next use, so this is routine and still signed in,
-			// merely due for a refresh - not a login prompt. Before issue #2468's fix,
-			// this case wrongly reported signedIn: false, needsLogin: true.
+			// merely due for a refresh - not a login prompt.
 			{expiry: now.Add(-time.Second), refreshToken: "refresh", wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsRefresh: true}, wantNeedsRef: true},
 			// Expires inside the 5-minute refresh window but not yet: signed in, needs refresh.
 			{expiry: now.Add(time.Minute), wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Minute), NeedsRefresh: true}, wantNeedsRef: true},
