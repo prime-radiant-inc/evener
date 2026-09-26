@@ -413,6 +413,41 @@ func TestNavigationSessionValueValidatesOmittedWatches(t *testing.T) {
 	}
 }
 
+// Task progress is counts and a label on the wire, bounded as the codec's
+// tasksValue bounds them: safe non-negative counts, no more tasks done and
+// cancelled than exist, and a current task within the label bound.
+func TestNavigationSessionValueValidatesTaskProgress(t *testing.T) {
+	withTasks := func(tasks hubapi.NavigationTaskProgress) hubapi.NavigationSessionSummary {
+		session := navigationSchemaSession("local:schema-session", "schema-session")
+		session.Tasks = &tasks
+		return session
+	}
+	for name, tasks := range map[string]hubapi.NavigationTaskProgress{
+		"a list in progress":          {Total: 7, Done: 2, Cancelled: 1, CurrentID: 4, Current: "Fix the settle/drain race"},
+		"a finished list":             {Total: 7, Done: 6, Cancelled: 1},
+		"a current task at the bound": {Total: 1, CurrentID: 1, Current: strings.Repeat("😀", maxNavigationLabelRunes)},
+		"counts at the safe bound":    {Total: int(maxNavigationSafeInteger), Done: int(maxNavigationSafeInteger), CurrentID: int(maxNavigationSafeInteger)},
+	} {
+		if !navigationSessionValueValid(withTasks(tasks)) {
+			t.Errorf("%s rejected: %+v", name, tasks)
+		}
+	}
+	for name, tasks := range map[string]hubapi.NavigationTaskProgress{
+		"a negative total":              {Total: -1},
+		"a negative done count":         {Total: 1, Done: -1},
+		"a negative cancelled count":    {Total: 1, Cancelled: -1},
+		"a negative current id":         {Total: 1, CurrentID: -1},
+		"more done than exist":          {Total: 2, Done: 3},
+		"more settled than exist":       {Total: 2, Done: 1, Cancelled: 2},
+		"a total beyond the safe range": {Total: int(maxNavigationSafeInteger) + 1},
+		"an over-long current task":     {Total: 1, CurrentID: 1, Current: strings.Repeat("t", maxNavigationLabelRunes+1)},
+	} {
+		if navigationSessionValueValid(withTasks(tasks)) {
+			t.Errorf("%s accepted: %+v", name, tasks)
+		}
+	}
+}
+
 func navigationSchemaChainSnapshot(t *testing.T, fixture navigationSchemaFixture, depth int) hubapi.NavigationSnapshot {
 	t.Helper()
 	snapshot := cloneNavigationSnapshot(fixture.snapshot)

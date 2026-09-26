@@ -496,7 +496,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 					startSeed = currentWorkSeedWithoutTasks(startSeed)
 				}
 				mergeStartCurrentWork(&params.Thread.Evener, s.appEnvelope.Tasks, s.appEnvelope.Goal, startSeed)
-				s.appEnvelope.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
+				s.appEnvelope.Tasks = appwire.CloneTaskAggregate(params.Thread.Evener.Tasks)
 				s.appEnvelope.Goal = cloneGoalState(params.Thread.Evener.Goal)
 				if startSeed != nil && startSeed.Tasks != nil {
 					s.appEnvelope.taskCarrierGeneration++
@@ -757,7 +757,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				params.Thread.Evener.ParentRef = parentRef
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
-				projection.thread.Evener.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
+				projection.thread.Evener.Tasks = appwire.CloneTaskAggregate(params.Thread.Evener.Tasks)
 				projection.thread.Evener.Goal = cloneGoalState(params.Thread.Evener.Goal)
 				params.Thread = projection.thread
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
@@ -910,7 +910,7 @@ func (s *Server) taskAggregateForOwnerLocked(ownerSessionID string) *appwire.Tas
 		return nil
 	}
 	if s.appEnvelope.TaskStoreOwnerSessionID == ownerSessionID {
-		return cloneTaskAggregate(s.appEnvelope.Tasks)
+		return appwire.CloneTaskAggregate(s.appEnvelope.Tasks)
 	}
 	ids := make([]string, 0, len(s.appDescendants))
 	for id, projection := range s.appDescendants {
@@ -921,7 +921,7 @@ func (s *Server) taskAggregateForOwnerLocked(ownerSessionID string) *appwire.Tas
 	sort.Strings(ids)
 	for _, id := range ids {
 		if tasks := s.appDescendants[id].thread.Evener.Tasks; tasks != nil {
-			return cloneTaskAggregate(tasks)
+			return appwire.CloneTaskAggregate(tasks)
 		}
 	}
 	return nil
@@ -954,12 +954,12 @@ func (s *Server) taskCarrierTargetsLocked(sourceThreadID, ownerSessionID string)
 
 func mergeStartCurrentWork(target *appwire.EvenerThread, cachedTasks *appwire.TaskAggregate, cachedGoal *appwire.GoalState, seed *events.CurrentWorkSeedData) {
 	if seed == nil {
-		target.Tasks = cloneTaskAggregate(cachedTasks)
+		target.Tasks = appwire.CloneTaskAggregate(cachedTasks)
 		target.Goal = cloneGoalState(cachedGoal)
 		return
 	}
 	if seed.Tasks == nil {
-		target.Tasks = cloneTaskAggregate(cachedTasks)
+		target.Tasks = appwire.CloneTaskAggregate(cachedTasks)
 	}
 	// A present seed's Goal is authoritative, including nil clear. The projector
 	// already converted it into target.Goal.
@@ -976,7 +976,7 @@ func currentWorkSeedWithoutTasks(seed *events.CurrentWorkSeedData) *events.Curre
 }
 
 func taskPatch(params appwire.TaskUpdatedParams) *appwire.TaskAggregate {
-	return cloneTaskAggregate(&appwire.TaskAggregate{
+	return appwire.CloneTaskAggregate(&appwire.TaskAggregate{
 		Total:     params.Total,
 		Done:      params.Done,
 		Cancelled: params.Cancelled,
@@ -987,18 +987,6 @@ func taskPatch(params appwire.TaskUpdatedParams) *appwire.TaskAggregate {
 
 func goalPatch(params appwire.GoalUpdatedParams) *appwire.GoalState {
 	return cloneGoalState(params.Goal)
-}
-
-func cloneTaskAggregate(value *appwire.TaskAggregate) *appwire.TaskAggregate {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	if value.Current != nil {
-		current := *value.Current
-		clone.Current = &current
-	}
-	return &clone
 }
 
 func cloneGoalState(value *appwire.GoalState) *appwire.GoalState {

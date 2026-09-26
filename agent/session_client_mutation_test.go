@@ -1639,6 +1639,17 @@ func TestClientMutation_InterruptPostSignalEffectFailureJoinedRetryDoesNotCancel
 	cancelReturned := make(chan struct{})
 	releaseOwnerWait := make(chan struct{})
 	ownerErr := make(chan error, 1)
+	ownerReturned := make(chan struct{})
+	retryJoined := make(chan struct{})
+	// The owner's failed update releases its lease, so the joined retry can
+	// take over and finalize the interrupt before the owner reads the journal
+	// back. An owner that finds its interrupt durably terminal reports it
+	// applied, so the owner's own write error is only observable when the
+	// retry takes over after the owner has returned. Hold the retry until then.
+	sess.clientMutationInterruptJoined = func() {
+		close(retryJoined)
+		<-ownerReturned
+	}
 	go func() {
 		_, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
 			cancelCalls.Add(1)
@@ -1646,11 +1657,10 @@ func TestClientMutation_InterruptPostSignalEffectFailureJoinedRetryDoesNotCancel
 			<-releaseOwnerWait
 		})
 		ownerErr <- err
+		close(ownerReturned)
 	}()
 	<-cancelReturned
 
-	retryJoined := make(chan struct{})
-	sess.clientMutationInterruptJoined = func() { close(retryJoined) }
 	retryResponse := make(chan appwire.TurnInterruptResponse, 1)
 	retryErr := make(chan error, 1)
 	go func() {

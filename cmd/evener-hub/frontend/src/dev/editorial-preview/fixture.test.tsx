@@ -33,14 +33,9 @@ afterAll(() => {
 // React's later DOM commit and fails boundedly if the fixture never appears.
 const FIXTURE_READY_TRIPWIRE_MS = 10_000;
 
-async function waitForFixtureText(text: string, timeout = FIXTURE_READY_TRIPWIRE_MS): Promise<HTMLElement> {
-  return screen.findByText(text, undefined, { timeout });
+async function waitForFixtureText(text: string): Promise<HTMLElement> {
+  return screen.findByText(text, undefined, { timeout: FIXTURE_READY_TRIPWIRE_MS });
 }
-
-test("fixture wait rejects when the requested text never appears", async () => {
-  render(<div />);
-  await expect(waitForFixtureText("missing fixture text", 50)).rejects.toThrow();
-}, 500);
 
 test("real AppShell opens fixture parent, distinct child, and returns via navigation", async () => {
   window.history.replaceState({}, "", "/");

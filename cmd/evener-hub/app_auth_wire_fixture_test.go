@@ -14,7 +14,7 @@ package hub
 // registered RPC handler over a hermetic registry, encodes the answer the way
 // the wire does, and pins it in testdata/authwire/responses.json. Both other
 // consumers decode that same file — cmd/evener-tui/hub_auth_wire_test.go and
-// the AppWire package's credentialLabels.wire.test.ts — so no client can drift from
+// the AppWire package's credentialLabels.test.ts — so no client can drift from
 // the hub's answers without this test failing first.
 //
 // Regenerate after an intentional wire change with:
@@ -162,10 +162,21 @@ func withStoredValue(build func(t *testing.T) *hubAuthController, name, value st
 // expired states as well as the healthy one; the response reports those as
 // booleans, so no timestamp reaches the corpus.
 func withOAuthRecord(build func(t *testing.T) *hubAuthController, name, email string, expiresIn time.Duration) func(t *testing.T) *hubAuthController {
+	return withOAuthRecordRefreshToken(build, name, email, expiresIn, "refresh-"+name)
+}
+
+// withOAuthRecordRefreshToken is withOAuthRecord with the stored record's
+// refresh token overridden - the fixture corpus's way of recording a Codex
+// sign-in that cannot be refreshed (issue #2483): a blank/whitespace token
+// passes authopenai.AuthRecord.Validate (which refuses only the exact empty
+// string) but is not usable, so AuthRecord.NeedsLogin reports true once the
+// access token expires.
+func withOAuthRecordRefreshToken(build func(t *testing.T) *hubAuthController, name, email string, expiresIn time.Duration, refreshToken string) func(t *testing.T) *hubAuthController {
 	return func(t *testing.T) *hubAuthController {
 		t.Helper()
 		ctrl := build(t)
 		record := makeOAuthRecord(name, email)
+		record.RefreshToken = refreshToken
 		record.Expiry = time.Now().Add(expiresIn)
 		if err := ctrl.saveAuth(ctrl.stateDir, name, record); err != nil {
 			t.Fatalf("save OAuth record for %s: %v", name, err)
@@ -250,6 +261,11 @@ func authWireScenarios() []authWireScenario {
 			name: "status/oauth-expired",
 			note: "a Codex record whose access token has expired",
 			run:  statusOf("openai-codex", withOAuthRecord(authControllerOver("", nil), "openai-codex", "bot@example.com", -time.Minute)),
+		},
+		{
+			name: "status/oauth-login-required",
+			note: "a Codex record whose access token has expired and whose refresh token cannot recover it",
+			run:  statusOf("openai-codex", withOAuthRecordRefreshToken(authControllerOver("", nil), "openai-codex", "bot@example.com", -time.Minute, "   ")),
 		},
 		{
 			name: "status/oauth-none",

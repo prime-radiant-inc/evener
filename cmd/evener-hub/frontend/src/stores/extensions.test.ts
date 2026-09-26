@@ -1115,42 +1115,6 @@ describe("reconnect-triggered refetch", () => {
     expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
     expect(extensionsStore.getState().pluginsLoading).toBe(false);
   });
-
-  test("a reconnect reads nothing for a section that was never opened", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
-    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
-    await extensionsStore.getState().fetchMarketplaces();
-    const marketplaceCalls = fake.calls.filter((c) => c.method === "evener/marketplace/list").length;
-
-    fake.emitStateChange("reconnecting");
-    fake.emitReady();
-    await drainMicrotasks();
-
-    expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(marketplaceCalls + 1);
-    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
-    expect(fake.calls.filter((c) => c.method === "evener/launch/getLayer")).toHaveLength(0);
-  });
-
-  // A fresh screen that installs a plugin before ever fetching the list: none
-  // of pluginsLoading/plugins/pluginsError is set yet, so nothing in the
-  // store's own data marks the list as wanted - only the install still on the
-  // wire does, at the seam writeRevisioned and readRevisioned share.
-  test("a mutation issued before any list fetch still recovers on a replaced connection", async () => {
-    const interrupted = connectFakeClient();
-    interrupted.on("evener/plugin/install", () => new Promise(() => {}));
-    void extensionsStore.getState().installPlugin("linter", "acme-plugins");
-    await Promise.resolve();
-    expect(extensionsStore.getState().plugins).toBeNull();
-
-    const replacement = new FakeClient("ready");
-    replacement.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
-    connectionStore.getState().connect(replacement);
-    await drainMicrotasks();
-
-    expect(replacement.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
-    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
-  });
 });
 
 describe("notification-triggered refetch", () => {

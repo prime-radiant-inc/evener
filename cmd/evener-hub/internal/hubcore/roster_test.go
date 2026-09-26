@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -752,11 +753,11 @@ func TestRosterRefreshCarriesEscalationCardsAndFiresOnAReplacedCard(t *testing.T
 	}
 }
 
-// Every roster hand-off goes through cloneLiveEntry, so a caller that edits a
+// Every roster hand-off goes through CloneLiveEntry, so a caller that edits a
 // card it was handed must not reach the roster's copy.
 func TestCloneLiveEntryOwnsPendingEscalations(t *testing.T) {
 	original := LiveEntry{PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", DeniedPath: "/srv/docs/a.md"}}}
-	clone := cloneLiveEntry(original)
+	clone := CloneLiveEntry(original)
 	original.PendingEscalations[0].DeniedPath = "mutated"
 	if clone.PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
 		t.Fatalf("clone card changed through the original: %+v", clone.PendingEscalations)
@@ -820,6 +821,89 @@ func TestRosterRefreshFiresOnChangeOnEscalationTransitions(t *testing.T) {
 	r.Refresh()
 	if changes != 2 {
 		t.Fatalf("escalation resolving fired onChange %d times total, want 2", changes)
+	}
+}
+
+// taskProgress builds a task aggregate the way agent/task.Summarize does:
+// Remaining is whatever the done and cancelled counts leave of the total.
+func taskProgress(total, done, cancelled int, current *appwire.TaskSummary) *appwire.TaskAggregate {
+	return &appwire.TaskAggregate{Total: total, Done: done, Cancelled: cancelled, Remaining: total - done - cancelled, Current: current}
+}
+
+// Task progress renders as the row's task line (S13a), so each fact the line
+// shows must move the fingerprint on its own while the status holds still, or
+// onChange never invalidates navigation and the row keeps a stale task.
+func TestRosterFingerprintIncludesTaskProgress(t *testing.T) {
+	withTasks := func(tasks *appwire.TaskAggregate) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {Status: "active", Tasks: tasks}}
+	}
+	settleRace := &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"}
+	base := withTasks(taskProgress(7, 2, 1, settleRace))
+	if rosterFingerprint(base) != rosterFingerprint(withTasks(taskProgress(7, 2, 1, &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"}))) {
+		t.Fatal("roster fingerprint must not change when the task progress is identical")
+	}
+	for name, changed := range map[string]map[string]LiveEntry{
+		"a task is added":             withTasks(taskProgress(8, 2, 1, settleRace)),
+		"a task is done":              withTasks(taskProgress(7, 3, 1, settleRace)),
+		"a task is cancelled":         withTasks(taskProgress(7, 2, 2, settleRace)),
+		"another task is current":     withTasks(taskProgress(7, 2, 1, &appwire.TaskSummary{ID: 5, Description: "Fix the settle/drain race"})),
+		"the current task is renamed": withTasks(taskProgress(7, 2, 1, &appwire.TaskSummary{ID: 4, Description: "Fix the drain race"})),
+		"no task is current":          withTasks(taskProgress(7, 2, 1, nil)),
+		"the task progress goes away": withTasks(nil),
+	} {
+		if rosterFingerprint(base) == rosterFingerprint(changed) {
+			t.Errorf("roster fingerprint must change when %s", name)
+		}
+	}
+}
+
+// The observable half, and the probe-to-roster hop: the task progress a probe
+// reports must reach the entry Refresh publishes, a refresh that moves it must
+// fire onChange, and one that does not must stay silent. The roster owns its
+// copy, so neither the prober's result nor a listed snapshot can reach it.
+func TestRosterRefreshFiresOnChangeWhenTasksMove(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	settleRace := func() *appwire.TaskSummary {
+		return &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"}
+	}
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID: "01PARENT",
+		Status:    "active",
+		Tasks:     taskProgress(7, 3, 0, settleRace()),
+		OK:        true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	listed, ok := r.Find("01PARENT")
+	if !ok || !reflect.DeepEqual(listed.Tasks, taskProgress(7, 3, 0, settleRace())) {
+		t.Fatalf("published entry = %+v, want the probe's task progress", listed)
+	}
+	prober.result.Tasks.Current.Description = "changed by the prober"
+	listed.Tasks.Current.Description = "changed by a reader"
+	if again, _ := r.Find("01PARENT"); again.Tasks.Current.Description != "Fix the settle/drain race" {
+		t.Fatalf("roster current task = %+v, want the roster's own copy", again.Tasks.Current)
+	}
+
+	prober.result.Tasks = taskProgress(7, 3, 0, settleRace())
+	changes := 0
+	r.SetOnChange(func() { changes++ })
+	r.Refresh()
+	if changes != 0 {
+		t.Fatalf("no-op refresh fired onChange %d times", changes)
+	}
+
+	prober.result.Tasks = taskProgress(7, 4, 0, &appwire.TaskSummary{ID: 5, Description: "Land the fix"})
+	r.Refresh()
+	if changes != 1 {
+		t.Fatalf("a task finishing fired onChange %d times, want 1", changes)
+	}
+
+	prober.result.Tasks = nil
+	r.Refresh()
+	if changes != 2 {
+		t.Fatalf("the task progress going away fired onChange %d times total, want 2", changes)
 	}
 }
 
@@ -1877,6 +1961,31 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
 	live.ActiveFlags[0] = "mutated"
 	if again, _ := r.Find("01SPAWNED"); !slices.Contains(again.ActiveFlags, "resumeRequired") {
 		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
+	}
+}
+
+// The task progress beside the read's status survives the spawned-daemon path
+// too, so a resumed session that keeps a task list shows its task line from
+// its first publication rather than from the next scan.
+func TestRosterReadSpawnedThreadPublishesTaskProgress(t *testing.T) {
+	r := NewRoster(t.TempDir(), nil)
+	entry := rendezvous.Entry{
+		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
+	}
+	tasks := taskProgress(3, 1, 0, &appwire.TaskSummary{ID: 2, Description: "Resume the migration"})
+	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "01SPAWNED", SessionID: "01SPAWNED",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Tasks: tasks},
+		}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live, ok := r.Find("01SPAWNED")
+	if !ok || !reflect.DeepEqual(live.Tasks, tasks) {
+		t.Fatalf("published entry = %+v, want the task progress the read carried", live)
 	}
 }
 

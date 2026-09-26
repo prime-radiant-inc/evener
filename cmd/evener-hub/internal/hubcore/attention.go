@@ -89,7 +89,7 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 			continue
 		}
 		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)
-		e := appwire.AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk}
+		e := appwire.AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk, ApprovalPending: le.PendingEscalation}
 		if meta != nil {
 			e.Title = nodeTitle(*meta, nodeKind(*meta))
 			e.Project = projectName(*meta)
@@ -135,7 +135,7 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 	var changed []appwire.AttentionChanged
 	for id, e := range cur {
 		prev, had := w.prev[id]
-		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending {
+		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending || prev.ApprovalPending != e.ApprovalPending {
 			pl := "idle"
 			if had {
 				pl = prev.Level
@@ -148,6 +148,7 @@ func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwi
 			gone := prev
 			gone.Level = "idle"
 			gone.AskPending = false
+			gone.ApprovalPending = false
 			changed = append(changed, appwire.AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
 		}
 	}
