@@ -62,7 +62,9 @@ test("a held steer appearing is announced once", async () => {
       <HeldSteerAnnouncements ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  await seedHeld("steer", "hello");
+  await act(async () => {
+    await seedHeld("steer", "hello");
+  });
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
   );
@@ -141,9 +143,11 @@ test("delivery is announced once when the transcript reflects the id", async () 
       ],
     }),
   );
-  await threadsStore.getState().refreshThread("ref_a");
-  await refreshPendingTurnsProjection("ref_a");
-  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    await threadsStore.getState().refreshThread("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
   );
@@ -283,17 +287,19 @@ test.each([
       <HeldSteerAnnouncements ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  const storage = new MutationOutboxIndexedDB();
-  if (seedKind === "transferToRecovery") {
-    await storage.transferToRecovery(id, REJECTED_AT_ACCEPTANCE, "turn is not active");
-  } else if (seedKind === "cancelUnattempted") {
-    await storage.cancelUnattempted("ref_a");
-  } else {
-    await storage.markUnknown(id, "blockedUnknown");
-  }
-  storage.close();
-  await refreshPendingTurnsProjection("ref_a");
-  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    const storage = new MutationOutboxIndexedDB();
+    if (seedKind === "transferToRecovery") {
+      await storage.transferToRecovery(id, REJECTED_AT_ACCEPTANCE, "turn is not active");
+    } else if (seedKind === "cancelUnattempted") {
+      await storage.cancelUnattempted("ref_a");
+    } else {
+      await storage.markUnknown(id, "blockedUnknown");
+    }
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").textContent).toBe(expected));
   // Announced once, not re-announced on a re-render.
   const before = screen.getByTestId("held-steer-announcements").textContent;
@@ -317,9 +323,11 @@ test("a failed-delivery vanish (record gone, nothing holds the id) is announced 
   // needs the runtime re-minted against the new factory - the same rebind this
   // file's beforeEach performs for every test.
   globalThis.indexedDB = new IDBFactory();
-  resetThreadsStoreForTests();
-  await refreshPendingTurnsProjection("ref_a");
-  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    resetThreadsStoreForTests();
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message failed to deliver."),
   );
@@ -340,7 +348,9 @@ test("the region stays silent on the timer's cadence", async () => {
       <HeldSteerAnnouncements ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  await seedHeld("steer", "hello");
+  await act(async () => {
+    await seedHeld("steer", "hello");
+  });
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
   );
@@ -373,7 +383,9 @@ test("the announcement text is visually hidden", async () => {
       <HeldSteerAnnouncements ref="ref_a" />
     </SessionNowContext.Provider>,
   );
-  await seedHeld("steer", "hello");
+  await act(async () => {
+    await seedHeld("steer", "hello");
+  });
   await waitFor(() =>
     expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
   );
