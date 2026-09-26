@@ -461,9 +461,9 @@ async function runChecks(page, scheme) {
     await tapRole('menuitem', 'Delete category'); await sleep(300);
     await ev(page, `EV.S.board.selecting = true; EV.S.board.selected = { 's-retry': true, 's-audit': true }; EV.update()`); await sleep(300);
     await ev(page, `EV.bulkMenu()`); await sleep(300);
-    const pinItem = await ev(page, `(EV.S.menu.items.filter(Boolean).find((i) => /pin/i.test(i.label)) || null)`);
-    if (pinItem) {
-      await tapRole('menuitem', pinItem.label);
+    const pinLabel = await ev(page, `EV.S.menu.items.filter(Boolean).map((i) => i.label).find((l) => /pin/i.test(l))`);
+    if (pinLabel) {
+      await tapRole('menuitem', pinLabel);
       const after = await ev(page, `({ cats: ['s-retry', 's-audit'].map((id) => EV.sess(id).category), valid: EV.S.categories.map((c) => c.id) })`);
       if (after.cats.some((c) => c && !after.valid.includes(c))) throw new Error('a bulk action pinned sessions to a deleted category: ' + JSON.stringify(after));
     }
