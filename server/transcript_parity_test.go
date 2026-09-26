@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"context"
 	"encoding/json"
 	"image"
@@ -482,6 +483,20 @@ func TestTranscriptParity(t *testing.T) {
 	}
 	if _, err := sess.ProcessInputKind(ctx, "", nil, agent.EntryNotification); err != nil {
 		t.Fatal(err)
+	}
+	if script.remaining() != 0 {
+		var tail []string
+		turns := transcriptTurns(t, sess.TranscriptPath())
+		for _, turn := range turns[max(0, len(turns)-6):] {
+			tail = append(tail, fmt.Sprintf("%s(attention=%q)", turn.Kind, turn.AttentionID))
+		}
+		ps.mu.Lock()
+		var kinds []string
+		for _, ev := range ps.seen[ps.next:] {
+			kinds = append(kinds, string(ev.Kind))
+		}
+		ps.mu.Unlock()
+		t.Fatalf("the notification input ran no turn: state %s, transcript tail %v, events since the delegate input ended %v", sess.WireState(), tail, kinds)
 	}
 	endOfInput()
 	if left := script.remaining(); left != 0 {
