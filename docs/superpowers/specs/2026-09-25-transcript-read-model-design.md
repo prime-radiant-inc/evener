@@ -12,7 +12,7 @@ Revision history:
   cap; client request generations are monotonic across boot changes and a
   descendant served by its root's daemon carries a qualified generation token;
   the index header persists the covered entry count; a single entry that fails
-  to project is quarantined as one visible item rather than failing the whole
+  to decode is quarantined as one visible item rather than failing the whole
   thread; `delivery` covers session-owned async writes as well as cold
   writers; the update log is bounded to 10,000 records; a failed thread's read
   attempts recovery before returning the error; a closing history publishes
@@ -228,15 +228,26 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
   - **Replace or merge.** The generation token decides only that.
     - A latest-window response whose token differs from the one the client holds
       replaces the thread's whole history. That covers numeric to `daemonless`,
-      `daemonless` to numeric, and a higher number.
+      `daemonless` to numeric, a higher number of the same form and owner, and
+      (per Descendants, above) a qualified token whose owner differs from the
+      held one, or a switch between an unqualified and a qualified token —
+      each of these replaces even when the qualified token's numeric part is
+      lower.
     - Within the same `daemonless` token and incarnation, a daemonless response
       follows the scoped rules under Reads.
-    - Updates carrying a lower numeric generation are ignored.
-  - **The state machine.** One state machine covers reads and updates alike.
+    - Updates carrying a lower numeric generation, of the same form and owner
+      as the held token, are ignored.
+  - **The state machine.** One state machine covers reads and updates alike,
+    stated fully by `CompareBootGeneration` (Descendants, above): same token,
+    apply; same form and owner with a lower number, ignore; anything else —
+    a higher number of the same form and owner, or any difference in form or
+    owner — replaces:
     - **Same token as held:** apply normally.
-    - **Lower numeric token:** ignore.
-    - **Any other token** (a higher number, or a switch between numeric and
-      `daemonless`):
+    - **Lower numeric token, same form and owner:** ignore.
+    - **Any other token** (a higher number of the same form and owner; a
+      switch between numeric and `daemonless`; a qualified token with a
+      different owner; or a switch between an unqualified and a qualified
+      token, regardless of which number is larger):
       1. Mark the thread invalid and issue a fresh subscribing latest-window
          read.
       2. Drop updates while invalid. This is safe because the replacing read is
@@ -354,6 +365,15 @@ delivery and stop goroutines at any time: model-bound attention STEERING
   (`internal/apptranscript/logical_turn.go:314-316`) and makes a reused provider
   call ID harmless.
 - Item `id` derives from the key and keeps today's kind prefixes.
+- **Server-side steering identity.** A steering item's id is `item_steering_<entryIndex>`,
+  where `entryIndex` is the entry's ordinal plus one — the same number as its
+  position's `entry` and its transcript key's ordinal, so it is unique the same
+  way every other entry-ordinal-keyed item's id is. The server derives it the
+  same way live and on reload; the client never mints it. The item still
+  carries the steer request's `ClientMutationID`, so a client that sent the
+  steer matches its own request to the resulting history item without needing
+  an id of its own. `StableTurnID` keeps meaning the steer mutation's own ID
+  (see above) and never contributes to the item's id.
 
 **Position.** Every entry, legacy and new, uses `{entry: ordinal + 1, item:
 part}`. Header-derived prelude items use `{entry: 0, item: part}`, with key
@@ -846,9 +866,13 @@ it holds three tables of fixed-size records.
   snapshot at recorded length `L` binary-searches the log for the first record
   at or past `L` and returns the items and turns it names. The log is bounded
   to the newest 10,000 records: an extension that would grow it past that
-  cuts the oldest ones. A request whose held snapshot predates what the log
-  still retains gets a full latest-window replacement with no update-log
-  deltas, the same response an incarnation mismatch gets.
+  cuts the oldest ones, and the header persists the byte offset the cut
+  entries' updates started from as the log's retained floor. A request whose
+  held length is below that floor predates what the log still retains — the
+  binary search alone cannot tell that case apart from "no updates yet," so
+  the floor is what makes it decidable — and gets a full latest-window
+  replacement with no update-log deltas, the same response an incarnation
+  mismatch gets.
 
 **Extension.** Index updates are not part of the append. The index header
 records the length it covers. A read captures the recorded length once, extends
@@ -857,7 +881,14 @@ Extending over an entry fills in a completer or rewrites a turn summary, both
 at fixed offsets, and appends new item, turn and update log records.
 - One extender at a time holds an exclusive lock on the sidecar; readers hold a
   shared lock while they read records. The lock is a file lock, because the hub
-  and a daemon can open the same sidecar.
+  and a daemon can open the same sidecar. Extending and projecting are two
+  separate acquisitions, not one lock held across both or downgraded between
+  them: a read extends under the exclusive lock, releases it, then projects
+  under the shared lock, entirely from the records its own handle just wrote
+  and now holds decoded in memory. So the two steps describe the same build by
+  construction, whether or not another handle takes the exclusive lock in
+  between: that handle's extension, if any, changes the file, not the
+  in-memory records this read already extended and is about to project from.
 - The header holds the covered length, the covered entry count (the next
   entry's ordinal) and each table's record count, all published in the same
   header write. The covered entry count lets an extender in a fresh process —
@@ -883,9 +914,14 @@ This replaces the JSON index that today is unmarshalled whole or held in a cache
 `server/appwire_runtime.go:80`). It also replaces the per-group rank arithmetic
 in `item_paging.go:176-234`.
 
-**Validation.** An append is validated by file identity, recorded length and
-trailing bytes, the check proven by the attention fold cursor (PR #2254). The
-full prefix rehash (`turn_index.go:571-584`) goes away.
+**Validation.** The transcript is still an extension of what the index covers
+when, in order: the file's identity is the one the index recorded (device and
+inode, or the platform's equivalent; empty when the platform exposes neither,
+which then falls through to the rest of the check), the file is at least as
+long as the covered length, and the last 4 KB of the covered prefix hashes
+(SHA-256) to what the index recorded for it. Any failure rebuilds. This is the
+check the attention fold cursor already proved (PR #2254). The full prefix
+rehash (`turn_index.go:571-584`) goes away.
 
 **Memory.** A bounded cache of 64 open index handles plus their headers is the
 only index memory.
@@ -1104,6 +1140,16 @@ Each phase ships on its own and keeps main green.
      projection runs after it
    - a daemonless client holding a tool call's page when its TOOL_RESULTS lands
    - an async attention write after a turn's completion
+   - a delegate moving between an unqualified and a qualified boot-generation
+     token, and between two qualified tokens with different owners: each
+     replaces even when the incoming counter is numerically lower
+   - an entry that fails to decode is quarantined and history continues past
+     it, live and on reload, with no resync and no failed-history state; a
+     builder error over a decodable entry instead takes the rebuild and
+     failed-state path
+   - a request whose held length predates what the bounded update log still
+     retains gets a full latest-window replacement, not a stale "no updates"
+     answer
 4. **Cleanup and docs.** Remove dead code and tests. Amend the atomic paging spec
    and `docs/appwire-protocol.md`.
 
