@@ -92,7 +92,9 @@ test("codec accepts the offline source marker on a session row", () => {
   expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
   const entity = snapshot.entities[0]!;
   const graph = normalizedGraphFromSnapshot(snapshot);
-  expect((graph.entities.get(entity.key)?.value as Record<string, unknown>).offline).toBe(true);
+  const installed = graph.entities.get(entity.key);
+  if (!installed) throw new Error("offline session entity missing from the normalized graph");
+  expect((installed.value as Record<string, unknown>).offline).toBe(true);
   const malformed = withOffline("yes");
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, malformed))).toThrow();
 });
