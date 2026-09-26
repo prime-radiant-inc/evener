@@ -1259,10 +1259,14 @@ test("while a turn runs, Steer is primary and Send is quiet", async () => {
   expect(submitButton().className.split(" ")).toContain(buttonStyles.quiet);
 });
 
-test("with nothing running, Send is the primary and there is no Steer to outrank it", async () => {
+test("with nothing running, Send is the primary, sends now, and there is no Steer to outrank it", async () => {
+  const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(submitButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
+  // The idle half of Send's timing reaching its bubble (canQueue false).
+  await user.hover(submitButton());
+  expect((await screen.findByRole("tooltip")).textContent).toMatch(/^Send now · /);
 });
 
 // The label is stable across states even though the ROUTE isn't: a mid-turn
