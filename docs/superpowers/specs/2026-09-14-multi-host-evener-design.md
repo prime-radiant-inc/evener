@@ -72,6 +72,15 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   navigation for the whole hub), and the operator's own config is now the only
   bound. Do not implement the cap without a new decision. (Component 03 §Scope
   carries the same record.)
+- **Restart identity pin: verify-then-signal accepted (Jesse, 2026-09-26).** The
+  guarded verify-then-signal posture stands, supervisor-preferred (restart by
+  systemd unit or launchd label where one is identified) with the ad hoc path
+  for a supervisorless hub: a target whose identity cannot be verified is
+  refused `ErrRestart` rather than signaled. The residual check-then-act window
+  is acknowledged, **not** closed, and no host-side atomic-signal helper is
+  planned — a `pidfd` is unreachable through the component's only host interface,
+  `ssh <dest> <command>`. (The [04] tracked-follow-up entry carries the same
+  record.)
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
