@@ -822,6 +822,17 @@ type EvenerThread struct {
 	VisionModel string `json:"visionModel,omitempty"`
 }
 
+// SubagentTally counts a live root session's subagents, at every depth, by how
+// each one's latest run stands (spec 9, S3). Running: no run has ended yet, or
+// a run is open again after the last one ended. Failed: the latest run ended
+// failed or exhausted. Done: it ended any other way (completed, cancelled or
+// stopped), including a subagent idle between runs.
+type SubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
+}
+
 // GoalState is the wire representation of a session's /goal. Status is the
 // lifecycle status ("active", "complete", "blocked"); Iterations is the number
 // of continuation turns taken. A nil *GoalState on EvenerThread means no goal is
