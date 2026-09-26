@@ -354,44 +354,33 @@ function hostId(host: ProtoHost | undefined): string {
 	return (host ?? "magic-kingdom") === "magic-kingdom" ? "local" : "paradise-park";
 }
 
-// failed -> errored, question -> awaiting (asking), approval -> active (the
-// phone infers approval from the row's presence in needs_you), restart ->
-// restartRequired, yourmove -> awaiting (turn ended, not asking: "your
-// move"), working -> active, idle -> idle, shutdown -> ended.
-function stateWord(state: ProtoState): { state: string; askPending?: true } {
-	switch (state) {
-		case "failed":
-			return { state: "errored" };
-		case "question":
-			return { state: "awaiting", askPending: true };
-		case "approval":
-			return { state: "active" };
-		case "restart":
-			return { state: "restartRequired" };
-		case "yourmove":
-			return { state: "awaiting" };
-		case "working":
-			return { state: "active" };
-		case "idle":
-			return { state: "idle" };
-		case "shutdown":
-			return { state: "ended" };
-	}
-}
+// The prototype's states on the wire. An approval stays "active" (the phone
+// infers approval from the row's presence in needs_you), and "yourmove" is a
+// turn that ended without asking.
+const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true }> = {
+	failed: { state: "errored" },
+	question: { state: "awaiting", askPending: true },
+	approval: { state: "active" },
+	restart: { state: "restartRequired" },
+	yourmove: { state: "awaiting" },
+	working: { state: "active" },
+	idle: { state: "idle" },
+	shutdown: { state: "ended" },
+};
 
-function subagentStateWord(state: SubState): { state: string; live: boolean } {
-	switch (state) {
-		case "running":
-			return { state: "active", live: true };
-		case "failed":
-			return { state: "errored", live: false };
-		case "done":
-			return { state: "ended", live: false };
-	}
-}
+// The prototype's needs-you band, from core.js's NEEDS (this fixture has no
+// "warning" state). It keys on the prototype's state because an approval row
+// is "active" on the wire, like the working band.
+const NEEDS_YOU_STATES = new Set<ProtoState>(["failed", "question", "approval", "restart"]);
+
+const SUBAGENT_WIRE_STATE: Record<SubState, { state: string; live: boolean }> = {
+	running: { state: "active", live: true },
+	failed: { state: "errored", live: false },
+	done: { state: "ended", live: false },
+};
 
 function toChildRow(sub: RawSubagent, ownerHostId: string, project: string, startupMs: number): NavigationSessionSummary {
-	const { state, live } = subagentStateWord(sub.state);
+	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
 	return {
 		ref: `${ownerHostId}:${sub.id}`,
 		host_id: ownerHostId,
@@ -432,7 +421,7 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = raw.project ?? "evener";
-	const { state, askPending } = stateWord(raw.state);
+	const { state, askPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const all = rawChildren(raw);
 	const capped = all.slice(0, MAX_CHILDREN);
@@ -492,16 +481,12 @@ export interface DemoFleet {
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
 	const offlineHost = options.offlineHost ?? false;
-	const rows = SESSIONS.map((raw) => toRow(raw, startupMs, offlineHost));
-	const rowById = new Map(rows.map((row) => [row.session_id, row]));
-	const rawById = new Map(SESSIONS.map((raw) => [raw.id, raw]));
+	const rowById = new Map(SESSIONS.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
+	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
-	const liveSessions = SESSIONS.filter((raw) => raw.state !== "shutdown").map((raw) => rowById.get(raw.id) as NavigationSessionSummary);
-	// Needs you: the failure, the question, the restart and the approval row --
-	// an "active" row that belongs here only because data.js marks it an
-	// approval, not because of its (shared-with-working) state.
-	const needsYouIds = new Set(["s-retry", "s-audit", "s-mirror", "s-namer"]);
-	const needsYouSessions = liveSessions.filter((row) => needsYouIds.has(row.session_id));
+	const liveRaw = SESSIONS.filter((raw) => raw.state !== "shutdown");
+	const liveSessions = liveRaw.map(rowOf);
+	const needsYouSessions = liveRaw.filter((raw) => NEEDS_YOU_STATES.has(raw.state)).map(rowOf);
 	// "9 working" (spec 7.1's Live summary line) is the working band itself,
 	// which excludes the approval row despite its sharing state "active".
 	const workingCount = SESSIONS.filter((raw) => raw.state === "working").length;
@@ -513,7 +498,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	];
 
 	const pinCategoryIds = ["release", "research"] as const;
-	const pinSessions = (id: string) => liveSessions.filter((row) => rawById.get(row.session_id)?.category === id);
+	const pinSessions = (id: string) => liveRaw.filter((raw) => raw.category === id).map(rowOf);
 	const pinSections = pinCategoryIds.map((id) => ({
 		id,
 		name: id === "release" ? "Release" : "Research",
@@ -527,18 +512,25 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const testRunRaw = SESSIONS.filter((raw) => raw.test);
 	const testRunProjects: NavigationProjectSummary[] = [{ key: "hub-test-env", name: "hub-test-env", session_count: testRunRaw.length }];
 
+	function knownProjectKey(params: NavigationReadParams): string {
+		const projectKey = params.projectKey as string;
+		if (!projectKeys.includes(projectKey) && projectKey !== "hub-test-env")
+			throw new Error(`Unknown demonstration project: ${projectKey}`);
+		return projectKey;
+	}
+
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): { rows: NavigationSessionSummary[]; remaining: number } {
 		if (tier === "archived") {
 			if (projectKey !== "evener") return { rows: [], remaining: 0 };
-			return { rows: archivedRaw.map((raw) => rowById.get(raw.id) as NavigationSessionSummary), remaining: ARCHIVED_TOTAL - archivedRaw.length };
+			return { rows: archivedRaw.map(rowOf), remaining: ARCHIVED_TOTAL - archivedRaw.length };
 		}
 		if (projectKey === "hub-test-env") {
 			if (tier === "recent") return { rows: [], remaining: 0 };
-			return { rows: testRunRaw.map((raw) => rowById.get(raw.id) as NavigationSessionSummary), remaining: 0 };
+			return { rows: testRunRaw.map(rowOf), remaining: 0 };
 		}
 		const inProject = projectSessionsRaw(projectKey);
-		const today = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
-		return { rows: today.map((raw) => rowById.get(raw.id) as NavigationSessionSummary), remaining: 0 };
+		const inTier = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
+		return { rows: inTier.map(rowOf), remaining: 0 };
 	}
 
 	function page<T>(items: T[], params: NavigationReadParams, defaultLimit: number): { page: T[]; remaining: number } {
@@ -585,9 +577,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				return wireV2(params, { projects: rows, remaining });
 			}
 			case "project": {
-				const projectKey = params.projectKey as string;
-				if (!projectKeys.includes(projectKey) && projectKey !== "hub-test-env")
-					throw new Error(`Unknown demonstration project: ${projectKey}`);
+				const projectKey = knownProjectKey(params);
 				const current = tierRows(projectKey, "current");
 				const recent = tierRows(projectKey, "recent");
 				const archived = tierRows(projectKey, "archived");
@@ -600,9 +590,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				});
 			}
 			case "project_page": {
-				const projectKey = params.projectKey as string;
-				if (!projectKeys.includes(projectKey) && projectKey !== "hub-test-env")
-					throw new Error(`Unknown demonstration project: ${projectKey}`);
+				const projectKey = knownProjectKey(params);
 				const tier = params.tier as "current" | "recent" | "archived";
 				const { rows: tierSessions, remaining } = tierRows(projectKey, tier);
 				const { page: sessions, remaining: pageRemaining } = page(tierSessions, params, SECTION_LIMIT);
@@ -617,7 +605,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		const query = params.query?.trim().toLowerCase();
 		const matches = query ? SESSIONS.filter((raw) => raw.title.toLowerCase().includes(query)) : SESSIONS;
 		const toHit = (raw: RawSession) => {
-			const row = rowById.get(raw.id) as NavigationSessionSummary;
+			const row = rowOf(raw);
 			const age = relativeAge(row.updated_at, startupMs);
 			return { id: row.session_id, title: row.title, project: row.project, state: row.state, age, ref: row.ref };
 		};

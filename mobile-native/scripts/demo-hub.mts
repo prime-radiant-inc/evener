@@ -116,6 +116,11 @@ export async function createDemoHub(
 					}),
 				);
 	}
+	function requireFleet() {
+		if (!demoFleet)
+			throw new Error("Method not implemented by demonstration server");
+		return demoFleet;
+	}
 	server.on("connection", (socket) => {
 		socket.on("close", () => subscribers.delete(socket));
 		socket.on("message", (raw) => {
@@ -378,24 +383,16 @@ export async function createDemoHub(
 						break;
 					}
 					case "evener/navigation/read":
-						if (!demoFleet)
-							throw new Error("Method not implemented by demonstration server");
-						result = demoFleet.answerNavigationRead(params);
+						result = requireFleet().answerNavigationRead(params);
 						break;
 					case "evener/search":
-						if (!demoFleet)
-							throw new Error("Method not implemented by demonstration server");
-						result = demoFleet.answerSearch(params);
+						result = requireFleet().answerSearch(params);
 						break;
 					case "evener/auth/list":
-						if (!demoFleet)
-							throw new Error("Method not implemented by demonstration server");
-						result = demoFleet.answerAuthList();
+						result = requireFleet().answerAuthList();
 						break;
 					case "evener/plugin/list":
-						if (!demoFleet)
-							throw new Error("Method not implemented by demonstration server");
-						result = demoFleet.answerPluginList();
+						result = requireFleet().answerPluginList();
 						break;
 					default:
 						throw new Error("Method not implemented by demonstration server");

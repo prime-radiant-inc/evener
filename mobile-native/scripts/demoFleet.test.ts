@@ -32,6 +32,10 @@ function sessionsOf(materialized: Record<string, unknown>): NavigationSessionSum
 	return materialized.sessions as NavigationSessionSummary[];
 }
 
+function liveRows(fleet: ReturnType<typeof createDemoFleet>): NavigationSessionSummary[] {
+	return sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+}
+
 function findRow(rows: NavigationSessionSummary[], sessionId: string): NavigationSessionSummary {
 	const row = rows.find((row) => row.session_id === sessionId);
 	if (!row) throw new Error(`missing session ${sessionId} in [${rows.map((r) => r.session_id).join(", ")}]`);
@@ -77,13 +81,13 @@ describe("demo fleet live and needs-you sections", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
 	it("holds the 20 live top-level sessions Appendix B's fixture actually contains", () => {
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		expect(rows).toHaveLength(20);
 		expect(new Set(rows.map((row) => row.session_id)).size).toBe(20);
 	});
 
 	it("maps the prototype's states the way the brief spells out: failed, question, approval and so on", () => {
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		expect(findRow(rows, "s-retry")).toMatchObject({ state: "errored", live: true, host_id: "paradise-park" });
 		expect(findRow(rows, "s-audit")).toMatchObject({ state: "awaiting", ask_pending: true });
 		expect(findRow(rows, "s-mirror")).toMatchObject({ state: "active" });
@@ -94,21 +98,21 @@ describe("demo fleet live and needs-you sections", () => {
 	});
 
 	it("gives local sessions a local: ref and remote ones a host-prefixed ref", () => {
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		expect(findRow(rows, "s-audit").ref).toBe("local:s-audit");
 		expect(findRow(rows, "s-retry").ref).toBe("paradise-park:s-retry");
 		expect(findRow(rows, "s-retry").host_id).toBe("paradise-park");
 	});
 
 	it("computes updated_at relative to startup", () => {
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		// s-retry: ago 2 minutes.
 		expect(findRow(rows, "s-retry").updated_at).toBe(new Date(STARTUP - 2 * 60 * 1000).toISOString());
 	});
 
 	it("holds exactly the 4 needs-you rows: the failure, the question, the approval and the restart", () => {
 		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "needs_you" })));
-		expect(rows.map((row) => row.session_id).sort()).toEqual(["s-audit", "s-mirror", "s-namer", "s-retry"].sort());
+		expect(rows.map((row) => row.session_id).sort()).toEqual(["s-audit", "s-mirror", "s-namer", "s-retry"]);
 		// Approval rows keep state "active"; the phone infers approval from
 		// showing up here, per the task's own background note.
 		expect(findRow(rows, "s-mirror").state).toBe("active");
@@ -116,10 +120,10 @@ describe("demo fleet live and needs-you sections", () => {
 
 	it("marks every paradise-park row offline under EVENER_DEMO_FLEET_OFFLINE_HOST, never local rows", () => {
 		const offlineFleet = createDemoFleet({ now: STARTUP, offlineHost: true });
-		const rows = sessionsOf(read(offlineFleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(offlineFleet);
 		expect(findRow(rows, "s-retry").offline).toBe(true); // paradise-park
 		expect(findRow(rows, "s-audit").offline).toBeUndefined(); // local
-		const defaultRows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const defaultRows = liveRows(fleet);
 		expect(findRow(defaultRows, "s-retry").offline).toBeUndefined();
 	});
 });
@@ -128,7 +132,7 @@ describe("demo fleet subagent trees", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
 	it("caps a big swarm at the hub's own child limit and counts the rest as omitted", () => {
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		const pr2138 = findRow(rows, "s-pr2138");
 		// 54 real subagents (Appendix B: "subagent trees from 0 to 54"), capped at
 		// the hub's maxNavigationChildren (cmd/evener-hub/navigation_projection.go).
@@ -142,7 +146,7 @@ describe("demo fleet subagent trees", () => {
 	});
 
 	it("gives a small named swarm its real titles (s-retry: r-1..r-4)", () => {
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		const retry = findRow(rows, "s-retry");
 		expect(retry.children.map((child) => child.session_id)).toEqual(["r-1", "r-2", "r-3", "r-4"]);
 		expect(retry.children.map((child) => child.state)).toEqual(["ended", "ended", "errored", "ended"]);
@@ -163,7 +167,7 @@ describe("demo fleet subagent trees", () => {
 describe("demo fleet running jobs", () => {
 	it("surfaces a working session's shell command as a running job", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
-		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
+		const rows = liveRows(fleet);
 		const tasklist = findRow(rows, "s-tasklist");
 		expect(tasklist.running_jobs).toEqual([
 			expect.objectContaining({ status: "running", command: "go test ./cmd/evener-hub/..." }),
