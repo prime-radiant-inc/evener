@@ -116,3 +116,39 @@ func TestOpenRevalidatesTheKindOfAnAlreadyHeldStore(t *testing.T) {
 		t.Fatalf("Open on a symlinked store file succeeded through a held store cell, want an error")
 	}
 }
+
+// TestAWriteRefusesWhenTheStorePathBecameANonRegularFile pins the kind rule on the
+// write path: a path that was a regular store file when it was opened can be
+// swapped for a link since, and the rename would replace the link rather than
+// refuse. The write refuses, leaves the link alone and leaves no temp file behind.
+func TestAWriteRefusesWhenTheStorePathBecameANonRegularFile(t *testing.T) {
+	path := StorePath(t.TempDir())
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	record := createTestRecord(t, store, "h1")
+
+	// The store file becomes a symlink behind the store's back.
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.Rename(path, elsewhere); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if err := os.Symlink(elsewhere, path); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if _, err := store.Transition(record.ID, StateRunning, nil); err == nil {
+		t.Fatalf("a write over a symlinked store path succeeded, want a refusal")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat(%s): %v", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the refused write replaced the link instead of refusing")
+	}
+	if temps := leftoverTemps(t, filepath.Dir(path)); len(temps) > 0 {
+		t.Fatalf("the refused write left temp files behind: %v", temps)
+	}
+}

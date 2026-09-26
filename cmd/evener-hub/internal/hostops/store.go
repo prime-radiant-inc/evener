@@ -646,6 +646,22 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 			return false, err
 		}
 	}
+	// The fail-closed kind rule is re-run here, immediately before the rename: a
+	// path that was a regular store file when it was opened can be swapped for a
+	// link or a fifo since, and the rename would replace it instead of refusing.
+	// The gap between this check and the rename cannot be closed on the afero
+	// seam — there is no portable rename-onto-a-regular-file-only — so this
+	// narrows the window to that gap and makes every non-racy case refuse.
+	kind, err := lstat(fs, path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return false, fmt.Errorf("hostops: stat store %s: %w", path, err)
+	default:
+		if err := rejectNonStoreFileKind(path, kind); err != nil {
+			return false, err
+		}
+	}
 	if err := fs.Rename(tempPath, path); err != nil {
 		return false, fmt.Errorf("hostops: rename store: %w", err)
 	}
