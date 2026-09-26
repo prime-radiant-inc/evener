@@ -1,7 +1,8 @@
 // Navigation snapshot and delta decoding: validates a hub navigation response
-// against the resource key that asked for it, normalizes the entities and
-// order containers into a deep-frozen graph, and materializes that graph back
-// into the rows a view renders.
+// against the resource key that asked for it, drops the value-record keys
+// this client does not know, normalizes the entities and order containers
+// into a deep-frozen graph, and materializes that graph back into the rows a
+// view renders.
 import type {
   NavigationDelta,
   NavigationEntityRecord,
@@ -46,6 +47,10 @@ export type DecodedNavigationResponse =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const hasOwn = (value: Record<string, unknown>, key: string) => Object.hasOwn(value, key);
+// exactKeys is for structure: the response envelope, the snapshot and delta
+// records, entity, container and owner records, and paging metadata. A key the
+// codec does not know there changes how the rest of the response is read, so
+// a change of that kind ships behind a new representationVersion.
 const exactKeys = (
   value: unknown,
   required: readonly string[],
@@ -66,6 +71,43 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 const bool = (value: unknown): value is boolean => typeof value === "boolean";
 const optional = (value: unknown, check: (candidate: unknown) => boolean) => value === undefined || check(value);
 const schemaError = (category: string): Error => new Error(`navigation protocol: invalid ${category}`);
+
+// A value record's keys: the keys it must carry, the keys it may carry, and
+// the keys whose values are themselves value records ("one" record, or "each"
+// record of a list).
+interface ValueRecordKeys {
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+  readonly nested?: Readonly<Record<string, { readonly one: ValueRecordKeys } | { readonly each: ValueRecordKeys }>>;
+}
+
+// knownKeys is exactKeys for a value record: every required key is present,
+// and a key the record's keys do not name is allowed. A newer hub adds
+// optional keys to value records without a ProtocolVersion bump
+// (appwire/types.go), and an app built before a key existed must keep reading
+// every page that carries it. The validators still check every key they name;
+// decodeNavigationResponse then drops the rest (dropUnknownKeys).
+const knownKeys = (value: unknown, keys: ValueRecordKeys): value is Record<string, unknown> =>
+  isRecord(value) && keys.required.every((key) => hasOwn(value, key));
+
+// dropUnknownKeys copies a validated value record, keeping only the keys its
+// ValueRecordKeys name, nested records included. It runs after validation, so
+// every nested value it recurses into is a record or a list of records.
+// Dropping keeps unvalidated data out of the graph and the rendered rows, and
+// keeps merge's identity check from seeing a change an older app cannot show.
+function dropUnknownKeys(value: Record<string, unknown>, keys: ValueRecordKeys): Record<string, unknown> {
+  const known: Record<string, unknown> = {};
+  for (const key of [...keys.required, ...keys.optional]) {
+    if (!hasOwn(value, key)) continue;
+    const item = value[key];
+    const nested = keys.nested?.[key];
+    if (nested === undefined) known[key] = item;
+    else if ("one" in nested) known[key] = dropUnknownKeys(item as Record<string, unknown>, nested.one);
+    else known[key] = (item as Record<string, unknown>[]).map((entry) => dropUnknownKeys(entry, nested.each));
+  }
+  return known;
+}
+
 const MAX_NAVIGATION_DEPTH = 32;
 const MAX_NAVIGATION_SESSION_ENTITIES = 2000;
 const MAX_NAVIGATION_GRAPH_ENTITIES = MAX_NAVIGATION_SESSION_ENTITIES + 1;
@@ -102,57 +144,100 @@ const version = (value: unknown): value is NavigationReadBase =>
   (value.revision as number) >= 0 &&
   safeString(value.etag, 1024);
 
-const SESSION_REQUIRED = ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"];
-const SESSION_OPTIONAL = [
-  "branch",
-  "cluster_count",
-  "favorite",
-  "rename",
-  "ask_pending",
-  "dormant",
-  "offline",
-  "updated_at",
-  "more_subagents",
-  "omitted_descendants",
-  "omitted_watches",
-  "omitted_armed_watches",
-  "running_jobs",
-  "completed_jobs",
-  "watches",
-];
-const JOB_REQUIRED = ["job_id", "job_type", "status"];
-const JOB_OPTIONAL = ["command", "task", "reason", "intent", "full_command"];
-const WATCH_REQUIRED = ["id", "source", "deliveries", "created_at", "active"];
-const WATCH_OPTIONAL = [
-  "target",
-  "send_to",
-  "note",
-  "cadence",
-  "output_match",
-  "events",
-  "wildcard_events",
-  "delivery_times",
-  "end_reason",
-];
-const PROJECT_REQUIRED = ["key", "name", "session_count"];
-const PROJECT_OPTIONAL = [
-  "working_dir",
-  "rollup_state",
-  "rollup_live",
-  "rollup_attn",
-  "default_expanded",
-  "more_current",
-  "more_recent",
-  "more_archived",
-  "worktrees",
-  "is_archived",
-  "favorite",
-  "sources",
-];
+const JOB_KEYS: ValueRecordKeys = {
+  required: ["job_id", "job_type", "status"],
+  optional: ["command", "task", "reason", "intent", "full_command"],
+};
+const WATCH_CADENCE_KEYS: ValueRecordKeys = {
+  required: ["kind"],
+  optional: ["seconds", "derived_next_fire_at", "every", "filter"],
+};
+const WATCH_KEYS: ValueRecordKeys = {
+  required: ["id", "source", "deliveries", "created_at", "active"],
+  optional: [
+    "target",
+    "send_to",
+    "note",
+    "cadence",
+    "output_match",
+    "events",
+    "wildcard_events",
+    "delivery_times",
+    "end_reason",
+  ],
+  nested: { cadence: { each: WATCH_CADENCE_KEYS } },
+};
+const SESSION_KEYS: ValueRecordKeys = {
+  required: ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
+  optional: [
+    "branch",
+    "cluster_count",
+    "favorite",
+    "rename",
+    "ask_pending",
+    "dormant",
+    "offline",
+    "updated_at",
+    "more_subagents",
+    "omitted_descendants",
+    "omitted_watches",
+    "omitted_armed_watches",
+    "running_jobs",
+    "completed_jobs",
+    "watches",
+  ],
+  nested: { running_jobs: { each: JOB_KEYS }, completed_jobs: { each: JOB_KEYS }, watches: { each: WATCH_KEYS } },
+};
+const PROJECT_KEYS: ValueRecordKeys = {
+  required: ["key", "name", "session_count"],
+  optional: [
+    "working_dir",
+    "rollup_state",
+    "rollup_live",
+    "rollup_attn",
+    "default_expanded",
+    "more_current",
+    "more_recent",
+    "more_archived",
+    "worktrees",
+    "is_archived",
+    "favorite",
+    "sources",
+  ],
+};
+const PROJECT_ANCHOR_KEYS: ValueRecordKeys = { required: ["key"], optional: [] };
+const PIN_SECTION_KEYS: ValueRecordKeys = { required: ["id", "name", "count"], optional: [] };
+const SOURCE_KEYS: ValueRecordKeys = { required: ["id", "label", "kind", "online"], optional: [] };
+const COUNT_KEYS: ValueRecordKeys = { required: ["count"], optional: [] };
+const ATTENTION_SUMMARY_KEYS: ValueRecordKeys = { required: ["needsYou", "error", "working"], optional: [] };
+const SECTIONS_KEYS: ValueRecordKeys = {
+  required: ["live", "needs_you", "pin_sections"],
+  optional: [],
+  nested: { live: { one: COUNT_KEYS }, needs_you: { one: COUNT_KEYS }, pin_sections: { one: COUNT_KEYS } },
+};
+const CATALOGS_KEYS: ValueRecordKeys = {
+  required: ["projects", "archived_projects", "test_runs"],
+  optional: [],
+  nested: { projects: { one: COUNT_KEYS }, archived_projects: { one: COUNT_KEYS }, test_runs: { one: COUNT_KEYS } },
+};
+const MANIFEST_KEYS: ValueRecordKeys = {
+  required: ["generation_id", "revision", "sources", "attentionSummary", "sections", "catalogs"],
+  optional: [],
+  nested: {
+    sources: { each: SOURCE_KEYS },
+    attentionSummary: { one: ATTENTION_SUMMARY_KEYS },
+    sections: { one: SECTIONS_KEYS },
+    catalogs: { one: CATALOGS_KEYS },
+  },
+};
+const LOCATION_KEYS: ValueRecordKeys = {
+  required: ["generation_id", "revision", "ref", "top_level_ref", "top_level"],
+  optional: ["project_key", "tier", "pin_section_id"],
+};
 
 function jobValue(value: unknown): boolean {
   return (
-    exactKeys(value, JOB_REQUIRED, JOB_OPTIONAL) &&
+    knownKeys(value, JOB_KEYS) &&
     identity(value.job_id) &&
     identity(value.job_type) &&
     identity(value.status) &&
@@ -165,7 +250,7 @@ function jobValue(value: unknown): boolean {
 }
 
 const watchCadenceValue = (value: unknown): boolean =>
-  exactKeys(value, ["kind"], ["seconds", "derived_next_fire_at", "every", "filter"]) &&
+  knownKeys(value, WATCH_CADENCE_KEYS) &&
   identity(value.kind) &&
   optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0) &&
   optional(value.derived_next_fire_at, rfc3339Timestamp) &&
@@ -174,7 +259,7 @@ const watchCadenceValue = (value: unknown): boolean =>
 
 function watchValue(value: unknown): boolean {
   return (
-    exactKeys(value, WATCH_REQUIRED, WATCH_OPTIONAL) &&
+    knownKeys(value, WATCH_KEYS) &&
     identity(value.id) &&
     identity(value.source) &&
     count(value.deliveries) &&
@@ -205,7 +290,7 @@ const omittedArmedWithinOmitted = (value: Record<string, unknown>): boolean =>
 
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
-    exactKeys(value, SESSION_REQUIRED, SESSION_OPTIONAL) &&
+    knownKeys(value, SESSION_KEYS) &&
     identity(value.ref) &&
     identity(value.host_id) &&
     identity(value.session_id) &&
@@ -237,7 +322,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
 
 function projectValue(value: unknown): value is Record<string, unknown> {
   return (
-    exactKeys(value, PROJECT_REQUIRED, PROJECT_OPTIONAL) &&
+    knownKeys(value, PROJECT_KEYS) &&
     identity(value.key) &&
     boundedString(value.name, 512) &&
     count(value.session_count) &&
@@ -268,10 +353,7 @@ function projectValue(value: unknown): value is Record<string, unknown> {
 
 function pinSectionValue(value: unknown): value is Record<string, unknown> {
   return (
-    exactKeys(value, ["id", "name", "count"]) &&
-    identity(value.id) &&
-    boundedString(value.name, 512) &&
-    count(value.count)
+    knownKeys(value, PIN_SECTION_KEYS) && identity(value.id) && boundedString(value.name, 512) && count(value.count)
   );
 }
 
@@ -295,7 +377,8 @@ function entityIdentityForResource(
     return { logical: `project\0${value.value.key as string}`, anchor: false };
   }
   if (key.kind === "project" && value.kind === "project") {
-    if (!exactKeys(value.value, ["key"]) || value.value.key !== key.projectKey) throw schemaError("entity schema");
+    if (!knownKeys(value.value, PROJECT_ANCHOR_KEYS) || value.value.key !== key.projectKey)
+      throw schemaError("entity schema");
     return { logical: `project\0${value.value.key as string}`, anchor: true };
   }
   if (value.kind !== "session" || !sessionValue(value.value)) throw schemaError("entity schema");
@@ -345,31 +428,31 @@ function container(value: unknown, key: ResourceKey): value is NavigationOrderCo
 }
 
 function descriptor(value: unknown): boolean {
-  return exactKeys(value, ["count"]) && count(value.count);
+  return knownKeys(value, COUNT_KEYS) && count(value.count);
 }
 
 function manifestMetadata(value: Record<string, unknown>): boolean {
   if (
-    !exactKeys(value, ["generation_id", "revision", "sources", "attentionSummary", "sections", "catalogs"]) ||
+    !knownKeys(value, MANIFEST_KEYS) ||
     !Array.isArray(value.sources) ||
     value.sources.length > 64 ||
     !value.sources.every(
       (source) =>
-        exactKeys(source, ["id", "label", "kind", "online"]) &&
+        knownKeys(source, SOURCE_KEYS) &&
         identity(source.id) &&
         boundedString(source.label, 512) &&
         identity(source.kind) &&
         bool(source.online),
     ) ||
-    !exactKeys(value.attentionSummary, ["needsYou", "error", "working"]) ||
+    !knownKeys(value.attentionSummary, ATTENTION_SUMMARY_KEYS) ||
     !count(value.attentionSummary.needsYou) ||
     !count(value.attentionSummary.error) ||
     !count(value.attentionSummary.working) ||
-    !exactKeys(value.sections, ["live", "needs_you", "pin_sections"]) ||
+    !knownKeys(value.sections, SECTIONS_KEYS) ||
     !descriptor(value.sections.live) ||
     !descriptor(value.sections.needs_you) ||
     !descriptor(value.sections.pin_sections) ||
-    !exactKeys(value.catalogs, ["projects", "archived_projects", "test_runs"]) ||
+    !knownKeys(value.catalogs, CATALOGS_KEYS) ||
     !descriptor(value.catalogs.projects) ||
     !descriptor(value.catalogs.archived_projects) ||
     !descriptor(value.catalogs.test_runs)
@@ -456,11 +539,7 @@ function validateResourceMetadata(metadata: unknown, key: ResourceKey, versionVa
       bool(metadata.truncated);
   else
     valid =
-      exactKeys(
-        metadata,
-        ["generation_id", "revision", "ref", "top_level_ref", "top_level"],
-        ["project_key", "tier", "pin_section_id"],
-      ) &&
+      knownKeys(metadata, LOCATION_KEYS) &&
       metadata.ref === key.ref &&
       identity(metadata.top_level_ref) &&
       bool(metadata.top_level) &&
@@ -649,6 +728,42 @@ const RESPONSE_COMMON_KEYS = ["status", "generationId", "revision", "etag"] as c
 const RESPONSE_SNAPSHOT_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "data"] as const;
 const RESPONSE_DELTA_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "base", "data"] as const;
 
+// The value-record keys of an entity a resource holds; entity() already
+// refused a kind the resource cannot hold.
+function entityValueKeys(key: ResourceKey, kind: string): ValueRecordKeys {
+  if (kind === "session") return SESSION_KEYS;
+  if (kind === "pin_section") return PIN_SECTION_KEYS;
+  return key.kind === "project" ? PROJECT_ANCHOR_KEYS : PROJECT_KEYS;
+}
+
+function knownEntity(key: ResourceKey, item: NavigationEntityRecord): NavigationEntityRecord {
+  return { ...item, value: dropUnknownKeys(item.value as Record<string, unknown>, entityValueKeys(key, item.kind)) };
+}
+
+// Paging metadata is exact (validateResourceMetadata refused any unknown key),
+// so only a manifest's or a location's metadata can carry one to drop.
+function knownMetadata(key: ResourceKey, metadata: unknown): unknown {
+  if (key.kind === "manifest") return dropUnknownKeys(metadata as Record<string, unknown>, MANIFEST_KEYS);
+  if (key.kind === "location") return dropUnknownKeys(metadata as Record<string, unknown>, LOCATION_KEYS);
+  return metadata;
+}
+
+function knownSnapshot(key: ResourceKey, snapshot: NavigationSnapshot): NavigationSnapshot {
+  return {
+    ...snapshot,
+    metadata: knownMetadata(key, snapshot.metadata),
+    entities: snapshot.entities.map((item) => knownEntity(key, item)),
+  };
+}
+
+function knownDelta(key: ResourceKey, delta: NavigationDelta): NavigationDelta {
+  return {
+    ...delta,
+    ...(delta.metadata === undefined ? {} : { metadata: knownMetadata(key, delta.metadata) }),
+    upsertedEntities: delta.upsertedEntities.map((item) => knownEntity(key, item)),
+  };
+}
+
 export function decodeNavigationResponse(
   key: ResourceKey,
   sentBase: NavigationReadBase | undefined,
@@ -691,8 +806,9 @@ export function decodeNavigationResponse(
     throw new Error("navigation protocol: invalid v2 response");
   if (wire.representation === "snapshot") {
     if (!exactKeys(wire, RESPONSE_SNAPSHOT_KEYS)) throw new Error("navigation protocol: invalid snapshot");
-    validateSnapshotForResource(key, current, wire.data as NavigationSnapshot);
-    return { status: "snapshot", version: current, snapshot: wire.data as NavigationSnapshot };
+    const snapshot = wire.data as NavigationSnapshot;
+    validateSnapshotForResource(key, current, snapshot);
+    return { status: "snapshot", version: current, snapshot: knownSnapshot(key, snapshot) };
   }
   if (!exactKeys(wire, RESPONSE_DELTA_KEYS)) throw new Error("navigation protocol: invalid delta response");
   try {
@@ -705,7 +821,7 @@ export function decodeNavigationResponse(
       !validateDeltaForResource(key, current, wire.data)
     )
       throw schemaError("delta");
-    return { status: "delta", version: current, base: wire.base, delta: wire.data };
+    return { status: "delta", version: current, base: wire.base, delta: knownDelta(key, wire.data) };
   } catch (cause) {
     throw new NavigationBaseInvalidError(cause);
   }

@@ -7,8 +7,10 @@ import type { NavigationSnapshot } from "../../types.gen";
 import {
   decodeNavigationResponse,
   materializeNavigationResource,
+  materializeSnapshot,
   type NormalizedResource,
   normalizedGraphFromSnapshot,
+  snapshotResource,
 } from "./codec";
 import { applyDelta } from "./merge";
 import {
@@ -117,6 +119,159 @@ test("codec accepts stateless records and rejects obsolete entity and container 
   expect(() =>
     decodeNavigationResponse(key, undefined, snapshotResponse(key, obsoleteContainer as unknown as NavigationSnapshot)),
   ).toThrow();
+});
+
+// --- Additive keys on value records ------------------------------------------
+// A newer hub adds optional keys to value records without a protocol version
+// bump (appwire/types.go ProtocolVersion; #1208, #2453). The codec accepts a
+// value record carrying a key it does not know, still validates every key it
+// does know, and drops the unknown key before anything installs the record:
+// it never reaches the normalized graph, the rendered rows, or merge's
+// identity comparison. Structure stays exact (the test.each below).
+const futureValue = { nested: ["private-body-value"], count: -1 };
+
+function decodedSnapshot(resource: ResourceKey, snapshot: NavigationSnapshot) {
+  const decoded = decodeNavigationResponse(resource, undefined, snapshotResponse(resource, snapshot));
+  if (decoded.status !== "snapshot") throw new Error(`expected a snapshot, got ${decoded.status}`);
+  return decoded;
+}
+
+test("codec drops unknown keys on a session row and on its jobs, watches and cadence", () => {
+  const snapshot = liveSnapshot();
+  const first = snapshot.entities[0];
+  if (!first) throw new Error("missing entity");
+  const job = { job_id: "job-1", job_type: "shell", status: "running", task: "build" };
+  const cadence = { kind: "every", seconds: 60 };
+  const watch = { id: "watch-1", source: "self", deliveries: 0, created_at: "2026-09-26T12:00:00Z", active: true };
+  first.value = {
+    ...(first.value as object),
+    running_jobs: [{ ...job, future_job_key: futureValue }],
+    completed_jobs: [{ ...job, status: "completed", future_job_key: futureValue }],
+    watches: [{ ...watch, cadence: [{ ...cadence, future_cadence_key: futureValue }], future_watch_key: futureValue }],
+    future_session_key: futureValue,
+  };
+  const rows = materializeSnapshot(key, decodedSnapshot(key, snapshot)).sessions as Array<Record<string, unknown>>;
+  expect(rows).toEqual([
+    {
+      ...sessionValue("local:session"),
+      running_jobs: [job],
+      completed_jobs: [{ ...job, status: "completed" }],
+      watches: [{ ...watch, cadence: [cadence] }],
+    },
+  ]);
+});
+
+test("an unknown key never excuses a malformed known one", () => {
+  const snapshot = liveSnapshot();
+  const first = snapshot.entities[0];
+  if (!first) throw new Error("missing entity");
+  first.value = { ...(first.value as object), future_session_key: futureValue, ask_pending: "private-body-value" };
+  expectContentFreeRejection(key, snapshot);
+});
+
+test("codec drops unknown keys on project, project anchor and pin-section values", () => {
+  const fixtures = schemaFixtures();
+  for (const kind of ["catalog", "project", "pin_catalog"] as const) {
+    const fixture = fixtures.find((candidate) => candidate.key.kind === kind);
+    if (!fixture) throw new Error(`missing ${kind} fixture`);
+    const snapshot = cloneSnapshot(fixture.snapshot);
+    for (const item of snapshot.entities) item.value = { ...(item.value as object), future_value_key: futureValue };
+    for (const item of decodedSnapshot(fixture.key, snapshot).snapshot.entities)
+      expect(item.value).not.toHaveProperty("future_value_key");
+  }
+});
+
+test("codec drops unknown keys across the manifest and keeps everything it knows", () => {
+  const manifest = schemaFixtures().find((fixture) => fixture.key.kind === "manifest");
+  if (!manifest) throw new Error("missing manifest fixture");
+  const source = { id: "local", label: "magic-kingdom", kind: "local", online: true };
+  const known = {
+    generation_id: "g",
+    revision: 1,
+    sources: [source],
+    attentionSummary: { needsYou: 1, error: 0, working: 2 },
+    sections: { live: { count: 3 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 2 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  };
+  const snapshot = cloneSnapshot(manifest.snapshot);
+  snapshot.metadata = {
+    ...known,
+    notices: futureValue,
+    sources: [{ ...source, version: "private-body-value" }],
+    attentionSummary: { ...known.attentionSummary, approval: 1 },
+    sections: { ...known.sections, live: { count: 3, oldest: "private-body-value" }, finished: { count: 4 } },
+    catalogs: { ...known.catalogs, hosts: { count: 2 } },
+  };
+  expect(materializeSnapshot(manifest.key, decodedSnapshot(manifest.key, snapshot))).toEqual(known);
+});
+
+test("codec drops unknown keys on a location's metadata", () => {
+  const location = schemaFixtures().find((fixture) => fixture.key.kind === "location");
+  if (!location) throw new Error("missing location fixture");
+  const snapshot = cloneSnapshot(location.snapshot);
+  snapshot.metadata = { ...(snapshot.metadata as object), host_label: "private-body-value" };
+  expect(decodedSnapshot(location.key, snapshot).snapshot.metadata).not.toHaveProperty("host_label");
+});
+
+test.each([
+  [
+    "paging metadata",
+    (snapshot: NavigationSnapshot) => {
+      snapshot.metadata = { ...(snapshot.metadata as object), total: 9 };
+    },
+  ],
+  [
+    "an entity record",
+    (snapshot: NavigationSnapshot) => {
+      const first = snapshot.entities[0];
+      if (!first) throw new Error("missing entity");
+      snapshot.entities[0] = { ...first, hint: "private-body-value" } as typeof first;
+    },
+  ],
+  [
+    "a container owner",
+    (snapshot: NavigationSnapshot) => {
+      const owned = snapshot.containers.find((container) => container.owner.kind === "entity");
+      if (!owned) throw new Error("missing owned container");
+      owned.owner = { ...owned.owner, hint: "private-owner" } as typeof owned.owner;
+    },
+  ],
+  [
+    "the snapshot record",
+    (snapshot: NavigationSnapshot) => {
+      (snapshot as unknown as Record<string, unknown>).hint = "private-body-value";
+    },
+  ],
+] as const)("codec still refuses an unknown key on %s", (_name, mutate) => {
+  const snapshot = liveSnapshot();
+  mutate(snapshot);
+  expectContentFreeRejection(key, snapshot);
+});
+
+test("a delta that changes only an unknown key keeps the installed entity", () => {
+  const snapshot = liveSnapshot();
+  const installed = snapshotResource(key, decodedSnapshot(key, snapshot));
+  const entity = snapshot.entities[0];
+  if (!entity) throw new Error("missing entity");
+  const decoded = decodeNavigationResponse(key, base, {
+    status: "ok",
+    representation: "delta",
+    generationId: "g",
+    revision: 2,
+    etag: "tag-2",
+    base,
+    data: {
+      metadata: { ...(snapshot.metadata as object), revision: 2 },
+      upsertedEntities: [{ ...entity, value: { ...(entity.value as object), future_session_key: futureValue } }],
+      removedEntityKeys: [],
+      upsertedContainers: [],
+      removedContainerKeys: [],
+    },
+  });
+  if (decoded.status !== "delta") throw new Error(`expected a delta, got ${decoded.status}`);
+  expect(decoded.delta.upsertedEntities[0]?.value).not.toHaveProperty("future_session_key");
+  const applied = applyDelta(installed, decoded.delta, decoded.version);
+  expect(applied.graph.entities.get(entity.key)).toBe(installed.graph.entities.get(entity.key));
 });
 
 test("normalized metadata and entity values are deeply frozen and detached", () => {
@@ -604,14 +759,6 @@ test("codec rejects wrong resource metadata, value schema, slots, scope, and orp
       const value = { ...(first.value as Record<string, unknown>) };
       delete value.host_id;
       snapshot.entities[0] = { ...first, value };
-    },
-    (snapshot) => {
-      const first = snapshot.entities[0];
-      if (!first) throw new Error("missing entity");
-      snapshot.entities[0] = {
-        ...first,
-        value: { ...(first.value as object), unknown: "private-body-value" },
-      };
     },
     (snapshot) => {
       const first = snapshot.entities[0];
