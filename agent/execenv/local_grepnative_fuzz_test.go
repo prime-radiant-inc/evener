@@ -79,7 +79,7 @@ func egrep_countOutput(counts map[string]int) string {
 // becomes 100.
 func egrep_effMax(maxResults int) int {
 	if maxResults <= 0 {
-		return 100
+		return DefaultGrepMaxResults
 	}
 	return maxResults
 }
