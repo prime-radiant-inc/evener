@@ -2,12 +2,13 @@ package hub
 
 import (
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// TestNavigationRemoteRowsCarryTheirQuestionAndApproval pins S2b's remote-host
+// TestNavigationRemoteRowsCarryTheirQuestionAndApproval pins remote-host
 // parity: a remote host's session reaches the controller's navigation with its
 // question and its approval, as a local one does. The asking row carries
 // ask_pending and sorts into NeedsYou's question band. The row blocked on an
@@ -27,12 +28,11 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 	})
 	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
 
-	snapshot := web.navigationSnapshotInputs(t.Context())
-	decisions := map[hubcore.ArchiveKey]bool{}
-	tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
-	_, attention := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, nil, nil, nil, nil)
-	projection, err := buildNavigationProjection(inputs)
+	captured, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now())
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	projection, err := buildNavigationProjection(captured.Inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 	if needsYou[1].State != "active" || needsYou[1].AskPending {
 		t.Fatalf("approval needs-you row = %#v, want its real state active and no question", needsYou[1])
 	}
-	if attention.NeedsYou != 2 || attention.Working != 1 {
+	if attention := captured.Inputs.AttentionSummary; attention.NeedsYou != 2 || attention.Working != 1 {
 		t.Fatalf("attention summary = %+v, want two needing you and one working", attention)
 	}
 

@@ -61,9 +61,10 @@ func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags(t 
 // a pending question and a pending approval: the root session. ask_user and
 // sandbox escalation are both root-only (agent/session_escalation.go's
 // escalationAllowed mirrors ask_user's gate), yet an in-process child's entry is
-// a copy of its root's. Copied, the root's question showed on the child's row,
-// and a controller hub reading this hub's list would show it, and the approval,
-// on the remote subagent too. The root's row carries the cards themselves.
+// a copy of its root's. A copied flag would put the root's question on the
+// child's row, and a controller hub reading this hub's list would show it, and
+// the approval, on the remote subagent too. The root's row carries the cards
+// themselves.
 func TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval(t *testing.T) {
 	card := appwire.SandboxEscalationRequested{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"}
 	live := hubcore.LiveEntry{
@@ -89,13 +90,9 @@ func TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval(t *testing.T)
 	}
 
 	// The rows this hub's thread/list serves: what a controller hub reads.
-	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, nil)
-	listed, err := source.ListThreads(t.Context(), appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatalf("ListThreads: %v", err)
-	}
-	rows := make(map[string]appwire.Thread, len(listed.Data))
-	for _, row := range listed.Data {
+	listed := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry { return entries })
+	rows := make(map[string]appwire.Thread, len(listed))
+	for _, row := range listed {
 		rows[row.ID] = row
 	}
 	rootRow, childRow := rows["sess_root"], rows["sess_child"]
