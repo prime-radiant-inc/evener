@@ -10,6 +10,7 @@ import (
 // aliases are accepted (and frozen into the child as the canonical off) while
 // out-of-vocabulary values still fail loudly.
 func TestDelegateCreate_NormalizesReasoningEffortAlias(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	adapter := newTask6FrozenDescriptorAdapter()
 	client.Register(adapter)

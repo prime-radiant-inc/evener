@@ -251,6 +251,7 @@ func TestDelegateResourceStop_JobStopReportsClosedResumability(t *testing.T) {
 // line the delegate footer must not cross: a shell job_stop renders exactly the
 // one-line job-family footer, with no cancellation provenance appended.
 func TestDelegateResourceStop_ShellStopFooterCarriesNoDelegateProvenance(t *testing.T) {
+	t.Parallel()
 	reason := "stopped_by_parent"
 	shell := jobStopResult{
 		ID:             "job_1",
@@ -271,6 +272,7 @@ func TestDelegateResourceStop_ShellStopFooterCarriesNoDelegateProvenance(t *test
 // job_stop reports for each actor authorizeMutationLocked admits: the tree's
 // root session, or the exact parent delegate.
 func TestDelegateResourceStop_CancellingActorIsNamed(t *testing.T) {
+	t.Parallel()
 	if got, want := rootDelegateActor("root-session").describe(), "root session root-session"; got != want {
 		t.Fatalf("root actor describe() = %q, want %q", got, want)
 	}

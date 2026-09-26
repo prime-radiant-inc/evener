@@ -48,6 +48,7 @@ import (
 // sanctioned mechanism, it is simply outside what "bare" means; the audit
 // never inspects the identifier's own declaration.
 func TestNoBareWallClockDeadlineInAgentTests(t *testing.T) {
+	t.Parallel()
 	findings, err := deadlineAuditFindings(".", deadlineAuditAllowlist)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +64,7 @@ func TestNoBareWallClockDeadlineInAgentTests(t *testing.T) {
 }
 
 func TestDeadlineAuditRejectsBareContextWithTimeout(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -85,6 +87,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditAllowsSameLineTripwireMarker(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -103,6 +106,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditAllowsPrecedingLineTripwireMarker(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -122,6 +126,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditAllowsMultiLineTripwireMarkerBlock(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -143,6 +148,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditRejectsMarkerTwoLinesAbove(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -167,6 +173,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditCatchesWaitForConditionAndAwaitWithin(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -188,6 +195,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditIgnoresNamedDurationIdentifier(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -209,6 +217,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditIgnoresUnrelatedTimeDotSecondUsage(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -229,6 +238,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditIgnoresSleep(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -244,6 +254,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditSkipsAllowlistedFile(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample_test.go", `package agent
 
 import (
@@ -262,6 +273,7 @@ func TestSomething(t *testing.T) {
 }
 
 func TestDeadlineAuditIgnoresNonTestGoFiles(t *testing.T) {
+	t.Parallel()
 	dir := writeDeadlineAuditFixture(t, "sample.go", `package agent
 
 import (

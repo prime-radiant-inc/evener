@@ -11,6 +11,7 @@ import (
 // findSessionTranscriptsTool's Exec wrapper renders the structured envelope to
 // text (the no-match path) and surfaces execFindSessionTranscripts errors.
 func TestW2Tail_FindSessionTranscriptsTool_Exec(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{stateDir: t.TempDir(), sessionID: "sess-x"}
 	tl := findSessionTranscriptsTool(deps)
 
