@@ -184,15 +184,22 @@
   }
 
   function RBlock({ b, i, path, sessionId, changed, count, onComment }) {
-    const lp = EV.useLongPress(() => {
-      EV.log("block_menu", { path, block: i });
-      EV.openMenu({ kind: "list", top: 280, title: "Paragraph", block: i, path, preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${b.text.replace(/[#*`>|-]/g, "").slice(0, 220)}</div></div>`, items: [
-        { label: "Comment", icon: I.bubble({ s: 18 }), run: () => onComment(i) },
-        { label: "Quote in reply", icon: I.quote({ s: 18 }), run: () => { EV.log("quote_from_doc", { path, block: i }); EV.quoteIntoDraft(sessionId, b.text.replace(/^#+\s*/, "")); } },
+    const lp = EV.useLongPress((e) => {
+      // In a list, comments attach to the bullet under the finger, not the whole list.
+      const t = e && e.target && e.target.closest ? e.target : null;
+      const li = t ? t.closest("li") : null;
+      const blk = t ? t.closest(".rblock") : null;
+      let item = null;
+      let quote = b.text.replace(/^#+\s*/, "");
+      if (li && blk) { item = [...blk.querySelectorAll("li")].indexOf(li); quote = li.textContent.trim(); li.classList.add("li-sel"); }
+      EV.log("block_menu", { path, block: i, item });
+      EV.openMenu({ kind: "list", top: 280, title: item != null ? "List item" : "Paragraph", block: i, path, liEl: item != null ? li : null, preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${quote.replace(/[#*`>|]/g, "").slice(0, 220)}</div></div>`, items: [
+        { label: "Comment", icon: I.bubble({ s: 18 }), run: () => onComment(i, item, quote) },
+        { label: "Quote in reply", icon: I.quote({ s: 18 }), run: () => { EV.log("quote_from_doc", { path, block: i, item }); EV.quoteIntoDraft(sessionId, quote); } },
         { label: "Copy", icon: I.doc({ s: 18 }), run: () => EV.toast("Copied") },
       ] });
     });
-    const pressed = EV.S.menu && EV.S.menu.path === path && EV.S.menu.block === i;
+    const pressed = EV.S.menu && EV.S.menu.path === path && EV.S.menu.block === i && !EV.S.menu.liEl;
     return html`<div class=${"rblock" + (changed ? " changed" : "") + (pressed ? " sel" : "")} data-block=${i} ...${lp}>
       ${changed ? html`<span class="chg-label">Changed</span>` : null}
       <div dangerouslySetInnerHTML=${{ __html: b.html }}></div>
@@ -218,7 +225,7 @@
         if (el) { scrollRef.current.scrollTo({ top: el.offsetTop - 60, behavior: "smooth" }); el.classList.remove("flashc"); void el.offsetWidth; el.classList.add("flashc"); }
       }
     });
-    const onComment = (i) => EV.openSheet("comment", { path, sessionId, block: i });
+    const onComment = (i, item, quote) => EV.openSheet("comment", { path, sessionId, block: i, item, quote });
     const goChange = (dir) => {
       const n = (ci + dir + changed.length) % changed.length;
       setCi(n);
@@ -279,7 +286,7 @@
     </${EV.Sheet}>`;
   };
 
-  EV.sheets.comment = function ({ path, sessionId, block }) {
+  EV.sheets.comment = function ({ path, sessionId, block, item, quote }) {
     const S = EV.S;
     const blocks = EV.useMemoBlocks(path, S.docs[path].md);
     const [txt, setTxt] = useState("");
@@ -287,13 +294,13 @@
     useEffect(() => { ref.current && ref.current.focus(); }, []);
     const save = () => {
       if (!txt.trim()) return;
-      (S.comments[path] = S.comments[path] || []).push({ block, text: txt.trim() });
-      EV.log("comment_add", { path, block, text: txt.trim() });
+      (S.comments[path] = S.comments[path] || []).push({ block, item, quote, text: txt.trim() });
+      EV.log("comment_add", { path, block, item, text: txt.trim() });
       EV.closeSheet();
       EV.toast("Comment added");
     };
     return html`<${EV.Sheet} title="Comment" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} right=${html`<button class="text-btn strong" disabled=${!txt.trim()} onClick=${save}>Add</button>`} size="medium">
-      <div class="comment-q">${blocks[block].text.replace(/^#+\s*/, "").slice(0, 280)}</div>
+      <div class="comment-q">${(quote || blocks[block].text.replace(/^#+\s*/, "")).slice(0, 280)}</div>
       <div class="field"><textarea ref=${ref} rows="4" placeholder="What should change?" value=${txt} onInput=${(e) => setTxt(e.currentTarget.value)} aria-label="Comment"></textarea></div>
       <div class="gfoot">Comments stay with this document until you send your review.</div>
     </${EV.Sheet}>`;
@@ -305,7 +312,7 @@
     const list = S.comments[path] || [];
     return html`<${EV.Sheet} title=${"Comments · " + list.length} right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
       ${!list.length ? html`<div class="empty"><b>No comments yet</b>Touch and hold a paragraph to comment on it.</div>` : html`<div class="group">${list.map((c, i) => html`<div class="gi static" key=${i} style="display:block">
-        <div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${blocks[c.block].text.replace(/^#+\s*/, "").slice(0, 140)}</div>
+        <div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${(c.quote || blocks[c.block].text.replace(/^#+\s*/, "")).slice(0, 140)}</div>
         <div style="margin-top:6px">${c.text}</div>
         <div style="display:flex;gap:8px;margin-top:6px"><button class="mini-btn" onClick=${() => { S.jumpBlock = c.block; EV.closeSheet(); }}>Show</button><button class="mini-btn danger" onClick=${() => { list.splice(i, 1); EV.log("comment_delete", { path }); EV.update(); }}>Delete</button></div>
       </div>`)}</div>`}
@@ -318,12 +325,12 @@
     const s = EV.sess(sessionId);
     const blocks = EV.useMemoBlocks(path, S.docs[path].md);
     const list = S.comments[path] || [];
-    const [verdict, setVerdict] = useState(list.length ? "Request changes" : "Approve");
+    const [verdict, setVerdict] = useState(null);
     const [note, setNote] = useState("");
     const working = EV.stateOf(s) === "working" || EV.stateOf(s) === "stuck";
     const build = () => {
-      let m = "Review of " + path + ": " + verdict.toLowerCase() + ".";
-      list.forEach((c) => { m += "\n\n> " + blocks[c.block].text.replace(/^#+\s*/, "").split("\n")[0].slice(0, 160) + "\n" + c.text; });
+      let m = "Review of " + path + ": " + (verdict === "Comment" ? "comments" : verdict.toLowerCase()) + ".";
+      list.forEach((c) => { m += "\n\n> " + (c.quote || blocks[c.block].text.replace(/^#+\s*/, "")).split("\n")[0].slice(0, 160) + "\n" + c.text; });
       if (note.trim()) m += "\n\nOverall: " + note.trim();
       return m;
     };
@@ -340,13 +347,14 @@
     return html`<${EV.Sheet} title="Review" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} size="large">
       <div class="gfoot" style="padding:4px 32px 10px">To “${s.title}” · ${path.split("/").pop()}</div>
       ${h(EV.Seg, { options: ["Approve", "Request changes", "Comment"], value: verdict, onChange: setVerdict })}
+      ${verdict ? null : html`<div class="gfoot" style="padding-top:6px">Choose one to send your review.</div>`}
       <div class="glabel">Overall note</div>
       <div class="field"><textarea rows="3" placeholder=${verdict === "Approve" ? "Optional: anything to keep in mind" : "Optional: the gist of what to change"} value=${note} onInput=${(e) => setNote(e.currentTarget.value)} aria-label="Overall note"></textarea></div>
       <div class="glabel">Comments · ${list.length}</div>
-      ${list.length ? html`<div class="group">${list.map((c, i) => html`<div class="gi static" key=${i} style="display:block"><div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${blocks[c.block].text.replace(/^#+\s*/, "").slice(0, 120)}</div><div style="margin-top:5px">${c.text}</div></div>`)}</div>`
+      ${list.length ? html`<div class="group">${list.map((c, i) => html`<div class="gi static" key=${i} style="display:block"><div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${(c.quote || blocks[c.block].text.replace(/^#+\s*/, "")).slice(0, 120)}</div><div style="margin-top:5px">${c.text}</div></div>`)}</div>`
         : html`<div class="gfoot">No comments. Touch and hold a paragraph in the document to add one.</div>`}
       <div style="display:flex;gap:8px;justify-content:flex-end;padding:18px 16px 8px">
-        ${working ? html`<button class="btn" onClick=${() => send("queue")}>Queue</button><button class="btn primary" onClick=${() => send("steer")}>Steer now</button>` : html`<button class="btn primary big" onClick=${() => send("send")}>Send review</button>`}
+        ${working ? html`<button class="btn" disabled=${!verdict} onClick=${() => send("queue")}>Queue</button><button class="btn primary" disabled=${!verdict} onClick=${() => send("steer")}>Steer now</button>` : html`<button class="btn primary big" disabled=${!verdict} onClick=${() => send("send")}>Send review</button>`}
       </div>
       ${working ? html`<div class="gfoot">The session is working. Steer reaches it at its next step; Queue waits until its turn ends.</div>` : null}
     </${EV.Sheet}>`;

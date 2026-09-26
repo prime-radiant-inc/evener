@@ -214,7 +214,7 @@
   EV.closeSheet = function () { EV.S.sheets.pop(); EV.update(); };
   EV.closeAllSheets = function () { EV.S.sheets = []; EV.update(); };
   EV.openMenu = function (menu) { EV.S.menu = Object.assign({ openedAt: Date.now() }, menu); EV.update(); };
-  EV.closeMenu = function () { EV.S.menu = null; EV.update(); };
+  EV.closeMenu = function () { if (EV.S.menu && EV.S.menu.liEl) EV.S.menu.liEl.classList.remove("li-sel"); EV.S.menu = null; EV.update(); };
 
   let toastTimer = null;
   EV.toast = function (text, undo) {
@@ -571,34 +571,44 @@
   EV.screens = {};
   EV.sheets = {};
 
-  // Edge-swipe back, anywhere in the app.
+  // Edge-swipe back, anywhere in the app. Inside a stacked sheet (a picker
+  // opened from the launch sheet) it goes back to the sheet underneath, the
+  // way a UINavigationController inside a sheet does; with no sheet open it
+  // pops the screen. A lone sheet is dismissed by dragging it down, not by
+  // this gesture.
+  EV.edgeBack = () => { if (EV.S.sheets.length > 1) EV.closeSheet(); else EV.pop(); };
   function useEdgeBack(ref) {
     useEffect(() => {
       const el = ref.current;
       if (!el) return;
-      let st = null;
-      const down = (e) => {
-        const r = el.getBoundingClientRect();
-        if (e.clientX - r.left < 22 && EV.S.nav.length > 1 && !EV.S.sheets.length && !EV.S.menu) st = { x: e.clientX, y: e.clientY };
+      const canStart = (x) => x - el.getBoundingClientRect().left < 22 && !EV.S.menu
+        && (EV.S.sheets.length > 1 || (EV.S.nav.length > 1 && !EV.S.sheets.length));
+      const finish = (start, x, y) => {
+        const dx = x - start.x, dy = Math.abs(y - start.y);
+        if (dx > 70 && dy < 80) { EV.log("gesture", { name: "edge_back" }); EV.edgeBack(); }
       };
+      // A touch fires both streams (pointerup, then touchend). Scroll areas
+      // take the pointer stream (pointercancel) as soon as a horizontal drag
+      // starts, so the touch stream is the backup; whichever ends first
+      // clears both starts so one swipe never goes back twice.
+      let st = null, tst = null;
+      const down = (e) => { st = canStart(e.clientX) ? { x: e.clientX, y: e.clientY } : null; };
       const up = (e) => {
         if (!st) return;
-        const dx = e.clientX - st.x, dy = Math.abs(e.clientY - st.y);
-        st = null;
-        if (dx > 70 && dy < 80) { EV.log("gesture", { name: "edge_back" }); EV.pop(); }
+        const start = st;
+        st = tst = null;
+        finish(start, e.clientX, e.clientY);
       };
-      let tst = null;
       const tdown = (e) => {
-        const t = e.touches[0], r = el.getBoundingClientRect();
-        tst = t && t.clientX - r.left < 22 && EV.S.nav.length > 1 && !EV.S.sheets.length && !EV.S.menu ? { x: t.clientX, y: t.clientY } : null;
+        const t = e.touches[0];
+        tst = t && canStart(t.clientX) ? { x: t.clientX, y: t.clientY } : null;
       };
       const tup = (e) => {
         const t = e.changedTouches[0];
         if (!tst || !t) return;
-        const dx = t.clientX - tst.x, dy = Math.abs(t.clientY - tst.y);
-        tst = null;
-        st = null;
-        if (dx > 70 && dy < 80) { EV.log("gesture", { name: "edge_back" }); EV.pop(); }
+        const start = tst;
+        st = tst = null;
+        finish(start, t.clientX, t.clientY);
       };
       el.addEventListener("pointerdown", down, true);
       el.addEventListener("pointerup", up, true);

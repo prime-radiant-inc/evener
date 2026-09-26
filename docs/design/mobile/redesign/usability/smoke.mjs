@@ -177,19 +177,37 @@ async function runChecks(page, scheme) {
   await check(S('flow-row-tap-and-next'), page, async () => {
     await reset(page); await tap('Audit Tool Descriptions for Implied Options');
     await logHas(page, 'row_tap', (e) => e.sessionId === 's-audit');
-    const bar = page.getByRole('button', { name: /other sessions need you/ }).first(); await bar.tap(); await sleep(400);
+    await page.getByRole('button', { name: 'Go to the next session that needs you' }).tap(); await sleep(400);
     await logHas(page, 'next', (e) => e.from === 's-audit' && !!e.to);
   });
-  await check(S('flow-edge-swipe-never-archives'), page, async () => {
-    await reset(page);
+  // A finger dragged in from the left edge, the way the back gesture starts.
+  const edgeSwipe = async (y) => {
     const cdp = await page.context().newCDPSession(page);
-    const pts = (x) => [{ x, y: 430 }];
+    const pts = (x) => [{ x, y }];
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(3) });
     for (let x = 20; x <= 300; x += 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(x) });
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await sleep(400);
+  };
+  await check(S('flow-edge-swipe-never-archives'), page, async () => {
+    await reset(page);
+    await edgeSwipe(430);
     const log = await ev(page, 'window.__proto.log');
     if (log.some((e) => e.type === 'archive')) throw new Error('an edge swipe on the Board archived a row');
+  });
+  await check(S('flow-edge-back-one-level'), page, async () => {
+    await reset(page, 'reading'); await sleep(300);
+    const before = await ev(page, 'EV.S.nav.map((n) => n.name).join(">")');
+    await edgeSwipe(300);
+    const after = await ev(page, 'EV.S.nav.map((n) => n.name).join(">")');
+    const want = before.split('>').slice(0, -1).join('>');
+    if (after !== want) throw new Error(`one back swipe went from ${before} to ${after}, expected ${want}`);
+  });
+  await check(S('flow-edge-back-in-stacked-sheet'), page, async () => {
+    await reset(page); await ev(page, `EV.openNew('smoke'); EV.openSheet('pickPlugins',{})`); await sleep(400);
+    await edgeSwipe(500);
+    const kinds = await ev(page, 'EV.S.sheets.map((s) => s.kind).join(",")');
+    if (kinds !== 'launch') throw new Error(`a back swipe in the plugin picker left sheets [${kinds}], expected [launch]`);
   });
   await check(S('flow-scoped-approval'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-mirror')`); await sleep(400);

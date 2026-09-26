@@ -19,7 +19,7 @@
         <span class=${"conn-dot" + (S.conn === "live" ? "" : S.conn === "reconnecting" ? " reconnecting" : " offline")}></span>${S.conn === "live" ? "Connected · live" : S.conn === "reconnecting" ? "Reconnecting…" : "Offline"} · evener ${hubHost.version} · up to date
       </div>
       <div class="glabel">Fleet</div>
-      <div class="group">${h(EV.Gi, { icon: I.host({ s: 17 }), iconBg: "#5B6770", label: "Hosts", value: html`${S.hosts.length}${offline ? html` <span class="tag red">${offline} offline</span>` : mismatch ? html` <span class="tag amber">${mismatch} to update</span>` : ""}`, chev: true, onClick: () => EV.openSheet("hosts", {}) })}</div>
+      <div class="group">${h(EV.Gi, { icon: I.host({ s: 17 }), iconBg: "#5B6770", label: "Hosts", value: html`${S.hosts.length}${offline ? html` <span class="tag red">${offline} offline</span>` : mismatch ? html` <span class="tag gray">${mismatch} on another version</span>` : ""}`, chev: true, onClick: () => EV.openSheet("hosts", {}) })}</div>
       <div class="glabel">Setup</div>
       <div class="group">
         ${h(EV.Gi, { icon: I.key({ s: 17 }), iconBg: "#2F6F8F", label: "Providers", value: html`${S.providers.length}${needSign ? html` <span class="tag amber">${needSign} to sign in</span>` : ""}`, chev: true, onClick: () => EV.openSheet("providers", {}) })}
@@ -58,12 +58,10 @@
     const S = EV.S;
     const x = EV.host(hostId);
     const hubV = EV.host("magic-kingdom").version;
-    const [updating, setUpdating] = useState(false);
-    const upd = () => { setUpdating(true); EV.log("host_update", { host: x.id }); setTimeout(() => { x.version = hubV; setUpdating(false); EV.toast(x.id + " updated to " + hubV); EV.update(); }, 2200); };
     return html`<${EV.Sheet} title=${x.id} left=${Back("Hosts")} size="stacked">
       <div class="group">
         ${h(EV.Gi, { label: "Status", value: html`<span class=${"conn-dot" + (x.state === "offline" ? " offline" : x.state === "connecting" ? " reconnecting" : "")}></span>${EV.cap(x.state)}` })}
-        ${h(EV.Gi, { label: "Version", value: x.version !== hubV ? html`${x.version} <span class="tag amber">Hub runs ${hubV}</span>` : x.version })}
+        ${h(EV.Gi, { label: "Version", value: x.version !== hubV ? html`${x.version} <span class="tag gray">Hub runs ${hubV}</span>` : x.version })}
         ${h(EV.Gi, { label: "System", value: x.os })}
         ${h(EV.Gi, { label: "Resources", value: x.cpus + " CPUs · " + x.memGB + " GB" })}
         ${h(EV.Gi, { label: "Live sessions", value: S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length })}
@@ -75,11 +73,8 @@
         ${x.state === "connecting"
           ? h(EV.Gi, { label: "Connecting…", sub: "Trying ssh " + x.id, value: h(EV.Pulse, { values: [0.3, 0.6, 0.9, 0.6, 0.3, 0.6, 0.9] }) })
           : h(EV.Gi, { label: x.state === "offline" ? "Reconnect" : "Reconnect now", cls: "accent", onClick: () => { EV.log("host_reconnect", { host: x.id }); EV.reconnectHost(x.id); } })}
-        ${x.version !== hubV ? (x.state === "connected"
-          ? h(EV.Gi, { label: updating ? "Updating…" : "Update host to " + hubV, cls: "accent", onClick: updating ? null : upd })
-          : h(EV.Gi, { label: "Update host to " + hubV, sub: "Reconnect first; the update runs over the same connection", cls: "disabled" })) : null}
       </div>
-      <div class="gfoot">${x.origin === "hub.toml" ? "This host is defined in hub.toml, so it can only be edited there." : "Hosts added in the app can be edited or removed here."}</div>
+      <div class="gfoot">${x.version !== hubV ? "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient. " : ""}${x.origin === "hub.toml" ? "This host is defined in hub.toml, so it can only be edited there." : "Hosts added in the app can be edited or removed here."}</div>
     </${EV.Sheet}>`;
   };
 
@@ -118,7 +113,11 @@
     const p = S.providers.find((x) => x.id === provider);
     const [phase, setPhase] = useState(p.status === "ok" ? "done" : "start");
     const s = sessionId && EV.sess(sessionId);
+    // The hub's device flow hands the app a page URL and a code, nothing
+    // more, so the app copies the code on the way out instead of pretending
+    // the page arrives filled in.
     const open = () => {
+      EV.log("copy_code", { provider, auto: true });
       EV.log("provider_signin_start", { provider });
       setPhase("waiting");
       setTimeout(() => {
@@ -130,7 +129,7 @@
     };
     return html`<${EV.Sheet} title=${"Sign in to " + provider} left=${html`<button class="text-btn" onClick=${EV.closeSheet}>${phase === "done" ? "Close" : "Cancel"}</button>`} size=${stacked ? "stacked" : "medium"}>
       ${phase === "start" ? html`<div style="padding:4px 20px">
-          <p style="margin:0 0 12px;font-size:15px;line-height:21px;color:var(--ink-mid)">Open the sign-in page and enter this code. The hub finishes signing in on its own.</p>
+          <p style="margin:0 0 12px;font-size:15px;line-height:21px;color:var(--ink-mid)">The sign-in page opens inside the app, and this code is copied for you. Paste it when the page asks for it. The hub finishes signing in on its own.</p>
           <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border-radius:12px;padding:14px 16px">
             <span style="font:600 26px var(--mono);letter-spacing:.08em">WDJB-MJHT</span>
             <button class="btn" onClick=${() => { EV.log("copy_code", { provider }); EV.toast("Code copied"); }}>Copy code</button>
@@ -138,7 +137,7 @@
           <div style="margin-top:16px"><button class="btn primary big" onClick=${open}>Open sign-in page</button></div>
           <p style="font-size:13px;color:var(--ink-low);margin:10px 2px">The code expires in 15 minutes.</p>
         </div>`
-      : phase === "waiting" ? html`<div class="empty" style="padding-top:28px">${h(EV.Pulse, { values: [0.3, 0.6, 0.9, 0.6, 0.3, 0.6, 0.9] })}<b style="margin-top:12px">Waiting for you to finish signing in…</b>Come back here when the page says you're done.</div>`
+      : phase === "waiting" ? html`<div class="empty" style="padding-top:28px">${h(EV.Pulse, { values: [0.3, 0.6, 0.9, 0.6, 0.3, 0.6, 0.9] })}<b style="margin-top:12px">Waiting for you to finish signing in…</b>Your code is WDJB-MJHT. Close the page when it says you're done.</div>`
       : html`<div class="empty" style="padding-top:24px"><span style="color:var(--alive);display:inline-flex">${I.check({ s: 34 })}</span><b style="margin-top:8px">Signed in to ${provider}</b>Sessions using it can continue.
           ${s && s.state === "failed" ? html`<div style="margin-top:16px"><button class="btn primary" onClick=${() => { EV.closeAllSheets(); EV.retry(s); }}>${I.retry({ s: 16 })} Retry “${s.title}”</button></div>` : null}</div>`}
     </${EV.Sheet}>`;

@@ -264,9 +264,13 @@ function installHarnessHelpers() {
       const prev = byEl.get(c.el);
       if (!prev || (c.exact && !prev.exact)) byEl.set(c.el, c);
     }
-    let candidates = Array.from(byEl.values());
-    if (candidates.some((c) => c.exact)) candidates = candidates.filter((c) => c.exact);
-    candidates.sort((a, b) => a.area - b.area);
+    // Rank what a finger can reach above what it can't, and exact labels
+    // above partial ones. (Filtering to exact matches first made covered
+    // background text, like a list row's label behind a sheet, win over the
+    // reachable row whose full label merely contains the text.)
+    const candidates = Array.from(byEl.values());
+    const rank = (c) => (c.onScreen ? 0 : 2) + (c.exact ? 0 : 1);
+    candidates.sort((a, b) => rank(a) - rank(b) || a.area - b.area);
     return candidates.map((c) => ({
       tag: c.el.tagName.toLowerCase(),
       role: roleOf(c.el),

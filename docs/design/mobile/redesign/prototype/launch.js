@@ -83,10 +83,11 @@
       </div>
       <div class="recipes" role="radiogroup" aria-label="Recipes">
         ${L.recipe ? null : html`<span class="chip on" aria-label="Custom settings">Custom</span>`}
-        ${recipeChip("last", "Last used", () => applyRecipe(Object.assign({ id: "last", name: "Last used" }, S.lastUsed || S.recipes[0])))}
+        ${recipeChip("last", "Same as last time", () => applyRecipe(Object.assign({ id: "last", name: "Same as last time" }, S.lastUsed || S.recipes[0])))}
         ${S.recipes.map((r) => recipeChip(r.id, r.name, () => applyRecipe(r)))}
         <button class="chip" onClick=${() => EV.openSheet("saveRecipe", {})} aria-label="Save as recipe">${I.plus({ s: 14 })} Save</button>
       </div>
+      <div class="recipe-sum">${L.recipe ? "Sets " : "Custom: "}${[L.host, L.project, m.name + " " + L.effort, L.plugins.length + " plugins", L.access].join(" · ")}</div>
       ${L.error ? html`<div class="notice" style="background:var(--danger-bg);border-color:var(--danger-edge);grid-template-columns:22px 1fr"><span class="ic" style="color:var(--danger)">${I.failed({ s: 16 })}</span><span class="txt">${L.error}</span></div>` : null}
       ${L.note ? html`<div class="gfoot" style="padding-top:10px">${L.note}</div>` : null}
       <div class="glabel">Where</div>
@@ -98,7 +99,7 @@
       <div class="glabel">Agent</div>
       <div class="group">
         ${h(EV.Gi, { icon: I.cpu({ s: 17 }), iconBg: "#2F6F8F", label: "Model", sub: m.provider, value: m.name, chev: true, onClick: () => EV.openSheet("model", { target: "launch" }) })}
-        <div class="gi static" style="display:block;padding:10px 0 12px"><div style="padding:0 14px 8px;font-size:17px;display:flex;justify-content:space-between"><span>Effort</span><span style="color:var(--ink-low);font-size:13px">${m.name} supports ${m.efforts.length} levels</span></div>
+        <div class="gi static" style="display:block;padding:10px 0 12px"><div style="padding:0 14px 8px"><div style="font-size:17px">Effort</div><div style="color:var(--ink-low);font-size:13px">How long it thinks before acting</div></div>
           ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: L.effort, onChange: (e) => { L.effort = e; L.recipe = null; EV.log("launch_effort", { effort: e }); EV.update(); }, disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}</div>
         ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), iconBg: "#3C7A5A", label: "Plugins", value: L.plugins.length + " of " + S.plugins.length, chev: true, onClick: () => EV.openSheet("pickPlugins", {}) })}
         ${h(EV.Gi, { icon: I.shield({ s: 17 }), iconBg: "#7A5C3C", label: "Access", sub: { "Full access": "Read and write anywhere", "Workspace write": "Writes inside the project; asks first elsewhere", "Read-only": "Reads only", "Restricted": "Only allowed tools; no network" }[L.access], value: L.access, chev: true, onClick: () => EV.openSheet("pickAccess", {}) })}

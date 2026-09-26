@@ -333,7 +333,9 @@
   };
 
   EV.goNext = function (fromId) {
-    const list = EV.needsOrder().filter((x) => x.id !== fromId);
+    // Alerts that arrived while you were reading come first: that's what "new" promised.
+    const heldIds = EV.S.held.map((a) => a.sessionId);
+    const list = EV.needsOrder().filter((x) => x.id !== fromId).sort((a, b) => heldIds.includes(b.id) - heldIds.includes(a.id));
     EV.log("next", { from: fromId, to: list[0] ? list[0].id : null });
     if (!list.length) { EV.toast("Nothing else needs you"); return; }
     EV.S.held = [];
@@ -438,9 +440,24 @@
     const others = EV.needsCount(exceptId);
     const held = EV.S.held.length;
     if (!others) return null;
-    return html`<button class="next-bar" onClick=${() => EV.goNext(exceptId)} aria-label=${others + " other sessions need you. Go to the next one."}>
-      <span>${held ? html`<b>${held} new</b> · ` : null}${others} other session${others === 1 ? " needs" : "s need"} you</span><b>Next ${I.chevR({ s: 12 })}</b>
-    </button>`;
+    return html`<div class="next-bar">
+      <button class="nb-list" onClick=${() => { EV.log("needs_list_open", { from: exceptId }); EV.openSheet("needsList", { exceptId }); }} aria-label=${"See the " + others + " other sessions that need you"}>${held ? html`<b>${held} new</b> · ` : null}${others} other session${others === 1 ? " needs" : "s need"} you</button>
+      <button class="nb-next" onClick=${() => EV.goNext(exceptId)} aria-label="Go to the next session that needs you">Next ${I.chevR({ s: 12 })}</button>
+    </div>`;
+  };
+
+  // What needs you, as a short list to choose from, newest alerts first.
+  EV.sheets.needsList = function ({ exceptId }) {
+    const S = EV.S;
+    const heldIds = S.held.map((a) => a.sessionId);
+    const list = EV.needsOrder().filter((x) => x.id !== exceptId).sort((a, b) => heldIds.includes(b.id) - heldIds.includes(a.id));
+    return html`<${EV.Sheet} title="Needs you" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
+      ${list.map((x) => html`<button class="row" key=${x.id} style="text-align:left" onClick=${() => { EV.log("needs_list_pick", { sessionId: x.id }); S.held = S.held.filter((a) => a.sessionId !== x.id); EV.closeAllSheets(); EV.openSession(x.id, { from: "needs_list" }); }}>
+        <div class="mark">${h(EV.Mark, { s: x })}</div>
+        <div style="min-width:0"><div class="l1"><span class="title">${x.title}</span><span class="age">${heldIds.includes(x.id) ? html`<span class="draft" style="color:var(--attention-ink);border-color:var(--attention-edge)">New</span>` : null}${EV.fmtAgo(Date.now() - x.updatedAt)}</span></div>
+        ${EV.whyParts(x) ? html`<div class=${"why two " + (EV.whyParts(x).cls || "")}>${h(EV.WhyText, { w: EV.whyParts(x) })}</div>` : null}</div>
+      </button>`)}
+    </${EV.Sheet}>`;
   };
 
   // ---------- composer ----------
@@ -716,7 +733,7 @@
       <div class="search-field">${I.search({ s: 16 })}<input placeholder="Search models" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Search models" /></div>
       ${L ? null : html`<div class="glabel" style="padding-top:8px">Effort</div>
       ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: sel.effort, onChange: (e) => setSel({ model: sel.model, effort: e }), disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}
-      <div class="gfoot">${m.name} supports ${m.efforts.map(EV.cap).join(", ")}.</div>`}
+      <div class="gfoot">How long it thinks before acting. ${m.name} supports ${m.efforts.map(EV.cap).join(", ")}.</div>`}
       ${!q ? html`<div class="glabel">Recent</div><div class="group">${recentIds.map((id) => row(EV.model(id)))}</div>` : null}
       ${provs.map((p) => { const list = S.models.filter((x) => x.provider === p && matches(x)); return list.length ? html`<div class="glabel">${p}</div><div class="group">${list.map(row)}</div>` : null; })}
     </${EV.Sheet}>`;

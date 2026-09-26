@@ -452,7 +452,7 @@
   for (const s of sessions) if (!T[s.id]) T[s.id] = generic(s);
 
   const docs = {
-    "docs/superpowers/plans/2026-09-25-host-project-hierarchy.md": { kind: "Plan", ago: 62 * M, lines: 142, changed: [3, 9, 14], md: `# Host and project hierarchy in the sidebar
+    "docs/superpowers/plans/2026-09-25-host-project-hierarchy.md": { kind: "Plan", ago: 62 * M, lines: 142, changed: [3, 9, 15], md: `# Host and project hierarchy in the sidebar
 
 Sessions can run on several hosts, and every session belongs to a project. The sidebar needs to show both without making either one hard to find.
 
