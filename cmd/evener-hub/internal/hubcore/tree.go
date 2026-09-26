@@ -1038,10 +1038,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// firstApprovalFor resolves the oldest pending escalation card for a
 	// session ID from the same live map, for the same reason: every builder
 	// names the same card. The daemon lists cards in raise order, so the
-	// oldest is first; a session with none gets the zero card.
+	// oldest is first. It answers only while the entry's approval flag is set,
+	// so a row's approval detail always describes the approval the row says is
+	// pending; any other session gets the zero card.
 	firstApprovalFor := func(id string) appwire.SandboxEscalationRequested {
-		if cards := liveMap[id].PendingEscalations; len(cards) > 0 {
-			return cards[0]
+		if entry := liveMap[id]; entry.PendingEscalation && len(entry.PendingEscalations) > 0 {
+			return entry.PendingEscalations[0]
 		}
 		return appwire.SandboxEscalationRequested{}
 	}

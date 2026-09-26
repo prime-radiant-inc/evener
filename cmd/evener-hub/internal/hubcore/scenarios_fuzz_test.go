@@ -50,6 +50,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioBuildTree_MarksNeverRunSessionDormant,
 		fuzzScenarioBuildTree_NeedsYouAggregatesAwaitingAcrossProjects,
 		fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits,
+		fuzzScenarioBuildTree_NoApprovalDetailWithoutTheFlag,
 		fuzzScenarioBuildTree_NoOverflowWhenUnderCap,
 		fuzzScenarioBuildTree_NoProjectFallback,
 		fuzzScenarioBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID,
