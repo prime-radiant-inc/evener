@@ -333,3 +333,57 @@ func TestTransitionCarriesWhatAChangeMayWrite(t *testing.T) {
 		t.Fatalf("the change did not survive the reload: %+v", again)
 	}
 }
+
+// TestTransitionDoesNotAliasCallerOwnedValues pins the store side of the
+// transition callback: whatever mutable value the callback hands in — a progress
+// slice, a result, a raw message — the store adopts its own copy. A caller that
+// keeps a reference to it and mutates it afterwards must not be able to rewrite
+// store state without a write and without the store mutex, or memory and the file
+// silently disagree.
+func TestTransitionDoesNotAliasCallerOwnedValues(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+
+	progress := []ProgressEntry{{TS: time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), Message: "pushed"}}
+	result := &Result{OK: true, Message: "deployed"}
+	epoch := json.RawMessage(`{"bootId":"boot-1","opSeq":3}`)
+	if _, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+		r.Progress = progress
+		r.Result = result
+		r.FencingEpoch = epoch
+	}); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	before := mustReadFile(t, path)
+
+	// The caller keeps the values it handed in and mutates them.
+	progress[0].Message = "rewritten"
+	result.OK = false
+	result.Message = "rewritten"
+	epoch[0] = 'X'
+
+	stored, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q disappeared", record.ID)
+	}
+	if len(stored.Progress) != 1 || stored.Progress[0].Message != "pushed" {
+		t.Fatalf("the caller's progress slice aliased into the store: %+v", stored.Progress)
+	}
+	if stored.Result == nil || !stored.Result.OK || stored.Result.Message != "deployed" {
+		t.Fatalf("the caller's result aliased into the store: %+v", stored.Result)
+	}
+	if got := string(stored.FencingEpoch); got != `{"bootId":"boot-1","opSeq":3}` {
+		t.Fatalf("the caller's fencing epoch aliased into the store: %s", got)
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a caller's mutation rewrote the store file")
+	}
+	reloaded := reopenFresh(t, path)
+	again, ok := reloaded.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q did not survive the reload", record.ID)
+	}
+	if again.Result == nil || again.Result.Message != "deployed" {
+		t.Fatalf("the persisted result is not the one the transition wrote: %+v", again.Result)
+	}
+}

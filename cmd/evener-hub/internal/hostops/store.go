@@ -329,6 +329,13 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		// scope §4 keys on, and the sequence stamp is what race scans compare.
 		return Record{}, fmt.Errorf("%w: the change rewrote record %q's immutable fields", ErrInvalidRecord, id)
 	}
+	// The store adopts the snapshot it just wrote, so it must own every value in
+	// it: a callback that hands in a progress slice, a result or a raw message it
+	// still holds could otherwise rewrite in-memory state after this call
+	// returned, with no write and no lock, leaving memory and the file
+	// disagreeing. The record's mutable fields are copied here, once, before
+	// validation.
+	*record = cloneRecord(*record)
 	record.State = to
 	record.UpdatedAt = nowUTC()
 	if to.Terminal() {
