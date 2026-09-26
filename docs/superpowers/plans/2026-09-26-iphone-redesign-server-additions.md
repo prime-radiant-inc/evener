@@ -1432,6 +1432,13 @@ func (s *Session) WireState() string {
 func (s *Session) RestingWireState() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.restingWireStateLocked()
+}
+
+// restingWireStateLocked is RestingWireState for a caller that already holds
+// s.mu: RestoreSession builds its SessionStart under the lock, and taking it
+// again there would deadlock.
+func (s *Session) restingWireStateLocked() string {
 	resting := s.state == SessionIdle || s.state == SessionAwaiting
 	if resting && len(s.askPending) == 0 && historyEndsInTurnFailure(s.history) {
 		return appwire.ThreadStatusSystemError
@@ -1461,9 +1468,9 @@ func historyEndsInTurnFailure(history []schema.Turn) bool {
 }
 ```
 
-In `agent/session_init.go`, the restored `SessionStart` carries the resting wire state: `State: s.RestingWireState(),` in place of `State: string(restoredState),` (`:1580`). `recomputeRestoredState` may later upgrade idle to awaiting; `RestingWireState` gives `systemError` for both when the history ends in a failure, so the published value cannot go stale.
+In `agent/session_init.go`, the restored `SessionStart` carries the resting wire state: `State: s.restingWireStateLocked(),` in place of `State: string(restoredState),` (`:1580`). RestoreSession holds `s.mu` while it builds that event, so the locking `RestingWireState` would deadlock there. Check that the lock is held at that line before choosing; if it isn't, call `RestingWireState`. Add a test that restores a session whose history ends in a failure and returns, run under `go test -timeout 60s` so a deadlock fails instead of hanging. `recomputeRestoredState` may later upgrade idle to awaiting; `RestingWireState` gives `systemError` for both when the history ends in a failure, so the published value cannot go stale.
 
-In `cmd/evener/serve.go:1672`: `srv.SetState(sess.RestingWireState())` in place of `srv.SetState(string(sess.State()))`, so the synchronous startup write and the bridge's `SessionStart` write agree (#251).
+In `cmd/evener/serve.go:1672`: `srv.SetState(sess.WireState())` in place of `srv.SetState(string(sess.State()))`. `WireState` is `RestingWireState` plus the work-pending override, so a restored failed session whose restored queue already holds claimable work publishes `active`, as it does everywhere else, rather than `systemError`. Check where the restored work queues become known relative to this line. If they arrive later, make sure the state is published again when they do, so the startup value can't go stale, and keep the bridge's `SessionStart` write consistent with it (#251). Add a test for a restored failed session with pending work.
 
 - [ ] **Step 4: Run them to verify they pass, then the packages**
 
