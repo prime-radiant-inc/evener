@@ -69,7 +69,7 @@ func (s *Session) awaitingOrHasPendingAsk() bool {
 // told to give. TestWireState_AwaitingOutranksAutonomy pins this.
 func (s *Session) WireState() string {
 	state := s.RestingWireState()
-	if (state == string(SessionIdle) || state == appwire.ThreadStatusSystemError) && s.sessionWorkPending() {
+	if appwire.IsRestingThreadStatus(state) && s.sessionWorkPending() {
 		return string(SessionProcessing)
 	}
 	return state
