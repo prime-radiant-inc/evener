@@ -766,12 +766,13 @@ func fileHasContent(path string) bool {
 //
 // A block is the marker with the test's own output around it, and it runs from
 // the previous framework line to the next one, bounded by the two line counts.
-// If a nested owner separates a marker from its parent's diagnostics, the
-// owner-aware expansion below recovers the bounded parent context instead.
-// That keeps the indented t.Log/t.Error lines and the test's unindented direct
-// output (fmt.Println, log.Print, a child process) alike; only the toolchain's
-// own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
-// marker such as `panic:` — ends the run, on either side of the marker.
+// If a mismatched owner separates a marker from its diagnostic context, or the
+// ordinary window is empty, owner-aware expansion recovers bounded context
+// instead. That keeps the indented t.Log/t.Error lines and the test's
+// unindented direct output (fmt.Println, log.Print, a child process) alike;
+// only the toolchain's own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or
+// another failure marker such as `panic:` — ends the run, on either side of
+// the marker.
 //
 // A survey that died with no marker at all — a fatal error, an os.Exit, a
 // killed binary — has no block to show, so a bounded tail of the log stands in.
@@ -832,9 +833,8 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for index := start; index < end; index++ {
 			emittedLines[index] = struct{}{}
 		}
-		// Scanning resumes past this block and the next block cannot reach
-		// back into it: adjacent failures would otherwise print the lines
-		// between them twice.
+		// Scanning resumes past the ordinary window. Expansion can reach back
+		// earlier, so emittedLines prevents reprinting lines already emitted.
 		emitted = end
 		i = end
 	}
@@ -887,15 +887,16 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearby excerpt contains only its verdict or a different test owns the
 // nearest context. The lines from ordinaryStart up to marker are the
 // already-selected ordinary context. Selection starts with owned ordinary
-// output. When that window has no lines owned by the failing test or its
-// descendants, descendant diagnostics fill all but one slot when a parent
-// diagnostic exists, reserving one slot for the newest parent diagnostic.
-// Remaining slots are then backfilled from owned diagnostics, then owned output,
-// then unindented ordinary-window lines owned by other tests. Source diagnostics
+// output or, when that window has no lines owned by the failing test or its
+// descendants, descendant diagnostics. Either path reserves one slot when a
+// parent or failed-child diagnostic exists. Newest parent diagnostics are
+// selected next when present; remaining slots are then backfilled from owned
+// diagnostics, then owned output, then unindented ordinary-window lines owned
+// by other tests. Source diagnostics
 // are associated with the most recent go test RUN/CONT/NAME frame; a verdict
 // returns ownership to the failing test. If ordinary context owned by the
-// failing test or its descendants exists, expansion requires a parent-owned
-// source diagnostic.
+// failing test or its descendants exists, expansion requires a source
+// diagnostic owned by the failing test or one of its failed children.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
@@ -934,6 +935,18 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	ownedOutputCandidates := make([]int, 0, maxExpandedLines)
 	ordinaryContextCandidates := make([]int, 0, maxExpandedLines)
 	ordinaryCount := 0
+	failedChildDiagnostic := false
+	for index := marker + 1; index < len(lines) && index <= marker+surveyContextAfter; index++ {
+		trimmed := strings.TrimSpace(lines[index])
+		if !strings.HasPrefix(trimmed, "--- FAIL:") {
+			continue
+		}
+		childName := surveyFailureName(trimmed)
+		if strings.HasPrefix(childName, name+"/") {
+			failedChildDiagnostic = true
+			break
+		}
+	}
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
 			owner = frameOwner
@@ -974,7 +987,8 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			appendNewest(&ordinaryContextCandidates, lineIndex)
 		}
 	}
-	if ordinaryCount > 0 && !parentDiagnostic {
+	hasFailureDiagnostic := parentDiagnostic || failedChildDiagnostic
+	if ordinaryCount > 0 && !hasFailureDiagnostic {
 		return nil, false
 	}
 	keep := make(map[int]struct{}, maxExpandedLines)
@@ -989,13 +1003,13 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 	}
 	ordinaryBudget := maxExpandedLines
-	if parentDiagnostic {
+	if hasFailureDiagnostic {
 		ordinaryBudget--
 	}
 	selectNewest(ordinaryOwnedCandidates, min(ordinaryCount, ordinaryBudget))
 	if ordinaryCount == 0 {
 		descendantBudget := maxExpandedLines
-		if parentDiagnostic {
+		if hasFailureDiagnostic {
 			descendantBudget--
 		}
 		selectNewest(descendantDiagnosticCandidates, descendantBudget)

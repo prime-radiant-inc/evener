@@ -483,6 +483,27 @@ func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T)
 	}
 }
 
+// TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic covers a parent
+// whose later passing child owns the ordinary context nearest the parent
+// verdict. The earlier failed child's diagnostic must still reach the excerpt.
+func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child1\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child2\n")
+	log.WriteString("    child_test.go:9: passing child log\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child1 (0.00s)\n")
+	log.WriteString("    --- PASS: TestParent/child2 (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("earlier failed child diagnostic was omitted behind later child output: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput
 // keeps an owned child diagnostic ahead of unindented output after a sibling
 // NAME frame, which cannot be attributed to either test.
