@@ -530,19 +530,21 @@ only `local`, so the fan-out currently degenerates to one source.
   key, the table rebuild, and the source-aware resolver are the implementing
   PR's requirement.
   **Project summaries must carry the owning source, and destructive
-  local-project actions must be gated by it.** The project the rail renders has
-  no host dimension today: the resolved model is `identifier.Project` =
-  `{ID, CanonicalPath}` (`identifier/project.go`), the projected entity's
-  key/name/`working_dir` reach the frontend `RailProject`
-  (`shell/rail/railNodes.ts`), and none of them names the source. Remote rows
-  are folded into the same project list, and the project context menu
-  (`projectMenuItems`, `RailRow.tsx`) unconditionally renders the destructive
+  local-project actions must be gated by it.** The resolved model is still
+  `identifier.Project` = `{ID, CanonicalPath}` (`identifier/project.go`) and
+  carries no host dimension of its own, so the qualification rides beside it:
+  the projected summary's `Sources` list reaches the frontend `RailProject`
+  (`shell/rail/railNodes.ts`), and every consumer that acts on a project must
+  use it. Remote rows are folded into the same project list, and the project
+  context menu (`projectMenuItems`, `RailRow.tsx`) still renders the destructive
   items for every project, with the delete item wired to a **controller-local**
-  call: `onDeleteProjectRequest` → `deleteProject(key, workingDir)` →
-  `evener/project/delete` (`Rail.tsx`, `actions.ts`). A remote project row can
-  therefore trigger a delete of the controller's own sessions/project state (or
-  a colliding local project), and "New session" navigates the controller to the
-  remote path. Requirements:
+  call: `onDeleteProjectRequest` → `deleteProject(key, workingDir, sources)` →
+  `evener/project/delete` (`Rail.tsx`, `actions.ts`). **Shipped:** both ends
+  refuse a project that belongs to a host — `deleteProject` before issuing any
+  request, and the `projectDelete` handler with a typed `InvalidParams`
+  (`project_delete.go:128-132`) — so a remote row cannot delete the
+  controller's own sessions; "New session" carries the project's source into the
+  spawn form. Requirements:
   - every navigation project summary carries its owning source — the same
     `ref.SourceID` host qualification the group key and the archive/favorite
     stores use, projected onto the project entity (e.g. a `source`/`host_id`
