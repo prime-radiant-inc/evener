@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -703,13 +704,12 @@ func TestOpenRefusesDuplicateStampsButAcceptsGaps(t *testing.T) {
 	}
 }
 
-// TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes pins the fail-closed
-// presence rules for the two raw fields. An absent field is absent; a present
-// one must carry the shape the spec gives it — a member array for an
-// orphan-unverified record's boundary, an object for a fencing epoch — because a
-// boundary that reads as null, empty or a scalar is what the fencing path would
-// unmarshal into an empty list, and "demonstrably empty" is the reading that
-// clears a fence.
+// TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes pins the presence
+// rules for the two raw fields. An absent optional field is absent; a present one
+// must carry the shape the spec gives it — an array for an orphan-unverified
+// record's boundary, an object for a fencing epoch. Null, a scalar and an object
+// are not a boundary array at all, while an empty array is one the fencing path
+// legitimately persists (crash-fencing §5's demonstrably-empty clean rule).
 func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
 	orphan := func(boundary string) string {
 		return `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
@@ -721,7 +721,6 @@ func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
 	}
 	refused := map[string]string{
 		"null boundary":     orphan("null"),
-		"empty array":       orphan("[]"),
 		"object boundary":   orphan("{}"),
 		"scalar boundary":   orphan("123"),
 		"string boundary":   orphan(`"x"`),
@@ -743,6 +742,12 @@ func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
 		"member array": orphan(`[{"host":"h1","kind":"local-linux"}]`),
 		"object epoch": pending(`{"bootId":"boot-1","opSeq":3}`),
 		"absent epoch": pendingPayloadWithoutEpoch(),
+		// Crash-fencing §5: "A markerless local boundary reads clean only when
+		// demonstrably empty"; §3 adds "An empty boundary is already clean". An
+		// empty array is therefore a legitimate persisted boundary — the
+		// fail-closed marker for a lost boundary is the `boundary-unavailable`
+		// entry (§9), never an absent array.
+		"demonstrably empty boundary": orphan("[]"),
 	}
 	for name, body := range accepted {
 		t.Run("accepted/"+name, func(t *testing.T) {
@@ -828,5 +833,75 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	}
 	if len(refusing.Records()) != 0 {
 		t.Fatalf("a refused Create left records behind")
+	}
+}
+
+// TestTheFirstWriteSyncsTheDirectoryThatCarriesANewStore pins spec §4's
+// durability paragraph for the one write that creates the store's directory: the
+// rename's directory entry is fsynced, and so is the parent entry that carries
+// the newly created directory, or a crash can lose the directory and the store
+// with it. Later writes find the directory already there and pay only the first
+// sync.
+func TestTheFirstWriteSyncsTheDirectoryThatCarriesANewStore(t *testing.T) {
+	root := t.TempDir()
+	path := StorePath(root)
+	var synced []string
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		synced = append(synced, dir)
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+
+	createTestRecord(t, store, "h1")
+	dir := filepath.Dir(path)
+	if len(synced) != 2 || synced[0] != dir || synced[1] != filepath.Dir(dir) {
+		t.Fatalf("the first write synced %v, want the store directory %q then its parent %q",
+			synced, dir, filepath.Dir(dir))
+	}
+
+	synced = nil
+	createTestRecord(t, store, "h2")
+	if len(synced) != 1 || synced[0] != dir {
+		t.Fatalf("a later write synced %v, want only the store directory %q", synced, dir)
+	}
+}
+
+// TestLoadNormalizesStoredTimestampsToUTC pins spec §8's storage rule:
+// "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed RFC3339; a
+// stored offset form converts at write time)". A file that arrived with an offset
+// (hand-edited, migrated or custody-imported) is normalized on load, so the
+// offset never survives into a later write, and the instant is unchanged.
+func TestLoadNormalizesStoredTimestampsToUTC(t *testing.T) {
+	path := StorePath(t.TempDir())
+	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`
+	writeRawStore(t, path, 0o600, body)
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	stored, ok := store.Record("00000000000000000001")
+	if !ok {
+		t.Fatalf("record not loaded")
+	}
+	if got := stored.CreatedAt.Location(); got != time.UTC {
+		t.Fatalf("loaded createdAt location = %v, want UTC", got)
+	}
+	if want := time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC); !stored.CreatedAt.Equal(want) {
+		t.Fatalf("loaded createdAt = %v, want the same instant as %v", stored.CreatedAt, want)
+	}
+
+	if _, err := store.Transition(stored.ID, StateRunning, nil); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	raw := string(mustReadFile(t, path))
+	if !strings.Contains(raw, `"createdAt":"2026-09-26T00:00:00Z"`) {
+		t.Fatalf("the write did not store createdAt UTC-normalized:\n%s", raw)
+	}
+	if strings.Contains(raw, "+02:00") {
+		t.Fatalf("the offset form survived into the store file:\n%s", raw)
 	}
 }

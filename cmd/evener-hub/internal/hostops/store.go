@@ -471,6 +471,15 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                *file.Records,
 	}
+	// Spec §8: "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed
+	// RFC3339; a stored offset form converts at write time)". Values this store
+	// originates are already UTC; a record read from a hand-edited, migrated or
+	// custody-imported file is normalized here, so its offset form never survives
+	// into a later write.
+	for i := range state.Records {
+		state.Records[i].CreatedAt = state.Records[i].CreatedAt.UTC()
+		state.Records[i].UpdatedAt = state.Records[i].UpdatedAt.UTC()
+	}
 	if err := validateSnapshot(state); err != nil {
 		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
 	}
@@ -496,8 +505,9 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		return false, fmt.Errorf("hostops: marshal store: %w", err)
 	}
 	dir := filepath.Dir(path)
-	if err := fs.MkdirAll(dir, 0o700); err != nil {
-		return false, fmt.Errorf("hostops: create store directory: %w", err)
+	created, err := ensureStoreDir(fs, dir)
+	if err != nil {
+		return false, err
 	}
 	temp, err := afero.TempFile(fs, dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -545,6 +555,30 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 	}
 	if err := sync(fs, dir); err != nil {
 		return true, &postRenameError{err: err}
+	}
+	if created {
+		// The write created the store's directory, so the entry that carries it
+		// lives in the parent: a crash before that entry is durable can lose the
+		// new directory and the store with it. Only the first write pays this;
+		// every later write finds the directory already there.
+		if err := sync(fs, filepath.Dir(dir)); err != nil {
+			return true, &postRenameError{err: err}
+		}
+	}
+	return true, nil
+}
+
+// ensureStoreDir creates the store's directory when it is missing and reports
+// whether this call created it, so the write can sync the parent entry that
+// carries a new directory.
+func ensureStoreDir(fs afero.Fs, dir string) (bool, error) {
+	if _, err := fs.Stat(dir); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("hostops: stat store directory: %w", err)
+	}
+	if err := fs.MkdirAll(dir, 0o700); err != nil {
+		return false, fmt.Errorf("hostops: create store directory: %w", err)
 	}
 	return true, nil
 }

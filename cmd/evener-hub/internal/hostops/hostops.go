@@ -225,16 +225,16 @@ func validateRecord(record Record) error {
 	if len(record.FencingEpoch) > 0 && !jsonFieldIsObject(record.FencingEpoch) {
 		return fmt.Errorf("%w: record %q carries a fencing epoch that is not an object", ErrInvalidRecord, record.ID)
 	}
-	if len(record.OrphanBoundary) > 0 && !jsonFieldIsMemberArray(record.OrphanBoundary) {
-		return fmt.Errorf("%w: record %q carries an orphan boundary that is not a member array", ErrInvalidRecord, record.ID)
-	}
 	// Spec §4: "The `orphan-unverified` variant carries the per-member
-	// `BoundaryEntry[]` array". The check is fail-closed on purpose: an absent,
-	// null, empty or non-array boundary is not a verified boundary, and a record
-	// whose boundary reads as demonstrably-empty could otherwise un-fence a
-	// possibly-live orphan.
+	// `BoundaryEntry[]` array" — present, and an array. Null, a scalar or an
+	// object is not a boundary this store ever wrote, and an empty array is a
+	// legitimate boundary, not a missing one: crash-fencing §5's clean rule reads
+	// a `local-markerless` boundary as clean only "when demonstrably empty", and
+	// §3 records that "an empty boundary is already clean". The fail-closed
+	// marker for a lost boundary is the `boundary-unavailable` entry (§9), never
+	// an absent array.
 	switch {
-	case record.State == StateOrphanUnverified && !jsonFieldIsMemberArray(record.OrphanBoundary):
+	case record.State == StateOrphanUnverified && !jsonFieldIsArray(record.OrphanBoundary):
 		return fmt.Errorf("%w: orphan-unverified record %q carries no boundary array", ErrInvalidRecord, record.ID)
 	case record.State != StateOrphanUnverified && len(record.OrphanBoundary) > 0:
 		return fmt.Errorf("%w: record %q carries an orphan boundary in state %q", ErrInvalidRecord, record.ID, record.State)
@@ -264,15 +264,16 @@ func jsonFieldIsObject(raw json.RawMessage) bool {
 	return !jsonFieldIsNull(raw) && json.Unmarshal(raw, &map[string]json.RawMessage{}) == nil
 }
 
-// jsonFieldIsMemberArray reports whether a raw field carries a non-empty JSON
-// array: the outer form of §4's per-member `BoundaryEntry[]`. An absent, null,
-// empty or non-array boundary is not one.
-func jsonFieldIsMemberArray(raw json.RawMessage) bool {
+// jsonFieldIsArray reports whether a raw field carries a JSON array: the outer
+// form of §4's per-member `BoundaryEntry[]`. An empty array is an array — the
+// clean rule in crash-fencing §5 reads one as demonstrably empty — while an
+// absent field, the literal null, an object and a scalar are not arrays at all.
+func jsonFieldIsArray(raw json.RawMessage) bool {
 	if jsonFieldIsNull(raw) {
 		return false
 	}
 	var members []json.RawMessage
-	return json.Unmarshal(raw, &members) == nil && len(members) > 0
+	return json.Unmarshal(raw, &members) == nil
 }
 
 // jsonFieldIsNull reports whether a raw field is the JSON literal null. An
