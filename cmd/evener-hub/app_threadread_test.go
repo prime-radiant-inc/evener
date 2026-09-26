@@ -1855,3 +1855,97 @@ func TestThreadReadPastSessionSkipsFullTurnProjection(t *testing.T) {
 		t.Fatalf("thread/read computed the full past-turn projection %d times, want 0: the windowed page supplies the turns, so the O(transcript) projection is per-click waste", projected)
 	}
 }
+
+// TestPastEntryTurns_FlushesUnpairedCommunicate verifies that the full
+// past-entry read (computePastEntryTurns) flushes unpaired communicates —
+// a session whose last assistant turn issues a communicate call with no
+// paired result turn must render the flushed agentMessage. Before the fix,
+// computePastEntryTurns threaded the shared registry through
+// pastTranscriptCache.ItemTurnsFromFile but never called
+// FlushUnpairedCommunicates, so the trailing agentMessage was silently
+// dropped on the full past-entry read (while the paged read flushed
+// internally). This test proves the full read now agrees with the paged read.
+func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+	sessionID := "01UNPAIRED"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	w, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: now,
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(schema.Turn{
+		Kind:    schema.TurnUserInput,
+		Message: llm.User("do it"),
+	}); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	// Assistant turn with a valid-JSON communicate call and no paired result
+	// turn — the unpaired shape the flush must handle.
+	if err := w.Append(schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "thinking"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        "call_unpaired_past",
+				Name:      "communicate",
+				Arguments: json.RawMessage(`{"message":"hello there"}`),
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entry := hubcore.PastEntry{
+		ID:       sessionID,
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
+		StateDir: stateDir,
+	}
+	cfg := hubcore.WebConfig{}
+
+	// Full past-entry read must include the flushed agentMessage.
+	turns := requirePastEntryTurns(t, cfg, entry)
+	if len(turns) == 0 {
+		t.Fatalf("past-entry read produced %d turns, want at least 1", len(turns))
+	}
+	var fullFlushed string
+	for _, item := range turns[len(turns)-1].Items {
+		if item.Type == "agentMessage" && item.Text == "hello there" {
+			fullFlushed = item.Text
+		}
+	}
+	if fullFlushed == "" {
+		t.Fatalf("full past-entry read must flush the unpaired communicate agentMessage (Text %q not found); items: %+v", "hello there", turns[len(turns)-1].Items)
+	}
+
+	// Paged past-entry read already flushes internally (item-window path
+	// flushes), so it must also include the flushed agentMessage — proving
+	// full-read and paged-read parity.
+	page, err := pastEntryLatestItems(context.Background(), entry, 40)
+	if err != nil {
+		t.Fatalf("pastEntryLatestItems: %v", err)
+	}
+	var pagedFlushed string
+	for _, c := range page.Candidates {
+		if c.Item.Type == "agentMessage" && c.Item.Text == "hello there" {
+			pagedFlushed = c.Item.Text
+		}
+	}
+	if pagedFlushed == "" {
+		t.Fatalf("paged past-entry read must flush the unpaired communicate agentMessage; candidates: %+v", page.Candidates)
+	}
+	if fullFlushed != pagedFlushed {
+		t.Errorf("full read flushed Text = %q, paged read flushed Text = %q, want equal", fullFlushed, pagedFlushed)
+	}
+}

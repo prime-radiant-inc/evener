@@ -1587,14 +1587,18 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
-// LaneClosePassBudget — the budget the close disposal pass spends
+// close-cascade budget — the budget the close disposal pass spends
 // (session_worktree_close.go); the close-time cleanup runners themselves are
 // deliberately unbudgeted. A rollback of a refused or failed op must not
 // inherit the request context, which the close that refused the swap has
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	budget := closePassBudget(closeCtx)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()

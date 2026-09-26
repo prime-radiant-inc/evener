@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -2861,13 +2862,15 @@ func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 		t.Fatalf("completed tool item should carry the intent-derived Description, got %q", item.Description)
 	}
 
-	// Description is derived from the arguments' intent field when the
-	// started event carries no explicit Description, matching
-	// ToolIntentFromArguments.
+	// The START event sets Description from the valid args' intent field (as the
+	// real live path does for valid JSON with an intent field). The END now carries
+	// the START's Description forward instead of re-deriving from argsJSON without
+	// the size/validation gate (F3 round 5).
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "grep",
 		CallID:        "call_2",
 		ArgumentsJSON: `{"query":"retry","intent":"trace the retry callers"}`,
+		Description:   "trace the retry callers",
 	}})
 	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
 		ToolName: "grep",
@@ -3368,5 +3371,70 @@ func TestAppEventProjectorKeepsEnvironmentInOwnTurn(t *testing.T) {
 	}
 	if environmentItem.TurnID != "turn_environment_fixture" || environmentItem.TurnID == userItem.TurnID {
 		t.Fatalf("environment turn=%q user turn=%q; environment must be separate", environmentItem.TurnID, userItem.TurnID)
+	}
+}
+
+// TestAppEventProjectorToolCallEndRespectsStartDescriptionGate (F3 round 5,
+// updated F4 round 6): when the START event suppressed intent (Description="")
+// because the arguments failed the validation+size gate (oversized —
+// RawArgumentsRejected), the END item must NOT re-derive intent from those
+// same bytes. The fallback derivation (F4) applies the same gate, so bytes
+// the START path rejected stay suppressed at END.
+func TestAppEventProjectorToolCallEndRespectsStartDescriptionGate(t *testing.T) {
+	projector := NewAppEventProjector("th_gate", "local:th_gate")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_gate", Data: events.UserInputData{Text: "hello"}})
+
+	// START: Description is empty (the live path suppressed intent because
+	// the arguments were oversized — RawArgumentsRejected). The ArgumentsJSON
+	// carries the oversized raw bytes, which contain an "intent" field but
+	// exceed MaxToolArgumentBytes so the gate rejects them.
+	oversizedJSON := `{"intent":"should not appear at END","padding":"` + strings.Repeat("a", argrepair.MaxToolArgumentBytes) + `"}`
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_gate", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_gated",
+		ArgumentsJSON: oversizedJSON,
+		Description:   "", // START suppressed intent
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_gate", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_gated",
+		Error:    "tool arguments too large",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "" {
+		t.Fatalf("END item must not re-derive intent when the gate rejects the bytes (Description=%q)", item.Description)
+	}
+}
+
+// TestAppEventProjectorToolCallEndDerivesDescriptionOnUnseenStart (F4 round 6):
+// when START was never seen (no entry in toolDescriptionByKey), the END
+// handler falls back to GATED derivation from argsJSON — the same
+// validation+size gate the START path uses. Bytes that pass the gate
+// produce a Description; bytes that fail it stay empty.
+func TestAppEventProjectorToolCallEndDerivesDescriptionOnUnseenStart(t *testing.T) {
+	projector := NewAppEventProjector("th_unseen", "local:th_unseen")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_unseen", Data: events.UserInputData{Text: "hello"}})
+
+	// No START event — END arrives with args that pass the gate.
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_unseen", Data: events.ToolCallEndData{
+		ToolName:      "shell",
+		CallID:        "call_unseen",
+		ArgumentsJSON: `{"command":"go test","intent":"run the suite"}`,
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "run the suite" {
+		t.Fatalf("END with no prior START should derive Description from gated argsJSON, got %q", item.Description)
+	}
+
+	// No START, args that FAIL the gate (oversized) → Description suppressed.
+	oversizedJSON := `{"intent":"should not appear","padding":"` + strings.Repeat("a", argrepair.MaxToolArgumentBytes) + `"}`
+	out2 := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_unseen", Data: events.ToolCallEndData{
+		ToolName:      "shell",
+		CallID:        "call_unseen_oversized",
+		ArgumentsJSON: oversizedJSON,
+	}})
+	item2 := notificationThreadItem(t, out2, appwire.NotifyItemCompleted)
+	if item2.Description != "" {
+		t.Fatalf("END with no prior START and oversized args should suppress Description, got %q", item2.Description)
 	}
 }

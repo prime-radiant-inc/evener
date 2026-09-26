@@ -1,6 +1,6 @@
 // The option rows a question timeline item renders key on their POSITION in
 // the ask (timeline.ts's questionOptionKey), never on the label: the store's
-// publish bounds every label the timeline carries (project.ts's
+// publish bounds every label the timeline carries (projectedRows.ts's
 // truncateItem through boundQuestion, at MAX_ITEM_BYTES), so two options
 // whose labels share a prefix past the bound cut to the same string. Keyed
 // on that label — the pre-fix expression `${question.key}:${option.label}`
@@ -16,7 +16,7 @@ import {
 	MAX_ITEM_BYTES,
 	truncateText,
 	type MobileTimelineItem,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 import { TimelineItem } from "./TimelineItem";
 import { nativeModuleMock, render } from "./renderNative.testkit";
 

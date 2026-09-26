@@ -315,7 +315,7 @@ func assertEnvironmentTrackerMatchesModelHistory(t *testing.T, sess *Session) {
 // the session goes on to write must not land on top of it.
 func assertDurableSequenceStrictlyIncreases(t *testing.T, sess *Session) {
 	t.Helper()
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func assertDurableSequenceStrictlyIncreases(t *testing.T, sess *Session) {
 // reader of the session's transcript would see, in file order.
 func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
 	t.Helper()
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,7 @@ func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("provider requests = %d, want one accepted retry", len(adapter.Requests()))
 	}
-	retained, err := readTranscriptFull(sess.TranscriptPath())
+	retained, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

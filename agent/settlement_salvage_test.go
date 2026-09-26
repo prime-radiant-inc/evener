@@ -73,7 +73,7 @@ func sessionHistory(s *Session) []schema.Turn {
 
 func transcriptTurns(t *testing.T, path string) []schema.Turn {
 	t.Helper()
-	data, err := readTranscriptFull(path)
+	data, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

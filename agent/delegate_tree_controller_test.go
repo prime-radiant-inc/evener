@@ -729,7 +729,7 @@ func (*delegateToolResultCommit) Complete(bool) {}
 	return files, file, info, pkg
 }
 
-func newDelegateControllerTestHarness(t *testing.T, turnLimit, driveLimit int) (*delegateTreeController, string) {
+func newDelegateControllerTestHarness(t testing.TB, turnLimit, driveLimit int) (*delegateTreeController, string) {
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "delegate-events.jsonl")
@@ -763,7 +763,7 @@ func seedDelegateControllerIdle(t *testing.T, c *delegateTreeController, id, par
 	}
 }
 
-func seedDelegateControllerRunning(t *testing.T, c *delegateTreeController, id, parentID string) {
+func seedDelegateControllerRunning(t testing.TB, c *delegateTreeController, id, parentID string) {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()

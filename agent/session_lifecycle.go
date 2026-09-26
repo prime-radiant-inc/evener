@@ -339,15 +339,15 @@ func (s *Session) outstandingEnvWork() []string {
 //   - A SWAP's refresh runs under the session's own context, which this close
 //     cancelled in its step 2, well before reaching here. It stops on its own.
 //   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
-//     context.Background() with a LaneClosePassBudget of its own, because the
+//     context.Background() with a close-cascade budget of its own, because the
 //     close that refused the swap — or the spawn whose lane it is taking back —
 //     has already cancelled the request context the op's runner was bound to,
 //     and a rollback through that would fail silently. Cancelling the close
 //     cannot shorten it.
 //
 // So this bound is not a restatement of the rollback's bound: the close budget
-// is one LaneClosePassBudget minted when the close began and partly spent by
-// the time it gets here, while a rollback's is a full LaneClosePassBudget
+// is one close-cascade budget minted when the close began and partly spent by
+// the time it gets here, while a rollback's is a full close-cascade budget
 // starting later. The join can therefore always expire first. That is accepted
 // rather than fixed by waiting longer, for two reasons. The cascade budget
 // (spec §P0) exists so a whole close is bounded, and this join is a participant
@@ -623,7 +623,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// delegate lanes) over the SAME shared close budget. Store must still be
 			// open (the own-store Disposed mark is a durable append); it closes below.
 			s.disposeLaneResidueAtClose(budgetCtx)
-			s.unlockOwnManagedWorktreeAtClose()
+			s.unlockOwnManagedWorktreeAtClose(budgetCtx)
 		}
 
 		if !retirement && s.jobManager != nil {

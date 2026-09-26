@@ -419,14 +419,14 @@ func (c *delegateTreeController) cancelPlanForStopLocked(stop *delegateStopState
 
 func (c *delegateTreeController) memberIDsLeafFirstLocked(members map[string]struct{}) []string {
 	ids := make([]string, 0, len(members))
+	depths := make(map[string]int, len(members))
 	for id := range members {
 		ids = append(ids, id)
+		depths[id] = c.delegateDepthLocked(id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		leftDepth := c.delegateDepthLocked(ids[i])
-		rightDepth := c.delegateDepthLocked(ids[j])
-		if leftDepth != rightDepth {
-			return leftDepth > rightDepth
+		if depths[ids[i]] != depths[ids[j]] {
+			return depths[ids[i]] > depths[ids[j]]
 		}
 		return ids[i] < ids[j]
 	})
@@ -444,6 +444,44 @@ func (c *delegateTreeController) delegateDepthLocked(delegateID string) int {
 		delegateID = aggregate.Descriptor.ParentDelegateID
 	}
 	return depth
+}
+
+// deriveDelegateChildrenIndex builds the parent→children edge set for state.
+// Nil aggregates are skipped exactly as the membership walk skips them, and
+// root-level delegates (empty ParentDelegateID) contribute no edge: no
+// delegate carries the empty id, so a membership walk never follows a
+// ""-keyed edge.
+func deriveDelegateChildrenIndex(state delegatestore.State) map[string]map[string]struct{} {
+	children := make(map[string]map[string]struct{})
+	for id, aggregate := range state {
+		if aggregate == nil {
+			continue
+		}
+		parent := aggregate.Descriptor.ParentDelegateID
+		if parent == "" {
+			continue
+		}
+		if children[parent] == nil {
+			children[parent] = make(map[string]struct{})
+		}
+		children[parent][id] = struct{}{}
+	}
+	return children
+}
+
+// addChildEdgeLocked records one delegate's parent edge in the children
+// index. Callers must hold c.mu.
+func (c *delegateTreeController) addChildEdgeLocked(delegateID, parentID string) {
+	if parentID == "" {
+		return
+	}
+	if c.delegateChildren == nil {
+		c.delegateChildren = make(map[string]map[string]struct{})
+	}
+	if c.delegateChildren[parentID] == nil {
+		c.delegateChildren[parentID] = make(map[string]struct{})
+	}
+	c.delegateChildren[parentID][delegateID] = struct{}{}
 }
 
 func (c *delegateTreeController) stopResultLocked(stop *delegateStopState) delegateStopResult {
@@ -470,21 +508,21 @@ func classifyDelegateStopAdmission(state delegatestore.State, targetID string, m
 	return previousLifecycle, "already_idle"
 }
 
+// subtreeMembersLocked returns targetID and every transitive child below it.
+// It walks the delegateChildren index — one hop per edge instead of one full
+// durable scan per tree level — and the seen set keeps a corrupt journal's
+// parent loop from hanging the controller mutex, the same property the old
+// fixed-point closure provided.
 func (c *delegateTreeController) subtreeMembersLocked(targetID string) map[string]struct{} {
 	members := map[string]struct{}{targetID: {}}
-	changed := true
-	for changed {
-		changed = false
-		for id, aggregate := range c.durable {
-			if aggregate == nil {
-				continue
-			}
-			if _, included := members[id]; included {
-				continue
-			}
-			if _, parentIncluded := members[aggregate.Descriptor.ParentDelegateID]; parentIncluded {
-				members[id] = struct{}{}
-				changed = true
+	stack := []string{targetID}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for child := range c.delegateChildren[id] {
+			if _, seen := members[child]; !seen {
+				members[child] = struct{}{}
+				stack = append(stack, child)
 			}
 		}
 	}

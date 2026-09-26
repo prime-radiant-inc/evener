@@ -1,13 +1,20 @@
 diff --git a/internal/apptranscript/apptranscript.go b/internal/apptranscript/apptranscript.go
-index 3a4a0373..72c85e91 100644
+index 9cfadcb766..949f89f56a 100644
 --- a/internal/apptranscript/apptranscript.go
 +++ b/internal/apptranscript/apptranscript.go
-@@ -315,7 +315,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
+@@ -641,6 +641,15 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
+ 					// This makes live and reload agree: both defer, both render
+ 					// the same item at the result turn.
+ 					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
++						if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" {
++							items = append(items, appwire.ThreadItem{
++								Type:   "agentMessage",
++								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
++								TurnID: turnID,
++								Text:   text,
++								Status: appwire.TurnStatusCompleted,
++							})
++						}
+ 					continue
  				}
- 				toolNames[part.ToolCall.ID] = part.ToolCall.Name
- 				if part.ToolCall.Name == "communicate" {
--					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && strings.TrimSpace(text) != lastAssistantText {
-+					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && strings.TrimSpace(text) != lastAssistantText+" " {
- 						items = append(items, appwire.ThreadItem{
- 							Type:   "agentMessage",
- 							ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+ 				// Rejected call: show raw bytes, skip intent (mirrors #2162).

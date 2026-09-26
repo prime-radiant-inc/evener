@@ -9,7 +9,7 @@ import {
   MAX_ITEM_BYTES,
   type MobileConversation,
   truncateText,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
@@ -18,7 +18,7 @@ export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
   // Asked of the MODEL, with the package's own rule — the same call the
-  // projection's question rows come from (project.ts's askQuestionsByCall,
+  // projection's question rows come from (projectedRows.ts's askQuestionsByCall,
   // through liveAsksFor's shared scan), so the refs are canonical: the sheet
   // renders, and the answer composer validates against, exactly the labels
   // the agent offered. The timeline rows a reader scrolls carry the display
@@ -33,7 +33,7 @@ export function pendingQuestions(
 }
 
 // The sheet's own rendered text, bounded the same as a timeline row
-// (mobile/src/conversation/project.ts). Shared by questionsIdentity below and
+// (the row module, projectedRows.ts). Shared by questionsIdentity below and
 // QuestionSheet.tsx's own display copy, so the identity and what a reader
 // actually sees are cut exactly the same way.
 export const boundQuestionText = (text: string) =>
