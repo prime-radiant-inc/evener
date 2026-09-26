@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/test/e2e/fakellm"
@@ -597,14 +598,33 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) {
 	if err := host.tryRun(kill); err != nil {
 		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
 	}
+	probe := sshconn.ListenerProbeRemote(port)
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if out, _ := host.run(fmt.Sprintf("lsof -tiTCP:%s -sTCP:LISTEN 2>/dev/null", port)); len(strings.TrimSpace(string(out))) == 0 {
+		// Only a probe that ran (nil error) and answered NoListenerMarker proves
+		// the port is clear. A probe that could not run, or an answer this code
+		// does not recognize, proves nothing and must never be read as "the
+		// listener is gone": returning here is what lets the caller remove the
+		// directory a still-running hub serves from. The timeout below reports the
+		// unproven cleanup.
+		if out, err := host.run(probe); err == nil && hostListenerProbeAbsent(out) {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Errorf("the deploy check's host hub still holds %s after 10s; it may be serving from the directory this test is about to remove", addr)
+}
+
+// hostListenerProbeAbsent reports whether out — the answer of the shared
+// listener probe sshconn.ListenerProbeRemote — proves that the port has no
+// listener. The caller must already have a nil probe error: a probe that could
+// not run is "cannot say", not absence. Only sshconn.NoListenerMarker proves
+// absence; a pid, a listener-present answer, or anything unrecognized
+// (including empty output) is not absence, because treating a silent or failing
+// probe as "nothing is there" is the recognition bug that let cleanup remove a
+// live hub's directory.
+func hostListenerProbeAbsent(out []byte) bool {
+	return strings.TrimSpace(string(out)) == sshconn.NoListenerMarker
 }
 
 // hostHubKillCommand is the remote command that stops the hub this case started
@@ -613,12 +633,24 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) {
 // line — the marker the launched host hub was given (hubBootstrapArgv passes
 // --config). The port alone is deliberately not enough: it is a fixed literal, so
 // killing every listener on it could terminate an unrelated process.
+//
+// The pids come from the shared listener probe, not a bare `lsof`: that probe
+// falls back to ss and to /proc/net/tcp, so a host without lsof is still probed,
+// and it exits nonzero when no probe can run. The kill checks that status before
+// the loop, because `for pid in $(...)` discards it: an unprobeable host must be
+// a reported failure, never a silent "nothing to kill".
 func hostHubKillCommand(addr, configPath string) string {
 	port := addr[strings.LastIndex(addr, ":")+1:]
+	// The probe's answer is a pid per line or one of its two markers; the case
+	// guard keeps only numeric pids as kill candidates, so a marker can never
+	// reach `ps` or `kill`.
 	return fmt.Sprintf(
-		"for pid in $(lsof -tiTCP:%s -sTCP:LISTEN 2>/dev/null); do "+
+		"pids=$( %s ); s=$?; "+
+			"if [ $s -ne 0 ]; then echo 'evener-hub deploy check cleanup: no listener probe is available on the host (lsof, ss, and /proc/net/tcp are all missing); refusing to conclude no hub is listening' >&2; exit $s; fi; "+
+			"for pid in $pids; do "+
+			"case \"$pid\" in ''|*[!0-9]*) continue;; esac; "+
 			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null; then kill \"$pid\"; fi; done",
-		port, shellquote.RemoteWord(configPath))
+		sshconn.ListenerProbeRemote(port), shellquote.RemoteWord(configPath))
 }
 
 // TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision
@@ -629,7 +661,7 @@ func TestHostHubKillCommandTargetsOnlyThisTestsHub(t *testing.T) {
 	const addr = "127.0.0.1:19180"
 	const config = "/home/dev/evener-deploy-e2e-source/hub.toml"
 	got := hostHubKillCommand(addr, config)
-	if !strings.Contains(got, "lsof -tiTCP:19180 -sTCP:LISTEN") {
+	if !strings.Contains(got, "lsof -ti :19180 -sTCP:LISTEN") {
 		t.Fatalf("kill command does not find the listener by the case's port: %q", got)
 	}
 	if !strings.Contains(got, "ps -ww -o command=") {
@@ -645,5 +677,66 @@ func TestHostHubKillCommandTargetsOnlyThisTestsHub(t *testing.T) {
 	// different command; otherwise the kill would match any listener on the port.
 	if other := hostHubKillCommand(addr, "/home/dev/other/hub.toml"); other == got {
 		t.Fatal("kill command ignores the config path, so it would signal any listener on the port")
+	}
+}
+
+// TestHostHubKillCommandFailsClosedWithoutAProbe pins issue #2151 item 2's
+// recognition defect in the cleanup's kill command. The command used to list
+// pids with a bare `lsof -tiTCP:<port> ... 2>/dev/null`: on a host without lsof
+// that answers with empty output and no error, which reads as "no listener", so
+// the loop kills nothing and cleanup can remove the test's directory while its
+// hub still runs from it. The pids must instead come from the shared probe that
+// falls back to ss and /proc/net/tcp, and the probe's own exit status must be
+// checked before the loop — `for pid in $(...)` discards it — so an unprobeable
+// host is a reported failure rather than a silent "nothing to kill".
+func TestHostHubKillCommandFailsClosedWithoutAProbe(t *testing.T) {
+	const addr = "127.0.0.1:19180"
+	const config = "/home/dev/evener-deploy-e2e-source/hub.toml"
+	got := hostHubKillCommand(addr, config)
+	if strings.Contains(got, "lsof -tiTCP:19180 -sTCP:LISTEN 2>/dev/null") {
+		t.Fatalf("the kill still runs lsof alone and reads its silence as absence: %q", got)
+	}
+	for _, tier := range []string{"command -v lsof", "command -v ss", "/proc/net/tcp"} {
+		if !strings.Contains(got, tier) {
+			t.Fatalf("the kill's probe lost the %q tier, so a host without lsof kills nothing: %q", tier, got)
+		}
+	}
+	if !strings.Contains(got, "no listener probe is available") {
+		t.Fatalf("the kill does not distinguish an unprobeable host from an empty port: %q", got)
+	}
+	// The kill must check that status before the loop. Asserting the ordering,
+	// not just the presence of `s=$?`/`exit $s` (which the embedded probe also
+	// contains), keeps the test tied to the property rather than the spelling.
+	guard := strings.Index(got, "evener-hub deploy check cleanup")
+	loop := strings.Index(got, "for pid in $pids")
+	if guard < 0 || loop < 0 || guard > loop {
+		t.Fatalf("the kill does not check the probe's exit status before the pid loop (guard=%d loop=%d): %q", guard, loop, got)
+	}
+}
+
+// TestHostListenerProbeAbsentOnlyOnTheMarker pins the poll's recognition without
+// a host: only the probe's no-listener marker proves the port clear. A pid, a
+// listener-present answer, and — the item-2 defect — empty or unrecognized
+// output must all read as "not absent", so a silent probe never ends the poll
+// early.
+func TestHostListenerProbeAbsentOnlyOnTheMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{name: "no-listener marker proves absence", out: sshconn.NoListenerMarker + "\n", want: true},
+		{name: "marker among noise", out: " " + sshconn.NoListenerMarker + "\n", want: true},
+		{name: "a pid is not absence", out: "4242\n", want: false},
+		{name: "a named pid brackets the marker", out: "4242\n" + sshconn.NoListenerMarker + "\n", want: false},
+		{name: "listener-present marker is not absence", out: sshconn.ListenerPresentMarker + "\n", want: false},
+		{name: "empty output is not absence", out: "", want: false},
+		{name: "unrecognized output is not absence", out: "sshconn: probe blew up\n", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hostListenerProbeAbsent([]byte(tc.out)); got != tc.want {
+				t.Fatalf("hostListenerProbeAbsent(%q) = %v, want %v", tc.out, got, tc.want)
+			}
+		})
 	}
 }
