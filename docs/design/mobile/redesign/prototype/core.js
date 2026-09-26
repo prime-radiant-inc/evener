@@ -272,7 +272,7 @@
   EV.toast = function (text, undo) {
     EV.S.toast = { text, undo, key: Date.now() };
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { EV.S.toast = null; EV.update(); }, undo ? 8000 : 2600);
+    toastTimer = EV.later(undo ? 8000 : 2600, () => { EV.S.toast = null; EV.update(); });
     EV.update();
   };
 
@@ -315,7 +315,7 @@
   // Alerts stay 8 seconds, and never go away while a finger is on them.
   function armBannerTimer() {
     clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => { if (EV.S.bannerHeld) { armBannerTimer(); return; } EV.S.banner = null; EV.update(); }, 8000);
+    bannerTimer = EV.later(8000, () => { if (EV.S.bannerHeld) { armBannerTimer(); return; } EV.S.banner = null; EV.update(); });
   }
   EV.releaseHeld = function () {
     const S = EV.S;
