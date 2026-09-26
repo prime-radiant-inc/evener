@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,5 +24,25 @@ func TestSessionRegisteredToolsDocumentParameters(t *testing.T) {
 		if missing := toolpkg.UndocumentedProperties(def); len(missing) > 0 {
 			t.Errorf("%s parameters carry no description: %s", def.Name, strings.Join(missing, ", "))
 		}
+	}
+}
+
+// TestDefListDirLimitProseMatchesEnforcedDefault pins list_dir's advertised
+// default limit to the constant the handler enforces (roborev round 2 caught
+// the prose saying 500 where the code says 1000): a model sizing an explicit
+// limit against the advertised default must not work from a wrong cap.
+func TestDefListDirLimitProseMatchesEnforcedDefault(t *testing.T) {
+	def := toolpkg.DefListDir()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("list_dir properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	limit, ok := props["limit"].(map[string]any)
+	if !ok {
+		t.Fatalf("list_dir missing limit property; got properties: %v", props)
+	}
+	desc, _ := limit["description"].(string)
+	if !strings.Contains(desc, strconv.Itoa(defaultListDirLimit)) {
+		t.Errorf("list_dir limit description should state the enforced default of %d, got: %q", defaultListDirLimit, desc)
 	}
 }

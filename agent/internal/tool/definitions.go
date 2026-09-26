@@ -51,7 +51,7 @@ func DefListDir() llm.ToolDefinition {
 				"path":   map[string]any{"type": "string", "description": "Directory to list; blank means the working root."},
 				"depth":  map[string]any{"type": "integer", "description": "Recursion depth; 1 lists only this directory (default)."},
 				"offset": map[string]any{"type": "integer", "description": "Index of the first entry to return (default 0). Use with limit to page a large directory."},
-				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 500)."},
+				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 1000; a page-size budget may return fewer)."},
 			},
 		},
 	}
