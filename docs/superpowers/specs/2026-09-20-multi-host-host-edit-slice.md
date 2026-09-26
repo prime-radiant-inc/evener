@@ -8,6 +8,14 @@ This slice implements the edit half of component 08 — the registry spec,
 `56989a29d7`) — against the code slice 1 merged (PR #1784, `d66d970556`), and
 records what it defers to the pipeline slice.
 
+> **Storage decision update (2026-09-26).** Registry spec §19 open question 1 is
+> decided: `hub.toml` is rewritten in place, machine-managed, with a banner
+> stating that operator comments are not preserved; the sidecar is retired, and
+> its entries migrate into `hub.toml` once (registry spec §6). The sidecar
+> wording below records what this slice shipped; the live update contract now
+> targets any live entry — every host lives in the one machine-managed file, so
+> the "edit the file" refusal is retired.
+
 ## 1. Purpose
 
 Today a host can be added, connected and removed from Settings → Hosts, but not
@@ -26,9 +34,10 @@ identity. This slice makes editing the supported path.
 
 The registry spec defines update (§4) and the UI (§13). This slice implements:
 
-- §4 — `evener/host/update` is a mutation; the target must be a **live sidecar
-  entry**; a `hub.toml`-declared name is refused with the "edit the file"
-  explanation; a name absent from both files, or present solely as a tombstone,
+- §4 — `evener/host/update` is a mutation; the target must be a **live
+  entry** (this slice shipped sidecar-only targets; the storage decision note
+  above retired that split — every host lives in `hub.toml` and is editable); a
+  name absent from the file, or present solely as a tombstone,
   is refused as not found; every field except `name` is mutable; `name` is
   immutable — it keys source IDs, cached rows, manager state and file entries;
   **every update advances the registry generation**, and the staged update
@@ -173,12 +182,12 @@ and the compensation paths in one shape:
 
 - **Commit, under the mutation mutex.** Refuse a name with a mutation already
   in flight — the existing in-flight mark, generalised from removals to any
-  mutation on the name. Require a live sidecar entry: a `hub.toml` name gets
-  the edit-the-file refusal, a name that is gone or tombstone-only gets not
-  found. **Validate the entry here, before anything is written** — the same
+  mutation on the name. Require a live entry (after the storage decision every
+  `hub.toml` host is live-editable — see the note above); a name that is gone
+  or tombstone-only gets not found. **Validate the entry here, before anything is written** — the same
   `hostreg.ValidateEntry` call the add flow runs for exactly this reason — so a
   refusal commits nothing and an entry the registry would reject never reaches
-  the file. Then persist durable-first with one atomic sidecar write that
+  the file. Then persist durable-first with one atomic `hub.toml` write that
   replaces the entry **in place**, through a store-level replace: the file
   keeps the order it already had, so an edit is a minimal change to it rather
   than a reordering nothing asked for. (The rendered list is name-sorted
@@ -239,10 +248,10 @@ and the compensation paths in one shape:
     cache generation still owns its rows, and the retained list is still this
     host's. An edit that changes only the SSH address or a path must not blank
     the host's sessions in the tree.
-  On failure, roll the sidecar back to the live set — one atomic write of the
+  On failure, roll `hub.toml` back to the live set — one atomic write of the
   live set as it stands now, not a pre-commit copy: a concurrent add or removal
   that committed in this window must survive — which puts the file and the
-  in-memory sidecar store back on the same entries in the same order, clear the
+  in-memory host store back on the same entries in the same order, clear the
   mark, and return the error. A live-phase refusal happens before the swap and
   leaves the retiring identity's attach record intact. When the live set no
   longer holds the name — only a directly driven registry can drop it while the
@@ -250,7 +259,7 @@ and the compensation paths in one shape:
   un-commit is a **removal**: drop the committed store row before taking the
   snapshot, so the rollback writes the live set without the name and the file
   does not keep an edit for a name that is not live, which a later add would
-  duplicate and the next sidecar load would reject.
+  duplicate and the next `hub.toml` load would reject.
   If the live phase instead succeeded and a directly driven registry drops the
   entry before the finish-phase reread, the name is likewise removed: drop the
   committed store row and write that live snapshot, then retire the derived
@@ -276,9 +285,9 @@ and the compensation paths in one shape:
   slice 1's Key path control, on edit without the `name` input (the host's name
   is in the dialog's title, per §13), submit disabled while in flight, and each
   field's message placed inline (§5).
-- Row actions: **Edit** for sidecar, non-removed rows. `hub.toml` rows keep the
-  read-only explanation the pane's help text already gives; removed rows keep
-  their removed posture.
+- Row actions: **Edit** for every non-removed row (this slice gated it on the
+  sidecar origin; the storage decision note above retired that split). Removed
+  rows keep their removed posture.
 - **No skew marker in this slice.** §13 wants the row to show the host's
   installed build beside the controller's, and this slice cannot honestly build
   it: the row's `hubVersion` is `buildinfo.Version()` *of the controller*, by
@@ -336,7 +345,9 @@ installed, and the new identity's own row still adopts it).
 
 ## 4. Semantics, precisely
 
-- Update targets a live sidecar entry. `name` is immutable. The entry's
+- Update targets a live entry (sidecar-only when this slice shipped; the
+  storage decision made every `hub.toml` host editable — see the note above).
+  `name` is immutable. The entry's
   effective values are what the row, the source and the attach path read: there
   is no second copy to drift.
 - **The attached-edit rule.** Any edit to a host that is attached lands, drops
@@ -370,7 +381,7 @@ installed, and the new identity's own row still adopts it).
 - Refusals commit nothing. A `hub.toml` name, an unknown or tombstone-only
   name, a validation refusal and a failed durable write all leave the file and
   the live set exactly as they were.
-- A failed live phase rolls the sidecar back to the live snapshot and returns
+- A failed live phase rolls `hub.toml` back to the live snapshot and returns
   the error.
 
 ## 6. Deviations from the trio, and what the pipeline slice inherits
@@ -447,13 +458,17 @@ Every item is pinned by a test in this slice's PR.
    value, the row prefills the dialog, and the pane repaints — the row
    comparator carries the new fields, so the change is not swallowed by the
    publish guard.
-2. The sidecar is the durable record: after an edit and a sidecar reload, the
-   edited values are the effective entry, and no `hub.toml` entry was written.
+2. The durable record is the machine-managed host store: after an edit and a
+   reload through it, the edited values are the effective entry (this slice
+   shipped the sidecar as that record; the storage decision moved it into
+   `hub.toml` — see the note above).
 3. `name` cannot change: the update request carries `name` only as the target
    it addresses, the edit dialog offers no name input (it names the host in its
    title), and no mutable field can rename a host.
-4. A `hub.toml`-declared name is refused with the edit-the-file message;
-   nothing changes on disk or live.
+4. A name that is unknown or tombstone-only is refused, nothing changes on
+   disk or live (this slice also refused `hub.toml`-declared names with the
+   edit-the-file message; the storage decision retired that refusal — see the
+   note above).
 5. An unknown name is refused as not found and nothing is written. (The
    tombstone-only arm of §4's rule is not constructible yet: slice 1's removal
    deletes the entry outright and tombstones arrive with the remnant
@@ -477,8 +492,8 @@ Every item is pinned by a test in this slice's PR.
 11. Per-field validation lands on the right field, in wire spelling: a missing
     ssh destination on `address`, an empty root on `roots`, a malformed name on
     `name` (add).
-12. An invalid entry never reaches the sidecar: the refusal leaves the file
-    bytes unchanged, a reload of the sidecar is clean, and a padded input is
+12. An invalid entry never reaches the durable store: the refusal leaves the file
+    bytes unchanged, a reload through the store is clean, and a padded input is
     stored trimmed — the file and the live set cannot drift.
 13. No regression to slice 1: `list`/`status` still never dial, Connect and
     remove behave as they did, an edit round-trips a stored `keyPath` rather

@@ -2,7 +2,7 @@
 
 Status: not started. This spec is the hand-off for the implementing session.
 
-Depends on: the registry spec (registry, sidecar, receipts, remnants, tombstones, generations, the
+Depends on: the registry spec (registry, `hub.toml`, receipts, remnants, tombstones, generations, the
 `attachUnderGate` primitive, and the operation-store skeleton helpers). The pipeline stacks on
 the registry; fencing stacks on the pipeline. Hand-written Go request/response structs for pipeline-owned methods land in the same PR as
 their handlers (union-shaped private types authored in the registry PR stay unregistered until this PR registers them — registry spec §2). Public catalog registration plus the regenerated client for union-shaped
@@ -14,20 +14,20 @@ Every later section uses these terms with exactly these meanings.
 
 - **MutationId.** The client-supplied idempotency key on `add`/`update`/`remove`: opaque, non-empty, at most 128 bytes, no required structure. A replay is a call repeating a previously used key.
 - **OperationId (client operation ID).** The client-supplied operation ID on `deploy`/`restart`: opaque, non-empty, at most 128 bytes, no required structure. `deploy`/`restart` responses carry `id` (the controller-assigned record id) and `clientOperationId` (echoing the caller's value).
-- **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (registry spec §15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
+- **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in `hub.toml`. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (registry spec §15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
 - **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused: at most 128 bytes, and the generator pins its output to 36 bytes (canonical UUID text), so the 8 KiB cursor-cap bound in §8 holds by construction. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 - **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
 - **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
-- **Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
+- **Tombstone.** The durable removed-host record carrying retained rows, persisted in `hub.toml`. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 - **Per-host gate.** The try-acquire (never wait) mutex serializing deploy/restart/`plan`/teardown work for one host name. A held gate fails new work fast with the typed busy error.
-- **Mutation lock.** The process-wide lock serializing sidecar read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (§5).
+- **Mutation lock.** The process-wide lock serializing `hub.toml` read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (§5).
 - **Store mutex.** The lock serializing operation-store read-modify-write. No path holding the store mutex ever acquires the mutation lock.
 - **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
 - **Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, `hub.toml` fingerprint, facts, and running state it was minted from.
 - **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 - **Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9), plus the `boundary-unavailable` custody sentinel a corrupt-store custody import carries when corruption destroyed the boundary (crash-fencing spec §9).
 - **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
-- **Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge. It persists in the sidecar per live entry and per tombstone; every sidecar write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§4); cursor validation reads the mirrored value (§8).
+- **Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live entry and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§4); cursor validation reads the mirrored value (§8).
 - **Facts revision (`factsRevision`).** The canonical digest of every preflight field planning or deploy decides on: OS/arch, home directory, resolved roots, UID, installed version, protocol version, and launch flags. `plan` computes it over the refreshed facts at mint (§3) and `HostPlan.factsRevision` carries it as the mint-time reference; deploy checks the token's facts freshness rather than recomputing the digest (§6 step 3).
 
 Pipeline-specific terms:
@@ -65,9 +65,9 @@ discriminator (the registry spec §2 table assigns that registration here). It m
 generations in the store. It consumes
 `attachUnderGate` for restart reattach.
 
-This spec does not own mutations, mutation receipts, sidecar commits, remnants,
+This spec does not own mutations, mutation receipts, `hub.toml` commits, remnants,
 tombstones, or generations. Those are defined in the registry spec (§4 mutations, §5
-receipts, §6 sidecar-remnants, §15 tombstones-generations). The last-known store schema
+receipts, §6 remnant records, §15 tombstones-generations). The last-known store schema
 is defined in the registry spec §10; this spec defines only the publish side. Fencing,
 orphan reaping, quarantine, and `orphan-resolve` are defined in the crash-fencing spec;
 this spec cites them and never restates them.
@@ -182,7 +182,7 @@ lookup. History stays readable either way.
 
 Durability: every operation-store write is atomic (temp-file fsync plus rename plus
 parent-directory fsync — the temp file is fsynced before the rename and the containing
-directory fsynced after it, matching the sidecar protocol in the registry spec §6).
+directory fsynced after it, matching the `hub.toml` write protocol in the registry spec §6).
 Token consumption and record creation are one such write (§6 step 4). The store file and
 its temp files carry mode `0600`. Replacements preserve the mode. Startup refuses to
 load a store readable beyond its owner. A corrupt or schema-invalid store file at boot
@@ -309,29 +309,30 @@ the guard advanced past kill/wait of the superseded epoch. Boot performs no SSH.
 unreachable host cannot block startup. Remote fencing lands lazily at the next
 operation's guard advance, after the store already serves `interrupted` records.
 
-Host-removed pass: after the sidecar loads and after the interrupted transition, boot
+Host-removed pass: after `hub.toml` loads (the one-time legacy-sidecar migration
+included) and after the interrupted transition, boot
 applies every loaded tombstone. It marks that host's records `host-removed`, but only
 records whose pinned (generation, incarnation id) pair matches the tombstone's persisted
 (removed generation, removed incarnation id) pair. Generation-only matching would mark a
 new live incarnation's records as removed. A tombstone colliding with a live re-add
 carrying a different incarnation id matches no record. A crash between `remove`'s
-sidecar commit and its live mark recovers exactly the removed incarnation's records the
-same way. `remove`'s sidecar commit and operation-store mark are two separate durable
+`hub.toml` commit and its live mark recovers exactly the removed incarnation's records the
+same way. `remove`'s `hub.toml` commit and operation-store mark are two separate durable
 writes in different files; a crash between them leaves the mark to this reconciliation.
 Tombstone contents and retention are defined in the registry spec §15.
 
-Generation mirror: every sidecar commit that also advances a mirrored store-side
-generation writes a commit marker — the (name, sidecar generation, store-mirror
-generation) triple — into the sidecar's atomic write. Boot runs bidirectional
-reconciliation before serving any request. A store mirror newer than the sidecar mark
-for the same name with no matching sidecar commit marker rolls back to the sidecar mark
-before any token or record validation. A sidecar mark newer than the store mirror
+Generation mirror: every `hub.toml` commit that also advances a mirrored store-side
+generation writes a commit marker — the (name, `hub.toml` generation, store-mirror
+generation) triple — into `hub.toml`'s atomic write. Boot runs bidirectional
+reconciliation before serving any request. A store mirror newer than the `hub.toml` mark
+for the same name with no matching `hub.toml` commit marker rolls back to the `hub.toml` mark
+before any token or record validation. A `hub.toml` mark newer than the store mirror
 pushes forward into the store mirror in the same boot pass. The rollback applies only
-when the sidecar carries a live entry or tombstone for the name with a valid marker
-triple to roll back to. When the sidecar is missing or held no entry for the name, the
+when `hub.toml` carries a live entry or tombstone for the name with a valid marker
+triple to roll back to. When `hub.toml` is missing or held no entry for the name, the
 store mirror is preserved, never rolled back, and the max-of-both restoration reads the
 surviving mirror as the high-water mark. The discarded generation is preserved as the
-name's high-water mark in the same atomic sidecar write that performs the rollback, so
+name's high-water mark in the same atomic `hub.toml` write that performs the rollback, so
 no later mutation reuses it. Boot recovers any record or dedup entry naming the discarded generation instead of refusing startup: records naming it transition to `interrupted` with a note naming the torn write (their generation was discarded, so their outcome is unknown), dedup tombstones naming it drop in the same write with same-key replays refusing `stale-entry` (pruned-generation value — §11), and the boot serves once the high-water mark lands. No torn-write split refuses startup. This section owns the mirrored-generation
 boot rule; the registry spec cites it and states no independent maximum. Cursors are opaque client-held wire values, so boot
 asserts nothing about cursor-pinned boundaries; a stale cursor is caught when presented
@@ -615,12 +616,13 @@ only. The UI renders progress through terminal state. Never a synchronous RPC.
 
 The boot pass runs in this order, before the store serves any request: operation-store
 load plus the safety-critical local reap of its local orphan boundary first (defined in the
-crash-fencing spec §3), then sidecar load (defined in the registry spec §6), then the
+crash-fencing spec §3), then `hub.toml` load (defined in the registry spec §6, the one-time legacy-sidecar
+migration included), then the
 interrupted transition, then the tombstone-derived
 `host-removed` pass, then bidirectional generation-mirror reconciliation, then the
-cross-file intent reconciliation (§9). A corrupt sidecar is still a hard startup error,
+cross-file intent reconciliation (§9). A corrupt `hub.toml` is still a hard startup error,
 but only after the operation store's local reap has run: a valid operation store is
-never left unreaped because an unrelated sidecar failed validation. Boot performs no SSH. An unreachable host cannot
+never left unreaped because an unrelated `hub.toml` failed validation. Boot performs no SSH. An unreachable host cannot
 block startup. Remote fencing lands lazily at the next operation's guard advance, after
 the store already serves `interrupted` records.
 
@@ -638,8 +640,8 @@ store file, the store starts with zero outstanding tokens. Otherwise only unexpi
 binding-intact tokens for live hosts remain valid past the restart.
 
 Generation-mirror reconciliation runs before serving any request, per §4: roll back a
-store mirror newer than the sidecar mark with no matching commit marker; push forward a
-sidecar mark newer than the store mirror; preserve the mirror when the sidecar carries
+store mirror newer than the `hub.toml` mark with no matching commit marker; push forward a
+`hub.toml` mark newer than the store mirror; preserve the mirror when `hub.toml` carries
 no entry for the name; record the discarded number as the high-water mark; recover records or dedup entries naming the discarded generation per §4 (interrupted transition, never a startup refusal).
 
 ## 8. Operations pagination and cursors
@@ -714,81 +716,81 @@ the whole store.
 ## 9. Cross-file commit intents
 
 Token rows live in the operation-store file while tombstones and mutation receipts live
-in the sidecar. No shared mutex makes two files atomic. `remove`'s staged commit (the
+in `hub.toml`. No shared mutex makes `hub.toml` and the operation-store file atomic. `remove`'s staged commit (the
 token-row purge plus the tombstone write) and any token consume or delete that must
-coincide with a sidecar commit run a durable two-phase intent. Two-phase intents
-converge sidecar and store without a cross-file atomic write.
+coincide with a `hub.toml` commit run a durable two-phase intent. Two-phase intents
+converge `hub.toml` and store without a cross-file atomic write.
 
-`pendingStoreSync`: the sidecar's atomic write carries the intent (the exact store rows
-to delete or invalidate plus the sidecar generation the intent belongs to). The store
-write applies it. A follow-up sidecar atomic write clears the intent. Token deletion
-lands only after the sidecar commit's swap succeeds: the store purge runs as the
+`pendingStoreSync`: `hub.toml`'s atomic write carries the intent (the exact store rows
+to delete or invalidate plus the `hub.toml` generation the intent belongs to). The store
+write applies it. A follow-up `hub.toml` atomic write clears the intent. Token deletion
+lands only after the `hub.toml` commit's swap succeeds: the store purge runs as the
 post-swap step, never before it. A failure before the purge with the swap already
-landed leaves the sidecar new and the store old: boot re-applies the intent's
-purge, then clears the intent in its follow-up sidecar write — the §9 boot
+landed leaves `hub.toml` new and the store old: boot re-applies the intent's
+purge, then clears the intent in its follow-up `hub.toml` write — the §9 boot
 reconciliation below owns this ordering, never a no-op. A failure before the swap
 leaves both files old with nothing to compensate. A post-swap failure after the purge (still before
-the commit point) compensates the store purge alongside the sidecar restore: the purged
+the commit point) compensates the store purge alongside the `hub.toml` restore: the purged
 rows are re-inserted alongside the stash restore, so compensation resurrects exactly
-the tokens its own sidecar restore revalidates, and the compensated mutation leaves old
-sidecar bytes beside old store rows. Boot and live recovery cover every ordering
+the tokens its own `hub.toml` restore revalidates, and the compensated mutation leaves old
+`hub.toml` bytes beside old store rows. Boot and live recovery cover every ordering
 of the four steps (swap, purge, intent-clear, compensation): swap-landed/purge-missing
 re-applies the purge; purge-landed/intent-present converges to the committed
-sidecar's view and clears; compensation open follows the `pendingCompensation`
+`hub.toml`'s view and clears; compensation open follows the `pendingCompensation`
 phase arms; converged (rows gone, intent cleared) clears the stale intent with no
 further write.
 
 `pendingCompensation`: the committer first persists a record holding the rows about to
-be purged (plus the stash reference and the sidecar generation the purge belongs to, in
+be purged (plus the stash reference and the `hub.toml` generation the purge belongs to, in
 phase `compensating-armed`) into the operation-store file — which the stash restore
-cannot touch, so a sidecar restore that overwrites the restorable sidecar bytes leaves
+cannot touch, so a `hub.toml` restore that overwrites the restorable `hub.toml` bytes leaves
 this record intact — in its own store-local write before the purge write. Boot resumes
 the rollback plus stash cleanup from this record (never from bytes inside the restorable
-sidecar): a record still open means the swap compensation has not converged, and boot
+`hub.toml`): a record still open means the swap compensation has not converged, and boot
 re-runs it by phase per the reconciliation arms below. The purge write
 advances the record past `armed`. The preimage persists before the purge, never after
 it. Past the commit point the committer clears the armed record in its own store write:
 the purge stands. Only on the failure path does the restorer run. The record carries
-`phase` (`compensating-armed` → `compensating-sidecar` → `compensating-rows` →
-`compensating-runtime` → `compensating-clear`) plus the stash reference the sidecar restore must apply. The
-restorer advances the phase in its own store write per step: sidecar restore first
+`phase` (`compensating-armed` → `compensating-hubtoml` → `compensating-rows` →
+`compensating-runtime` → `compensating-clear`) plus the stash reference the `hub.toml` restore must apply. The
+restorer advances the phase in its own store write per step: `hub.toml` restore first
 (stash bytes back, phase to `compensating-rows`), then the row re-insert (phase to
 `compensating-runtime`), then the runtime revert (phase to
 `compensating-clear`), then the record clear. The marker plus its stash
 reference persist until the runtime revert succeeds: a record in
-`compensating-runtime` re-applies the restored sidecar's runtime set first,
+`compensating-runtime` re-applies the restored `hub.toml`'s runtime set first,
 then clears. A runtime-revert failure leaves the record in
 `compensating-runtime` with the stash reference intact, never a cleared
 compensation beside a diverged runtime.
 
 Boot reconciles a live compensation record by phase, never by blind re-insert. A record
-still in `compensating-armed` checks the purge first: a sidecar whose
+still in `compensating-armed` checks the purge first: a `hub.toml` whose
 `pendingStoreSync` intent is already cleared means the commit path passed the commit
 point, so boot clears without resurrecting rows; intent still present with the rows
-still present means the purge never landed, so boot restores the sidecar from the
+still present means the purge never landed, so boot restores `hub.toml` from the
 stash, leaves the rows untouched, and clears; intent still present with the rows absent
-means the purge landed before the crash, so boot advances to `compensating-sidecar`
-and follows that arm. A record in `compensating-sidecar` restores the sidecar from the
+means the purge landed before the crash, so boot advances to `compensating-hubtoml`
+and follows that arm. A record in `compensating-hubtoml` restores `hub.toml` from the
 referenced stash before touching any rows. A record in `compensating-rows` verifies the
-restored sidecar is in place, then re-inserts exactly the rows the restored sidecar's
+restored `hub.toml` is in place, then re-inserts exactly the rows the restored `hub.toml`'s
 generation revalidates, then advances to `compensating-runtime`. A record in
-`compensating-runtime` re-applies the restored sidecar's runtime set to the
+`compensating-runtime` re-applies the restored `hub.toml`'s runtime set to the
 live handles first, then clears. A record in `compensating-clear` clears without resurrecting
 rows: the rows are already converged. A crash at any point of compensation still
-converges to the restored sidecar's view with its tokens intact. The compensation
-record survives the sidecar restoration by construction, and the restored sidecar
+converges to the restored `hub.toml`'s view with its tokens intact. The compensation
+record survives `hub.toml` restoration by construction, and the restored `hub.toml`
 carries no `pendingStoreSync` intent for the generic rules below to misread.
 
 Boot reconciles both directions before serving. An intent whose store rows are still
-present is re-applied: the sidecar committed, the store lagged. Store rows with no
-covering intent whose sidecar generation already advanced past them are dropped: the
-store committed, the sidecar's compensation already restored. Once sidecar and store
+present is re-applied: the `hub.toml` committed, the store lagged. Store rows with no
+covering intent whose `hub.toml` generation already advanced past them are dropped: the
+store committed, `hub.toml`'s compensation already restored. Once `hub.toml` and store
 agree (the intent's store rows are already gone, including the store-already-applied
 no-op where a re-applied intent finds nothing to delete), the boot pass clears the
-stale intent in its own follow-up sidecar atomic write. No converged intent survives
-its boot. A crash between the files converges to exactly the committed sidecar's view,
-never a restored sidecar beside a committed revocation. Compensation resurrects only
-the tokens its own sidecar restore revalidates.
+stale intent in its own follow-up `hub.toml` atomic write. No converged intent survives
+its boot. A crash between the files converges to exactly the committed `hub.toml`'s view,
+never a restored `hub.toml` beside a committed revocation. Compensation resurrects only
+the tokens its own `hub.toml` restore revalidates.
 
 ## 10. Protocol types
 
@@ -986,7 +988,7 @@ This spec's paths emit:
 - `cursor-too-large` (conflict class). The over-cap first-page refusal. Data carries
   `{capBytes: 8192}`, never a compacting `compactSeq`.
 
-Not emitted here, cited only: `concurrent-edit` belongs to the sidecar final check
+Not emitted here, cited only: `concurrent-edit` belongs to the `hub.toml` final check
 (defined in the registry spec §6). `fencing-failure`, `fencing-helper-absent`,
 `fencing-helper-untrusted`, and `orphan-fenced-busy` belong to the fencing spec. The
 `orphanBoundary` element shapes belong to the fencing spec §9.
@@ -1059,7 +1061,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 - Fenced probe ordering: the first mutating probe after a crashed epoch runs takeover, bounded kill/wait, and guard advance before its write half (crash-fencing spec §4); the ordering test observes the write landing only after the guard advanced past the superseded epoch.
 - `factsRevision` freshness: a token whose preflight facts are older than the token-bound bound at deploy time refuses `stale-entry`; deploy runs no fresh preflight, so the check is on the stored `factsRevision`/`factsCapturedAt`, not a re-read, and the mint-time digest remains the pinned reference for the facts the token was minted from.
 - `restart` incarnation pair: a lost-response retry repeating the old pair replays the retained record; the same operation ID naming the new pair after remove/re-add opens fresh; a pair older than current refuses `stale-entry`.
-- Torn-write recovery: a store-newer/sidecar-older split with no commit marker transitions affected records to `interrupted` and serves; startup is never refused for this split.
+- Torn-write recovery: a store-newer/`hub.toml`-older split with no commit marker transitions affected records to `interrupted` and serves; startup is never refused for this split.
 - The running probe (`evener/host/running` handler): local revision plus health plus
   optional `processStartTime`; mutation classification with the required
   `{fencingEpoch: {bootId, opSeq}}` params (the generated client carries the
@@ -1110,7 +1112,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   atomic consume-and-create write (a replayed deploy after a crash in that window
   finds a record, never a silently consumed token).
 - Startup reconciliation of pending/running to `interrupted` plus the
-  tombstone-derived `host-removed` pass (a crash between a remove's sidecar commit
+  tombstone-derived `host-removed` pass (a crash between a remove's `hub.toml` commit
   and its live mark still never-matches at boot).
 - The corrupt operation-store boot quarantine (store quarantined aside; boot serves
   empty with zero outstanding tokens plus the operator-visible health signal;
@@ -1123,10 +1125,10 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   file with incomplete custody, fails closed; truncated and
   corrupt stores covered end-to-end — including the fail-startup posture when
   custody is incomplete).
-- The cross-file intent (a crash between the sidecar commit and the store sync
-  converges to the committed sidecar's view in both directions; the store purge lands
+- The cross-file intent (a crash between the `hub.toml` commit and the store sync
+  converges to the committed `hub.toml`'s view in both directions; the store purge lands
   only after swap success; swap-failure compensation re-inserts exactly the purged
-  token rows its sidecar restore revalidates).
+  token rows its `hub.toml` restore revalidates).
 - Plan publish: every `plan` refusal and every completed probe lands in the
   (generation, incarnation id)-scoped running-state/refusal snapshot. `status` after
   a plan refusal renders the refusal, never stale data.
@@ -1202,5 +1204,7 @@ is stated in the registry spec §13 and cited here, never restated.
    block this component (version display reads preflight facts, and the running
    probe reads the remote's real build).
 
-Sidecar-versus-`hub.toml` rewrite, tombstone retention period, and per-host detach
+The sidecar-versus-`hub.toml` rewrite question is decided (registry spec §19:
+in-place `hub.toml` rewrite, machine-managed, comments not preserved); tombstone
+retention period and per-host detach
 belong to the sibling specs and are not reopened here.

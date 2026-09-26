@@ -68,6 +68,7 @@ evener_path = "/usr/local/bin/evener"    # optional; remote binary path
 roots       = ["/Users/jesse/src"]       # optional; remote working roots
 config_path = "/etc/evener/hub.toml"     # optional; the host's hub.toml
 addr        = "127.0.0.1:9180"           # optional; the host hub's loopback address
+key_path    = "~/.ssh/id_m4"              # optional; SSH identity file for this host
 ```
 
 - `name` → `appwire.Ref.SourceID`; refs surface as `name:<sessionID>`
@@ -81,6 +82,10 @@ addr        = "127.0.0.1:9180"           # optional; the host hub's loopback add
 - `evener_path` and `roots` are advisory inputs to components 04/05; this
   component only stores and validates their shape (`roots` entries must be
   non-empty after trim; no path validation here).
+- `key_path` (optional) is the SSH private-key file the controller dials with.
+  It is a component-08 addition to the stored schema: the machine-managed
+  `hub.toml` carries it so a UI-added host's key path round-trips through a
+  rewrite (component 08, §6).
 - **`config_path` / `addr` — the connection parameters both halves must
   agree on (corrected contract).** The bridge resolves the host hub's address
   and capability-token state root from the `hub.toml` it reads; component 04's
