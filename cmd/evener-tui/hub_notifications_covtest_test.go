@@ -236,32 +236,32 @@ func TestCovNotificationMatchesCurrentSession(t *testing.T) {
 func TestCovHandleChildActivityFrame(t *testing.T) {
 	// No watched children.
 	m := hubModel{}
-	_, handled := m.handleChildActivityFrame(appwire.Notification{Method: appwire.NotifyItemStarted})
+	_, handled := m.handleChildActivityFrame(appwire.Notification{Method: appwire.NotifyHistoryUpdated})
 	if handled {
 		t.Fatal("should not handle when no watched children")
 	}
 
 	// Wrong method.
 	m = hubModel{watchedChildRefs: map[string]bool{"local:child": true}}
-	_, handled = m.handleChildActivityFrame(appwire.Notification{Method: appwire.NotifyTurnCompleted})
+	_, handled = m.handleChildActivityFrame(appwire.Notification{Method: appwire.NotifyThreadStatusChanged})
 	if handled {
 		t.Fatal("should not handle wrong method")
 	}
 
-	// Matching child ref, item started.
+	// Matching child ref, history/updated.
 	m = hubModel{
 		watchedChildRefs: map[string]bool{"local:child": true},
 		session:          newModel(nil),
 		detail:           hubSessionDetail{Ref: "local:parent"},
 	}
 	n := appwire.Notification{
-		Method: appwire.NotifyItemStarted,
-		Params: mustJSON(appwire.ItemLifecycleParams{
+		Method: appwire.NotifyHistoryUpdated,
+		Params: mustJSON(appwire.HistoryUpdatedParams{
 			Ref: "local:child",
-			Item: appwire.ThreadItem{
+			Items: []appwire.ThreadItem{{
 				ToolName:    "read_file",
 				Description: "reading file",
-			},
+			}},
 		}),
 	}
 	_, handled = m.handleChildActivityFrame(n)
@@ -271,7 +271,7 @@ func TestCovHandleChildActivityFrame(t *testing.T) {
 
 	// Matching child ref but invalid JSON params for ref: not handled.
 	n = appwire.Notification{
-		Method: appwire.NotifyItemStarted,
+		Method: appwire.NotifyHistoryUpdated,
 		Params: json.RawMessage(`invalid`),
 	}
 	_, handled = m.handleChildActivityFrame(n)
@@ -279,18 +279,18 @@ func TestCovHandleChildActivityFrame(t *testing.T) {
 		t.Fatal("should not handle invalid JSON for ref parse")
 	}
 
-	// Matching ref, valid ref JSON but invalid item params: handled=true.
-	// Use a valid ref but make ItemLifecycleParams unmarshal fail by using wrong types.
+	// Matching ref, valid ref JSON but invalid items params: handled=true.
+	// Use a valid ref but make HistoryUpdatedParams unmarshal fail by using wrong types.
 	n = appwire.Notification{
-		Method: appwire.NotifyItemStarted,
+		Method: appwire.NotifyHistoryUpdated,
 		Params: mustJSON(map[string]any{
-			"ref":  "local:child",
-			"item": "not-an-object",
+			"ref":   "local:child",
+			"items": "not-an-array",
 		}),
 	}
 	_, handled = m.handleChildActivityFrame(n)
 	if !handled {
-		t.Fatal("should still handle (return true) for matching ref even when item params fail")
+		t.Fatal("should still handle (return true) for matching ref even when items params fail")
 	}
 }
 
@@ -362,53 +362,39 @@ func TestCovSubscribeNewChildren(t *testing.T) {
 func TestCovReconcilePendingFromNotification(t *testing.T) {
 	pending := pendingpkg.NewPendingCoordinator(pendingpkg.RealClock{}, func(tea.Msg) {})
 
-	// Steering injected.
+	// A recorded "steering" item (evener/steering/injected's replacement).
 	pending.Register(appwire.MethodTurnDrainAsSteer, "queued steering", "local:01TEST", "")
 	n := appwire.Notification{
-		Method: appwire.NotifyEvenerSteeringInjected,
-		Params: mustJSON(appwire.EvenerSteeringInjectedParams{Ref: "local:01TEST", Text: "steer text"}),
+		Method: appwire.NotifyHistoryUpdated,
+		Params: mustJSON(appwire.HistoryUpdatedParams{
+			Ref:   "local:01TEST",
+			Items: []appwire.ThreadItem{{Type: "steering", Text: "steer text"}},
+		}),
 	}
 	reconcilePendingFromNotification(pending, n)
 	if pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "anything", "local:01TEST") {
-		t.Fatal("steering notification left its pending mutation registered")
+		t.Fatal("steering item left its pending mutation registered")
 	}
 
-	// Item started (userMessage).
+	// A recorded userMessage item (item/started|completed and
+	// turn/completed's replacement).
 	pending.Register(appwire.MethodTurnStart, "hello", "local:01TEST", "")
 	n = appwire.Notification{
-		Method: appwire.NotifyItemStarted,
-		Params: mustJSON(appwire.ItemLifecycleParams{
-			Ref:  "local:01TEST",
-			Item: appwire.ThreadItem{Type: "userMessage", Text: "hello"},
+		Method: appwire.NotifyHistoryUpdated,
+		Params: mustJSON(appwire.HistoryUpdatedParams{
+			Ref:   "local:01TEST",
+			Items: []appwire.ThreadItem{{Type: "userMessage", Text: "hello"}},
 		}),
 	}
 	reconcilePendingFromNotification(pending, n)
 	if pending.TryReconcile(appwire.MethodTurnStart, "hello", "local:01TEST") {
-		t.Fatal("item-started notification left its pending turn registered")
-	}
-
-	// Turn completed.
-	pending.Register(appwire.MethodTurnStart, "completed input", "local:01TEST", "")
-	n = appwire.Notification{
-		Method: appwire.NotifyTurnCompleted,
-		Params: mustJSON(appwire.TurnCompletedParams{
-			Ref: "local:01TEST",
-			Turn: appwire.Turn{
-				Items: []appwire.ThreadItem{
-					{Type: "userMessage", Text: "completed input"},
-				},
-			},
-		}),
-	}
-	reconcilePendingFromNotification(pending, n)
-	if pending.TryReconcile(appwire.MethodTurnStart, "completed input", "local:01TEST") {
-		t.Fatal("turn-completed notification left its pending turn registered")
+		t.Fatal("history-updated notification left its pending turn registered")
 	}
 
 	// Invalid JSON must not reconcile an unrelated pending mutation.
 	pending.Register(appwire.MethodTurnStart, "still pending", "local:01TEST", "")
 	n = appwire.Notification{
-		Method: appwire.NotifyTurnCompleted,
+		Method: appwire.NotifyHistoryUpdated,
 		Params: json.RawMessage(`invalid`),
 	}
 	reconcilePendingFromNotification(pending, n)
