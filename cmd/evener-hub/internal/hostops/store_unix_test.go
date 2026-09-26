@@ -72,3 +72,47 @@ func TestOpenRefusesAStorePathThatIsNotARegularFile(t *testing.T) {
 		}
 	})
 }
+
+// TestOpenRefusesADanglingSymlinkAtTheStorePath pins the kind check's ordering:
+// a following stat reports "missing" for a dangling link, so a loader that reads
+// the missing-file case first treats it as a fresh empty store — and the next
+// write's rename replaces the link instead of writing through it.
+func TestOpenRefusesADanglingSymlinkAtTheStorePath(t *testing.T) {
+	path := StorePath(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "never-created.json"), path); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatalf("Open on a dangling symlink succeeded, want an error")
+	}
+}
+
+// TestOpenRevalidatesTheKindOfAnAlreadyHeldStore pins the other half of the kind
+// check: a cached store cell is not a licence to skip the file's kind. A symlink
+// whose target resolves to a path whose cell is already held would otherwise hand
+// out a handle that writes through the link and replaces it on its next rename.
+func TestOpenRevalidatesTheKindOfAnAlreadyHeldStore(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "real-store.json")
+	writeRawStore(t, target, 0o600, validStoreJSON)
+	direct, err := Open(target)
+	if err != nil {
+		t.Fatalf("Open(target): %v", err)
+	}
+	createTestRecord(t, direct, "h1")
+
+	// The store path becomes a symlink to that same file, so it resolves to the
+	// key whose cell is already held.
+	link := StorePath(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, err := Open(link); err == nil {
+		t.Fatalf("Open on a symlinked store file succeeded through a held store cell, want an error")
+	}
+}

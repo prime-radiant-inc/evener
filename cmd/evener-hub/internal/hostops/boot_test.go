@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,7 +192,15 @@ func TestBootPassReportsTheCountItMovedWhenAFailureLanded(t *testing.T) {
 	newStore := func(t *testing.T, path string, syncErr *error, renameErr *error) *Store {
 		t.Helper()
 		store, err := openFS(afero.NewOsFs(), path, storeFaults{
-			syncDir:      func(afero.Fs, string) error { return *syncErr },
+			// Only the store directory's sync (the one behind the rename) can be
+			// made to fail here; the parent-chain syncs that precede the rename
+			// pass, so the failure under test is the post-rename one.
+			syncDir: func(_ afero.Fs, dir string) error {
+				if dir != filepath.Dir(path) {
+					return nil
+				}
+				return *syncErr
+			},
 			beforeRename: func() error { return *renameErr },
 		})
 		if err != nil {

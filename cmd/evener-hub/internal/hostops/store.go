@@ -148,6 +148,20 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 		return nil, err
 	}
 	if existing, held := storeCells.Load(key); held {
+		// A cached cell is not a licence to skip the file's kind: the handle it
+		// hands out would otherwise write through a path that has since become a
+		// link or a fifo, and its rename would replace the link rather than what
+		// it names.
+		info, err := lstat(fs, path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
+		default:
+			if err := rejectNonStoreFileKind(path, info); err != nil {
+				return nil, err
+			}
+		}
 		return &Store{path: path, fs: fs, faults: faults, cell: existing.(*storeCell)}, nil
 	}
 	state, err := loadFS(fs, path)
@@ -497,30 +511,19 @@ func (f recordFile) record() (Record, error) {
 // every other failure is reported, never papered over.
 func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	empty := snapshot{Version: storeVersion}
-	info, err := fs.Stat(path)
+	// The kind check runs on the path itself (never following a final link) and
+	// before the missing-file case: a dangling symlink reports "missing" to a
+	// following stat, and reading it as a fresh empty store is exactly what lets
+	// the next write replace the link instead of writing through it.
+	info, err := lstat(fs, path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return empty, nil
 		}
 		return snapshot{}, fmt.Errorf("hostops: stat store %s: %w", path, err)
 	}
-	// The store file must be a regular file this store owns: a directory, a
-	// symlink, a fifo, a socket or a device is not one. A link is refused because
-	// the atomic rename replaces the link itself, not what it points at, so a
-	// store behind a link would silently move on its first write; a fifo in
-	// particular would block the read below forever, turning a stray file into a
-	// boot that never finishes.
-	kind, err := lstat(fs, path)
-	if err != nil {
-		return snapshot{}, fmt.Errorf("hostops: stat store %s: %w", path, err)
-	}
-	switch {
-	case kind.IsDir():
-		return snapshot{}, fmt.Errorf("hostops: store %s is a directory, not a store file", path)
-	case kind.Mode()&os.ModeSymlink != 0:
-		return snapshot{}, fmt.Errorf("hostops: store %s is a symlink; the store file must be a regular file", path)
-	case !kind.Mode().IsRegular():
-		return snapshot{}, fmt.Errorf("hostops: store %s is not a regular file", path)
+	if err := rejectNonStoreFileKind(path, info); err != nil {
+		return snapshot{}, err
 	}
 	if perm := info.Mode().Perm(); !ownerOnly(perm) {
 		return snapshot{}, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
@@ -600,8 +603,11 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		return false, fmt.Errorf("hostops: marshal store: %w", err)
 	}
 	dir := filepath.Dir(path)
-	created, err := ensureStoreDir(fs, dir)
-	if err != nil {
+	sync := syncDirFS
+	if faults.syncDir != nil {
+		sync = faults.syncDir
+	}
+	if err := ensureStoreDir(fs, dir, sync); err != nil {
 		return false, err
 	}
 	temp, err := afero.TempFile(fs, dir, filepath.Base(path)+".tmp-*")
@@ -644,38 +650,50 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		return false, fmt.Errorf("hostops: rename store: %w", err)
 	}
 	renamed = true
-	sync := syncDirFS
-	if faults.syncDir != nil {
-		sync = faults.syncDir
-	}
 	if err := sync(fs, dir); err != nil {
 		return true, &postRenameError{err: err}
-	}
-	if created {
-		// The write created the store's directory, so the entry that carries it
-		// lives in the parent: a crash before that entry is durable can lose the
-		// new directory and the store with it. Only the first write pays this;
-		// every later write finds the directory already there.
-		if err := sync(fs, filepath.Dir(dir)); err != nil {
-			return true, &postRenameError{err: err}
-		}
 	}
 	return true, nil
 }
 
-// ensureStoreDir creates the store's directory when it is missing and reports
-// whether this call created it, so the write can sync the parent entry that
-// carries a new directory.
-func ensureStoreDir(fs afero.Fs, dir string) (bool, error) {
-	if _, err := fs.Stat(dir); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("hostops: stat store directory: %w", err)
+// ensureStoreDir creates the store's directory and every missing level above it,
+// syncing the parent entry of each level as it goes: a fresh state root can need
+// several levels at once, and a crash before a level's parent entry is durable can
+// lose that level, the store and the record with it. Each level's parent is synced
+// on every write, not only on creation, so a directory an earlier attempt created
+// before its parent sync failed converges instead of staying unprovable.
+//
+// This is the discipline the hub's recovery store already follows
+// (createRecoveryDirectory); the chain is walked top-down and stops at the deepest
+// level that exists.
+func ensureStoreDir(fs afero.Fs, dir string, sync func(afero.Fs, string) error) error {
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if _, err := lstat(fs, parent); errors.Is(err, os.ErrNotExist) {
+			if err := ensureStoreDir(fs, parent, sync); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return fmt.Errorf("hostops: stat store directory %s: %w", parent, err)
+		}
 	}
-	if err := fs.MkdirAll(dir, 0o700); err != nil {
-		return false, fmt.Errorf("hostops: create store directory: %w", err)
+	info, err := lstat(fs, dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if err := fs.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("hostops: create store directory: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("hostops: stat store directory %s: %w", dir, err)
+	case !info.IsDir():
+		return fmt.Errorf("hostops: store parent %q is not a directory", dir)
 	}
-	return true, nil
+	if parent != dir {
+		if err := sync(fs, parent); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // syncDirFS opens dir, syncs it and closes it: the durability half of the
@@ -711,6 +729,25 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 		return 0, false
 	}
 	return perm, true
+}
+
+// rejectNonStoreFileKind refuses a path that is not a store file this store may
+// serve or write: a directory, a symlink, a fifo, a socket or a device. A link is
+// refused because the atomic rename replaces the link itself, not what it points
+// at, so a store behind one would silently move on its first write; a fifo in
+// particular would block the read forever, turning a stray file into a boot that
+// never finishes. A regular file — and nothing at all, which is a fresh store —
+// passes.
+func rejectNonStoreFileKind(path string, info os.FileInfo) error {
+	switch {
+	case info.IsDir():
+		return fmt.Errorf("hostops: store %s is a directory, not a store file", path)
+	case info.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("hostops: store %s is a symlink; the store file must be a regular file", path)
+	case !info.Mode().IsRegular():
+		return fmt.Errorf("hostops: store %s is not a regular file", path)
+	}
+	return nil
 }
 
 // lstat stats a path without following a final symlink, through the filesystem

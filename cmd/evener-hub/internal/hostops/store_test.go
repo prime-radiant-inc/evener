@@ -530,7 +530,10 @@ func readStoreSnapshot(t *testing.T, path string) snapshot {
 func TestAPostRenameFailureKeepsMemoryInStepWithTheFile(t *testing.T) {
 	path := StorePath(t.TempDir())
 	var syncErr error
-	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(afero.Fs, string) error {
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		if dir != filepath.Dir(path) {
+			return nil
+		}
 		return syncErr
 	}})
 	if err != nil {
@@ -797,7 +800,10 @@ func pendingPayloadWithoutEpoch() string {
 func TestALandedWriteIsReconcilable(t *testing.T) {
 	path := StorePath(t.TempDir())
 	var syncErr error
-	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(afero.Fs, string) error {
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		if dir != filepath.Dir(path) {
+			return nil
+		}
 		return syncErr
 	}})
 	if err != nil {
@@ -857,11 +863,10 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 }
 
 // TestTheFirstWriteSyncsTheDirectoryThatCarriesANewStore pins spec §4's
-// durability paragraph for the one write that creates the store's directory: the
-// rename's directory entry is fsynced, and so is the parent entry that carries
-// the newly created directory, or a crash can lose the directory and the store
-// with it. Later writes find the directory already there and pay only the first
-// sync.
+// durability paragraph on the write path: the parent entry that carries the store
+// directory is fsynced (every write, so a directory an earlier attempt created
+// before its parent sync failed converges) and so is the directory the rename
+// landed in.
 func TestTheFirstWriteSyncsTheDirectoryThatCarriesANewStore(t *testing.T) {
 	root := t.TempDir()
 	path := StorePath(root)
@@ -876,15 +881,45 @@ func TestTheFirstWriteSyncsTheDirectoryThatCarriesANewStore(t *testing.T) {
 
 	createTestRecord(t, store, "h1")
 	dir := filepath.Dir(path)
-	if len(synced) != 2 || synced[0] != dir || synced[1] != filepath.Dir(dir) {
-		t.Fatalf("the first write synced %v, want the store directory %q then its parent %q",
-			synced, dir, filepath.Dir(dir))
+	if len(synced) != 2 || synced[0] != filepath.Dir(dir) || synced[1] != dir {
+		t.Fatalf("the first write synced %v, want the parent %q that carries the store directory, then the directory %q the rename landed in",
+			synced, filepath.Dir(dir), dir)
 	}
 
 	synced = nil
 	createTestRecord(t, store, "h2")
-	if len(synced) != 1 || synced[0] != dir {
-		t.Fatalf("a later write synced %v, want only the store directory %q", synced, dir)
+	if len(synced) != 2 || synced[0] != filepath.Dir(dir) || synced[1] != dir {
+		t.Fatalf("a later write synced %v, want the same two directories", synced)
+	}
+}
+
+// TestTheFirstWriteSyncsEveryLevelItCreates pins the recursive half: a fresh state
+// root needs several levels at once, and each level's parent entry is synced as
+// that level is created — bottom-up, a crash before a level's entry is durable
+// loses that level, the store and the record with it.
+func TestTheFirstWriteSyncsEveryLevelItCreates(t *testing.T) {
+	scratch := t.TempDir()
+	stateRoot := filepath.Join(scratch, "state", "evener")
+	path := StorePath(stateRoot)
+	var synced []string
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		synced = append(synced, dir)
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+
+	createTestRecord(t, store, "h1")
+	dir := filepath.Dir(path)
+	want := []string{scratch, filepath.Dir(stateRoot), stateRoot, dir}
+	if len(synced) != len(want) {
+		t.Fatalf("the write synced %v, want one entry per level (and the store directory): %v", synced, want)
+	}
+	for i := range want {
+		if synced[i] != want[i] {
+			t.Fatalf("the write synced %v, want %v", synced, want)
+		}
 	}
 }
 
