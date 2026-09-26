@@ -355,7 +355,36 @@ jobs:
         with:
           go-cache-kind: race-${{ matrix.scope }}
 
+      # EXPERIMENT (do not merge): per-package and per-test timing of the agent lane.
+      - name: "EXPERIMENT: time the agent race run"
+        if: matrix.scope == 'agent'
+        working-directory: agent
+        run: |
+          nproc
+          /usr/bin/time -o /tmp/race.time -f 'TIMING race wall=%es user=%Us sys=%Ss maxrss=%MKB' go test -race -short -count=1 -parallel 6 -json ./... > /tmp/race.json || true
+          cat /tmp/race.time
+          python3 - <<'PY'
+          import json, collections
+          pk = {}; tests = []
+          for line in open('/tmp/race.json'):
+              try: e = json.loads(line)
+              except ValueError: continue
+              if e.get('Action') not in ('pass', 'fail', 'skip') or 'Elapsed' not in e: continue
+              if e.get('Test'):
+                  if '/' not in e['Test']: tests.append((e['Elapsed'], e['Package'].split('/')[-1], e['Test'], e['Action']))
+              else: pk[e['Package']] = (e['Elapsed'], e['Action'])
+          print('TIMING packages by elapsed:')
+          for p, (el, a) in sorted(pk.items(), key=lambda x: -x[1][0])[:12]: print(f'TIMING {el:7.1f}s {a} {p}')
+          tests.sort(reverse=True)
+          print(f'TIMING top-level tests: {len(tests)}, summed elapsed {sum(t[0] for t in tests):.0f}s')
+          for t in tests[:40]: print(f'TIMING {t[0]:7.2f}s {t[3]} {t[1]} {t[2]}')
+          b = collections.Counter()
+          for t in tests: b['>10s' if t[0] > 10 else '1-10s' if t[0] > 1 else '0.1-1s' if t[0] > 0.1 else '<0.1s'] += t[0]
+          print('TIMING buckets', {k: round(v) for k, v in b.items()})
+          PY
+
       - name: Test (race detector — ${{ matrix.scope }})
+        if: matrix.scope != 'agent'
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
 
       - uses: ./.github/actions/go-cache-save
