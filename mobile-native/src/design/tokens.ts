@@ -28,6 +28,7 @@ export interface Palette {
 	alive: string;
 	aliveInk: string;
 	aliveBg: string;
+	aliveEdge: string;
 	danger: string;
 	dangerInk: string;
 	dangerBg: string;
@@ -50,7 +51,9 @@ function channels(hex: string): [number, number, number] {
 }
 
 /** `hue` laid over `base` at `amount` (0 to 1), blended per sRGB channel and
- * rounded: the spec's tints ("the hue at 15% over surface"). */
+ * rounded: the spec's tints ("the hue at 15% over surface"). The web's
+ * color-mix blends the same formula in OKLab; the two land within about one
+ * just-noticeable difference of each other. */
 export function mix(hue: string, base: string, amount: number): string {
 	const h = channels(hue);
 	const b = channels(base);
@@ -60,7 +63,7 @@ export function mix(hue: string, base: string, amount: number): string {
 		.toUpperCase()}`;
 }
 
-type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
+type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "aliveEdge" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
 
 function withTints(core: Core): Palette {
 	const accentBg = mix(core.accent, core.surface, 0.15);
@@ -69,6 +72,7 @@ function withTints(core: Core): Palette {
 		attentionBg: mix(core.attention, core.surface, 0.15),
 		attentionEdge: mix(core.attention, core.edge, 0.4),
 		aliveBg: mix(core.alive, core.surface, 0.15),
+		aliveEdge: mix(core.alive, core.edge, 0.4),
 		dangerBg: mix(core.danger, core.surface, 0.15),
 		dangerEdge: mix(core.danger, core.edge, 0.4),
 		accentBg,
@@ -132,26 +136,8 @@ export const palettes: Record<Scheme, Palette> = {
 	}),
 };
 
-/** The palette for React Native's color scheme; anything but "dark" is light. */
-export function paletteFor(scheme: Scheme | null | undefined): Palette {
+/** The palette for React Native's color scheme; anything but "dark" (null,
+ * "unspecified") is light. */
+export function paletteFor(scheme: string | null | undefined): Palette {
 	return scheme === "dark" ? palettes.dark : palettes.light;
 }
-
-/** iOS PostScript names of the embedded Source Serif 4 faces (see app.json's
- * expo-font plugin), and the app's existing machine face. A custom face is
- * chosen by name, never by fontWeight. */
-export const fonts = {
-	serif: "SourceSerif4-Regular",
-	serifItalic: "SourceSerif4-Italic",
-	serifSemibold: "SourceSerif4-SemiBold",
-	mono: "Menlo",
-} as const;
-
-/** Reading roles from spec 16.2. Sizes are points before Dynamic Type; callers
- * multiply fontSize and lineHeight by the iOS font scale, as ui.tsx does. */
-export const typeRoles = {
-	agentProse: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 26 },
-	yourMessage: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 25 },
-	document: { fontFamily: fonts.serif, fontSize: 18, lineHeight: 28 },
-	machine: { fontFamily: fonts.mono, fontSize: 13, lineHeight: 18 },
-} as const;

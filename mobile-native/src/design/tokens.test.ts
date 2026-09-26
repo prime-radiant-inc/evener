@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fonts, mix, paletteFor, palettes, typeRoles } from "./tokens";
+import { mix, paletteFor, palettes } from "./tokens";
 
 describe("the palette is the spec's (section 16.1)", () => {
 	it("light", () => {
@@ -37,14 +37,14 @@ describe("tints: the hue at 15% over surface, edges at 40% over edge", () => {
 	});
 	it("light tints", () => {
 		expect(palettes.light).toMatchObject({
-			attentionBg: "#FBEDD4", attentionEdge: "#E7C384", aliveBg: "#DAECDE",
+			attentionBg: "#FBEDD4", attentionEdge: "#E7C384", aliveBg: "#DAECDE", aliveEdge: "#8EC29E",
 			dangerBg: "#F8E0DE", dangerEdge: "#DFA09E", accentBg: "#D7E9F9", accentEdge: "#85B9E5",
 			bubble: "#D7E9F9",
 		});
 	});
 	it("dark tints", () => {
 		expect(palettes.dark).toMatchObject({
-			attentionBg: "#433324", attentionEdge: "#825834", aliveBg: "#273A2C",
+			attentionBg: "#433324", attentionEdge: "#825834", aliveBg: "#273A2C", aliveEdge: "#386A4A",
 			dangerBg: "#412C2A", dangerEdge: "#7E4443", accentBg: "#273541", accentEdge: "#385D82",
 			bubble: "#273541",
 		});
@@ -57,22 +57,6 @@ describe("paletteFor", () => {
 		expect(paletteFor("light").scheme).toBe("light");
 		expect(paletteFor(null).scheme).toBe("light");
 		expect(paletteFor(undefined).scheme).toBe("light");
-	});
-});
-
-describe("type", () => {
-	it("names the embedded Source Serif 4 faces and the app's machine face", () => {
-		expect(fonts).toEqual({
-			serif: "SourceSerif4-Regular",
-			serifItalic: "SourceSerif4-Italic",
-			serifSemibold: "SourceSerif4-SemiBold",
-			mono: "Menlo",
-		});
-	});
-	it("sets the spec's reading sizes", () => {
-		expect(typeRoles.agentProse).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26 });
-		expect(typeRoles.yourMessage).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 25 });
-		expect(typeRoles.document).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 18, lineHeight: 28 });
-		expect(typeRoles.machine).toEqual({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18 });
+		expect(paletteFor("unspecified").scheme).toBe("light");
 	});
 });
