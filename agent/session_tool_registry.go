@@ -192,6 +192,12 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 type taskGuard struct {
 	getOrCreateTaskStore func() *taskpkg.TaskStore
 	markUsed             func()
+	// beforeBareTaskView is a test-only scheduling seam immediately before a
+	// bare task-list view. Production leaves it nil.
+	beforeBareTaskView func()
+	// afterFailedTaskReload is a test-only scheduling seam after a failed retry
+	// Load has released the store lock. Production leaves it nil.
+	afterFailedTaskReload func()
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }

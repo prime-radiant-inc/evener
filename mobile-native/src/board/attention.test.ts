@@ -52,6 +52,10 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "active", offline: true }, false, false, "shutDown"],
 		[{ state: "active", offline: true }, true, false, "shutDown"],
 		[{ state: "awaiting", ask_pending: true, offline: true }, false, false, "shutDown"],
+		[{ state: "active", approval_pending: true }, false, false, "approval"],
+		[{ state: "active", offline: true, approval_pending: true }, false, false, "shutDown"],
+		[{ state: "awaiting", ask_pending: true, approval_pending: true }, false, false, "question"],
+		[{ state: "errored", approval_pending: true }, false, false, "failed"],
 	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
 		expect(boardState(row("s", over), approval, seen)).toBe(expected);
 	});
@@ -81,7 +85,7 @@ describe("hub timestamps", () => {
 	});
 });
 
-describe("approvals inferred from the needs_you section (until S2)", () => {
+describe("approvals inferred from the needs_you section", () => {
 	it("is every row there for no reason its state gives", () => {
 		const section = [
 			row("a", { state: "awaiting" }),

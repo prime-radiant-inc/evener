@@ -176,11 +176,19 @@ export class FoldedSections {
 }
 
 export function forgetBoard(storage: BoardStorage, hubId: string): void {
+	let failed = false;
 	for (const key of [seenKey(hubId), foldedKey(hubId)])
 		try {
 			storage.removeItemSync(key);
 		} catch {
-			// Only a storage failure throws (a missing key doesn't). It orphans the
-			// key, and nothing reads it again: hub ids are fresh UUIDs, never reused.
+			// Keep trying the other key: a storage failure orphans this one (hub
+			// ids are fresh UUIDs, never reused, so nothing reads it again), but
+			// the caller must still hear about it. ConnectionProvider's removeHub
+			// cleanup runs this last, alongside cleanups that surface their own
+			// storage failures the same way, so rethrowing here shows the user
+			// the same "could not be deleted" message instead of a silently
+			// incomplete removal.
+			failed = true;
 		}
+	if (failed) throw new Error("forgetBoard: could not remove board memory from storage");
 }
