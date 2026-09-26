@@ -32,9 +32,9 @@ const keyVersion = 2
 // whatever turn shows them.
 func ItemKey(turnID string, position appwire.ThreadItemPosition) string {
 	if position.Entry == 0 {
-		return fmt.Sprintf("apptranscript-item-v%d:prelude:header:%d", keyVersion, position.Item)
+		return fmt.Sprintf("%s%s%d", keyPrefix, headerKeyPrefix, position.Item)
 	}
-	return fmt.Sprintf("apptranscript-item-v%d:%s:%d:%d", keyVersion, turnID, position.Entry-1, position.Item)
+	return fmt.Sprintf("%s%s:%d:%d", keyPrefix, turnID, position.Entry-1, position.Item)
 }
 
 // keyPrefix is the fixed lead-in every ItemKey carries; ParseItemKey rejects
