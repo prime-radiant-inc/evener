@@ -15,7 +15,12 @@
  * `where` labels the source in that error.
  */
 export function goConstantValue(source: string, name: string, where: string): string {
-  const match = source.match(new RegExp(`${name}(?:\\s+\\w+)?\\s*=\\s*"([^"]+)"`));
+  // \b anchors the name to an identifier boundary: without it the pattern
+  // matches the name as a SUFFIX of a longer constant and returns that
+  // constant's value - appwire/errors.go's ErrorMutationOutcomeUnknown before
+  // MutationOutcomeUnknown is the live collision (goConstants.test.ts pins
+  // it).
+  const match = source.match(new RegExp(`\\b${name}(?:\\s+\\w+)?\\s*=\\s*"([^"]+)"`));
   const value = match?.[1];
   if (value === undefined) throw new Error(`${where} has no ${name} constant`);
   return value;
