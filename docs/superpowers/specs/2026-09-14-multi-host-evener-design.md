@@ -467,9 +467,9 @@ implementing — several have landed without their entry being re-marked.
   lease wrapper is a fencing helper, not a restart-identity pin). The residual check-then-act window in the ad hoc path
   remains: the re-read narrows it and does not close it. The refusal rule
   stands, never a fallback to a bare unguarded `kill`: an identity field that
-  cannot be re-read refuses `ErrRestart` with no signal, and a supervisor label
-  outside the bare-safe set is refused likewise (the label case is a separate
-  fix in flight). The shipped manager still refuses the supervisorless branch
+  cannot be re-read refuses `ErrRestart` with no signal, while a supervisor label
+  outside the bare-safe set is never interpolated into the remote shell and
+  falls through to the guarded ad hoc restart (design §2). The shipped manager still refuses the supervisorless branch
   (`restartHub` returns `ErrRestart` without calling `restartBare`), and
   `restartBare` — which validates at identification time, not at signal time —
   is unreachable from production; making the guarded ad hoc path the

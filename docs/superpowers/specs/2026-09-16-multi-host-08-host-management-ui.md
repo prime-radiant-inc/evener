@@ -636,10 +636,10 @@ compares only the effective `HostConfig` fields plus `generation`/`origin` —
 never volatile live state (`attached`, `midEnsure`, `lastAttachError`) or age
 counters (`installedVersionAgeSec`, `lastAttachErrorAgeSec`,
 `escalationAgeSec`): a keyed retry that observes its intended effective row
-(for a lost-response keyless `add`: the listed entry hash equals the intended
-entry; for `remove`: a missing name or a `removed: true` row — a keyed
+(for `remove`: a missing name or a `removed: true` row — a keyed
 `remove` retry returns its receipt first) returns the recorded receipt, never a
-fresh apply. A keyless `add` retry that observes a matching listed row returns
+fresh apply. A keyless `add` retry that observes a matching listed row (the
+listed entry hash equals the intended entry) returns
 the explicit ambiguous outcome — the row may be the caller's committed
 mutation, a pre-existing identical row, or another client's remove/re-add, and
 the keyless retry cannot distinguish them — instead of claiming the mutation
