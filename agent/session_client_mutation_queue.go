@@ -170,8 +170,6 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnQueueResponse{}, clientMutationRejectionError(lookup.Record)
 	}
-	// Re-engagement: release the attention rail with the QueueHeld release
-	// this accept just committed, re-arming whatever the Stop deferred.
 	s.unparkRootDelegateAttention()
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		// A retry of a queue that was accepted but never run -- the process died
@@ -868,8 +866,6 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnDrainAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
 	}
-	// Re-engagement: release the attention rail with the QueueHeld release
-	// this drain just committed, re-arming whatever the Stop deferred.
 	s.unparkRootDelegateAttention()
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnDrainAsSteerResponse
@@ -987,8 +983,6 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
 	}
-	// Re-engagement: release the attention rail with the QueueHeld release
-	// this promote just committed, re-arming whatever the Stop deferred.
 	s.unparkRootDelegateAttention()
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnPromoteQueuedAsSteerResponse

@@ -715,9 +715,6 @@ func (s *Session) armRootDelegateAttention(attentionID string) {
 		s.rootAttentionWakeIDs = make(map[string]struct{})
 	}
 	s.rootAttentionWakeIDs[attentionID] = struct{}{}
-	// A parked rail caches but stays asleep: the Stop that parked it owns
-	// the next wake, and unparkRootDelegateAttention re-arms everything
-	// cached here at re-engagement.
 	shouldWake := !s.rootAttentionWake && !s.rootAttentionParked
 	if shouldWake {
 		s.rootAttentionWake = true
@@ -801,12 +798,6 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		}
 		resolutionErr = err
 	}
-	s.attentionMu.Lock()
-	// Clear the flag even while a wake is pending. This turn may have honored
-	// that wake and then declined — its resolution failed — and the drain
-	// skips the notification rung right after a notification turn, so the
-	// flagged wake alone can strand the item. The retry owns the next wake.
-	s.rootAttentionWake = false
 	// A PERMANENT provider failure — a 401 from a dead credential, a
 	// request the provider will refuse every time — cannot be retried into
 	// success, and the paced retry never gives up on its own: re-arming it
@@ -815,18 +806,27 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	// wake — a user message, a fresh delegate event, re-engagement after a
 	// Stop.
 	//
-	// A cancelled turn (context.Canceled) keeps the retry. The rail's wake
-	// is not a re-request of the same call, it is the delivery-liveness
-	// chain the retirement machinery pins: a cancelled attention turn still
-	// owes its delivery. A user's Stop needs no help from this branch either
-	// — the park the accepted Stop takes cancels whatever the unwinding
-	// turn armed. llm.Classify answers the transport's question (must the
-	// same request be re-issued?); the carve-out is the rail's own.
+	// A cancelled or user-aborted turn keeps the retry (roundWasCancelled,
+	// the package's "the context went away, not the provider" predicate).
+	// The rail's wake is not a re-request of the same call, it is the
+	// delivery-liveness chain the retirement machinery pins: a cancelled
+	// attention turn still owes its delivery. A user's Stop needs no help
+	// from this branch either — the park the accepted Stop takes cancels
+	// whatever the unwinding turn armed. llm.Classify answers the
+	// transport's question (must the same request be re-issued?); the
+	// carve-out is the rail's own.
 	//
 	// Transient failures keep the retry, which is their delivery
 	// guarantee, and a resolution failure with no turn error is a storage
 	// flap, retryable by nature.
-	if turnErr != nil && !errors.Is(turnErr, context.Canceled) && llm.Classify(turnErr) == llm.ErrorClassPermanent {
+	permanent := turnErr != nil && !roundWasCancelled(turnErr) && llm.Classify(turnErr) == llm.ErrorClassPermanent
+	s.attentionMu.Lock()
+	// Clear the flag even while a wake is pending. This turn may have honored
+	// that wake and then declined — its resolution failed — and the drain
+	// skips the notification rung right after a notification turn, so the
+	// flagged wake alone can strand the item. The retry owns the next wake.
+	s.rootAttentionWake = false
+	if permanent {
 		s.resetRootAttentionRetryLocked()
 	} else {
 		s.scheduleRootAttentionRetryLocked()
@@ -1023,6 +1023,9 @@ func (s *Session) resetRootAttentionRetryLocked() {
 // is cleared and any paced retry cancelled; until the user re-engages,
 // nothing on this rail may wake the session. Pending IDs are never dropped —
 // they stay cached for unparkRootDelegateAttention to re-arm.
+// The stable-delegate drive rail is deliberately outside this park: its
+// wakes stand down at the notification admission gate, so they cost a no-op
+// cycle, never a turn.
 func (s *Session) parkRootDelegateAttention() {
 	s.attentionMu.Lock()
 	s.rootAttentionParked = true

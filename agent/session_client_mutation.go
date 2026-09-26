@@ -370,8 +370,6 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnStartResponse{}, clientMutationRejectionError(lookup.Record)
 	}
-	// Re-engagement: release the attention rail with the QueueHeld release
-	// this accept just committed, re-arming whatever the Stop deferred.
 	s.unparkRootDelegateAttention()
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
@@ -972,10 +970,13 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, clientMutationRejectionError(lookup.Record)
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
-		// Park even on replay: this Stop already landed once (the mutation is
-		// terminal), and a replayed Stop is the same user intent in a process
-		// that lost the in-memory flag.
-		s.parkRootDelegateAttention()
+		// Park on replay only when the durable hold it mirrors is still set.
+		// Replay re-runs no accept callback, so QueueHeld/SteeringHeld are
+		// not re-taken — a Stop retried after the user re-engaged must not
+		// re-park the rail past their live engagement.
+		if s.clientMutations.snapshot().QueueHeld {
+			s.parkRootDelegateAttention()
+		}
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 		return interruptResponseFromRecord(lookup.Record, appwire.MutationDispositionReplayed)
 	}
@@ -1001,11 +1002,12 @@ func (s *Session) InterruptClientMutation(
 		if err != nil {
 			return appwire.TurnInterruptResponse{}, err
 		}
+		// The cancelled turn has unwound, so nothing holds the attention
+		// rail's lock across an append pair; park where every outcome of this
+		// Stop passes (the rule the comment below records). The re-park on
+		// the non-terminal fall-through is a no-op.
+		s.parkRootDelegateAttention()
 		if terminal {
-			// The cancelled turn has unwound, so nothing holds the attention
-			// rail's lock across an append pair anymore — same rule as the
-			// park below.
-			s.parkRootDelegateAttention()
 			s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 			return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
 		}

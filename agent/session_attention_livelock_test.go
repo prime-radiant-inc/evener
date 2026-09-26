@@ -5,7 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -29,9 +28,10 @@ import (
 //  1. A PERMANENT provider failure (401) must not re-arm the paced retry.
 //     The IDs stay pending and cached — deferred, not dropped — and ride
 //     the next genuine wake: a user message, a fresh delegate event,
-//     re-engagement after a Stop. A cancelled turn keeps the retry (the
-//     retirement family pins that contract); a Stop's own park is what
-//     keeps a stopped session stopped.
+//     re-engagement after a Stop. A cancelled or user-aborted turn keeps
+//     the retry (roundWasCancelled; the retirement family pins the
+//     cancelled case); a Stop's own park is what keeps a stopped session
+//     stopped.
 //  2. A TRANSIENT failure keeps the paced retry. That retry is the delivery
 //     guarantee for attention, and the permanent rule must not eat it.
 //  3. A Stop parks the attention rail exactly as it parks the queue and the
@@ -58,16 +58,12 @@ func newAttentionLivelockSession(t *testing.T, streamErr error) (*Session, *agen
 	// these tests measure is the attention rail's paced retry, not the
 	// provider retry chain beneath it.
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	clk := agenttest.NewFakeClock()
-	sess.clock = clk
-	t.Cleanup(func() { sess.Close() })
+		clock:          clk,
+	}))
 	var notifies atomic.Int64
 	sess.SetNotifyFunc(func() { notifies.Add(1) })
 	return sess, clk, &notifies, adapter
@@ -188,6 +184,9 @@ func TestRootAttentionTransientFailureKeepsThePacedRetry(t *testing.T) {
 // IDs re-arm only when the user re-engages.
 func TestStopParksRootDelegateAttentionUntilReEngagement(t *testing.T) {
 	s, clk, notifies, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	// Not serveSession: this test keeps the session unserved so its turns
+	// run unnamed and nothing claims the parked queue behind the test's
+	// back; the events channel still needs a consumer, so drain by hand.
 	go func() {
 		for range s.Events() {
 		}
@@ -287,5 +286,91 @@ func TestStopParksRootDelegateAttentionUntilReEngagement(t *testing.T) {
 	}
 	if got := notifies.Load(); got == beforeReEngage {
 		t.Fatal("re-engagement re-armed the wake without asking for a notification turn to deliver it")
+	}
+}
+
+// A user-aborted turn keeps the paced retry for the same reason a cancelled
+// one does: the abort is the user stopping the request, not the provider
+// refusing it, and the delivery the turn owed is still owed. An AbortError
+// with no Canceled cause must not fall into the permanent branch — the
+// isAbortError half of roundWasCancelled is what keeps it out.
+func TestRootAttentionAbortedTurnKeepsThePacedRetry(t *testing.T) {
+	s, clk, _, _ := newAttentionLivelockSession(t, llm.NewAbortError("user aborted the request", nil))
+	serveSession(t, s)
+
+	armOneRootAttention(t, s, "dlg_abort", "delegate:dlg_abort/delivery/1")
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the aborted notification turn unexpectedly succeeded")
+	}
+
+	_, retryActive, pending := attentionRailState(s)
+	if !retryActive {
+		t.Fatal("an aborted attention turn did not arm the paced retry; the delivery-liveness chain regressed")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids = %d, want 1", pending)
+	}
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if _, retryActive, _ = attentionRailState(s); retryActive {
+		t.Fatal("the paced retry is still armed after firing")
+	}
+}
+
+// A Stop retried after the user re-engaged must not re-park the attention
+// rail: replay re-runs no accept callback, so the durable QueueHeld a park
+// mirrors is already released, and the deferred attention the re-engagement
+// just re-armed stays armed.
+func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
+	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	// Not serveSession, for the same reason as the park test above.
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_replay", "delegate:dlg_replay/delivery/1")
+
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-replayed-late",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Re-engage: turn/start unparks and re-arms the deferred attention.
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-after-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the user re-engages"}},
+	}); err != nil {
+		t.Fatalf("turn/start after the stop: %v", err)
+	}
+	wake, retryActive, pending := attentionRailState(s)
+	if !wake || retryActive || pending != 1 {
+		t.Fatalf("re-engagement left wake=%t retry=%t pending=%d; this test is not in the state it means to be", wake, retryActive, pending)
+	}
+	afterReEngage := notifies.Load()
+
+	// The Stop's client retries it after its response was lost: the store
+	// replays the terminal mutation.
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-replayed-late",
+	}, func() {}); err != nil {
+		t.Fatalf("replayed stop: %v", err)
+	}
+
+	wake, retryActive, pending = attentionRailState(s)
+	if !wake {
+		t.Fatal("the replayed Stop re-parked the attention rail past the user's live engagement; QueueHeld is released, so nothing would re-arm it until the next re-engagement")
+	}
+	if retryActive {
+		t.Fatal("this test is not in the state it means to be: no paced retry should be armed here")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the replay = %d, want 1", pending)
+	}
+	if got := notifies.Load(); got != afterReEngage {
+		t.Fatalf("notifies after the replay = %d, want %d (the replayed Stop re-parked and re-armed nothing)", got, afterReEngage)
 	}
 }

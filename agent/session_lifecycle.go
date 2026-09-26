@@ -2030,14 +2030,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	defer func() { s.releaseRunningTurnID(runningTurnID) }()
 
 	if kind == EntryNotification {
-		// A Stop parked this rail (parkRootDelegateAttention, set when that
-		// Stop was accepted, beside the QueueHeld/SteeringHeld it wrote).
-		// This wake owes the user silence, not another turn, so stand down
-		// BEFORE minting or consuming any wake state — the same ordering
-		// the name refusal below keeps — and let unparkRootDelegateAttention
-		// re-arm the cached IDs at re-engagement. Job notifications are not
-		// the user's to stop mid-delivery, so a wake that carries any still
-		// runs.
+		// A Stop parked this rail: stand down BEFORE minting or consuming
+		// any wake state — the same ordering the name refusal below keeps.
+		// Job notifications are not the user's to stop mid-delivery, so a
+		// wake that carries any still runs.
 		if s.rootAttentionRailParked() && s.peekNotifications() == 0 {
 			s.finishNotificationNoop()
 			return "", false, nil
