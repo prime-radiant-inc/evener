@@ -172,3 +172,22 @@ export const palettes: Record<Scheme, Palette> = {
 export function paletteFor(scheme: string | null | undefined): Palette {
 	return scheme === "dark" ? palettes.dark : palettes.light;
 }
+
+/** iOS PostScript names of the embedded Source Serif 4 faces (see app.json's
+ * expo-font plugin), and the app's existing machine face. A custom face is
+ * chosen by name, never by fontWeight. */
+export const fonts = {
+	serif: "SourceSerif4-Regular",
+	serifItalic: "SourceSerif4-Italic",
+	serifSemibold: "SourceSerif4-SemiBold",
+	mono: "Menlo",
+} as const;
+
+/** Reading roles from spec 16.2. Sizes are points before Dynamic Type; callers
+ * multiply fontSize and lineHeight by the iOS font scale, as ui.tsx does. */
+export const typeRoles = {
+	agentProse: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 26 },
+	yourMessage: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 25 },
+	document: { fontFamily: fonts.serif, fontSize: 18, lineHeight: 28 },
+	machine: { fontFamily: fonts.mono, fontSize: 13, lineHeight: 18 },
+} as const;
