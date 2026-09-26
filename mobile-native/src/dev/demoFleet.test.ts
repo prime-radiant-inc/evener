@@ -422,6 +422,28 @@ describe("demo fleet paging", () => {
 	it("rejects a negative offset, like the hub's own validation", () => {
 		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 }))).toThrow(/offset/i);
 	});
+
+	// The wire protocol's offset/limit are uint32 fields, so a fractional or
+	// NaN value can never arrive that way -- but NavigationReadParams is typed
+	// as plain `number`, and these tests build it directly, bypassing the
+	// wire. page() must reject what the wire can never produce instead of
+	// silently truncating to a partial page or reporting a NaN remaining
+	// count.
+	it("rejects a fractional offset", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 1.5, limit: 7 }))).toThrow(/offset/i);
+	});
+
+	it("rejects a NaN offset", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: Number.NaN, limit: 7 }))).toThrow(/offset/i);
+	});
+
+	it("rejects a fractional limit", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 7.5 }))).toThrow(/limit/i);
+	});
+
+	it("rejects a NaN limit", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.NaN }))).toThrow(/limit/i);
+	});
 });
 
 describe("demo fleet truncation", () => {
