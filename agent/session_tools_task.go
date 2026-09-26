@@ -475,13 +475,13 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
 							if err != nil {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
-								postCommitAdvice = "The terminal update was committed; retry auto-advance after fixing persistence."
+								postCommitAdvice = "The terminal update was committed; start the next task explicitly after fixing persistence."
 							} else {
 								finalTasks = auto.After
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
 									postCommitErr = fmt.Errorf("post-commit auto-advance steering failed: %w", err)
-									postCommitAdvice = "The task update was committed; retry auto-advance after fixing steering."
+									postCommitAdvice = "The terminal update and auto-advance were committed; retry steering after fixing steering."
 								}
 							}
 						} else {

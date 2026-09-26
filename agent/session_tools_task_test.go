@@ -27,8 +27,13 @@ type taskToolHarness struct {
 	dir      string
 	steers   []string
 	steerErr error
-	emitted  []events.EventData
+	emitted  []taskToolEvent
 	reg      *tool.Registry
+}
+
+type taskToolEvent struct {
+	kind events.EventKind
+	data events.EventData
 }
 
 func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarness {
@@ -40,8 +45,8 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 	}
 	h := &taskToolHarness{store: store, dir: dir}
 	deps := &toolDeps{
-		emit: func(_ events.EventKind, data events.EventData) {
-			h.emitted = append(h.emitted, data)
+		emit: func(kind events.EventKind, data events.EventData) {
+			h.emitted = append(h.emitted, taskToolEvent{kind: kind, data: data})
 		},
 		steer: func(text, _ string) error {
 			h.steers = append(h.steers, text)
@@ -65,6 +70,22 @@ func (h *taskToolHarness) reopened(t *testing.T) *taskpkg.TaskStore {
 		t.Fatalf("reload committed task state: %v", err)
 	}
 	return reloaded
+}
+
+func taskUpdatedEvent(t *testing.T, h *taskToolHarness) events.TaskUpdatedData {
+	t.Helper()
+	if len(h.emitted) != 1 {
+		t.Fatalf("emitted %d task events, want one final snapshot", len(h.emitted))
+	}
+	event := h.emitted[0]
+	if event.kind != events.EventTaskUpdated {
+		t.Fatalf("event kind = %q, want %q", event.kind, events.EventTaskUpdated)
+	}
+	data, ok := event.data.(events.TaskUpdatedData)
+	if !ok {
+		t.Fatalf("event data = %T, want events.TaskUpdatedData", event.data)
+	}
+	return data
 }
 
 // call executes a task_list call with the given raw arguments (nil = bare
@@ -140,12 +161,13 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 	if !strings.Contains(result.Output, fault.ErrInjected.Error()) {
 		t.Fatalf("auto-advance save failure output = %q, want injected cause", result.Output)
 	}
+	if !strings.Contains(result.Output, "start the next task explicitly") {
+		t.Fatalf("auto-advance save failure output = %q, want reachable recovery advice", result.Output)
+	}
 	if len(h.steers) != 0 {
 		t.Fatalf("failed auto-advance steered %d times: %q", len(h.steers), h.steers)
 	}
-	if len(h.emitted) != 1 {
-		t.Fatalf("failed auto-advance emitted %d task events, want committed snapshot", len(h.emitted))
-	}
+	taskUpdatedEvent(t, h)
 	if len(result.ToolState) == 0 {
 		t.Fatal("failed auto-advance returned no committed task state")
 	}
@@ -183,6 +205,10 @@ func TestTaskTool_SteerFailureReportsCommittedMutation(t *testing.T) {
 	if len(h.emitted) != 1 {
 		t.Fatalf("steer failure emitted %d task events, want committed snapshot", len(h.emitted))
 	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 1 || event.Done != 0 || event.Remaining != 1 || event.Current == nil || event.Current.ID != 1 {
+		t.Fatalf("steer failure event = %+v, want final in-progress task 1", event)
+	}
 	state := decodeTaskToolState(t, result)
 	if taskStateEntry(t, state, 1).Status != taskpkg.TaskInProgress {
 		t.Fatalf("published state after steer failure = %#v", state)
@@ -215,9 +241,19 @@ func TestTaskTool_AutoAdvanceSteerFailureReportsCommittedMutation(t *testing.T) 
 	if len(h.emitted) != 1 {
 		t.Fatalf("auto steer failure emitted %d task events, want one final snapshot", len(h.emitted))
 	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 2 || event.Done != 1 || event.Remaining != 1 || event.Current == nil || event.Current.ID != 2 {
+		t.Fatalf("auto steer failure event = %+v, want task 1 done and task 2 current", event)
+	}
 	state := decodeTaskToolState(t, result)
 	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskInProgress {
 		t.Fatalf("published state after auto steer failure = %#v", state)
+	}
+	if view := h.store.View(); len(view) != 2 || view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskInProgress {
+		t.Fatalf("in-memory state after auto steer failure = %#v", view)
+	}
+	if strings.Contains(result.Output, "retry auto-advance") {
+		t.Fatalf("auto steer failure advice incorrectly requests retrying committed auto-advance: %q", result.Output)
 	}
 	reloaded := h.reopened(t)
 	if view := reloaded.View(); len(view) != 2 || view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskInProgress {
@@ -240,9 +276,16 @@ func TestTaskTool_TaskCompletionSteerFailureReportsCommittedMutation(t *testing.
 	if len(h.emitted) != 1 {
 		t.Fatalf("completion steer failure emitted %d task events, want one final snapshot", len(h.emitted))
 	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 1 || event.Done != 1 || event.Remaining != 0 || event.Current != nil {
+		t.Fatalf("completion steer failure event = %+v, want final done task 1", event)
+	}
 	state := decodeTaskToolState(t, result)
 	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone {
 		t.Fatalf("published state after completion steer failure = %#v", state)
+	}
+	if view := h.store.View(); len(view) != 1 || view[0].Status != taskpkg.TaskDone {
+		t.Fatalf("in-memory state after completion steer failure = %#v", view)
 	}
 	reloaded := h.reopened(t)
 	if view := reloaded.View(); len(view) != 1 || view[0].Status != taskpkg.TaskDone {
@@ -488,7 +531,7 @@ func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
 	}
 	var found []events.TaskUpdatedData
 	for _, data := range h.emitted {
-		if taskUpdate, ok := data.(events.TaskUpdatedData); ok {
+		if taskUpdate, ok := data.data.(events.TaskUpdatedData); ok {
 			found = append(found, taskUpdate)
 		}
 	}

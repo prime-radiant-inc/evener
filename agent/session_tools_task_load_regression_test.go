@@ -116,13 +116,11 @@ func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 	s := newTestSession(t)
 	s.taskStore = store
 	s.taskStoreOnce.Do(func() {})
-	reg := tool.NewRegistry()
-	registerTaskTools(reg, newToolDeps(s))
 	args, err := json.Marshal(map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+	result := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID: "transient-load-recovery", Name: "task_list", Arguments: args,
 	})
 	if result.IsError {

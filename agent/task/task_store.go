@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -288,6 +287,8 @@ func (s *TaskStore) Load() error {
 
 	data, err := afero.ReadFile(s.fs, s.path)
 	if os.IsNotExist(err) {
+		s.tasks = nil
+		s.nextID = 1
 		s.loadErr = nil
 		return nil
 	}
@@ -308,7 +309,7 @@ func (s *TaskStore) Load() error {
 	// fields untouched. Load still assigns only after unmarshalling and
 	// normalization, so malformed input cannot partially replace the store.
 	for i := range tasks {
-		effort := strings.ToLower(strings.TrimSpace(tasks[i].ReasoningEffort))
+		effort := llm.NormalizeReasoningEffort(tasks[i].ReasoningEffort)
 		if err := llm.ValidateReasoningEffort(effort); err != nil {
 			effort = ""
 		}
@@ -343,10 +344,7 @@ func (s *TaskStore) loadErrorLocked() error {
 }
 
 func (s *TaskStore) ensureAvailableLocked() error {
-	if s.loadErr == nil {
-		return nil
-	}
-	return fmt.Errorf("%w: %w", ErrTaskStoreUnavailable, s.loadErr)
+	return s.loadErrorLocked()
 }
 
 // save writes the task list to disk atomically.

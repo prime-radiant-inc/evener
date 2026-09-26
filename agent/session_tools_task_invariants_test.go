@@ -51,7 +51,7 @@ func TestTaskTool_EventsPayloadShapeUnchanged(t *testing.T) {
 	})
 	var found *events.TaskUpdatedData
 	for _, d := range h.emitted {
-		if td, ok := d.(events.TaskUpdatedData); ok {
+		if td, ok := d.data.(events.TaskUpdatedData); ok {
 			found = &td
 		}
 	}
