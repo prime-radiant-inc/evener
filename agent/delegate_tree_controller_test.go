@@ -251,6 +251,7 @@ func TestDelegateControllerCapturedSnapshotsCarryMonotonicRevision(t *testing.T)
 }
 
 func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
+	t.Parallel()
 	loaded, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax, Dir: "."}, ".")
 	if err != nil {
 		t.Fatalf("load agent package: %v", err)
@@ -284,6 +285,7 @@ func TestDelegateControllerProductionIntegrationMatchesInventory(t *testing.T) {
 }
 
 func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		source string
@@ -342,6 +344,7 @@ func TestDelegateControllerDormancyGuardRejectsConstructionAndAliases(t *testing
 }
 
 func TestDelegateControllerDormancyGuardRejectsOmittedProductionFile(t *testing.T) {
+	t.Parallel()
 	production := []string{"active.go", "inactive_windows.go"}
 	loaded := []string{"active.go"}
 	if got, want := delegateControllerOmittedProductionFiles(production, loaded), []string{"inactive_windows.go"}; !reflect.DeepEqual(got, want) {
@@ -350,6 +353,7 @@ func TestDelegateControllerDormancyGuardRejectsOmittedProductionFile(t *testing.
 }
 
 func TestDelegateControllerDormancyGuardRejectsExtraSameFunctionReference(t *testing.T) {
+	t.Parallel()
 	files, file, info, pkg := typeCheckDelegateControllerDormancyFixture(t, "delegate_tree_steer.go", `package agent
 func probe(session *Session) {
 	session.appendDelegateSteeringDurably("first", "turn_first")

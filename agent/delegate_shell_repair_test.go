@@ -12,6 +12,7 @@ import (
 )
 
 func TestDelegateShellRepairAppendsRuntimeLostAndConsumesCoveredNotification(t *testing.T) {
+	t.Parallel()
 	path := seedDelegateShellStore(t, true, false)
 	plan := delegateShellRepairPlan{
 		delegateID:          "dlg_target",
@@ -33,6 +34,7 @@ func TestDelegateShellRepairAppendsRuntimeLostAndConsumesCoveredNotification(t *
 }
 
 func TestDelegateShellRepairPreservesNotificationOutsideStop(t *testing.T) {
+	t.Parallel()
 	path := seedDelegateShellStore(t, true, false)
 	if err := executeDelegateShellRepair(delegateShellRepairPlan{
 		delegateID:    "dlg_target",
@@ -230,6 +232,7 @@ func TestDelegateShellRepairAppendFailureKeepsStopPending(t *testing.T) {
 }
 
 func TestDelegateShellRepairIsIdempotentAfterReopen(t *testing.T) {
+	t.Parallel()
 	path := seedDelegateShellStore(t, true, true)
 	before, err := os.ReadFile(path)
 	if err != nil {
