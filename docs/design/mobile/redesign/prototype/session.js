@@ -195,7 +195,7 @@
   };
   EV.fork = function (s, text) {
     const id = "s-fork-" + Date.now();
-    const ns = Object.assign({}, s, { id, title: s.title + " (fork)", state: "idle", unseen: false, category: null, updatedAt: Date.now(), startedAt: Date.now(), subs: null });
+    const ns = Object.assign({}, s, { id, title: s.title + " (fork)", state: "idle", unseen: false, category: null, updatedAt: Date.now(), startedAt: Date.now(), subs: null, usage: { ...s.usage }, ctx: { ...s.ctx }, urls: (s.urls || []).slice() });
     EV.S.sessions.push(ns);
     EV.S.transcripts[id] = (EV.S.transcripts[s.id] || []).filter((x) => x.t !== "ask" && x.t !== "appr").slice(0, 3).concat([{ t: "sys", text: "Forked from “" + s.title + "”" }]);
     EV.S.drafts[id] = text || "";
@@ -1016,7 +1016,7 @@
     const [txt, setTxt] = useState("");
     const go = () => {
       const id = "s-aside-" + Date.now();
-      EV.S.sessions.push(Object.assign({}, s, { id, title: "Aside: " + txt.trim().split(/\s+/).slice(0, 5).join(" "), state: "working", activity: "Thinking", category: null, subs: null, updatedAt: Date.now(), startedAt: Date.now(), unseen: false, tasks: null, goal: null, notes: null, attachments: [] }));
+      EV.S.sessions.push(Object.assign({}, s, { id, title: "Aside: " + txt.trim().split(/\s+/).slice(0, 5).join(" "), state: "working", activity: "Thinking", category: null, subs: null, updatedAt: Date.now(), startedAt: Date.now(), unseen: false, tasks: null, goal: null, notes: null, attachments: [], usage: { ...s.usage }, ctx: { ...s.ctx }, urls: (s.urls || []).slice() }));
       EV.S.transcripts[id] = [{ t: "sys", text: "Aside from “" + s.title + "” with the same setup" }, { t: "user", text: txt.trim() }, { t: "think", live: true }];
       EV.log("aside", { from: s.id, to: id, text: txt.trim() });
       EV.closeAllSheets();

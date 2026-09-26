@@ -382,6 +382,22 @@ async function runChecks(page, scheme) {
     await tapRole('button', 'Start session');
     await logHas(page, 'start_session', (e) => e.prompt.includes('roster'));
   });
+  // A fork and an aside start from a copy of the session they came from;
+  // their usage and context counters must be their own, not the parent's.
+  await check(S('flow-fork-and-aside-own-their-numbers'), page, async () => {
+    await reset(page);
+    const before = await ev(page, `(() => { const s = EV.sess('s-hier'); return { in: s.usage.in, used: s.ctx.used }; })()`);
+    await ev(page, `EV.fork(EV.sess('s-hier'), '')`); await sleep(300);
+    const forkId = await ev(page, `EV.top().id`);
+    await ev(page, `EV.popToBoard(); EV.openSheet('aside', { sessionId: 's-hier' })`); await sleep(300);
+    await page.locator('textarea[aria-label="Aside question"]').tap(); await page.keyboard.type('What about the mobile layout?');
+    await tapInSheet('button', 'Start', true);
+    await sleep(300);
+    const asideId = await ev(page, `EV.top().id`);
+    await ev(page, `(() => { EV.sess('${forkId}').usage.in += 5e6; EV.sess('${forkId}').ctx.used += 50; EV.sess('${asideId}').usage.in += 7e6; EV.sess('${asideId}').ctx.used += 70; })()`);
+    const after = await ev(page, `(() => { const s = EV.sess('s-hier'); return { in: s.usage.in, used: s.ctx.used }; })()`);
+    if (after.in !== before.in || after.used !== before.used) throw new Error(`forking and asiding s-hier then mutating the copies changed its own usage/ctx: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  });
 }
 
 try {
