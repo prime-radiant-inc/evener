@@ -242,6 +242,40 @@ func TestReplaySurveyFailuresShowsAssertionContext(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresFindsParentAssertionThroughSubtests is the issue
+// #2121 regression: a parent can fail after its subtests and other parallel
+// test output has been emitted. Its assertion is therefore outside the
+// marker's nearby framework-delimited window, but must still reach the survey
+// summary.
+func TestReplaySurveyFailuresFindsParentAssertionThroughSubtests(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		assertion string
+	}{
+		{"TestRetirementTreeSettleDrainsPendingRootAttention", "    retirement_test.go:42: pending root attention was not drained"},
+		{"TestRetirementDelegateIdleEntrypointsClaimFirst", "    retirement_test.go:84: first idle entrypoint did not claim"},
+	} {
+		var log strings.Builder
+		fmt.Fprintf(&log, "=== RUN   %s\n", tc.name)
+		log.WriteString(tc.assertion + "\n")
+		fmt.Fprintf(&log, "=== RUN   %s/subtest\n", tc.name)
+		for i := range surveyContextBefore + surveyContextAfter {
+			_, _ = fmt.Fprintf(&log, "    subtest output line %d\n", i)
+		}
+		fmt.Fprintf(&log, "--- PASS: %s/subtest (0.00s)\n", tc.name)
+		fmt.Fprintf(&log, "--- FAIL: %s (0.00s)\n", tc.name)
+
+		gotLines := replayLines(t, writeSurveyLog(t, log.String()), 10)
+		got := strings.Join(gotLines, "\n")
+		if !strings.Contains(got, tc.assertion) {
+			t.Errorf("%s parent assertion was omitted from replay: %q", tc.name, got)
+		}
+		if len(gotLines) > surveyContextBefore+1 {
+			t.Errorf("%s replayed %d lines, want at most %d", tc.name, len(gotLines), surveyContextBefore+1)
+		}
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework

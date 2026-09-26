@@ -807,6 +807,16 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
+		if start == i {
+			if expanded, ok := expandSurveyFailure(lines, i, emitted); ok {
+				for _, excerpt := range expanded {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				emitted = end
+				i = end
+				continue
+			}
+		}
 		for _, excerpt := range lines[start:end] {
 			_, _ = fmt.Fprintln(w, excerpt)
 		}
@@ -821,6 +831,104 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 			_, _ = fmt.Fprintln(w, line)
 		}
 	}
+}
+
+// surveyFailureName recovers the test name from the framing line the testing
+// package emits. The name lets a failure reach back to its own run, rather than
+// treating a completed subtest or an interleaved parallel test as the parent's
+// boundary.
+func surveyFailureName(line string) string {
+	name := strings.TrimPrefix(line, "--- FAIL:")
+	if end := strings.Index(name, " ("); end >= 0 {
+		name = name[:end]
+	}
+	return strings.TrimSpace(name)
+}
+
+// surveyDiagnosticLine matches the source location that testing prefixes on
+// t.Error/t.Fatal output. These lines are the useful part of a parent failure
+// even when the test framework has put many subtest frames between them and
+// the parent's verdict.
+var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.go:[0-9]+:`)
+
+// expandSurveyFailure recovers a bounded set of a parent's output when the
+// nearby excerpt contains only its verdict. It intentionally runs only for
+// that empty-proximity shape: ordinary blocks retain their established
+// context (including nested failure markers). A source-located diagnostic is
+// preferred from the whole matching run-to-verdict range; remaining room is
+// filled from the end of that range. The result is still no larger than one
+// block's existing before bound plus its marker.
+func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return nil, false
+	}
+	run := -1
+	for i := marker - 1; i >= emitted; i-- {
+		if lines[i] == "=== RUN   "+name {
+			run = i
+			break
+		}
+	}
+	if run < 0 {
+		return nil, false
+	}
+
+	type candidate struct {
+		index      int
+		line       string
+		diagnostic bool
+	}
+	candidates := make([]candidate, 0, marker-run)
+	for index, line := range lines[run+1 : marker] {
+		if surveyFrameworkLine(line) || strings.TrimSpace(line) == "" {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			index:      index,
+			line:       line,
+			diagnostic: surveyDiagnosticLine.MatchString(line),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	const maxExpandedLines = surveyContextBefore
+	keep := make(map[int]bool, min(len(candidates), maxExpandedLines))
+	selectedCount := 0
+	for _, candidate := range candidates {
+		if candidate.diagnostic && selectedCount < maxExpandedLines {
+			keep[candidate.index] = true
+			selectedCount++
+			if selectedCount == maxExpandedLines {
+				break
+			}
+		}
+	}
+	if selectedCount < maxExpandedLines {
+		for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+			candidate := candidates[i]
+			if candidate.diagnostic {
+				continue
+			}
+			keep[candidate.index] = true
+			selectedCount++
+		}
+	}
+	selected := make([]candidate, 0, selectedCount)
+	for _, candidate := range candidates {
+		if keep[candidate.index] {
+			selected = append(selected, candidate)
+		}
+	}
+
+	result := make([]string, 0, len(selected)+1)
+	for _, candidate := range selected {
+		result = append(result, candidate.line)
+	}
+	result = append(result, lines[marker])
+	return result, true
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
