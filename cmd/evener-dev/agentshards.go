@@ -53,6 +53,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1047,7 +1048,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	const maxExpandedLines = surveyContextBefore
 	appendNewest := func(candidates *[]int, index int) {
 		if len(*candidates) == maxExpandedLines {
-			copy((*candidates)[:], (*candidates)[1:])
+			copy(*candidates, (*candidates)[1:])
 			(*candidates)[maxExpandedLines-1] = index
 			return
 		}
@@ -1114,16 +1115,8 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	reserveFailedChildDiagnostic := false
 	candidateInOrdinaryTail := func(candidates []int, ordinaryBudget int) bool {
 		candidate := candidates[len(candidates)-1]
-		start := len(ordinaryOwnedCandidates) - ordinaryBudget
-		if start < 0 {
-			start = 0
-		}
-		for _, ordinaryCandidate := range ordinaryOwnedCandidates[start:] {
-			if ordinaryCandidate == candidate {
-				return true
-			}
-		}
-		return false
+		start := max(len(ordinaryOwnedCandidates)-ordinaryBudget, 0)
+		return slices.Contains(ordinaryOwnedCandidates[start:], candidate)
 	}
 	ordinaryBudgetForReservations := func() int {
 		reservedDiagnostics := 0
@@ -1153,11 +1146,11 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	ordinaryBudget := ordinaryBudgetForReservations()
 	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
-	for i := len(deferredLines) - 1; i >= 0; i-- {
-		if deferredLines[i] <= run {
+	for _, deferredLine := range slices.Backward(deferredLines) {
+		if deferredLine <= run {
 			continue
 		}
-		keep[deferredLines[i]] = struct{}{}
+		keep[deferredLine] = struct{}{}
 	}
 	selectNewest := func(candidates []int, limit int) {
 		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
