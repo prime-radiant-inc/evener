@@ -168,7 +168,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 		// The loop returning means nothing further will be written, so any
 		// callback still waiting on its response runs now.
 		defer conn.runPendingAfterWrite()
-		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout, conn.responseWritten)
+		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout, conn.responseWritten, conn.beforeSend)
 	})
 	go conn.runWorker(ctx)
 
@@ -251,12 +251,17 @@ func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel 
 }
 
 func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <-chan appwire.Message) {
-	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout, nil)
+	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout, nil, nil)
 }
 
 // sent, when non-nil, is called with each message the transport accepted, so
-// a handler can act only once its response has actually gone out.
-func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSender, send <-chan appwire.Message, writeTimeout time.Duration, sent func(appwire.Message)) {
+// a handler can act only once its response has actually gone out. beforeSend,
+// when non-nil, is called with each dequeued message immediately before the
+// transport call — the one point that is both after the message has
+// genuinely left the outbound channel (so a caller keying off it, like the
+// force-stop busy flag, can rely on the channel send having already
+// happened-before this) and strictly before the peer can observe it.
+func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSender, send <-chan appwire.Message, writeTimeout time.Duration, sent func(appwire.Message), beforeSend func(appwire.Message)) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -264,6 +269,9 @@ func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSen
 		case msg, ok := <-send:
 			if !ok {
 				return
+			}
+			if beforeSend != nil {
+				beforeSend(msg)
 			}
 			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
 			err := transport.Send(writeCtx, msg)

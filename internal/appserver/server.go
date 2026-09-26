@@ -578,10 +578,17 @@ type Connection struct {
 	mu                sync.RWMutex
 	initialized       bool
 	recoveryRunning   bool
-	cancel            context.CancelFunc
-	responseMu        sync.Mutex
-	hydrationMu       sync.Mutex
-	hydrations        map[string]*hydrationResponseFinalizer
+	// recoveryClearID is the requestIDKey of the in-flight force-stop
+	// response whose transmission should clear recoveryRunning. It is set
+	// before that response is enqueued (recoveryRunning must survive the
+	// enqueue itself, to bound in-flight force stops to one) and consumed by
+	// beforeSend, which clears both fields together right before the send
+	// loop hands the matching response to the transport.
+	recoveryClearID string
+	cancel          context.CancelFunc
+	responseMu      sync.Mutex
+	hydrationMu     sync.Mutex
+	hydrations      map[string]*hydrationResponseFinalizer
 	// afterWrite holds the AfterResponseWritten callbacks, keyed the same way
 	// hydrations is (requestIDKey). afterWriteDrained records that
 	// runPendingAfterWrite has already run, so a callback arriving after the
@@ -735,6 +742,52 @@ func (c *Connection) takeAllHydrations() []*hydrationResponseFinalizer {
 	}
 	c.responseMu.Unlock()
 	return pending
+}
+
+// markRecoveryClear records resp's requestIDKey as the force-stop response
+// whose transmission should clear recoveryRunning. It must be called before
+// resp is enqueued, while recoveryRunning is still true (see the comment in
+// receiveInbound): the flag has to survive the enqueue itself, and beforeSend
+// clears it only once the send loop dequeues this exact response, right
+// before it reaches the transport.
+func (c *Connection) markRecoveryClear(resp appwire.Message) {
+	id, _ := responseHydrationOutcome(resp)
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	c.recoveryClearID = id
+	c.mu.Unlock()
+}
+
+// beforeSend runs on the send loop immediately before the transport call for
+// every outbound frame, so it stays cheap for the common case (no force stop
+// in flight) via the RLock check below: when msg is the response
+// markRecoveryClear tagged, it clears the force-stop busy flag here —
+// strictly before Send, not after: Send can block or fail against a peer that
+// stopped draining, so clearing only once it returns would (as an earlier
+// version of this fix did) leave a gap between the client receiving the
+// frame and the flag actually clearing. Clearing immediately before the call
+// instead keeps a real ordering guarantee: this runs in the same goroutine as
+// Send, strictly before it in program order, so the client cannot observe
+// the response before the flag is already false.
+func (c *Connection) beforeSend(msg appwire.Message) {
+	c.mu.RLock()
+	clearID := c.recoveryClearID
+	c.mu.RUnlock()
+	if clearID == "" {
+		return
+	}
+	id, _ := responseHydrationOutcome(msg)
+	if id != clearID {
+		return
+	}
+	c.mu.Lock()
+	if c.recoveryClearID == id {
+		c.recoveryClearID = ""
+		c.recoveryRunning = false
+	}
+	c.mu.Unlock()
 }
 
 // responseWritten runs the after-write callback registered for msg's request,
@@ -1411,21 +1464,28 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 		}
 		// Recovery must reach ownership cancellation even when the serial worker
 		// is awaiting an unresponsive daemon. Other mutations retain FIFO order.
-		// recoveryRunning is cleared here, before the response is enqueued —
-		// not in a defer after handleAndEnqueue returns, which races the same
-		// response's delivery to the client: the send loop still has to
-		// dequeue and transmit the frame, and nothing would order that against
-		// a deferred clear running in this goroutine. Clearing before the
-		// enqueue instead orders it with a real guarantee: a channel send
-		// happens before the corresponding receive completes, so the send
-		// loop can never dequeue (and so never transmit) this response until
-		// after the flag is already false.
+		// recoveryRunning stays true across this whole dispatch, including the
+		// enqueue: enqueueResponse can block for a long time against a peer
+		// that has stopped draining (a full outbound buffer parks it until the
+		// send loop catches up or the connection ends), and clearing the flag
+		// any earlier than that would let a flood of force stops pile up
+		// dispatch goroutines behind it with no bound — the same unbounded
+		// backlog the flag exists to prevent for every other mutation.
+		//
+		// markRecoveryClear instead defers the clear to beforeSend, which the
+		// send loop runs immediately before handing this exact response to the
+		// transport. That keeps the ordering guarantee the flag depends on: a
+		// channel send happens before the corresponding receive completes, so
+		// the send loop can never dequeue (and so never transmit) this
+		// response before beforeSend has already cleared the flag — a client
+		// that pipelines a second force stop right behind the first can never
+		// observe the flag still set for a recovery that has already been
+		// handed to the transport.
 		go func() {
-			resp := c.handleRecovered(ctx, msg)
-			c.mu.Lock()
-			c.recoveryRunning = false
-			c.mu.Unlock()
-			c.enqueueDispatched(ctx, resp)
+			c.handleRecovered(ctx, msg, func(resp appwire.Message) {
+				c.markRecoveryClear(resp)
+				c.enqueueDispatched(ctx, resp)
+			})
 		}()
 		return true
 	}
@@ -1776,28 +1836,42 @@ func (c *Connection) inflightSlowReads() string {
 // covers the receive loop's goroutine), and the inline path shares the
 // barrier so both dispatch modes contain a panic identically.
 func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) {
-	c.enqueueDispatched(ctx, c.handleRecovered(ctx, msg))
+	c.handleRecovered(ctx, msg, func(resp appwire.Message) {
+		c.enqueueDispatched(ctx, resp)
+	})
 }
 
-// handleRecovered is handleAndEnqueue's panic barrier without the immediate
-// enqueue, for a caller that must act on the outcome — success or panic —
-// before the response can reach the transport. The force-stop dispatch is
-// the one caller: it clears the connection's recovery-busy flag from the
-// returned response, strictly before enqueueing it, so the clear is ordered
-// before the send loop can ever dequeue and transmit the frame (a channel
-// send happens before the corresponding receive completes), and a client
-// that pipelines a second force stop right behind the first can never
-// observe the flag still set for a recovery that has already finished.
-func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message) (resp appwire.Message) {
+// handleRecovered is handleAndEnqueue's panic barrier as a continuation:
+// onResponse runs from inside the same defer/recover that covers
+// HandleMessage, so whatever onResponse does with the response — enqueue it,
+// or the force-stop dispatch's clear-then-enqueue — is covered by the
+// barrier exactly like the handler itself. A panic from onResponse is caught,
+// logged, and (if the handler's own response was never delivered) answered
+// with an InternalError, the same as a panic from HandleMessage; onResponse
+// is never called twice for one message, so a panic after a successful
+// handoff is swallowed rather than risking a duplicate response.
+//
+// This continuation shape is why onResponse exists at all rather than a
+// return value: an earlier version returned the response and left the caller
+// to enqueue it outside this function, which quietly narrowed the barrier to
+// HandleMessage alone — a panic during the enqueue itself (a real,
+// independent failure mode: enqueueResponse touches hydration bookkeeping
+// beyond the plain channel send) could then escape the dispatch goroutine
+// uncaught.
+func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message, onResponse func(appwire.Message)) {
+	delivered := false
 	defer func() {
 		if r := recover(); r != nil {
 			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
-			if msg.Request != nil {
-				resp = appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request"))
+			if !delivered && msg.Request != nil {
+				delivered = true
+				onResponse(appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
 			}
 		}
 	}()
-	return c.HandleMessage(ctx, msg)
+	resp := c.HandleMessage(ctx, msg)
+	delivered = true
+	onResponse(resp)
 }
 
 // methodOf names a message's method for the panic log; a frame that is
