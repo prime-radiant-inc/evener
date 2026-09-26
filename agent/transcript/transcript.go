@@ -23,7 +23,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -495,11 +494,6 @@ func writeTranscriptHeader(fs afero.Fs, f afero.File, tail *appendTail, header H
 
 	tail.mu.Lock()
 	defer tail.mu.Unlock()
-	if tail.recordedLength == 0 {
-		// A new file's tail: the transcript is fresh, so its startup entries
-		// form the prelude until the first execution begins.
-		tail.turns.prelude = openTurn{id: appwire.SystemPreludeTurnID, fresh: true}
-	}
 	// Never below what a shared tail already holds: a writer that opened the
 	// file once the header landed has already scanned it.
 	tail.recordedLength = max(tail.recordedLength, int64(len(data)+1))
@@ -681,11 +675,6 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 			w.tail.turns = placed // what there was to end is over
 			return nil, nil, nil
 		}
-	}
-	if w.tailMove != w.tail.move {
-		// Another writer on this file moved its end since this one last wrote,
-		// so this handle's position is behind it.
-		w.positionUnknown = true
 	}
 	if w.tailMove != w.tail.move {
 		// Another writer on this file moved its end since this one last wrote,
