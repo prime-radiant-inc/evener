@@ -965,6 +965,16 @@ describe("seen markers", () => {
 		expect(other.isSeen({ ref: "a", updated_at: at(10) })).toBe(false);
 	});
 
+	it("drops an epoch or a seen mark whose timestamp doesn't parse", () => {
+		const storage = memoryStorage(
+			new Map([["evener.native.seen.hub-a", JSON.stringify({ epoch: "not a time", sessions: { a: { through: "nope" } } })]]),
+		);
+		const seen = new SeenMarkers(storage, "hub-a");
+		expect(seen.isSeen({ ref: "a", updated_at: at(1) })).toBe(true);
+		seen.adoptEpoch([{ updated_at: at(5) }]);
+		expect(seen.isSeen({ ref: "a", updated_at: at(6) })).toBe(false);
+	});
+
 	it("reads corrupt storage as empty", () => {
 		const storage = memoryStorage(new Map([["evener.native.seen.hub-a", "{not json"]]));
 		const seen = new SeenMarkers(storage, "hub-a");
@@ -1098,12 +1108,13 @@ interface SeenState {
 function parseSeen(value: unknown): SeenState {
 	const state: SeenState = { epoch: null, sessions: {} };
 	if (!isRecord(value)) return state;
-	if (typeof value.epoch === "string") state.epoch = value.epoch;
+	if (typeof value.epoch === "string" && timeOf(value.epoch) !== null) state.epoch = value.epoch;
 	if (isRecord(value.sessions))
 		for (const [ref, record] of Object.entries(value.sessions)) {
 			if (!isRecord(record)) continue;
 			if (record.unread === true) state.sessions[ref] = { unread: true };
-			else if (typeof record.through === "string") state.sessions[ref] = { through: record.through };
+			else if (typeof record.through === "string" && timeOf(record.through) !== null)
+				state.sessions[ref] = { through: record.through };
 		}
 	return state;
 }
@@ -1667,7 +1678,7 @@ Expected: FAIL: `Cannot find module './boardData'`.
 
 - [ ] **Step 3: Implement `boardData.ts` to the requirements above**
 
-Keep each reader's retained rows in the controller: store the last non-empty `Page` per reader. Build the snapshot from each reader's live page once it has loaded, otherwise from the retained copy. The manifest reader is a small private class in the same file, about 50 lines: `read()`, invalidation-driven re-read through `singleFlight`, and `dispose()`.
+Keep each reader's retained rows in the controller: at teardown (`setClient(null)` or a swap to a new client), keep each loaded reader's page as the snapshot showed it. A fresh successful read replaces it, even when that read is empty, so a Board whose sessions all ended shows its empty state instead of stale rows. Build the snapshot from each reader's live page once it has loaded, otherwise from the retained copy. The manifest reader is a small private class in the same file, about 50 lines: `read()`, invalidation-driven re-read through `singleFlight`, and `dispose()`.
 
 - [ ] **Step 4: Run the tests and watch them pass, then run `make test-native`**
 
@@ -1781,7 +1792,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 8. **Opening a session:**
    - Call `seenMarkers(hubId).markSeen(row)`, then `navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title })`.
    - The Board re-renders through `seenMarkers(hubId).subscribe` and `getRevision`.
-   - `adoptEpoch` runs with Live's rows once `loaded` first turns true.
+   - `adoptEpoch` runs once, on a device's first run, with every Live row and every Needs you row. Live is sorted by attention, not time, so a newer row can sit on a later page. While `seenMarkers(hubId)` has no epoch, the screen keeps calling `loadMoreLive()` until Live's `remaining` is 0, then adopts. Until then `isSeen` treats every row as seen, so nothing flashes Finished. Test it with a two-page Live whose newest row is on page 2.
 9. **Focus:** pause the controller when the screen blurs (`useFocusEffect`), and resume when it's focused. The controller lives in a `useState` per hub and gets `setClient(client)` whenever `useConnection().client` changes.
 10. **Drafts:** `drafts.refsWithDrafts(hubId)` is read on focus. Rows whose ref is in it show the Draft tag.
 
@@ -1818,163 +1829,9 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 
 ---
 
-## PR 3: pinned categories, projects and hosts, test runs, archived
+## PRs 3, 5 and 4 (Tasks 9-15)
 
-### Task 9: Pinned categories inline
-
-**Files:**
-- Create: `mobile-native/src/board/PinnedSections.tsx`
-- Modify: `mobile-native/src/board/boardData.ts` (per-category pages) and `mobile-native/src/board/BoardScreen.tsx`
-- Test: `mobile-native/src/board/boardData.test.ts` and `mobile-native/src/board/PinnedSections.test.tsx`
-
-**Interfaces:**
-- Produces: `BoardSnapshot.pinSections: Record<string, Page<NavigationSessionSummary>>`, one `NavigationPages` per category (`{ resource: "pin_section", sectionId }`, field `"sessions"`, limit 50), created for each category in the catalog and dropped when a category leaves it.
-
-**Requirements (spec 7.1):**
-- Each category is its own section, in the hub's order. The header shows `pin.fill`, the name, the count, a fold toggle (`foldedSections` key `pin:${id}`, unfolded by default), and ⋯ with Rename and Delete.
-  - Rename and Delete use `NavigationActions.renamePinSection` and `deletePinSection` through the existing `usePinNavigation` flow, or open `PinSectionEditor` with its existing params.
-  - Delete confirms: "Delete "<name>"? Its sessions stay; they're only unpinned."
-- Rows are quiet one-line `BoardRow`s with a still mark. A live session also stays in Live.
-- An empty category says "Touch and hold a session and choose Pin to category."
-- The pinned-category row links from PR 2 are removed.
-
-- [ ] Steps follow Task 5's pattern: failing tests (pages per category, and fold state persists), implement, `make test-native`, then commit (`feat(native): pinned categories live on the Board`).
-
-### Task 10: Projects and hosts, test runs, archived
-
-**Files:**
-- Create: `mobile-native/src/board/ProjectsSection.tsx`
-- Modify: `mobile-native/src/board/BoardScreen.tsx` and `mobile-native/src/projectBrowser.ts` (reuse it, adding a catalog parameter so it can read `projects`, `test_runs` and `archived_projects`)
-- Test: `mobile-native/src/projectBrowser.test.ts` and `mobile-native/src/board/ProjectsSection.test.tsx`
-
-**Requirements (spec 7.1):**
-- **Projects.**
-  - Projects come from `createProjectBrowserController(client, "projects")`. Keep today's default (`"projects"`) so existing callers and tests don't change.
-  - Pinned projects (`favorite`) float to the top with `pin.fill`. Each project row shows its name and live count (`rollup_live`).
-  - Inside an unfolded project, sessions split into today (`current`), recent, and a folded archived group, as quiet rows.
-- **"Organize by."**
-  - It appears only when the manifest has more than one source. The toggle in the section header flips between "Project, then host" (default) and "Host, then project", and the section title between "Projects" and "Hosts".
-  - Its choice persists in `foldedSections` under the key `organize-by-host`.
-  - Hosts group projects by `NavigationProjectSummary.sources`, labelled with the manifest's source label. A host whose source is offline shows an amber "Offline" and nothing when connected.
-- **Test runs** (folded by default) reads the `test_runs` catalog; **Archived** (folded by default) reads `archived_projects`, with each project's archived tier inside.
-- Rows in Projects, Test runs and Archived are quiet `BoardRow`s. A session on an offline host is `ended`, so it shows as shut down.
-- The Projects and Archived link rows from PR 2 are removed.
-
-- [ ] Steps: failing tests (the catalog parameter reads each catalog; the host grouping and offline label; fold defaults), implement, `make test-native`, then commit (`feat(native): projects, hosts, test runs and archive on the Board`). Open PR 3: "feat(native): the Board's own sections (phase 2, PR 3)".
-
----
-
-## PR 5: notices and search
-
-### Task 14: Notices
-
-**Files:**
-- Create: `mobile-native/src/board/notices.ts` (pure) and `mobile-native/src/board/Notices.tsx`
-- Modify: `mobile-native/src/board/boardData.ts` (auth and plugin reads) and `mobile-native/src/board/BoardScreen.tsx`
-- Test: `mobile-native/src/board/notices.test.ts`, `mobile-native/src/board/boardData.test.ts` and `mobile-native/src/board/Notices.test.tsx`
-
-**Interfaces:**
-- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" | "Plugins" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; liveRows: readonly NavigationSessionSummary[]; projectRows: readonly NavigationSessionSummary[] }): Notice[]`.
-
-**Requirements (spec 7.1, ruling 8):**
-- **Sign-in:** one notice per provider with `needsLogin`: "<provider> sign-in expired". Its action "Sign in" opens today's provider sign-in flow for that provider.
-- **Host:** one notice per offline source: "<label> is offline · 3 sessions", where the count is the number of loaded rows whose `host_id` is that source. The action "Details" opens `HubSettings` until phase 5.
-- **Plugin:** one notice per broken plugin: "<plugin> is broken". Its action "Plugins" opens today's `Plugins` screen. That route takes only `{ hubId }`, so opening at that plugin's row (spec 7.1) waits for phase 5's Hub; the notice already names the plugin.
-- **Placement and style:** notices sit under the chips as rows: `exclamationmark.triangle.fill` in amber, the sentence in `inkHi`, the action in `accentInk`. No tinted box. They disappear when resolved.
-- **Reads:**
-  - `evener/auth/list` on focus and on `evener/auth/updated`.
-  - `evener/plugin/list` on focus and every 5 minutes while the Board is focused.
-  - The sources come from the manifest.
-
-- [ ] Steps: failing tests (the pure `notices` table, the reads and polling with fake timers, and rendering), implement, `make test-native`, then commit (`feat(native): Board notices`).
-
-### Task 15: Search
-
-**Files:**
-- Create: `mobile-native/src/board/boardSearch.ts` (the controller and recent searches) and `mobile-native/src/board/SearchResults.tsx`
-- Modify: `mobile-native/src/board/BoardScreen.tsx` (replace the `RosterSearch` field from Task 7) and `mobile-native/src/board/boardMemory.ts` (`forgetBoard` removes `evener.native.recent-searches.${hubId}` too)
-- Test: `mobile-native/src/board/boardSearch.test.ts`, `mobile-native/src/board/SearchResults.test.tsx` and `mobile-native/src/board/boardMemory.test.ts` (the forget test covers all three keys)
-
-**Requirements (spec 7.4, ruling 7):**
-- **Showing search:**
-  - Search shows from the header's Search button or by pulling the list down. Spike `headerSearchBarOptions` on the native stack first: with `hideWhenScrolling`, iOS reveals it by pulling down, which is exactly the spec.
-  - If the spike fails, use a search field in the list header, hidden at an initial content offset.
-  - Record the result in the PR description.
-- **Scopes:** chips for All and Live. Archived waits for S14.
-- **Results:**
-  - `evener/search { query }` is debounced 250ms. A newer query wins, and a query change clears stale results.
-  - **Sessions** lists `live` and then `past` results, each with a state mark from `boardState` over `{ state }` and the age.
-  - **Projects** lists the loaded projects catalog filtered by name or `working_dir`, case-insensitive.
-  - Tapping a session opens it; tapping a project scrolls to it in the Projects section and unfolds it.
-- **Recent searches** show when the field is empty: the last 8 queries submitted with a tap on a result, kept in kv-store under `evener.native.recent-searches.${hubId}` and cleared by `forgetBoardForHub`, with a "Clear" action.
-- **Retire today's search:** `RosterSearch` and `rosterSearch.ts` are deleted if nothing else uses them. Check first with `grep -rn "rosterSearch\|RosterSearch" mobile-native/src`.
-
-- [ ] Steps: failing tests (debounce and newest wins, scopes, grouping, recent searches bounded and per hub), implement, `make test-native`, then commit (`feat(native): Board search`). Open PR 5: "feat(native): Board notices and search (phase 2, PR 5)".
-
----
-
-## PR 4: row actions, select mode, list stability
-
-### Task 11: Gesture and animation foundations
-
-**Files:**
-- Modify: `mobile-native/package.json`, `package-lock.json`, `babel.config.js` (the worklets plugin, if Expo 57's preset doesn't add it), `App.tsx` (`GestureHandlerRootView` at the root) and `Podfile.lock` (regenerated as in Task 4, Step 6)
-- Modify: `mobile-native/src/renderNative.testkit.tsx` only if screen tests need a gesture-handler mock
-
-- [ ] **Step 1:** Run `npx expo install react-native-gesture-handler react-native-reanimated react-native-worklets` and let Expo pick SDK 57's versions. Read the installed `react-native-reanimated` README's Expo section for the Babel plugin requirement, and follow it.
-- [ ] **Step 2:** Wrap the app root in `GestureHandlerRootView style={{ flex: 1 }}`.
-- [ ] **Step 3:** Regenerate the lock (Task 4, Step 6's commands). Expected: the diff adds the three pods only.
-- [ ] **Step 4:** Run `make test-native`. The ConversationScreen tests import all of `screens.tsx`; if a new native import breaks them, mock it in that test's `vi.mock` list, as the test already does for other native modules.
-- [ ] **Step 5:** Build Release in the simulator and launch. Commit (`build(native): gesture handler and reanimated`).
-
-### Task 12: Swipes and the long-press menu
-
-**Files:**
-- Create: `mobile-native/src/board/SwipeRow.tsx`, `mobile-native/src/board/rowActions.ts` and `mobile-native/src/board/RowMenu.tsx`
-- Modify: `mobile-native/src/board/BoardRow.tsx` and `mobile-native/src/board/BoardScreen.tsx`
-- Test: `mobile-native/src/board/rowActions.test.ts` and `mobile-native/src/board/RowMenu.test.tsx`
-
-**Interfaces:**
-- Produces `rowActions.ts`. Each function is at the request boundary, takes the client, and returns the hub's result:
-  - `archiveSession(actions: NavigationActions, row, archived: boolean)`, using `evener/archive/set` through `NavigationActions.archive` so the recovery journal covers it;
-  - `stopSession(client, row)`, calling `turn/interrupt`. Read `TurnInterruptParams` in `appwire/types.go`. If it needs the instance id, read it with `thread/read { ref }` first, and say so in a comment;
-  - `shutDownSession(client, row)` (`thread/shutdown`);
-  - `renameSession(client, row, name)` (`evener/thread/name/set`);
-  - `pinSession(actions, row, target)` (`NavigationActions.assignPin`).
-
-**Requirements (spec 7.3):**
-- **Swipe right** (leading) is Archive, in blue-gray (`inkMid` fill, white label). A full swipe archives, and the toast "Archived · Undo" shows for 8 seconds; Undo unarchives.
-- **Swipes that begin within 24pt of the screen's left edge never act on a row.** Use `ReanimatedSwipeable` with a `hitSlop` of `{ left: -24 }`, or check the gesture's start x. Test the start-x rule as a pure function.
-- **Swipe left** (trailing) shows Stop (only when the row is working), Pin and More (which opens the long-press menu).
-- **Long-press:**
-  - Spike `@expo/ui`'s SwiftUI `ContextMenu` with a preview first, then `@react-native-menu/menu`, and if neither gives a preview card, a sheet that shows the preview card on top with the actions below.
-  - The preview card holds the title, state, why line, project and host (the task progress, subagent failures, model and excerpt come with S13, S3 and S1).
-  - Tapping the card opens the session.
-  - The actions are: Pin to category… (the categories plus "New category…"), Mark as read or Mark as unread (`seenMarkers`), Stop (when working), Shut down (destructive, confirmed), Archive, and Rename. Copy link waits for a session deep link, which the app doesn't have; say so in the PR.
-  - Record the spike's outcome in the PR description.
-- Every action shows its state where it was taken (spec 14's outbox): an archived row dims until the hub confirms.
-
-- [ ] Steps: failing tests (each `rowActions` function sends the right request; the edge-zone rule; the menu's actions per state), implement, `make test-native`, look in the simulator, then commit (`feat(native): swipe and long-press actions on Board rows`).
-
-### Task 13: Select mode and list stability
-
-**Files:**
-- Create: `mobile-native/src/board/listStability.ts` (pure) and `mobile-native/src/board/SelectBar.tsx`
-- Modify: `mobile-native/src/board/BoardScreen.tsx` and `mobile-native/src/board/BoardToolbar.tsx`
-- Test: `mobile-native/src/board/listStability.test.ts`
-
-**Requirements (spec 7.1, 7.3):**
-- **Select** leads the toolbar. It puts rows into multi-select, with a checkbox in the mark column and a bottom bar: Archive, Pin, and Mark as read. Done leaves.
-- **The list never reorders while a finger is on it or it is scrolling.**
-  - Hold the band ordering: `listStability.ts` exports `class HeldOrder` with `hold()`, `release()` and `order(next: LiveBands): LiveBands`. While held, `order` returns the previous order with row contents updated, and rows that left are removed.
-  - Changes apply when the list settles (`onScrollEndDrag`, `onMomentumScrollEnd`, touch end).
-  - Rows move with a 250ms spring (Reanimated layout transitions).
-  - A row entering Needs you gets a brief amber wash: `attentionBg` fading out over 1.2s.
-  - With Reduce Motion on, rows change places without animation and the wash is skipped.
-
-- [ ] Steps: failing tests (`HeldOrder` keeps order while held, updates contents, drops departed rows and applies on release), implement, `make test-native`, look in the simulator, then commit (`feat(native): select mode and a Board that holds still under your finger`). Open PR 4: "feat(native): Board row actions and select mode (phase 2, PR 4)".
-
----
+Pinned categories, projects and hosts, test runs and archived (PR 3), notices and search (PR 5), and row actions, select mode and list stability (PR 4) are planned in part 2: `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part2.md`.
 
 ## PR B: the demo fleet
 
