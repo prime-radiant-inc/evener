@@ -609,12 +609,18 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// limit are validated, never clamped -- a negative offset (the wire's own
 	// uint32 field can't even decode one), a zero or negative limit, or a
 	// limit over the resource's own maximum are all hard errors, the same as
-	// an unrecognized resource elsewhere in this file.
+	// an unrecognized resource elsewhere in this file. The wire's uint32 also
+	// can't carry a fractional or NaN value, so both are required to be
+	// finite integers here too -- otherwise they'd pass the comparisons below
+	// (NaN fails every relational operator) and produce a truncated page or a
+	// NaN remaining count instead of an error.
 	function page<T>(items: T[], params: NavigationReadParams, maximum: number): { page: T[]; remaining: number } {
 		const offset = params.offset ?? 0;
+		if (!Number.isInteger(offset)) throw new Error(`offset must be an integer: ${offset}`);
 		if (offset < 0) throw new Error(`offset must not be negative: ${offset}`);
 		let limit = maximum;
 		if (params.limit !== undefined) {
+			if (!Number.isInteger(params.limit)) throw new Error(`limit must be an integer: ${params.limit}`);
 			if (params.limit <= 0) throw new Error("limit must be greater than zero");
 			if (params.limit > maximum) throw new Error(`limit exceeds maximum of ${maximum}`);
 			limit = params.limit;

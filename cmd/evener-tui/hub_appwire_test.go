@@ -403,11 +403,59 @@ func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
 	}
 }
 
+// A turn that fails with a message queued behind it leaves work that starts
+// the next turn without the user, so the daemon's failure exit announces
+// thread/status/changed(active) (agent WireState), not a close. The TUI keeps
+// the session running: processing stays on and the composer stays in queue
+// mode.
+func TestHubModelFailedTurnWithQueuedWorkStaysActive(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{
+		Ref:          "local:th_1",
+		SessionID:    "sess_1",
+		State:        appwire.ThreadStatusActive,
+		ActiveTurnID: "turn_1",
+		Capabilities: hubSessionCapabilities{Send: true, Queue: true},
+		Queue:        appwire.QueueState{Depth: 1},
+	}
+	m.session.processing = true
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+			"threadId": "th_1",
+			"ref":      "local:th_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusFailed,
+				Error:  &appwire.TurnError{Message: "rate limited"},
+			},
+		}).Notification,
+	})
+	got := updated.(hubModel)
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "th_1",
+			Ref:      "local:th_1",
+			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		}).Notification,
+	})
+	got = updated.(hubModel)
+	if got.detail.State != appwire.ThreadStatusActive || !got.session.processing {
+		t.Fatalf("state=%q processing=%v after a failed turn with queued work, want active and processing", got.detail.State, got.session.processing)
+	}
+	if mode := got.sessionComposerMode(); mode != hubComposerModeQueue {
+		t.Fatalf("composer mode=%v after a failed turn with queued work, want queue: the queued message runs next", mode)
+	}
+}
+
 // TestHubModelTurnCompletedReconcilesProcessingForFailedTurn is the s8x8
 // regression, on the wire as it is: after turn/completed clears ActiveTurnID
 // for the active turn, the daemon's failure exit (agent/session_lifecycle.go
 // endInputAtTurnFailure) emits EventSessionEnd with Reason "turn_failed",
-// announced as thread/status/changed(idle). That frame is what takes the
+// announced as thread/status/changed(systemError). That frame is what takes the
 // session out of queue mode: session.processing and detail.State follow it,
 // not the turn/completed ahead of it, so the frame reads as the transition it
 // is and the capability refresh keyed on transitions fires.
@@ -453,7 +501,7 @@ func TestHubModelTurnCompletedReconcilesProcessingForFailedTurn(t *testing.T) {
 		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 			ThreadID: "th_1",
 			Ref:      "local:th_1",
-			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
 		}).Notification,
 	})
 	got = updated.(hubModel)
