@@ -3,9 +3,11 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import {
 	approvalRefs,
 	boardState,
+	hubTime,
 	lastLine,
 	liveBands,
 	liveSummary,
+	stateWord,
 	summaryText,
 	usualPlace,
 	whyLine,
@@ -46,8 +48,35 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "ended" }, false, false, "shutDown"],
 		[{ state: "notLoaded" }, false, false, "shutDown"],
 		[{ state: "ended", offline: true }, false, false, "shutDown"],
+		[{ state: "active", offline: true }, false, false, "shutDown"],
+		[{ state: "active", offline: true }, true, false, "shutDown"],
+		[{ state: "awaiting", ask_pending: true, offline: true }, false, false, "shutDown"],
 	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
 		expect(boardState(row("s", over), approval, seen)).toBe(expected);
+	});
+
+	it.each([
+		["failed", "Failed"],
+		["question", "Question"],
+		["approval", "Approval"],
+		["warning", "Warning"],
+		["restartNeeded", "Restart needed"],
+		["working", "Working"],
+		["finished", "Finished"],
+		["idle", "Idle"],
+		["shutDown", "Shut down"],
+	] as const)("names %s as %s", (state, word) => {
+		expect(stateWord(state)).toBe(word);
+	});
+});
+
+describe("hub timestamps", () => {
+	it("reads the hub's ISO time and nothing else", () => {
+		expect(hubTime(at(5))).toBe(Date.UTC(2026, 8, 26, 12, 5));
+		expect(hubTime(undefined)).toBeNull();
+		expect(hubTime(null)).toBeNull();
+		expect(hubTime("")).toBeNull();
+		expect(hubTime("not a time")).toBeNull();
 	});
 });
 
@@ -91,6 +120,19 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.working.map((item) => item.row.ref)).toEqual(["work-b", "work-a"]);
 		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-new", "done-old"]);
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
+	});
+
+	it("sorts a row with a missing or unreadable updated_at as the oldest", () => {
+		const live = [
+			row("done-dated", { state: "awaiting", updated_at: at(10) }),
+			row("done-missing", { state: "awaiting" }),
+			row("done-garbled", { state: "awaiting", updated_at: "not a time" }),
+			row("failed-dated", { state: "errored", updated_at: at(10) }),
+			row("failed-missing", { state: "errored" }),
+		];
+		const bands = liveBands(live, [], never);
+		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-dated", "done-garbled", "done-missing"]);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["failed-missing", "failed-dated"]);
 	});
 
 	it("shows a session that needs you even when it sits past the Live pages loaded so far", () => {
@@ -168,6 +210,7 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 			],
 		});
 		expect(workingActivity(three)).toBe("Waiting on 3 subagents");
+		expect(workingActivity({ ...three, more_subagents: 12 })).toBe("Waiting on 3 subagents (+12 more)");
 		const running = row("s", {
 			state: "active",
 			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],

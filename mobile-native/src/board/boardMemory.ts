@@ -1,6 +1,7 @@
 // What this device remembers about one hub's Board: which sessions you have
 // seen and which sections you folded. Kept in expo-sqlite's kv-store under
 // per-hub keys that ConnectionProvider.removeHub clears.
+import { hubTime } from "./attention";
 
 export interface BoardStorage {
 	getItemSync(key: string): string | null;
@@ -10,7 +11,7 @@ export interface BoardStorage {
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
-const SEEN_LIMIT = 500;
+const MARK_LIMIT = 500;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -30,30 +31,35 @@ function writeJson(storage: BoardStorage, key: string, value: unknown): void {
 		// The in-memory copy still serves this launch.
 	}
 }
-function timeOf(value: string | null | undefined): number | null {
-	if (!value) return null;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : null;
-}
-
 interface SeenRecord {
 	through?: string;
 	unread?: true;
 }
 interface SeenState {
+	/** First run is done: the Board read this hub once and took the newest
+	 * updated_at it saw as the epoch, or none when no row carried one. */
+	adopted: boolean;
 	epoch: string | null;
 	sessions: Record<string, SeenRecord>;
 }
 
 function parseSeen(value: unknown): SeenState {
-	const state: SeenState = { epoch: null, sessions: {} };
+	const state: SeenState = { adopted: false, epoch: null, sessions: {} };
 	if (!isRecord(value)) return state;
-	if (typeof value.epoch === "string") state.epoch = value.epoch;
+	// First run stands only with an epoch that reads as a hub time, or with
+	// none because the fleet it read had no timestamps. A garbled epoch runs
+	// first run again rather than flooding Finished.
+	const epoch = typeof value.epoch === "string" && hubTime(value.epoch) !== null ? value.epoch : null;
+	if (value.adopted === true && (epoch !== null || value.epoch === null)) {
+		state.adopted = true;
+		state.epoch = epoch;
+	}
 	if (isRecord(value.sessions))
 		for (const [ref, record] of Object.entries(value.sessions)) {
 			if (!isRecord(record)) continue;
 			if (record.unread === true) state.sessions[ref] = { unread: true };
-			else if (typeof record.through === "string") state.sessions[ref] = { through: record.through };
+			else if (typeof record.through === "string" && hubTime(record.through) !== null)
+				state.sessions[ref] = { through: record.through };
 		}
 	return state;
 }
@@ -63,8 +69,10 @@ function parseSeen(value: unknown): SeenState {
  * own timestamps (a row's updated_at against the updated_at stored when you
  * opened it), so the phone's clock never matters. The first load on a device
  * adopts the newest updated_at it sees as an epoch, so sessions that ended
- * before this device ever showed the Board don't all arrive as unseen. S4
- * replaces this with a marker on the hub. */
+ * before this device ever showed the Board don't all arrive as unseen. A
+ * first load with no timestamps (an empty fleet) completes first run too, so
+ * the first session to finish after it arrives unseen. S4 replaces this with
+ * a marker on the hub. */
 export class SeenMarkers {
 	private state: SeenState;
 	private revision = 0;
@@ -80,26 +88,26 @@ export class SeenMarkers {
 	isSeen(row: { ref: string; updated_at?: string }): boolean {
 		const record = this.state.sessions[row.ref];
 		if (record?.unread) return false;
-		if (this.state.epoch === null) return true;
-		const updated = timeOf(row.updated_at);
+		if (!this.state.adopted) return true;
+		const updated = hubTime(row.updated_at);
 		if (updated === null) return true;
 		const through = Math.max(
-			timeOf(record?.through) ?? Number.NEGATIVE_INFINITY,
-			timeOf(this.state.epoch) ?? Number.NEGATIVE_INFINITY,
+			hubTime(record?.through) ?? Number.NEGATIVE_INFINITY,
+			hubTime(this.state.epoch) ?? Number.NEGATIVE_INFINITY,
 		);
 		return updated <= through;
 	}
 
 	adoptEpoch(rows: readonly { updated_at?: string }[]): void {
-		if (this.state.epoch !== null) return;
+		if (this.state.adopted) return;
 		let newest: { value: string; time: number } | null = null;
 		for (const row of rows) {
-			const time = timeOf(row.updated_at);
+			const time = hubTime(row.updated_at);
 			if (time !== null && row.updated_at && (newest === null || time > newest.time))
 				newest = { value: row.updated_at, time };
 		}
-		if (!newest) return;
-		this.state.epoch = newest.value;
+		this.state.adopted = true;
+		this.state.epoch = newest?.value ?? null;
 		this.save();
 	}
 
@@ -123,15 +131,16 @@ export class SeenMarkers {
 
 	private save(): void {
 		const entries = Object.entries(this.state.sessions);
-		if (entries.length > SEEN_LIMIT) {
-			// Unread marks are choices you made; past the limit, the oldest seen
-			// marks go first (they matter least: the epoch covers old sessions).
+		if (entries.length > MARK_LIMIT) {
+			// 500 marks in all, unread kept first: an unread mark is a choice you
+			// made, so past the limit the oldest seen marks go first (they matter
+			// least: the epoch covers old sessions).
 			entries.sort(
 				([, a], [, b]) =>
 					(a.unread ? 0 : 1) - (b.unread ? 0 : 1) ||
-					(timeOf(b.through) ?? 0) - (timeOf(a.through) ?? 0),
+					(hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0),
 			);
-			this.state.sessions = Object.fromEntries(entries.slice(0, SEEN_LIMIT));
+			this.state.sessions = Object.fromEntries(entries.slice(0, MARK_LIMIT));
 		}
 		writeJson(this.storage, seenKey(this.hubId), this.state);
 		this.revision++;

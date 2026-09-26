@@ -64,6 +64,9 @@ export function boardState(
 	approval: boolean,
 	seen: boolean,
 ): BoardState {
+	// A row from an offline source can't be reached, whatever state it last
+	// reported: it is never Working, Finished or Needs you.
+	if (row.offline) return "shutDown";
 	switch (row.state) {
 		case "errored":
 			return "failed";
@@ -90,9 +93,17 @@ export function bandOf(state: BoardState): Band | null {
 	return null;
 }
 
+/** A hub timestamp in milliseconds, or null when the hub sent none or one
+ * that doesn't parse. */
+export function hubTime(value?: string | null): number | null {
+	if (!value) return null;
+	const time = Date.parse(value);
+	return Number.isFinite(time) ? time : null;
+}
+
+// A row without a readable updated_at sorts as the oldest.
 function time(row: NavigationSessionSummary): number {
-	const value = row.updated_at ? Date.parse(row.updated_at) : Number.NaN;
-	return Number.isFinite(value) ? value : 0;
+	return hubTime(row.updated_at) ?? 0;
 }
 function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
 	return a.row.ref < b.row.ref ? -1 : a.row.ref > b.row.ref ? 1 : 0;
@@ -185,7 +196,11 @@ export function whyLine(item: ClassifiedRow): WhyLine | null {
  * current step and quiet spells). */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const subagents = row.children.filter((child) => child.state === "active").length;
-	if (subagents > 0) return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}`;
+	// The hub caps a row's children; until S3 tallies the whole tree, say how
+	// many more there are rather than undercounting (spec 18, S3's fallback).
+	const more = row.more_subagents ?? 0;
+	if (subagents > 0)
+		return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}${more > 0 ? ` (+${more} more)` : ""}`;
 	const command = row.running_jobs?.find((job) => job.command)?.command;
 	if (command) return `Running ${command}`;
 	return "Working";
