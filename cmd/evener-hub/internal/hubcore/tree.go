@@ -433,10 +433,8 @@ type TreeNode struct {
 	AskPending bool   // true while the daemon reports an unanswered ask_user question
 	// ApprovalPending is true while the daemon reports a blocked
 	// sandbox-exemption escalation (LiveEntry.PendingEscalation), the reason
-	// promotedAttentionLevel puts an active session in NeedsYou. Like
-	// AskPending, every builder reads it from the session's live entry so a
-	// session's rows agree, and it never changes State: the promotion changes
-	// membership only.
+	// promotedAttentionLevel puts an active session in NeedsYou. The node
+	// keeps its real State.
 	ApprovalPending bool
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports

@@ -4,18 +4,18 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// TestNavigationRowsCarryApprovalPending pins S2's wire contract: a live
-// session blocked on a sandbox approval carries approval_pending on its Live
-// and NeedsYou rows and keeps reporting its real state ("active"). Every other
-// row omits the key, so its shaping is byte-for-byte unchanged.
+// TestNavigationRowsCarryApprovalPending pins the approval flag's wire
+// contract: a live session blocked on a sandbox approval carries
+// approval_pending on its Live and NeedsYou rows and keeps reporting its real
+// state ("active"), and a row without an approval omits the key.
 func TestNavigationRowsCarryApprovalPending(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "evener")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -30,10 +30,11 @@ func TestNavigationRowsCarryApprovalPending(t *testing.T) {
 		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2, SessionID: "01WORKING", WorkingDir: project.CanonicalPath}, SessionID: "01WORKING", Status: appwire.ThreadStatusActive},
 	)
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
-	_, live, projects := web.navigationTreeInputs(t.Context())
-	tree := hubBuildNavigationTree(nil, live, map[hubcore.ArchiveKey]bool{}, projects)
-	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, web.apiTreeSources(), hubapi.AttentionSummary{}, live, nil, nil, nil, nil)
-	projection, err := buildNavigationProjection(inputs)
+	snapshot, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now())
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	projection, err := buildNavigationProjection(snapshot.Inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}

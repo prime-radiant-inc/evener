@@ -106,22 +106,14 @@ test("codec accepts the offline source marker on a session row", () => {
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, malformed))).toThrow();
 });
 
-// A session blocked on a sandbox approval keeps its real state ("active") and
-// carries the hub's approval flag beside it (S2). The flag reaches the rendered
-// row, and a non-boolean one is a schema error like any other known key.
-test("codec keeps the approval flag on a session row and refuses a non-boolean one", () => {
-  const withApproval = (approval: unknown) => {
-    const snapshot = liveSnapshot();
-    const first = snapshot.entities[0];
-    if (!first) throw new Error("missing entity");
-    first.value = { ...(first.value as object), state: "active", approval_pending: approval };
-    return snapshot;
-  };
-  const rows = materializeSnapshot(key, decodedSnapshot(key, withApproval(true))).sessions as Array<
-    Record<string, unknown>
-  >;
-  expect(rows[0]?.approval_pending).toBe(true);
-  expectContentFreeRejection(key, withApproval("private-body-value"));
+// approval_pending is an optional boolean like ask_pending: a non-boolean value
+// is a schema error. The value-records fixture test proves a valid one is kept.
+test("codec refuses a non-boolean approval flag on a session row", () => {
+  const snapshot = liveSnapshot();
+  const first = snapshot.entities[0];
+  if (!first) throw new Error("missing entity");
+  first.value = { ...(first.value as object), approval_pending: "private-body-value" };
+  expectContentFreeRejection(key, snapshot);
 });
 
 test("codec accepts stateless records and rejects obsolete entity and container revisions", () => {

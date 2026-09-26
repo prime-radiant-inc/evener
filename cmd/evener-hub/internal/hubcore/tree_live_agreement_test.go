@@ -126,8 +126,8 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 
 // fuzzScenarioBuildTree_EveryRowCarriesApprovalPending: an escalation-promoted
 // session reports the approval on its NeedsYou, Live and project rows alike,
-// from the one approvalPendingFor closure, and keeps its real state on all of
-// them: promotion changes membership, not state.
+// and keeps its real state on all of them: promotion changes membership, not
+// state.
 func fuzzScenarioBuildTree_EveryRowCarriesApprovalPending(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "01APPROVAL", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
