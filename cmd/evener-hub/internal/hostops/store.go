@@ -415,10 +415,48 @@ func (next *snapshot) advanceSequence(record *Record) {
 // read as "no records", because the next write would then replace real history
 // with nothing.
 type storeFile struct {
-	Version                *uint64   `json:"version"`
-	Sequence               *uint64   `json:"sequence"`
-	AllocatorHighWaterMark *uint64   `json:"allocatorHighWaterMark"`
-	Records                *[]Record `json:"records"`
+	Version                *uint64       `json:"version"`
+	Sequence               *uint64       `json:"sequence"`
+	AllocatorHighWaterMark *uint64       `json:"allocatorHighWaterMark"`
+	Records                *[]recordFile `json:"records"`
+}
+
+// recordFile is the decode shape of one record. It carries the same fields as
+// Record, except that the fields whose zero value is a legitimate value are
+// pointers here: the writer always emits `hostRemoved`, and always emits both
+// halves of a present `result`, so a file that omits either is not one this store
+// produced and must be refused rather than silently read as `false`. The record
+// fields validation already refuses at their zero value (id, host, kind, state,
+// the pinned pair, the timestamps) need no pointer.
+type recordFile struct {
+	Record
+	HostRemoved *bool       `json:"hostRemoved"`
+	Result      *resultFile `json:"result,omitempty"`
+}
+
+// resultFile is the decode shape of a record's terminal result: `ok` is a
+// pointer because an absent outcome and a failed outcome are different things,
+// while §10's wire carries both halves of a present result.
+type resultFile struct {
+	OK      *bool  `json:"ok"`
+	Message string `json:"message"`
+}
+
+// record maps the decode shape to a record, refusing the two omitted-field
+// shapes the writer never produces.
+func (f recordFile) record() (Record, error) {
+	if f.HostRemoved == nil {
+		return Record{}, fmt.Errorf("record %q carries no host-removed mark", f.ID)
+	}
+	record := f.Record
+	record.HostRemoved = *f.HostRemoved
+	if f.Result != nil {
+		if f.Result.OK == nil {
+			return Record{}, fmt.Errorf("record %q carries a terminal result with no outcome", f.ID)
+		}
+		record.Result = &Result{OK: *f.Result.OK, Message: f.Result.Message}
+	}
+	return record, nil
 }
 
 // loadFS reads and validates the store file. A missing file is an empty store;
@@ -465,11 +503,19 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	case file.Records == nil:
 		return snapshot{}, fmt.Errorf("%w: %s carries no record list", ErrStoreCorrupt, path)
 	}
+	records := make([]Record, len(*file.Records))
+	for i, record := range *file.Records {
+		mapped, err := record.record()
+		if err != nil {
+			return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+		}
+		records[i] = mapped
+	}
 	state := snapshot{
 		Version:                *file.Version,
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
-		Records:                *file.Records,
+		Records:                records,
 	}
 	// Spec §8: "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed
 	// RFC3339; a stored offset form converts at write time)". Values this store

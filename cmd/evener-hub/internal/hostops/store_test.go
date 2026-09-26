@@ -224,6 +224,16 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		"missing record list":               `{"version":1,"sequence":0,"allocatorHighWaterMark":0}`,
 		"null record list":                  `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":null}`,
 		"null sequence":                     `{"version":1,"sequence":null,"allocatorHighWaterMark":0,"records":[]}`,
+		// The writer always emits a record's host-removed mark and both halves of
+		// a present result, so a file omitting either is not one it produced.
+		"record without a host-removed mark": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `,"hostRemoved":false`, ``, 1) + `]}`,
+		"null host-removed mark": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":null`, 1) + `]}`,
+		"result without an outcome": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"message":"failed"}`, 1) + `]}`,
+		"null result outcome": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":null,"message":"failed"}`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -231,6 +241,14 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			writeRawStore(t, path, 0o600, body)
 			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on a corrupt store: err = %v, want ErrStoreCorrupt", err)
+			}
+			// A refused file is never served and never rewritten: no temp file,
+			// and the bytes on disk are exactly what the caller wrote.
+			if got := string(mustReadFile(t, path)); got != body {
+				t.Fatalf("a refused load rewrote the corrupt store:\nbefore: %s\nafter:  %s", body, got)
+			}
+			if temps := leftoverTemps(t, filepath.Dir(path)); len(temps) > 0 {
+				t.Fatalf("a refused load left temp files behind: %v", temps)
 			}
 		})
 	}
@@ -903,5 +921,81 @@ func TestLoadNormalizesStoredTimestampsToUTC(t *testing.T) {
 	}
 	if strings.Contains(raw, "+02:00") {
 		t.Fatalf("the offset form survived into the store file:\n%s", raw)
+	}
+}
+
+// TestOpenAcceptsARecordCarryingEveryRequiredField is the positive control for
+// the presence rules: a terminal record with its host-removed mark and a result
+// that carries both halves loads.
+func TestOpenAcceptsARecordCarryingEveryRequiredField(t *testing.T) {
+	body := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete",` +
+		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z",` +
+		`"hostRemoved":true,"result":{"ok":false,"message":"waitHealthy timed out"},"sequence":1}]}`
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, body)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	stored, ok := store.Record("00000000000000000001")
+	if !ok {
+		t.Fatalf("record not loaded")
+	}
+	if !stored.HostRemoved {
+		t.Fatalf("host-removed mark lost: %+v", stored)
+	}
+	if stored.Result == nil || stored.Result.OK || stored.Result.Message != "waitHealthy timed out" {
+		t.Fatalf("terminal result lost: %+v", stored.Result)
+	}
+}
+
+// TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted sweeps the record's
+// required fields for the one class of decode gap the top level and the record
+// booleans had: a field whose omitted value decodes to a value that is itself
+// legitimate, so a malformed or truncated file would pass validation and be
+// rewritten in that shape. Every field below is one the writer always emits; a
+// file that drops any of them is refused, and refused without being rewritten.
+//
+// The fields not listed are optional by construction and absent is meaningful for
+// them: `fencingEpoch` (the create write lands before the first running probe
+// sets it), `orphanBoundary` (paired with the orphan-unverified state),
+// `progress` (a record may carry no progress yet) and `result` (absent until the
+// record is terminal). Their present forms are shape-checked separately.
+func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
+	complete := `{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy",` +
+		`"state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z",` +
+		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"deployed"},"sequence":1}`
+	omitted := map[string]string{
+		"id":                `"id":"00000000000000000001",`,
+		"clientOperationId": `"clientOperationId":"client-h1",`,
+		"host":              `"host":"h1",`,
+		"kind":              `"kind":"deploy",`,
+		"state":             `"state":"complete",`,
+		"generation":        `"generation":7,`,
+		"incarnationId":     `"incarnationId":"inc-1",`,
+		"createdAt":         `"createdAt":"2026-09-26T00:00:00Z",`,
+		"updatedAt":         `"updatedAt":"2026-09-26T00:00:00Z",`,
+		"hostRemoved":       `"hostRemoved":false,`,
+		"sequence":          `,"sequence":1`,
+		"result outcome":    `"ok":true,`,
+		"result message":    `"message":"deployed"`,
+	}
+	for name, fragment := range omitted {
+		t.Run(name, func(t *testing.T) {
+			record := strings.Replace(complete, fragment, "", 1)
+			if record == complete {
+				t.Fatalf("the fixture for %s did not change the record", name)
+			}
+			body := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` + record + `]}`
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("a record with no %s loaded: err = %v, want ErrStoreCorrupt", name, err)
+			}
+			if got := string(mustReadFile(t, path)); got != body {
+				t.Fatalf("a refused load rewrote the file with no %s", name)
+			}
+		})
 	}
 }

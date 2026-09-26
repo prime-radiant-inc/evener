@@ -73,6 +73,12 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}]}`,
+		// A record whose host-removed mark is missing, and a present result
+		// without its outcome: neither is a record this store wrote.
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z"}]}`,
+		`{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"message":"failed"},"sequence":1}]}`,
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1},` +
 			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1}]}`,
