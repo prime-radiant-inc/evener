@@ -2713,7 +2713,6 @@ test.each([
     messages: observeReturn().messages,
     mainOwnerId: workspaceStore.getState().mainPane()?.id,
   };
-  console.info("mixed-origin Back evidence", JSON.stringify({ origin, openHost, retained, returns, terminal }));
   expect(returns).toEqual(expectedReturns);
   expect(terminal).toEqual({ type: "welcome", welcome: true, messages: 0, mainOwnerId: owner.id });
 });
@@ -4294,4 +4293,7 @@ test("a popstate into a host-scoped settings URL selects the host before the pan
   }
 
   expect(hostAtDispatch).toBe("beta");
+  // The pane mounts for beta and settles on the registry's answer (this client
+  // scripts none, so the read fails) before the test ends.
+  expect(await screen.findByText("Couldn't check beta's registration")).toBeTruthy();
 });
