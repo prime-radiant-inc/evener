@@ -476,7 +476,10 @@ timed out, or was unauthenticated) — token unconsumed, no record. The worker r
 the probe differs from the token-bound running revision or running-health flag, and
 rejects if the re-probed `processStartTime` differs from the token-bound one when the
 token bound one. Both values come from the same remote clock across the two probes,
-never from controller wall-clock. The worker recomputes the `factsRevision` digest (§1) over the deploy-time preflight facts and compares it against the token-bound digest: any decision-relevant fact changed since mint (OS/arch, home, roots, UID, installed version, protocol, launch flags) is a `stale-entry` re-plan refusal. The worker re-checks token-bound preflight-facts
+never from controller wall-clock. Deploy runs no fresh preflight of its own — the
+on-gate re-read is the local resolution above plus the channel probe — so it
+validates the token's stored `factsRevision`/`factsCapturedAt` rather than
+recomputing the digest over new facts. The worker re-checks token-bound preflight-facts
 freshness (`factsCapturedAt` against the token-bound bound): facts
 older than the bound at deploy time are a `stale-entry` re-plan refusal. This re-read is
 the gate protocol's post-acquisition check (§5).
@@ -909,6 +912,7 @@ element type.
   "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?:
   BoundaryEntry[], progress: ProgressEntry[], result?: {ok: bool, message: string},
   createdAt: string, updatedAt: string, hostRemoved: bool, compacted?: true,
+  orphanResolved?: true,
   attestation?: {operator: string, statement: "orphan-verified-absent",
   recordId: string, boundaryRef: string, observedAt: string}}` —
   `incarnationId` is the pinned incarnation the record ran against; `orphanBoundary`
@@ -1044,7 +1048,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   discriminator with `{capBytes: 8192}`. Both shapes pinned.
 - Durable probe epoch: no `running` probe precedes its durable controller-side epoch — `plan` persists its probe epoch before the first probe call and binds it to the eventual token's (generation, incarnation id) pair; `deploy` persists its probe epoch before probing and promotes it at the step-(4) consume. Probe-epoch write failure is `probe-failed` with nothing launched; a crash between epoch and mint/consume boots to silent deletion of the epoch-only row with no token and no worker (probe epochs are ephemeral non-listed rows, never `operations`-visible); the mint supersedes a `plan` probe epoch and step (4) promotes a `deploy` one.
 - Fenced probe ordering: the first mutating probe after a crashed epoch runs takeover, bounded kill/wait, and guard advance before its write half (crash-fencing spec §4); the ordering test observes the write landing only after the guard advanced past the superseded epoch.
-- `factsRevision` invalidation: changing any decision-relevant preflight fact (OS/arch, home, roots, UID, installed version, protocol, launch flags) between mint and deploy invalidates the token with `stale-entry`.
+- `factsRevision` freshness: a token whose preflight facts are older than the token-bound bound at deploy time refuses `stale-entry`; deploy runs no fresh preflight, so the check is on the stored `factsRevision`/`factsCapturedAt`, not a re-read, and the mint-time digest remains the pinned reference for the facts the token was minted from.
 - `restart` incarnation pair: a lost-response retry repeating the old pair replays the retained record; the same operation ID naming the new pair after remove/re-add opens fresh; a pair older than current refuses `stale-entry`.
 - Torn-write recovery: a store-newer/sidecar-older split with no commit marker transitions affected records to `interrupted` and serves; startup is never refused for this split.
 - The running probe (`evener/host/running` handler): local revision plus health plus
