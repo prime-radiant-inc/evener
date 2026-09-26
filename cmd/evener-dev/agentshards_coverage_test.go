@@ -345,6 +345,32 @@ func TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics(t *tes
 	}
 }
 
+// TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
+// top-level parallel shape from go test -v: a sibling resumes after the
+// parent's assertion, emits source-located diagnostics, passes, and the
+// parent then fails. The sibling's newer lines must not claim the parent slot.
+func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before sibling output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== PAUSE TestParent\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("=== PAUSE TestSibling\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== CONT  TestSibling\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    sibling_test.go:%d: sibling diagnostic\n", i+1)
+	}
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was crowded out by sibling diagnostics: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework

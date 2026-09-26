@@ -857,12 +857,13 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict. It intentionally runs only for
 // that empty-proximity shape: ordinary blocks retain their established
-// context (including nested failure markers). Parent-level source diagnostics
-// before the first nested run are preferred over nested diagnostics, then the
-// latest remaining diagnostics fill the budget. This keeps a parent's
-// assertion from being crowded out by source-located subtest output. The
-// result is still no larger than one block's existing before bound plus its
-// marker.
+// context (including nested failure markers). Source diagnostics are associated
+// with the most recent go test RUN/CONT frame; a completed child or sibling
+// returns ownership to the parent. Parent-owned diagnostics are preferred over
+// nested or sibling diagnostics, then the latest remaining diagnostics fill
+// the budget. This keeps a parent's assertion from being crowded out by
+// source-located parallel output. The result is still no larger than one
+// block's existing before bound plus its marker.
 func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
@@ -885,15 +886,15 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		diagnostic  bool
 		parentLevel bool
 	}
-	firstNestedRun := marker - run
-	for index, line := range lines[run+1 : marker] {
-		if strings.HasPrefix(line, "=== RUN   "+name+"/") {
-			firstNestedRun = index
-			break
-		}
-	}
+	owner := name
 	candidates := make([]candidate, 0, marker-run)
 	for index, line := range lines[run+1 : marker] {
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			owner = frameOwner
+		}
+		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
+			owner = name
+		}
 		if surveyFrameworkLine(line) || strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -901,7 +902,7 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 			index:       index,
 			line:        line,
 			diagnostic:  surveyDiagnosticLine.MatchString(line),
-			parentLevel: index < firstNestedRun,
+			parentLevel: owner == name,
 		})
 	}
 	if len(candidates) == 0 {
@@ -948,6 +949,17 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	}
 	result = append(result, lines[marker])
 	return result, true
+}
+
+// surveyPhaseOwner extracts the test name from the testing package's RUN or
+// CONT frame. Fields are joined rather than taking fields[2] so subtest names
+// containing spaces remain associated with the right owner.
+func surveyPhaseOwner(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "===" || (fields[1] != "RUN" && fields[1] != "CONT") {
+		return ""
+	}
+	return strings.Join(fields[2:], " ")
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
