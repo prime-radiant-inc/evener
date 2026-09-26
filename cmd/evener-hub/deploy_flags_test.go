@@ -305,6 +305,14 @@ func evenerArtifact(t *testing.T) string {
 // makes GOTOOLCHAIN=auto try to download a toolchain instead.
 func nonEvenerGoBinary(t *testing.T) string {
 	t.Helper()
+	// The fixture must build as its own module, not in whatever workspace or
+	// toolchain configuration the developer's environment names: an exported
+	// GOWORK (or a `go env -w` GOENV setting, or a GOFLAGS build flag) would
+	// otherwise reach the child `go build` and fail it for a reason unrelated to
+	// the code under test. Same isolation cmd/evener-dev's fixture builds use.
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module example.com/not-evener\n\ngo 1.22\n"), 0o644); err != nil {
 		t.Fatalf("write fixture go.mod: %v", err)
