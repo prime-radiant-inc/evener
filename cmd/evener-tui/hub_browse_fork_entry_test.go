@@ -179,12 +179,12 @@ func lastForkEntrySystemMessage(t *testing.T, m hubModel) string {
 
 func applyForkEntryItem(t *testing.T, m hubModel, item appwire.ThreadItem) hubModel {
 	t.Helper()
-	raw, err := json.Marshal(appwire.ItemLifecycleParams{TurnID: item.TurnID, Item: item})
+	raw, err := json.Marshal(appwire.HistoryUpdatedParams{Items: []appwire.ThreadItem{item}})
 	if err != nil {
-		t.Fatalf("marshal item/completed params: %v", err)
+		t.Fatalf("marshal history/updated params: %v", err)
 	}
 	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: appwire.Notification{
-		Method: appwire.NotifyItemCompleted,
+		Method: appwire.NotifyHistoryUpdated,
 		Params: raw,
 	}})
 	return updated.(hubModel)

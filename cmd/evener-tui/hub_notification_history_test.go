@@ -76,3 +76,31 @@ func TestApplyHubNotificationOverlayResetDiscardsRetriedAttempt(t *testing.T) {
 		t.Fatalf("overlay/reset should discard the attempt: %+v", m.session.messages)
 	}
 }
+
+// A watched subagent child's own history/updated notification (item/started
+// and item/completed's read-model replacement) routes to its rail row's live
+// activity instead of rendering into the parent transcript, the same way the
+// live path always worked.
+func TestApplyHubNotificationHistoryUpdatedRoutesWatchedChildActivity(t *testing.T) {
+	m := newTUIStableDelegateModel()
+	m.watchedChildRefs = map[string]bool{"local:child": true}
+	m.session.messages = []transcript.ChatMessage{{
+		Kind: transcript.MsgTool,
+		Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "local:child"}},
+	}}
+
+	sendTUINotification(t, &m, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Ref: "local:child",
+		Items: []appwire.ThreadItem{
+			{Type: "commandExecution", ToolName: "read_file", Description: "reading /tmp"},
+		},
+	})
+
+	if len(m.session.messages) != 1 {
+		t.Fatalf("a watched child's history/updated must not render into the parent transcript: %+v", m.session.messages)
+	}
+	run := m.session.messages[0].Tool.Subagent
+	if run.Activity != "read_file: reading /tmp" || run.Steps != 1 {
+		t.Fatalf("child rail run = %+v, want activity routed from the child's history/updated", run)
+	}
+}
