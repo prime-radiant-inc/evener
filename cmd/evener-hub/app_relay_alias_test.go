@@ -68,9 +68,9 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	awaitLiveHubSubscriptions(t, appServer, 3)
 
 	params, err := json.Marshal(appwire.OverlayDeltaParams{
-		ThreadID:     "root-thread",
-		Ref:          rootRef,
-		Delta:        "one logical delta",
+		ThreadID: "root-thread",
+		Ref:      rootRef,
+		Delta:    "one logical delta",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,9 +89,9 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 
 	params, err = json.Marshal(appwire.OverlayDeltaParams{
-		ThreadID:     "child-thread",
-		Ref:          childRef,
-		Delta:        "one child delta",
+		ThreadID: "child-thread",
+		Ref:      childRef,
+		Delta:    "one child delta",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -349,9 +349,9 @@ func TestHubRelayThreadIDReadUsesAuthoritativeResponseRef(t *testing.T) {
 	}
 	awaitLiveHubSubscriptions(t, appServer, 1)
 	params, err := json.Marshal(appwire.OverlayDeltaParams{
-		ThreadID:     "lookup-thread",
-		Ref:          "local:workspace-thread",
-		Delta:        "authoritative workspace delta",
+		ThreadID: "lookup-thread",
+		Ref:      "local:workspace-thread",
+		Delta:    "authoritative workspace delta",
 	})
 	if err != nil {
 		t.Fatal(err)
