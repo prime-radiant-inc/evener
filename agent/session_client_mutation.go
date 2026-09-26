@@ -370,6 +370,9 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnStartResponse{}, clientMutationRejectionError(lookup.Record)
 	}
+	// Re-engagement: release the attention rail with the QueueHeld release
+	// this accept just committed, re-arming whatever the Stop deferred.
+	s.unparkRootDelegateAttention()
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
 			return appwire.TurnStartResponse{}, err
@@ -969,6 +972,10 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, clientMutationRejectionError(lookup.Record)
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
+		// Park even on replay: this Stop already landed once (the mutation is
+		// terminal), and a replayed Stop is the same user intent in a process
+		// that lost the in-memory flag.
+		s.parkRootDelegateAttention()
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 		return interruptResponseFromRecord(lookup.Record, appwire.MutationDispositionReplayed)
 	}
@@ -995,10 +1002,24 @@ func (s *Session) InterruptClientMutation(
 			return appwire.TurnInterruptResponse{}, err
 		}
 		if terminal {
+			// The cancelled turn has unwound, so nothing holds the attention
+			// rail's lock across an append pair anymore — same rule as the
+			// park below.
+			s.parkRootDelegateAttention()
 			s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 			return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
 		}
 	}
+	// The Stop is accepted and its cancelled turn has unwound: park the
+	// attention rail with the queue and steering holds this acceptance wrote,
+	// so the delegate deliveries it stops stay stopped. attentionMu may not be
+	// taken before cancelAndWait on this path: a turn blocked in its
+	// steering-append pair holds attentionMu across the write
+	// (appendTurnAfterTranscriptWrite's contract), so an earlier take
+	// deadlocks exactly when the turn's own unblocking waits on this Stop's
+	// cancelAndWait. A paced retry the unwound turn's failure path armed in
+	// the window before this park is cancelled by the park's generation bump.
+	s.parkRootDelegateAttention()
 	current := s.clientMutations.snapshot().Journal[params.ClientMutationID]
 	if current.OperationState == clientMutationOperationTerminal {
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)

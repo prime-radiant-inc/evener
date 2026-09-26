@@ -715,7 +715,10 @@ func (s *Session) armRootDelegateAttention(attentionID string) {
 		s.rootAttentionWakeIDs = make(map[string]struct{})
 	}
 	s.rootAttentionWakeIDs[attentionID] = struct{}{}
-	shouldWake := !s.rootAttentionWake
+	// A parked rail caches but stays asleep: the Stop that parked it owns
+	// the next wake, and unparkRootDelegateAttention re-arms everything
+	// cached here at re-engagement.
+	shouldWake := !s.rootAttentionWake && !s.rootAttentionParked
 	if shouldWake {
 		s.rootAttentionWake = true
 	}
@@ -804,7 +807,30 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	// skips the notification rung right after a notification turn, so the
 	// flagged wake alone can strand the item. The retry owns the next wake.
 	s.rootAttentionWake = false
-	s.scheduleRootAttentionRetryLocked()
+	// A PERMANENT provider failure — a 401 from a dead credential, a
+	// request the provider will refuse every time — cannot be retried into
+	// success, and the paced retry never gives up on its own: re-arming it
+	// against one is the livelock, every firing another doomed turn on the
+	// wire. The IDs stay pending and cached; they ride the next genuine
+	// wake — a user message, a fresh delegate event, re-engagement after a
+	// Stop.
+	//
+	// A cancelled turn (context.Canceled) keeps the retry. The rail's wake
+	// is not a re-request of the same call, it is the delivery-liveness
+	// chain the retirement machinery pins: a cancelled attention turn still
+	// owes its delivery. A user's Stop needs no help from this branch either
+	// — the park the accepted Stop takes cancels whatever the unwinding
+	// turn armed. llm.Classify answers the transport's question (must the
+	// same request be re-issued?); the carve-out is the rail's own.
+	//
+	// Transient failures keep the retry, which is their delivery
+	// guarantee, and a resolution failure with no turn error is a storage
+	// flap, retryable by nature.
+	if turnErr != nil && !errors.Is(turnErr, context.Canceled) && llm.Classify(turnErr) == llm.ErrorClassPermanent {
+		s.resetRootAttentionRetryLocked()
+	} else {
+		s.scheduleRootAttentionRetryLocked()
+	}
 	s.attentionMu.Unlock()
 	return resolutionErr
 }
@@ -933,7 +959,7 @@ func (s *Session) beginAttentionCallback() (func(), error) {
 }
 
 func (s *Session) scheduleRootAttentionRetryLocked() {
-	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
+	if s.rootAttentionRetry.active || s.rootAttentionWake || s.rootAttentionParked || len(s.rootAttentionWakeIDs) == 0 {
 		return
 	}
 	delay := s.rootAttentionRetry.delay
@@ -990,6 +1016,46 @@ func (s *Session) resetRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	s.rootAttentionRetry.active = false
 	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+}
+
+// parkRootDelegateAttention parks the root attention rail when a Stop is
+// accepted, mirroring the queue and steering holds that Stop parks. The wake
+// is cleared and any paced retry cancelled; until the user re-engages,
+// nothing on this rail may wake the session. Pending IDs are never dropped —
+// they stay cached for unparkRootDelegateAttention to re-arm.
+func (s *Session) parkRootDelegateAttention() {
+	s.attentionMu.Lock()
+	s.rootAttentionParked = true
+	s.rootAttentionWake = false
+	s.resetRootAttentionRetryLocked()
+	s.attentionMu.Unlock()
+}
+
+// unparkRootDelegateAttention releases the rail a Stop parked, at the same
+// re-engagement that releases QueueHeld (turn/start, turn/queue, drain,
+// promote). Deferred, not dropped: pending IDs re-arm the wake so a
+// notification turn delivers them after the user's own.
+func (s *Session) unparkRootDelegateAttention() {
+	s.attentionMu.Lock()
+	s.rootAttentionParked = false
+	shouldWake := len(s.rootAttentionWakeIDs) != 0 && !s.rootAttentionWake
+	if shouldWake {
+		s.rootAttentionWake = true
+	}
+	s.attentionMu.Unlock()
+	if shouldWake {
+		s.notify()
+	}
+}
+
+// rootAttentionRailParked reports whether an accepted Stop has parked the
+// attention rail; the notification admission stands an attention-only wake
+// down while it holds.
+func (s *Session) rootAttentionRailParked() bool {
+	s.attentionMu.Lock()
+	parked := s.rootAttentionParked
+	s.attentionMu.Unlock()
+	return parked
 }
 
 func (s *Session) scheduleDelegateAttentionArmRetryLocked() {

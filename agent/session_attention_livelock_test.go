@@ -1,0 +1,291 @@
+package agent
+
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
+)
+
+// The livelock this file pins was reported against a live session: once its
+// provider started returning 401, the session ran turn after turn of
+// identical failures (turns 1414-1479 in the report, one per paced-retry
+// firing), and the Stop button could not end it. Root cause: a failed
+// root-delegate-attention notification turn keeps its transcript-owned IDs
+// pending and re-arms scheduleRootAttentionRetryLocked
+// (finishRootDelegateAttentionTurn in session_attention.go), which doubles
+// up to a maximum delay and then fires forever — and the interrupt path
+// parks the queue and the steering rail but nothing reaches the attention
+// rail, so every firing starts a fresh notification turn the user already
+// asked to stop. Each firing is a full turn on the wire, which is what kept
+// stealing the input panel's focus.
+//
+// The fix contract these tests pin, in order:
+//
+//  1. A PERMANENT provider failure (401) must not re-arm the paced retry.
+//     The IDs stay pending and cached — deferred, not dropped — and ride
+//     the next genuine wake: a user message, a fresh delegate event,
+//     re-engagement after a Stop. A cancelled turn keeps the retry (the
+//     retirement family pins that contract); a Stop's own park is what
+//     keeps a stopped session stopped.
+//  2. A TRANSIENT failure keeps the paced retry. That retry is the delivery
+//     guarantee for attention, and the permanent rule must not eat it.
+//  3. A Stop parks the attention rail exactly as it parks the queue and the
+//     steering: the paced retry cancels, a fresh arm caches its ID without
+//     waking the session, a straggler wake stands down without a model turn,
+//     and re-engagement (turn/start) re-arms the deferred IDs.
+//
+// The tests drive the real durable arm path (appendDelegateNotificationDurably
+// + armDelegateAttention), the real turn path (ProcessInputKind with
+// EntryNotification), and the real interrupt path
+// (InterruptClientMutation), with only the LLM boundary scripted.
+
+// newAttentionLivelockSession builds a session whose "openai" provider fails
+// every stream with streamErr, on a fake clock, with a counted notify func.
+// It returns the adapter so a test can count model calls. No serve loop is
+// started: turns are driven by hand, so nothing runs behind the test's back.
+func newAttentionLivelockSession(t *testing.T, streamErr error) (*Session, *agenttest.FakeClock, *atomic.Int64, *streamingAdapter) {
+	t.Helper()
+	dir := t.TempDir()
+	adapter := &streamingAdapter{name: "openai", streamErr: streamErr}
+	c := llm.NewClient()
+	c.Register(adapter)
+	// MaxRetries 0 keeps the transport's own retry out of the picture: what
+	// these tests measure is the attention rail's paced retry, not the
+	// provider retry chain beneath it.
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	clk := agenttest.NewFakeClock()
+	sess.clock = clk
+	t.Cleanup(func() { sess.Close() })
+	var notifies atomic.Int64
+	sess.SetNotifyFunc(func() { notifies.Add(1) })
+	return sess, clk, &notifies, adapter
+}
+
+// armOneRootAttention appends a real durable delegate notification and arms
+// it, the way a child delegate's terminal notification does.
+func armOneRootAttention(t *testing.T, s *Session, delegateID, attentionID string) {
+	t.Helper()
+	content := "<delegate-notification delegate_id=\"" + delegateID + "\">terminal_error</delegate-notification>"
+	if _, err := s.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append attention %s: %v", attentionID, err)
+	}
+	if err := s.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm attention %s: %v", attentionID, err)
+	}
+}
+
+// attentionRailState snapshots the wake flag, the paced retry's armed flag,
+// and the cached pending ID count under one lock acquisition.
+func attentionRailState(s *Session) (wake, retryActive bool, pending int) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.rootAttentionWake, s.rootAttentionRetry.active, len(s.rootAttentionWakeIDs)
+}
+
+// A permanent provider failure must not re-arm the paced retry. A 401 cannot
+// be retried into success; every firing runs another doomed turn that
+// steals focus and burns quota, and nothing ever gives up. The pending IDs
+// stay cached for the next genuine wake.
+func TestRootAttentionPermanentFailureDoesNotReArmThePacedRetry(t *testing.T) {
+	s, clk, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
+	serveSession(t, s)
+
+	armOneRootAttention(t, s, "dlg_401", "delegate:dlg_401/delivery/1")
+	baseline := notifies.Load()
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the 401 notification turn unexpectedly succeeded")
+	}
+
+	// The turn consumed the wake; a permanent failure must leave the paced
+	// retry disarmed too.
+	wake, retryActive, pending := attentionRailState(s)
+	if retryActive {
+		t.Fatal("a permanent 401 left the paced retry armed; it can never succeed, and every firing runs another doomed turn")
+	}
+	if wake {
+		t.Fatal("a permanent 401 re-armed the attention wake")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids = %d, want 1 (deferred, not dropped)", pending)
+	}
+
+	// Nothing fires later either: advancing far past the retry's ceiling
+	// must not produce another wake.
+	clk.Advance(3 * jobNotificationRetryMaxDelay)
+	clk.Drain()
+	wake, retryActive, pending = attentionRailState(s)
+	if retryActive {
+		t.Fatal("the paced retry rearmed itself after a permanent failure")
+	}
+	if wake {
+		t.Fatal("a timer fired after a permanent failure and re-armed the attention wake")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after advancing = %d, want 1", pending)
+	}
+	if got := notifies.Load(); got != baseline {
+		t.Fatalf("notifies after a permanent failure = %d, want the baseline %d (no retry wake may fire)", got, baseline)
+	}
+}
+
+// A transient provider failure keeps the paced retry: that retry is the
+// delivery guarantee for attention — the item stays pending and the rail asks
+// for another wake. This pins the blast radius of the permanent-failure rule.
+func TestRootAttentionTransientFailureKeepsThePacedRetry(t *testing.T) {
+	s, clk, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	serveSession(t, s)
+
+	armOneRootAttention(t, s, "dlg_503", "delegate:dlg_503/delivery/1")
+	baseline := notifies.Load()
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the 503 notification turn unexpectedly succeeded")
+	}
+
+	_, retryActive, pending := attentionRailState(s)
+	if !retryActive {
+		t.Fatal("a transient 503 did not arm the paced retry; the delivery guarantee for transient failures regressed")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids = %d, want 1", pending)
+	}
+
+	// The retry fires and asks for another wake.
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	wake, retryActive, pending := attentionRailState(s)
+	if retryActive {
+		t.Fatal("the paced retry is still armed after firing; it double-fires")
+	}
+	if !wake {
+		t.Fatal("the paced retry fired without setting the attention wake")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the retry fired = %d, want 1", pending)
+	}
+	if got := notifies.Load(); got == baseline {
+		t.Fatal("the paced retry fired without asking for another wake; the delivery is stranded")
+	}
+}
+
+// A Stop must reach the attention rail the same way it reaches the queue and
+// the steering: park it. The paced retry the Stop interrupts cancels, a
+// straggler wake stands down without a model turn, a fresh child
+// notification caches its ID without waking the session, and the deferred
+// IDs re-arm only when the user re-engages.
+func TestStopParksRootDelegateAttentionUntilReEngagement(t *testing.T) {
+	s, clk, notifies, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	// A queued message is what makes an idle-but-pending session report
+	// processing, so the Stop is accepted (the shape pinned by
+	// TestStopIsHonestAboutAQueuedMessage).
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+
+	// The livelock's own state: pending attention plus a transient failure
+	// that left the paced retry armed.
+	armOneRootAttention(t, s, "dlg_park", "delegate:dlg_park/delivery/1")
+	baseline := notifies.Load()
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the 503 notification turn unexpectedly succeeded")
+	}
+	if _, retryActive, _ := attentionRailState(s); !retryActive {
+		t.Fatal("this test is not in the state it means to be: the transient failure did not arm the paced retry")
+	}
+
+	// Stop.
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-while-attention-pending",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	wake, retryActive, pending := attentionRailState(s)
+	if retryActive {
+		t.Fatal("the accepted Stop left the paced retry armed; it fires after the fence and starts another turn the user stopped")
+	}
+	if wake {
+		t.Fatal("the accepted Stop left the attention wake set")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the stop = %d, want 1 (a Stop defers deliveries, it does not drop them)", pending)
+	}
+
+	// The cancelled retry's stale firing wakes nothing.
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	wake, _, _ = attentionRailState(s)
+	if wake {
+		t.Fatal("the cancelled paced retry fired after the Stop and re-armed the attention wake")
+	}
+	if got := notifies.Load(); got != baseline {
+		t.Fatalf("notifies after the Stop = %d, want the baseline %d (nothing may wake a stopped session)", got, baseline)
+	}
+
+	// A straggler wake — one already in the notify slot when the Stop
+	// landed — stands down rather than running a model turn.
+	_, streamCallsBefore := adapter.Counts()
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("straggler EntryNotification while parked: %v", err)
+	}
+	_, streamCallsAfter := adapter.Counts()
+	if streamCallsAfter != streamCallsBefore {
+		t.Fatalf("a straggler wake while parked ran %d model call(s) the user stopped", streamCallsAfter-streamCallsBefore)
+	}
+	wake, _, pending = attentionRailState(s)
+	if wake {
+		t.Fatal("the straggler wake re-armed the attention rail while parked")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the straggler = %d, want 1", pending)
+	}
+
+	// A fresh child notification caches its ID but may not wake the session.
+	armOneRootAttention(t, s, "dlg_park", "delegate:dlg_park/delivery/2")
+	wake, _, pending = attentionRailState(s)
+	if wake {
+		t.Fatal("a fresh delegate notification woke a stopped session")
+	}
+	if pending != 2 {
+		t.Fatalf("pending attention ids after the fresh notification = %d, want 2 (the ID must still be cached)", pending)
+	}
+	if got := notifies.Load(); got != baseline {
+		t.Fatalf("notifies after the fresh notification = %d, want the baseline %d (a stopped session stays asleep)", got, baseline)
+	}
+
+	// Re-engagement unparks: turn/start releases the rail the same moment
+	// it releases QueueHeld, and the deferred attention re-arms.
+	beforeReEngage := notifies.Load()
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-after-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the user re-engages"}},
+	}); err != nil {
+		t.Fatalf("turn/start after the stop: %v", err)
+	}
+	wake, _, pending = attentionRailState(s)
+	if !wake {
+		t.Fatal("re-engagement did not re-arm the deferred attention wake; the pending deliveries are stranded")
+	}
+	if pending != 2 {
+		t.Fatalf("pending attention ids after re-engagement = %d, want 2", pending)
+	}
+	if got := notifies.Load(); got == beforeReEngage {
+		t.Fatal("re-engagement re-armed the wake without asking for a notification turn to deliver it")
+	}
+}

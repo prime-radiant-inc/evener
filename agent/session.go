@@ -906,6 +906,17 @@ type Session struct {
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
+	// rootAttentionParked is the attention rail's QueueHeld: an accepted
+	// Stop sets it beside the queue and steering holds that Stop parks, and
+	// the same re-engagement points clear it. While it holds, fresh arms
+	// cache their IDs but neither set the wake flag nor notify, the paced
+	// retry stays cancelled, and an attention-only notification turn stands
+	// down — the deliveries the user stopped wait for the user, not the
+	// clock. In-memory by design, like the wake flag it parks: restart
+	// rebuilds the rail from the transcript fold, and the permanent-failure
+	// rule in finishRootDelegateAttentionTurn bounds what a restart can
+	// re-drive.
+	rootAttentionParked bool
 	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
 	// lives on stageRootDelegateAttentionCoverage and
