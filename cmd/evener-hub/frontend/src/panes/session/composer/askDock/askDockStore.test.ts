@@ -58,7 +58,14 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 function readResponse(ref: string): ThreadReadResponse {
-  return { thread: testThread(ref) };
+  // Establishes the versioned-history baseline (bootGeneration/epoch/
+  // snapshot.incarnation) every history/updated push in this file's fixtures
+  // carries ("1"/1/"inc-1"): a read that omits `snapshot` hydrates a
+  // pre-v6, unversioned model instead, and the first live push then reads as
+  // an incarnation CHANGE from the (unset) baseline — classifySignal calls
+  // that "invalidate", not "apply", so the pushed item never merges and no
+  // batch is ever seen.
+  return { thread: testThread(ref), bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 0 } };
 }
 
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
@@ -97,7 +104,7 @@ function startTurn(fake: FakeClient, ref: string, turnId: string): void {
     method: "history/updated",
     params: {
       threadId: `thr_${ref}`,
-      ref: "ref-1",
+      ref,
       bootGeneration: "1",
       epoch: 1,
       snapshot: { incarnation: "inc-1", length: 1 },
