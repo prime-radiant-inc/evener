@@ -68,8 +68,7 @@ func assertFixtureNamesEveryField(t *testing.T, path string, typ reflect.Type, o
 		t.Fatalf("%s: not an object: %v", path, err)
 	}
 	var want []string
-	for i := range typ.NumField() {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if name == "" || name == "-" {
 			continue
