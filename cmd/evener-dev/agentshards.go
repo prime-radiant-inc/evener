@@ -807,6 +807,19 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
+		if start == i || surveyFailureHasMismatchedOwner(lines, i, emitted) {
+			if expanded, ok := expandSurveyFailure(lines, i, emitted); ok {
+				for _, excerpt := range expanded {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for _, excerpt := range lines[i+1 : end] {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				emitted = end
+				i = end
+				continue
+			}
+		}
 		for _, excerpt := range lines[start:end] {
 			_, _ = fmt.Fprintln(w, excerpt)
 		}
@@ -823,11 +836,156 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	}
 }
 
+// surveyFailureName recovers the test name from the framing line the testing
+// package emits. The name lets a failure reach back to its own run, rather than
+// treating a completed subtest or an interleaved parallel test as the parent's
+// boundary.
+func surveyFailureName(line string) string {
+	name := strings.TrimPrefix(line, "--- FAIL:")
+	if end := strings.Index(name, " ("); end >= 0 {
+		name = name[:end]
+	}
+	return strings.TrimSpace(name)
+}
+
+// surveyFailureHasMismatchedOwner reports whether the nearest ownership frame
+// before a failure belongs to another test. That frame can be a hard excerpt
+// boundary, leaving the parent's assertion outside the ordinary proximity
+// window even though owner-aware expansion can still recover it.
+func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return false
+	}
+	for index := marker - 1; index >= emitted; index-- {
+		if owner := surveyPhaseOwner(lines[index]); owner != "" {
+			return owner != name && !strings.HasPrefix(owner, name+"/")
+		}
+	}
+	return false
+}
+
+// surveyDiagnosticLine matches the source location that testing prefixes on
+// t.Error/t.Fatal output. These lines are the useful part of a parent failure
+// even when the test framework has put many subtest frames between them and
+// the parent's verdict.
+var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.go:[0-9]+:`)
+
+// expandSurveyFailure recovers a bounded set of a parent's output when the
+// nearby excerpt contains only its verdict or a different test owns the
+// nearest context. Ordinary blocks retain their established context (including
+// nested failure markers). Source diagnostics are associated with the most
+// recent go test RUN/CONT/NAME frame; a completed child or sibling returns
+// ownership to its parent. Parent-owned diagnostics are preferred over nested
+// or sibling diagnostics. The result is still no larger than one block's
+// existing before bound plus its marker.
+func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return nil, false
+	}
+	run := -1
+	for i := marker - 1; i >= emitted; i-- {
+		if lines[i] == "=== RUN   "+name {
+			run = i
+			break
+		}
+	}
+	if run < 0 {
+		return nil, false
+	}
+
+	type candidate struct {
+		index       int
+		line        string
+		diagnostic  bool
+		parentLevel bool
+	}
+	owner := name
+	candidates := make([]candidate, 0, marker-run)
+	for index, line := range lines[run+1 : marker] {
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			owner = frameOwner
+		}
+		trimmed := strings.TrimSpace(line)
+		if surveyTestVerdictLine.MatchString(trimmed) {
+			owner = name
+		}
+		if surveyFrameworkLine(line) || trimmed == "" {
+			continue
+		}
+		diagnostic := surveyDiagnosticLine.MatchString(line)
+		candidates = append(candidates, candidate{
+			index:       index,
+			line:        line,
+			diagnostic:  diagnostic,
+			parentLevel: owner == name,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	const maxExpandedLines = surveyContextBefore
+	keep := make(map[int]bool, min(len(candidates), maxExpandedLines))
+	selectedCount := 0
+	for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+		candidate := candidates[i]
+		if candidate.diagnostic && candidate.parentLevel {
+			keep[candidate.index] = true
+			selectedCount++
+		}
+	}
+	for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+		candidate := candidates[i]
+		if candidate.diagnostic && !keep[candidate.index] {
+			keep[candidate.index] = true
+			selectedCount++
+		}
+	}
+	if selectedCount < maxExpandedLines {
+		for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+			candidate := candidates[i]
+			if candidate.diagnostic {
+				continue
+			}
+			keep[candidate.index] = true
+			selectedCount++
+		}
+	}
+	selected := make([]candidate, 0, selectedCount)
+	for _, candidate := range candidates {
+		if keep[candidate.index] {
+			selected = append(selected, candidate)
+		}
+	}
+
+	result := make([]string, 0, len(selected)+1)
+	for _, candidate := range selected {
+		result = append(result, candidate.line)
+	}
+	result = append(result, lines[marker])
+	return result, true
+}
+
+// surveyPhaseOwner extracts the test name from the testing package's RUN,
+// CONT, or NAME frame. Fields are joined rather than taking fields[2] so
+// subtest names containing spaces remain associated with the right owner.
+func surveyPhaseOwner(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "===" ||
+		(fields[1] != "RUN" && fields[1] != "CONT" && fields[1] != "NAME") {
+		return ""
+	}
+	return strings.Join(fields[2:], " ")
+}
+
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
-// a test starts, and `PAUSE` and `CONT` around a parallel test's wait. The
-// space after the directive closes it off from the test name, so a test's own
-// line that merely begins with one of the words (`=== PAUSED ...`) is output.
-var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT) `)
+// a test starts, `PAUSE` and `CONT` around a parallel test's wait, and `NAME`
+// when testing switches output ownership. The space after the directive
+// closes it off from the test name, so a test's own line that merely begins
+// with one of the words (`=== PAUSED ...`) is output.
+var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT|NAME) `)
 
 // surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
 // closed by the colon `go test -v` always writes. Without the colon a line is
@@ -854,7 +1012,7 @@ var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok 
 //
 // Each form is matched through the delimiter the toolchain always writes, not
 // a prefix it merely starts with. A phase line is `=== ` plus `RUN`, `PAUSE`,
-// or `CONT` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
+// `CONT`, or `NAME` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
 // `PASS:`, `FAIL:`, or `SKIP:` (`surveyTestVerdictLine`); and the bare binary
 // verdict plus `go test`'s package verdict and summary come from
 // `surveyVerdictLine`. The variable tail of each — the test name and time, the
