@@ -31,6 +31,13 @@ type ToolCallRegistry struct {
 	Names             map[string]string
 	CommRawArgs       map[string]string
 	LastAssistantText string
+	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
+	// set LastAssistantText. The healed-communicate echo check scopes by turn
+	// to mirror the live projector's matchesLastAssistantMessage: an echo
+	// only counts within the turn that showed the text. Set alongside
+	// LastAssistantText (only when text is non-empty), and persisted in the
+	// round-8 StartsGroup snapshot the same way.
+	LastAssistantTurnID string
 }
 
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
@@ -674,7 +681,16 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				items = append(items, item)
 			}
 		}
-		reg.LastAssistantText = lastAssistantText
+		// Only record non-empty assistant text, mirroring the live projector's
+		// recordAssistantMessage (which returns early on empty text). A text-less
+		// ASSISTANT record must not zero LastAssistantText: doing so lets a later
+		// healed communicate echo the text of a PREVIOUS turn and renders a
+		// duplicate agentMessage on reload that live suppressed. The turnID scopes
+		// the echo check below so a cross-turn message is still rendered.
+		if lastAssistantText != "" {
+			reg.LastAssistantText = lastAssistantText
+			reg.LastAssistantTurnID = turnID
+		}
 		return items
 	case schema.TurnTool, schema.TurnToolResults:
 		var items []appwire.ThreadItem
@@ -726,7 +742,13 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
 						repaired := argrepair.RepairJSON([]byte(rawArgs))
 						normalized := NormalizeCommunicateArguments(repaired)
-						if msg := CommunicateMessageFromArguments(normalized); msg != "" && !EchoesAssistantText(reg.LastAssistantText, msg) {
+						// Scope the echo check to the logical turn that
+						// showed the text, mirroring the live projector's
+						// matchesLastAssistantMessage: an echo only counts
+						// within the turn it repeats. A cross-turn healed
+						// communicate with the same text is a genuine
+						// message, not an echo.
+						if msg := CommunicateMessageFromArguments(normalized); msg != "" && (turnID != reg.LastAssistantTurnID || !EchoesAssistantText(reg.LastAssistantText, msg)) {
 							items = append(items, appwire.ThreadItem{
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),

@@ -967,6 +967,14 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 				// {"accepted":...} ack) so it does not surface as an orphan.
 				idx.consumed[p.ToolCall.ID] = true
 				paired, hasResult := idx.byCallID[p.ToolCall.ID]
+				// A runtime failure (IsError=true, PrevalOnly=false) executed
+				// and returned an error; its raw bytes are not the delivered
+				// message. The app thread (apptranscript.go:714-742) renders
+				// nothing for runtime failures — only PrevalOnly rejections
+				// surface raw bytes. Skip the render so the markdown matches.
+				if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
+					continue
+				}
 				writeResultToolMessage(b, p.ToolCall, hasResult && !paired.result.IsError)
 				continue
 			}
