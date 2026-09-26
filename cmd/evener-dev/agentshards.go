@@ -854,9 +854,9 @@ func surveyFailureName(line string) string {
 }
 
 // surveyFailureHasMismatchedOwner reports whether the nearest ownership frame
-// before a failure belongs to another test. That frame can be a hard excerpt
-// boundary, leaving the parent's assertion outside the ordinary proximity
-// window even though owner-aware expansion can still recover it.
+// before a failure differs from the failing test itself. Descendant frames
+// intentionally count as mismatches: their ordinary tail can hide the
+// parent's diagnostic window, so expansion must rank the combined owners.
 func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
@@ -879,14 +879,16 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict or a different test owns the
 // nearest context. The lines from ordinaryStart up to marker are the
-// already-selected ordinary context. When a parent-owned diagnostic exists it
-// is selected first; otherwise the ordinary non-diagnostic tail is preferred so
-// multiline output remains intact. Source diagnostics are associated with the
-// most recent go test RUN/CONT/NAME frame; a completed child or sibling returns
-// ownership to its parent. Parent-owned diagnostics are preferred over nested
-// or sibling diagnostics. If ordinary context exists, expansion requires a
-// parent-owned source diagnostic; an empty ordinary window can still expand
-// child output.
+// already-selected ordinary context. Owned ordinary lines from the failing
+// test or a descendant are selected first, reserving one slot for the newest
+// parent-owned diagnostic when one exists; remaining candidates from those
+// owners then fill the bound. An empty ordinary window may expand child
+// diagnostics without that reservation. Source diagnostics are associated
+// with the most recent go test RUN/CONT/NAME frame; a completed child or
+// sibling returns ownership to its parent. If ordinary context exists,
+// expansion requires a parent-owned source diagnostic. When owned ordinary
+// lines overflow their budget, the newest budget-sized tail is kept
+// contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
 // marker.
 func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]string, bool) {
@@ -961,9 +963,11 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	if parentDiagnostic {
 		ordinaryBudget--
 	}
+	ownedByFailure := func(candidate candidate) bool {
+		return candidate.owner == name || strings.HasPrefix(candidate.owner, name+"/")
+	}
 	ordinaryOwned := func(candidate candidate) bool {
-		return candidate.ordinary &&
-			(candidate.owner == name || strings.HasPrefix(candidate.owner, name+"/"))
+		return candidate.ordinary && ownedByFailure(candidate)
 	}
 	ordinaryCount := 0
 	for _, candidate := range candidates {
@@ -979,13 +983,6 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 			}
 		}
 	} else {
-		for index, candidate := range candidates {
-			if ordinaryOwned(candidate) {
-				keep[index] = true
-				selectedCount++
-				break
-			}
-		}
 		selectNewest(ordinaryBudget, func(candidate candidate) bool {
 			return ordinaryOwned(candidate)
 		})
@@ -996,10 +993,10 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 		})
 	}
 	selectNewest(maxExpandedLines, func(candidate candidate) bool {
-		return candidate.diagnostic
+		return candidate.diagnostic && ownedByFailure(candidate)
 	})
 	selectNewest(maxExpandedLines, func(candidate candidate) bool {
-		return !candidate.diagnostic
+		return !candidate.diagnostic && ownedByFailure(candidate)
 	})
 	selected := make([]candidate, 0, selectedCount)
 	for index, candidate := range candidates {
