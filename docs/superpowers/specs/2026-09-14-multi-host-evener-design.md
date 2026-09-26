@@ -15,6 +15,15 @@ availability, while one hub presents the fleet. The unit of remoteness is the
 
 These are Jesse's calls, recorded so the specs do not relitigate them.
 
+- **The ad hoc restart path is kept (2026-09-26).** A hub with **no supervisor**,
+  and a detected launchd supervisor whose restart command **cannot be built
+  safely**, restart through the **guarded ad hoc path**; the
+  identification/signal PID-reuse window is accepted, and the label is still
+  never interpolated into the remote shell. This reverses the refusal prose in
+  this document and in `2026-09-14-multi-host-04-ssh-connection-manager.md` —
+  see that spec's partial-supersession note. The acceptance-criteria source is
+  component 04, not this summary.
+
 - **Topology**: any hub can act as a controller for hosts it can see. A static
   per-hub host list in config. No multi-master, no leader election, no shared
   state. A hub can also be a host. **Cycle rejection in v1 does not run from the
@@ -429,8 +438,9 @@ implementing — several have landed without their entry being re-marked.
   `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
   `evener`/`hub` is not a match. Several matches refuse with `ErrRestart` (no
   signal, no relaunch); when none matches it is the supervisorless branch, whose
-  only launch is the cold-bootstrap **start** (a supervisorless *restart*
-  refuses the same way — component 04, §"Stop/restart mechanics" check 5);
+  only launch is the cold-bootstrap **start** (a supervisorless *restart* ran
+  the guarded ad hoc path again from 2026-09-26 — see §2 Decisions; component
+  04, §"Stop/restart mechanics" check 5);
   **a candidate hub definition whose effective address cannot be
   resolved refuses with `ErrRestart` and starts nothing** rather than risking a
   duplicate, unless trusted explicit supervisor metadata recorded in the host
@@ -522,9 +532,11 @@ implementing — several have landed without their entry being re-marked.
   specifies, installs, and invokes no host-side helper that could hold the pin,
   so the guarantee is **not implementable through the described interfaces on
   any platform** — a supervisorless hub, Linux included, has no way to pin the
-  identified process across the signal and must refuse `ErrRestart` with no
+  identified process across the signal and had to refuse `ErrRestart` with no
   signal (never the bare unguarded `kill`, and never a promise of a pidfd path
-  it cannot execute). A restart-capable deployment must therefore be
+  it cannot execute). From 2026-09-26 the guarded ad hoc restart is kept again
+  and the identification/signal window is accepted — see §2 Decisions. A
+  restart-capable deployment must therefore be
   **supervised** (systemd unit `systemctl [--user] restart`; launchd
   `kickstart -k` pins by label, not PID), or wait for a host-side atomic-signal
   helper that is specified, provisioned by the installer, and invoked over the
@@ -567,9 +579,12 @@ implementing — several have landed without their entry being re-marked.
   ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`), never
   a fall-through to
   the ad hoc launch, and the same refusal applies when an identified launchd
-  label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
+  label fails the bare-safe gate instead of the old ad hoc fallback (reversed
+  2026-09-26 — see §2 Decisions: the unsafe label falls through to the guarded
+  ad hoc path again, and never reaches the shell). The ad hoc
   launch is reached only when **no** candidate definition matches, and only on
-  the cold-bootstrap **start** — a supervisorless *restart* refuses. Scope:
+  the cold-bootstrap **start** — a supervisorless *restart* runs the guarded ad
+  hoc path again (reversed 2026-09-26 — see §2 Decisions). Scope:
   `sshconn/version.go` (`pickSupervisor`, `detectSupervisor`,
   `detectSupervisorsFrom`, the restart path's label gate), `sshconn/version_test.go`.
   Mirrors component-04 §"Stop/restart mechanics", its supervisor test case, and
