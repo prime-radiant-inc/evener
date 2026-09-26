@@ -160,7 +160,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         marginBottom: 16,
       },
       taskList: {
-        checkedColor: colors.accent,
+        checkedColor: colors.palette.accentFill,
         checkedTextColor: colors.text,
         borderColor: colors.secondary,
       },
@@ -176,6 +176,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
     colors.accent,
     colors.secondary,
     colors.palette.scheme,
+    colors.palette.accentFill,
   ]);
   return (
     <EnrichedMarkdownText
