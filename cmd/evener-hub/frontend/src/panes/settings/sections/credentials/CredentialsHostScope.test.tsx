@@ -557,6 +557,34 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
   expect(fake.calls.some((call) => call.method === "evener/auth/device/poll")).toBe(false);
 });
 
+test("a remote device flow stops polling on success and reports it on the host", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on(
+    "evener/host/request",
+    codexHostRequest(() => REMOTE_POLL_AUTHORIZED),
+  );
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = setupUser();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  // Success closes the dialog - once it has opened, or its absence proves
+  // nothing - and names the instance and the host it signed in on (see
+  // oauthDialogs.tsx's DeviceCodeDialog).
+  expect(await screen.findByRole("dialog", { name: "Sign in to codex on beta" })).toBeTruthy();
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 3000 });
+  expect(getToasts().some((toast) => toast.text === "Signed in to codex on beta")).toBe(true);
+
+  const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
+  await act(() => vi.advanceTimersByTimeAsync(1500));
+  expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toHaveLength(polls);
+});
+
 test("a host that offers no device flow surfaces a named failure instead of a dead end", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
