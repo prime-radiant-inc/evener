@@ -37,6 +37,7 @@ it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font"
 	const s = markdownStyle("Hello");
 	expect(s.paragraph).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26, color: "#252521" });
 	expect(s.list).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
+	expect(s.list).toMatchObject({ markerFontWeight: "normal" });
 	expect(s.h1).toMatchObject({ fontSize: 20, fontWeight: "600" });
 	expect(s.h1.fontFamily).toBeUndefined();
 	expect(s.h2).toMatchObject({ fontSize: 17, fontWeight: "600" });

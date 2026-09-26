@@ -180,6 +180,7 @@ export const fonts = {
 	serif: "SourceSerif4-Regular",
 	serifItalic: "SourceSerif4-Italic",
 	serifSemibold: "SourceSerif4-SemiBold",
+	serifSemiboldItalic: "SourceSerif4-SemiBoldItalic",
 	mono: "Menlo",
 } as const;
 

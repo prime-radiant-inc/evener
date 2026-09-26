@@ -50,7 +50,8 @@
           "fonts": [
             "./node_modules/@expo-google-fonts/source-serif-4/400Regular/SourceSerif4_400Regular.ttf",
             "./node_modules/@expo-google-fonts/source-serif-4/400Regular_Italic/SourceSerif4_400Regular_Italic.ttf",
-            "./node_modules/@expo-google-fonts/source-serif-4/600SemiBold/SourceSerif4_600SemiBold.ttf"
+            "./node_modules/@expo-google-fonts/source-serif-4/600SemiBold/SourceSerif4_600SemiBold.ttf",
+            "./node_modules/@expo-google-fonts/source-serif-4/600SemiBold_Italic/SourceSerif4_600SemiBold_Italic.ttf"
           ]
         }
       ],

@@ -1,6 +1,6 @@
 import * as Clipboard from "expo-clipboard";
 import { memo, useMemo } from "react";
-import { AccessibilityInfo, Alert, Linking } from "react-native";
+import { AccessibilityInfo, Alert, Linking, Platform } from "react-native";
 import {
   EnrichedMarkdownText,
   type MarkdownStyle,
@@ -95,6 +95,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         ...body,
         bulletColor: colors.secondary,
         markerColor: colors.secondary,
+        markerFontWeight: "normal",
         gapWidth: 8,
         itemSpacing: 4,
       },
@@ -112,7 +113,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         backgroundColor: colors.surface,
         borderColor: colors.border,
         fontSize: 14,
-        fontFamily: fonts.mono,
+        fontFamily: Platform.OS === "ios" ? fonts.mono : "monospace",
       },
       codeBlock: {
         fontSize: 14,
@@ -124,7 +125,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         padding: 12,
         marginTop: 8,
         marginBottom: 12,
-        fontFamily: fonts.mono,
+        fontFamily: Platform.OS === "ios" ? fonts.mono : "monospace",
         syntaxColors: {
           keyword: colors.accent,
           operator: colors.text,
