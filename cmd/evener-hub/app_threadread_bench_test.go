@@ -107,11 +107,10 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 }
 
 // BenchmarkPastThreadReadResponseCold times a past session's initial
-// thread/read with a cold transcript cache and no on-disk turn index — the
-// first read after hub start or LRU eviction. Each iteration re-creates the
-// in-memory cache and removes the sidecar files the bounded reader persists,
-// so every pass pays the full cold path: turn-index build, derived usage scan,
-// derived failure scan, and projection of the latest 40 turns.
+// thread/read with a cold transcript cache — the first read after hub start
+// or LRU eviction. Each iteration re-creates the in-memory cache, so every
+// pass pays the full cold path: derived usage scan, derived failure scan, and
+// projection of the latest 40 turns.
 func BenchmarkPastThreadReadResponseCold(b *testing.B) {
 	for _, rounds := range []int{4_000, 25_000} {
 		b.Run(fmt.Sprintf("rounds=%d", rounds), func(b *testing.B) {
@@ -119,16 +118,10 @@ func BenchmarkPastThreadReadResponseCold(b *testing.B) {
 			if info, err := os.Stat(path); err == nil {
 				b.Logf("transcript %s: %.1f MB", filepath.Base(path), float64(info.Size())/(1<<20))
 			}
-			sidecars := []string{path + ".appwire-index.json", path + ".appwire-index.json.journal"}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
-				for _, sidecar := range sidecars {
-					if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
-						b.Fatal(err)
-					}
-				}
 				pastTranscriptCache = apptranscript.NewTurnCache()
 				b.StartTimer()
 				response, found, err := pastThreadReadResponse(context.Background(), cfg, params)
