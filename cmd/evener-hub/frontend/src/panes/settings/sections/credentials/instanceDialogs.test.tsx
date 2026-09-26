@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import { enterText } from "../../../../textEntryTestUtils";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
@@ -168,8 +169,8 @@ describe("AddInstanceDialog", () => {
       <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
     );
     await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
-    await user.type(screen.getByLabelText("Name"), "vertex-express");
-    await user.type(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL"), "https://example.test/v1");
+    await enterText(user, screen.getByLabelText("Name"), "vertex-express");
+    await enterText(user, screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL"), "https://example.test/v1");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
@@ -179,7 +180,7 @@ describe("AddInstanceDialog", () => {
     const user = userEvent.setup();
     render(<AddInstanceDialog availableProviders={[BEDROCK, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.selectOptions(screen.getByLabelText("Base provider"), "amazon-bedrock");
-    await user.type(screen.getByLabelText("AWS_REGION"), "us-east-1");
+    await enterText(user, screen.getByLabelText("AWS_REGION"), "us-east-1");
     await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
     expect(screen.queryByLabelText("AWS_REGION")).toBeNull();
     expect((screen.getByLabelText("GOOGLE_VERTEX_PROJECT") as HTMLInputElement).value).toBe("");
@@ -204,7 +205,7 @@ describe("AddInstanceDialog", () => {
     render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
-    await user.type(screen.getByLabelText(/credential header/i), "Authorization=Bearer secret");
+    await enterText(user, screen.getByLabelText(/credential header/i), "Authorization=Bearer secret");
     await user.click(screen.getByRole("button", { name: "Create" }));
     expect(
       screen.getByText("Credential header must reference a $VARIABLE or run a $(command), never a literal secret."),
@@ -228,7 +229,7 @@ describe("AddInstanceDialog", () => {
     render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
-    await user.type(screen.getByLabelText(/credential header/i), "Authorization=Bearer $PORTKEY_KEY");
+    await enterText(user, screen.getByLabelText(/credential header/i), "Authorization=Bearer $PORTKEY_KEY");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
@@ -249,7 +250,7 @@ describe("AddInstanceDialog", () => {
     render(<AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
-    await user.type(screen.getByLabelText(/api key environment variable/i), "PORTKEY_KEY");
+    await enterText(user, screen.getByLabelText(/api key environment variable/i), "PORTKEY_KEY");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
@@ -270,7 +271,7 @@ describe("AddInstanceDialog", () => {
     render(<AddInstanceDialog availableProviders={[VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
     await user.type(screen.getByLabelText("Name"), "vertex");
-    await user.type(screen.getByLabelText("GOOGLE_VERTEX_PROJECT"), "  my-proj  ");
+    await enterText(user, screen.getByLabelText("GOOGLE_VERTEX_PROJECT"), "  my-proj  ");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
@@ -293,7 +294,7 @@ describe("AddInstanceDialog", () => {
     );
     await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
-    await user.type(screen.getByLabelText(/base url/i), "https://x");
+    await enterText(user, screen.getByLabelText(/base url/i), "https://x");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("Created instance work").length).toBeGreaterThan(0);
@@ -894,7 +895,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("API key saved for work").length).toBeGreaterThan(0);
@@ -919,7 +920,7 @@ describe("ApiKeyDialog", () => {
         onSuccess={() => {}}
       />,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     // The listing for this name now carries a different endpoint.
     rerender(
       <ApiKeyDialog
@@ -963,7 +964,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
@@ -998,7 +999,7 @@ describe("ApiKeyDialog", () => {
         onSuccess={onSuccess}
       />,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     // The listing entry this name resolves to gains an endpoint identity while
     // the field holds the secret.
     rerender(
@@ -1018,7 +1019,7 @@ describe("ApiKeyDialog", () => {
 
     // The refusal re-anchored the expectation to the row on screen: the
     // re-typed value saves against the destination the dialog now displays.
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() =>
       expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
@@ -1051,7 +1052,7 @@ describe("ApiKeyDialog", () => {
         onSuccess={() => {}}
       />,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(setKey).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("cannot check this endpoint"));
@@ -1079,7 +1080,7 @@ describe("ApiKeyDialog", () => {
         onSuccess={() => {}}
       />,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(setKey).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("cannot check this endpoint"));
@@ -1108,7 +1109,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
@@ -1130,7 +1131,7 @@ describe("ApiKeyDialog", () => {
         onSuccess={() => {}}
       />,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     // The row loses its endpoint identity while the field holds the secret.
     rerender(
       <ApiKeyDialog
@@ -1174,7 +1175,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     // The listing for this name now carries a different endpoint.
     rerender(
       <>
@@ -1193,7 +1194,7 @@ describe("ApiKeyDialog", () => {
 
     // The error asks for the value again; entering it again saves against the
     // destination the dialog is now showing.
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() =>
       expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
@@ -1247,7 +1248,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     // The refusal is reported as the change it is, never as a save failure: the
@@ -1284,7 +1285,7 @@ describe("ApiKeyDialog", () => {
     // The re-typed value asserts that row's endpoint, so the retry the message
     // asks for saves against the destination the user can review instead of
     // being refused forever against the one that already moved.
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() =>
       expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")[1]?.params).toEqual({
@@ -1327,7 +1328,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("no longer in the provider list"));
@@ -1340,7 +1341,7 @@ describe("ApiKeyDialog", () => {
     // A retry while the row is still gone is answered by the same honest
     // message, and it still asserts the endpoint the user last reviewed rather
     // than saving unverified.
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("no longer in the provider list"));
     expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")[1]?.params).toEqual({
@@ -1397,7 +1398,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     // The write was refused before any RPC reached the replacement connection.
@@ -1429,7 +1430,7 @@ describe("ApiKeyDialog", () => {
     // The re-typed value asserts the endpoint the re-anchor adopted, so the
     // retry the message asks for saves against the destination the user can
     // review instead of being refused against one that is gone.
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await vi.waitFor(() =>
       expect(replacement.calls.filter((call) => call.method === "evener/auth/apiKey/set")[0]?.params).toEqual({
@@ -1466,7 +1467,7 @@ describe("ApiKeyDialog", () => {
         <Toast />
       </>,
     );
-    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
     // Dropped connection during the save: the credential write succeeded, and
     // the follow-up listing read rejecting must not turn it into "Save failed".

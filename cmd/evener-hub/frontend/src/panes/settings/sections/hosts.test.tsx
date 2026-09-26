@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { enterText } from "../../../textEntryTestUtils";
 import { HOST_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
@@ -70,26 +71,6 @@ test("an offline row keeps rendering its retained facts", async () => {
   expect(screen.getByText(/linux\/arm64/)).toBeTruthy();
 });
 
-test("add dialog submits name, address, and key", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("evener/host/list", () => ({ hosts: [] }));
-  fake.on("evener/host/add", () => row({ name: "gamma", address: "g.example", keyPath: "/keys/g" }));
-  render(<HostsSection sectionId="hosts" />);
-  await user.click(await screen.findByRole("button", { name: "Add host" }));
-  await user.type(screen.getByLabelText("Name"), "gamma");
-  await user.type(screen.getByLabelText("SSH address"), "g.example");
-  await user.type(screen.getByLabelText("Key path"), "/keys/g");
-  const dialog = screen.getByRole("dialog");
-  await user.click(within(dialog).getByRole("button", { name: "Add host" }));
-  await waitFor(() => {
-    expect(fake.calls.filter((c) => c.method === "evener/host/add")).toHaveLength(1);
-  });
-  expect(fake.calls.find((c) => c.method === "evener/host/add")?.params).toMatchObject({
-    entry: { name: "gamma", address: "g.example", keyPath: "/keys/g" },
-  });
-});
-
 test("the add dialog submits every entry field", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -98,13 +79,13 @@ test("the add dialog submits every entry field", async () => {
   render(<HostsSection sectionId="hosts" />);
   await user.click(await screen.findByRole("button", { name: "Add host" }));
   await user.type(screen.getByLabelText("Name"), "gamma");
-  await user.type(screen.getByLabelText("SSH address"), "g.example");
-  await user.type(screen.getByLabelText("User"), "operator");
+  await enterText(user, screen.getByLabelText("SSH address"), "g.example");
+  await enterText(user, screen.getByLabelText("User"), "operator");
   await user.type(screen.getByLabelText("Key path"), "/keys/g");
-  await user.type(screen.getByLabelText("Evener path"), "/opt/evener");
-  await user.type(screen.getByLabelText("Hub config path"), "/etc/evener/hub.toml");
-  await user.type(screen.getByLabelText("Hub address"), "127.0.0.1:9180");
-  await user.type(screen.getByLabelText("Roots"), "/srv/one{enter}/srv/two");
+  await enterText(user, screen.getByLabelText("Evener path"), "/opt/evener");
+  await enterText(user, screen.getByLabelText("Hub config path"), "/etc/evener/hub.toml");
+  await enterText(user, screen.getByLabelText("Hub address"), "127.0.0.1:9180");
+  await enterText(user, screen.getByLabelText("Roots"), "/srv/one\n/srv/two");
   const dialog = screen.getByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "Add host" }));
   await waitFor(() => {
@@ -144,7 +125,7 @@ test("a sidecar row offers Edit, prefills the whole entry, and sends no name inp
   expect(within(dialog).queryByLabelText("Name")).toBeNull();
 
   await user.clear(within(dialog).getByLabelText("SSH address"));
-  await user.type(within(dialog).getByLabelText("SSH address"), "b2.example");
+  await enterText(user, within(dialog).getByLabelText("SSH address"), "b2.example");
   await user.click(within(dialog).getByRole("button", { name: "Save" }));
   await waitFor(() => {
     expect(fake.calls.filter((c) => c.method === "evener/host/update")).toHaveLength(1);
@@ -226,7 +207,7 @@ test("add validation error renders inline", async () => {
   render(<HostsSection sectionId="hosts" />);
   await user.click(await screen.findByRole("button", { name: "Add host" }));
   await user.type(screen.getByLabelText("Name"), "gamma");
-  await user.type(screen.getByLabelText("SSH address"), "g.example");
+  await enterText(user, screen.getByLabelText("SSH address"), "g.example");
   const dialog = screen.getByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "Add host" }));
   expect(await within(dialog).findByRole("alert")).toBeTruthy();
