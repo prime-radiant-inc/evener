@@ -66,7 +66,15 @@ type builder struct {
 	lastAssistantText   string
 	lastAssistantTurnID string
 	lastAssistantPos    contributor
-	lastAssistantKnown  bool // true once the sticky value above is authoritative
+	// lastAssistantKnown is true once the sticky value above is
+	// authoritative: always, for a full build (correct from its first
+	// entry — "no text yet" is the ground truth, not an unknown), and for
+	// restoreBuilder only once a text-bearing assistant entry is scanned
+	// after it (restoreBuilder cannot recover the prior value — see its doc
+	// comment). A communicate call becoming pending while this is still
+	// false means the echo check's prior text is unrecoverable without a
+	// rebuild (see extend).
+	lastAssistantKnown bool
 }
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.

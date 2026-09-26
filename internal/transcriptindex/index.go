@@ -298,12 +298,8 @@ func (x *Index) extend(length int64) error {
 	if x.build == "" || x.stale || !x.grownByAppends(info) {
 		return x.rebuild(length, "")
 	}
-	if x.meta.PendingCommunicate {
-		// A pending communicate call at the covered tail is exactly what
-		// errRebuild guards elsewhere (restoreBuilder cannot reconstruct
-		// commCalls); catching it here, before attempting to extend, keeps
-		// the incarnation the way a caught errRebuild would.
-		return x.rebuild(length, x.meta.Incarnation)
+	if err := x.repairBuilder(length); err != nil {
+		return err
 	}
 	if length <= x.meta.Length {
 		return nil
@@ -313,11 +309,6 @@ func (x *Index) extend(length int64) error {
 	for _, t := range []*table{&x.items, &x.turns, &x.updates} {
 		if err := t.truncate(t.n); err != nil {
 			return err
-		}
-	}
-	if x.builderStale {
-		if err := x.restoreBuilder(); err != nil {
-			return x.rebuild(length, "")
 		}
 	}
 	if err := x.scan(length); err != nil {
@@ -331,7 +322,39 @@ func (x *Index) extend(length int64) error {
 		return x.rebuild(length, incarnation)
 	}
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
+	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
+		// A communicate call just became pending with lastAssistantText
+		// still unknown: only restoreBuilder ever leaves it unknown (a full
+		// build starts authoritative — see the builder's doc comment), and
+		// restoreBuilder cannot recover it any more than it can commCalls.
+		// The echo check pendingFlush relies on would be missing the true
+		// prior text. Only a full rebuild recovers it.
+		return x.rebuild(length, x.meta.Incarnation)
+	}
 	return x.writeMeta()
+}
+
+// repairBuilder brings x.builder up to date with the covered records when
+// another handle's extension left it stale: adopt updates the covered
+// counts/meta but never touches x.builder, so a caller that consults it
+// directly (pendingFlush's commCalls/lastAssistant* state) would otherwise
+// see the state from before that extension. restoreBuilder alone suffices
+// unless a communicate call is pending at the covered tail: it cannot
+// recover commCalls (see restoreBuilder), so that case gets a full rebuild
+// instead, exactly once per staleness. A builder that is not stale is left
+// untouched, so a caller re-checking the same length repeatedly (a pending
+// communicate call outliving several reads) costs nothing once repaired.
+func (x *Index) repairBuilder(length int64) error {
+	if !x.builderStale {
+		return nil
+	}
+	if x.meta.PendingCommunicate {
+		return x.rebuild(length, x.meta.Incarnation)
+	}
+	if err := x.restoreBuilder(); err != nil {
+		return x.rebuild(length, "")
+	}
+	return nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the
