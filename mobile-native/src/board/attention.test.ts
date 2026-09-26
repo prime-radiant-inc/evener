@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import {
 	approvalRefs,
+	bandOf,
 	boardState,
 	hubTime,
 	lastLine,
@@ -95,6 +96,20 @@ describe("approvals inferred from the needs_you section (until S2)", () => {
 });
 
 describe("Live bands (spec 7.1)", () => {
+	it.each([
+		["failed", "needsYou"],
+		["question", "needsYou"],
+		["approval", "needsYou"],
+		["warning", "needsYou"],
+		["restartNeeded", "needsYou"],
+		["working", "working"],
+		["finished", "finished"],
+		["idle", "idle"],
+		["shutDown", null],
+	] as const)("%s → %s", (state, band) => {
+		expect(bandOf(state)).toBe(band);
+	});
+
 	it("puts failures first, oldest first, then the rest of Needs you oldest waiting first", () => {
 		const live = [
 			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(30) }),

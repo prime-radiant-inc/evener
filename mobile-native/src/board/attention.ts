@@ -86,12 +86,20 @@ export function boardState(
 	return "finished";
 }
 
-const NEEDS_YOU = new Set<BoardState>(["failed", "question", "approval", "warning", "restartNeeded"]);
+const BANDS: Record<BoardState, Band | null> = {
+	failed: "needsYou",
+	question: "needsYou",
+	approval: "needsYou",
+	warning: "needsYou",
+	restartNeeded: "needsYou",
+	working: "working",
+	finished: "finished",
+	idle: "idle",
+	shutDown: null,
+};
 
 export function bandOf(state: BoardState): Band | null {
-	if (NEEDS_YOU.has(state)) return "needsYou";
-	if (state === "working" || state === "finished" || state === "idle") return state;
-	return null;
+	return BANDS[state];
 }
 
 /** A hub timestamp in milliseconds, or null when the hub sent none or one

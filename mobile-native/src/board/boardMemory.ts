@@ -1,6 +1,7 @@
 // What this device remembers about one hub's Board: which sessions you have
 // seen and which sections you folded. Kept in expo-sqlite's kv-store under
 // per-hub keys that ConnectionProvider.removeHub clears.
+import { isPlainObject } from "@evener/appwire-client";
 import { hubTime } from "./attention";
 
 export interface BoardStorage {
@@ -13,9 +14,6 @@ const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
 const MARK_LIMIT = 500;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function readJson(storage: BoardStorage, key: string): unknown {
 	try {
 		const raw = storage.getItemSync(key);
@@ -45,7 +43,7 @@ interface SeenState {
 
 function parseSeen(value: unknown): SeenState {
 	const state: SeenState = { adopted: false, epoch: null, sessions: {} };
-	if (!isRecord(value)) return state;
+	if (!isPlainObject(value)) return state;
 	// First run stands only with an epoch that reads as a hub time, or with
 	// none because the fleet it read had no timestamps. A garbled epoch runs
 	// first run again rather than flooding Finished.
@@ -54,9 +52,9 @@ function parseSeen(value: unknown): SeenState {
 		state.adopted = true;
 		state.epoch = epoch;
 	}
-	if (isRecord(value.sessions))
+	if (isPlainObject(value.sessions))
 		for (const [ref, record] of Object.entries(value.sessions)) {
-			if (!isRecord(record)) continue;
+			if (!isPlainObject(record)) continue;
 			if (record.unread === true) state.sessions[ref] = { unread: true };
 			else if (typeof record.through === "string" && hubTime(record.through) !== null)
 				state.sessions[ref] = { through: record.through };
@@ -85,7 +83,7 @@ export class SeenMarkers {
 		this.state = parseSeen(readJson(storage, seenKey(hubId)));
 	}
 
-	/** First run is done: adoptEpoch has run for this hub on this device. */
+	/** First run is done for this hub on this device: adoptEpoch has run. */
 	get adopted(): boolean {
 		return this.state.adopted;
 	}
@@ -162,7 +160,7 @@ export class FoldedSections {
 		private readonly hubId: string,
 	) {
 		const value = readJson(storage, foldedKey(hubId));
-		if (isRecord(value))
+		if (isPlainObject(value))
 			for (const [section, folded] of Object.entries(value))
 				if (typeof folded === "boolean") this.folded[section] = folded;
 	}
@@ -182,6 +180,7 @@ export function forgetBoard(storage: BoardStorage, hubId: string): void {
 		try {
 			storage.removeItemSync(key);
 		} catch {
-			// Nothing stored to forget.
+			// Only a storage failure throws (a missing key doesn't). It orphans the
+			// key, and nothing reads it again: hub ids are fresh UUIDs, never reused.
 		}
 }

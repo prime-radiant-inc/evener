@@ -16,16 +16,9 @@ import "./index";
 
 // Only readDocFile is mocked; docImageURL / DocFileError / DOC_FILE_MAX_BYTES
 // stay real so the pane's URL building and error-kind switch run for real.
-//
-// vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
-// pattern - under a shared module registry (isolate:false), a vi.mock()
-// factory registered here only replaces what THIS file's own import
-// resolves to. If docContent.ts's module instance was already evaluated by
-// an earlier file (e.g. register.test.ts's "./openDoc" import, or any other
-// file that renders DocPane), DocPane.tsx's own `readDocFile` binding is
-// already resolved to the real function by the time this mock registers -
-// spying on the real module's own export patches the one binding every
-// importer actually shares, regardless of import order.
+// Each test scripts its own reads through a fresh vi.spyOn on the module's
+// export, and afterEach's vi.restoreAllMocks hands the real function back, so
+// one test's scripted reads never answer the next test's.
 let mockRead: MockInstance<typeof docContentModule.readDocFile>;
 
 // A minimal, test-only "session" pane registration - mirrors

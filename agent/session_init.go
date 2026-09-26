@@ -1577,7 +1577,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Turns:             s.modelResponses,
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
-		State:             string(restoredState),
+		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated
 		// above, from the same transcript file and the same entry-by-entry scan
 		// internal/apptranscript's reload path counts by (kata eptj) — not

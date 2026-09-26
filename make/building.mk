@@ -91,8 +91,12 @@ build-llmcall:
 ## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
 ## tomlcheck, transcript-v2-upgrade). Not installed for
 ## end users; used by make targets and go run ./cmd/evener-dev/bin.
+# The build's wall time is printed after it: in CI it is part of the web gates'
+# step time, alongside the checks' own timed verdicts.
 build-dev:
-	go build -o evener-dev ./cmd/evener-dev/bin/
+	@echo 'go build -o evener-dev ./cmd/evener-dev/bin/'; start="$$(date +%s)"; \
+	status=0; go build -o evener-dev ./cmd/evener-dev/bin/ || status=$$?; \
+	printf 'build evener-dev: exit %s (%ss)\n' "$$status" "$$(($$(date +%s) - $$start))"; exit $$status
 
 # build-all builds both the runtime binary and the dev binary.
 ## Build every binary: the evener runtime binary and the evener-dev
