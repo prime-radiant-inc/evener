@@ -65,6 +65,7 @@ import (
 // rule this enforces — it RETURNS its diagnostic rather than emitting it,
 // because three of its four callers run under s.mu.
 func TestEmitReacquiresSessionMu(t *testing.T) {
+	t.Parallel()
 	files := agentSourceFiles(t)
 
 	emit := methodDecl(t, files, "Session", "emit")
@@ -90,6 +91,7 @@ func TestEmitReacquiresSessionMu(t *testing.T) {
 // the line immediately before emitting. Hoisting any of those three lines up is
 // caught today only because this guard turns it into an immediate hang.
 func TestEmitWithProvenanceReacquiresJobManagerMu(t *testing.T) {
+	t.Parallel()
 	files := agentSourceFiles(t)
 
 	emitWith := methodDecl(t, files, "Session", "emitWithProvenance")
@@ -113,6 +115,7 @@ func TestEmitWithProvenanceReacquiresJobManagerMu(t *testing.T) {
 // wrapper is allowed only when it still calls emitWithProvenance on the same
 // goroutine.
 func TestJobManagerEmitIsWiredToTheGuardedPath(t *testing.T) {
+	t.Parallel()
 	files := agentSourceFiles(t)
 	jobTreeEmitter := methodDecl(t, files, "Session", "emitWithJobTreeRevision")
 	if !callsOnTheSameGoroutine(jobTreeEmitter, "emitWithProvenance") {

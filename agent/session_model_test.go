@@ -2436,6 +2436,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 }
 
 func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	comm := communicateCall("c1", "ok")
@@ -2512,6 +2513,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 }
 
 func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		endpoint string
@@ -2574,6 +2576,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 }
 
 func TestSingleAttemptRequestMetadataCreatesSemanticGroup(t *testing.T) {
+	t.Parallel()
 	req, attempt := singleAttemptRequestMetadata(llm.Request{
 		Model:       "gpt-5.2",
 		Provider:    "openai",

@@ -61,6 +61,7 @@ func readRetirementPrimaryFiles(t *testing.T, stateDir string) retirementPrimary
 // case: the non-terminal release appends no terminal transcript evidence and
 // the same root id restores from the same state dir.
 func TestRetirementReleasePreservesRootTranscript(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	id := root.ID()
@@ -115,6 +116,7 @@ func TestRetirementReleasePreservesRootTranscript(t *testing.T) {
 // committed preparation is required: an uncommitted claim is refused before any
 // side effect, and the claim can still be aborted (admission reopens).
 func TestRetirementReleaseRefusesUncommittedPreparation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	id := root.ID()
@@ -165,6 +167,7 @@ func TestRetirementReleaseRefusesUncommittedPreparation(t *testing.T) {
 // close failure after Commit and asserts a failed retiring diagnostic with no
 // Abort path and no reopened admission.
 func TestRetirementReleaseFailureAfterCommitStaysRetiring(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	c, err := NewRetirementController(0, clock.Real())
@@ -222,6 +225,7 @@ func TestRetirementReleaseFailureAfterCommitStaysRetiring(t *testing.T) {
 // release must error before any side effect rather than report a vacuous
 // success over a terminally stopped tree.
 func TestRetirementReleaseRefusesAfterTerminalClose(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	c, err := NewRetirementController(0, clock.Real())
@@ -272,6 +276,7 @@ func TestRetirementReleaseRefusesAfterTerminalClose(t *testing.T) {
 // ownership must not let a later deferred Close execute a destructive second
 // pass after a successful non-terminal release.
 func TestRetirementDeferredCloseAfterReleaseIsNoOp(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	c, err := NewRetirementController(0, clock.Real())
@@ -1859,6 +1864,7 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 // for the same committed preparation must win teardown exactly once; run under
 // -race so the detector observes the guard access.
 func TestRetirementConcurrentReleaseOnlyOneProceeds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -1996,6 +2002,7 @@ func TestRetirementValidationRejectsRemovedRetainedScratchAfterPrepare(t *testin
 // so without the preparation check retirement would proceed over an
 // allocation the committed manifest never pinned.
 func TestRetirementPreparationFailsOnRecordedScratchPinFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()

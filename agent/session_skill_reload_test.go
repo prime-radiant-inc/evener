@@ -1315,6 +1315,7 @@ func TestSkillReload_Repeated_RetainedContentNotDuplicated(t *testing.T) {
 // discard it (the old comment claimed diagnostics "ride the typed turn"; they
 // never did).
 func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	missing := filepath.Join(t.TempDir(), "gone", "SKILL.md")
 	s.skillLifecycle.Inventory["opaque"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
@@ -1441,6 +1442,7 @@ func countSkillReloadReminderTurns(s *Session) int {
 // reminder. Without the reconciliation the handoff survives the restart and the
 // same inventory notification is delivered a second time.
 func TestSkillReloadReminder_DurableReminderConsumedAtRestore(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.mu.Lock()
 	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
@@ -1489,6 +1491,7 @@ func TestSkillReloadReminder_DurableReminderConsumedAtRestore(t *testing.T) {
 // history that now contains the duplicates, each attempt consumes more of the
 // very window it is checking and the cycle can never converge.
 func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	// A construction window keeps the context manager's estimator live (a
@@ -1736,6 +1739,7 @@ func TestSkillReload_FailedReloadNotificationWriteFailureIsVisible(t *testing.T)
 // free — otherwise the model receives duplicate instruction bodies and the
 // lifecycle publishes a duplicate activation per extra handoff.
 func TestSkillReload_DuplicateSelectionsAdmitOneBody(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_duplicate")
@@ -1802,6 +1806,7 @@ func TestSkillReload_DuplicateSelectionsAdmitOneBody(t *testing.T) {
 // already_present and collected another delivery obligation each time, with no
 // bound. The legacy record here is the shape a pre-identity activation leaves.
 func TestSkillReload_IncompleteIdentitySelectionRetiresReceipt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_legacy")
@@ -2150,6 +2155,7 @@ func TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff(t *testing.T) {
 // appended after it, the retry would deliver the newer publication's reload
 // before the older one's.
 func TestSkillReload_FailedAdmissionSaveRestoresTheReceiptAheadOfLaterHandoffs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "older", "---\nname: older\ndescription: fixture\n---\nBODY_order_older\n")

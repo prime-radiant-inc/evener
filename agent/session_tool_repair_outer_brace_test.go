@@ -11,6 +11,7 @@ import (
 )
 
 func TestPrepareToolCall_MissingOuterBrace(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(tool.DefCommunicate())); err != nil {
 		t.Fatal(err)

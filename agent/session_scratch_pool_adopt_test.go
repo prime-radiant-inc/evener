@@ -16,6 +16,7 @@ import (
 // unsynchronized map access (reported by the race detector, and a hard
 // concurrent-map fatal in production), so this test is meaningful under -race.
 func TestScratchRetentionConcurrentAdoption(t *testing.T) {
+	t.Parallel()
 	const consumers = 8
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
@@ -234,6 +235,7 @@ func TestPrepareRetainedScratchDeclinesWhenTheReleaseWinsTheWindow(t *testing.T)
 // pooled or its lease is contended in this process. The wrapper-only slot never
 // takes a second lease, so neither condition may skip its restore.
 func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		releaseLease bool

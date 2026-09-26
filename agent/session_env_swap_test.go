@@ -154,6 +154,7 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 // pre-commit binding stage, before the install) by replacing the retention
 // manifest with a directory.
 func TestSwapEnvAndRefreshReportsSuccessWhenPostCommitRetentionPublicationFails(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	defer sess.Close()
@@ -453,6 +454,7 @@ func awaitCloseFenceSignal(t *testing.T, signal <-chan struct{}, what string) {
 // The hook below holds the swap in exactly the window step 1's git occupies:
 // admitted, past the scratch move, with the install still to come.
 func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 
@@ -504,6 +506,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 // process table under whatever is still running, so it says what it walked
 // past, by name.
 func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
+	t.Parallel()
 	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 	sr := newScriptedLaneRepo(t)
@@ -601,6 +604,7 @@ func fenceWarnings(msgs []string) []string {
 // admitted there is nothing the cleanup can run under, so there is nothing to
 // say — and a warning naming an empty list is noise on every such close.
 func TestWorktreeSwap_ExpiredBudgetWithNothingAdmittedSaysNothing(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	warnings := collectWarningsUntilClosed(r.s)

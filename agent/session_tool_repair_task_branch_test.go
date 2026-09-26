@@ -21,6 +21,7 @@ import (
 // the add array — fail with errors the repair layer can explain against the
 // new schema, through the real prevalidation seam.
 func TestPrepareToolCall_OldTaskListActionShapeRejected(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(tool.DefTaskList(nil))); err != nil {
 		t.Fatalf("register task_list: %v", err)
@@ -47,6 +48,7 @@ func TestPrepareToolCall_OldTaskListActionShapeRejected(t *testing.T) {
 // error that names the add item's requirements — the same explainability the
 // #626 fix established, carried to the new schema.
 func TestPrepareToolCall_UpdateEntryInAddArrayExplains(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(tool.DefTaskList(nil))); err != nil {
 		t.Fatalf("register task_list: %v", err)
@@ -72,6 +74,7 @@ func TestPrepareToolCall_UpdateEntryInAddArrayExplains(t *testing.T) {
 // The same misfiled-entry call through execTool must surface the targeted
 // task-list diagnostic before generic schema repair can discard its fields.
 func TestExecTool_TaskListMisfiledEntrySurfacesTargetedPrevalidation(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
@@ -99,6 +102,7 @@ func TestExecTool_TaskListMisfiledEntrySurfacesTargetedPrevalidation(t *testing.
 }
 
 func TestExecTool_TaskListBriefSurfacesTargetedPrevalidation(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{

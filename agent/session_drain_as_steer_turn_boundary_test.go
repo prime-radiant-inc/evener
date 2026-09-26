@@ -249,6 +249,7 @@ func stopFromTheClaimWindow(s *Session, cancel context.CancelFunc, processDone <
 // ProcessInput call, and the only EventSessionEnd of that call comes after the
 // carrier turn opened.
 func TestDrainAsSteerKeepsTheTurnOpenUntilItsSteeringLegRuns(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	seen := recordEvents(s)
@@ -300,6 +301,7 @@ func TestDrainAsSteerKeepsTheTurnOpenUntilItsSteeringLegRuns(t *testing.T) {
 // not a wake of the failure's own -- carries it. Nothing is lost and nothing
 // is retried in a loop.
 func TestSteeringCarrierAppendFailureFailsTheTurnAndTheNextRunCarriesTheSteer(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
@@ -392,6 +394,7 @@ func TestSteeringCarrierAppendFailureFailsTheTurnAndTheNextRunCarriesTheSteer(t 
 // stays accepted, parked behind the steering hold, and the user's next run
 // carries it.
 func TestStopInTheCarrierClaimWindowParksTheSteerForTheNextUserRun(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	serveSession(t, s)
@@ -439,6 +442,7 @@ func TestStopInTheCarrierClaimWindowParksTheSteerForTheNextUserRun(t *testing.T)
 // fails. The steer never left accepted, the Stop's finalization parks it, no
 // wake fires for it, and the user's next run carries it.
 func TestStopWhileTheCarrierIsAppendingParksTheSteer(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	serveSession(t, s)
@@ -542,6 +546,7 @@ func restoreWithScriptedModel(t *testing.T, dir, id string) *Session {
 // (nothing re-runs a carrier by its id) and the steer, still pending, is
 // carried by the next run.
 func TestRestoreReleasesACarrierClaimThatNeverRan(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()
@@ -623,6 +628,7 @@ func recordSteerWithFailedIncorporation(t *testing.T, s *Session, clientMutation
 // restore rather than queued and delivered a second time, and the slot its
 // carrier claimed is released so the next turn/start is accepted.
 func TestRestoreFinalizesARecordedSteerAndReleasesItsCarrierSlot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()
@@ -676,6 +682,7 @@ func TestRestoreFinalizesARecordedSteerAndReleasesItsCarrierSlot(t *testing.T) {
 // in-flight set, never a history scan -- marking the steer incorporated and
 // releasing a hold that would otherwise name nothing (rule H, #710).
 func TestStopFinalizationMarksARecordedSteerAndReleasesTheHold(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -728,6 +735,7 @@ func TestStopFinalizationMarksARecordedSteerAndReleasesTheHold(t *testing.T) {
 // occupied slot). When the release retry lands it wakes, so the steer behind
 // the stale slot runs rather than waiting for an unrelated client action.
 func TestReleaseRetryWakesTheSteerBehindAStaleSlot(t *testing.T) {
+	t.Parallel()
 	// A scripted model, so the carrier the wake runs can complete.
 	dir := t.TempDir()
 	client := llm.NewClient()
@@ -788,6 +796,7 @@ func TestReleaseRetryWakesTheSteerBehindAStaleSlot(t *testing.T) {
 // peeked message, inside one turn -- and the steer behind it is left for the
 // next drain.
 func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -831,6 +840,7 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 // alone took it as the head steer, drained a different steer under its id,
 // and failed again on the next wake. Eligibility excludes in-flight steers.
 func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -869,6 +879,7 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 // would skip a steer that no longer exists -- and skip whatever is queued
 // behind it, since eligibility walks the order.
 func TestFailedSteeringSelectionLandsTheSteer(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -906,6 +917,7 @@ func TestFailedSteeringSelectionLandsTheSteer(t *testing.T) {
 // again inside the turn. The steer lands like any failed append: out of the
 // in-flight set, queued once, for the next drain.
 func TestFailedSteeringSelectionWhoseRecordFailsStopsTheDrain(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -955,6 +967,7 @@ func TestFailedSteeringSelectionWhoseRecordFailsStopsTheDrain(t *testing.T) {
 // whose steer is in the transcript, and the store's record catches up at the
 // input's settle through the steering table.
 func TestCarrierProceedsWhenOnlyTheIncorporationWriteFails(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -1033,6 +1046,7 @@ func externalWake(s *Session, wakes chan struct{}) {
 // the steer, runnable, and the next external wake -- attach, or any accepted
 // client mutation -- carries it once the disk has room.
 func TestPersistentSteeringAppendFailureRunsOneCarrierPerExternalWake(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
@@ -1080,6 +1094,7 @@ func TestPersistentSteeringAppendFailureRunsOneCarrierPerExternalWake(t *testing
 // the failure (the same contract as M1), the steer is runnable, and the next
 // external wake records the failure and retires it.
 func TestFailedSelectionRecordParksTheSteerUntilTheNextExternalWake(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	seen := recordEvents(s)
 	defer func() {
@@ -1144,6 +1159,7 @@ func TestFailedSelectionRecordParksTheSteerUntilTheNextExternalWake(t *testing.T
 // the queue; when the mark's retry fails too, the next wake retries it again
 // -- and never re-queues a steer the transcript already holds.
 func TestFailedRecordedSteerMarkRetriesAtTheNextWake(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -1219,6 +1235,7 @@ func recordFailedSelectionWithFailedRetirement(t *testing.T, s *Session, clientM
 // recorded as a failure turn; the mark the store catches up with must be the
 // failure's terminal state, not "incorporated".
 func TestRecordedSelectionFailureIsMarkedFailedNotIncorporated(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	serveSession(t, s)
@@ -1252,6 +1269,7 @@ func TestRecordedSelectionFailureIsMarkedFailedNotIncorporated(t *testing.T) {
 // TestRestoreMarksARecordedSelectionFailureFailed (round 11, M4 at restore):
 // the same failure, with the process dying before the retirement write.
 func TestRestoreMarksARecordedSelectionFailureFailed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()
@@ -1285,6 +1303,7 @@ func TestRestoreMarksARecordedSelectionFailureFailed(t *testing.T) {
 // request -- a steering turn is in the transcript that no request has read --
 // and stand down only when the drain delivered nothing.
 func TestCarrierProceedsWhenALaterSteerWasDeliveredBehindAFailedSelection(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	close(adapter.release) // every call answers at once
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
@@ -1328,6 +1347,7 @@ func TestCarrierProceedsWhenALaterSteerWasDeliveredBehindAFailedSelection(t *tes
 // contract as a failed append), and the next external wake -- here the
 // acceptance of an unrelated steer -- carries both.
 func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	close(adapter.release)
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
@@ -1386,6 +1406,7 @@ func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
 // manager and keeps a history this short verbatim -- as the TurnSummary entry
 // resume anchors on.
 func TestRestoreFinalizesARecordedSteerCompactedOutOfHistory(t *testing.T) {
+	t.Parallel()
 	crashed := newTestSessionForEnvctx(t)
 	dir, id := crashed.cfg.StateDir, crashed.ID()
 	if err := crashed.ensureClientMutationStore(); err != nil {
@@ -1435,6 +1456,7 @@ func TestRestoreFinalizesARecordedSteerCompactedOutOfHistory(t *testing.T) {
 // notification stays pending for the daemon's own wake, and the next external
 // wake carries the steer under its reserved id.
 func TestRefusedLadderClaimRunsNoAutonomousTurnBehindIt(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	adapter.later = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateResponse(false, "looking at the job") },
@@ -1514,6 +1536,7 @@ func TestRefusedLadderClaimRunsNoAutonomousTurnBehindIt(t *testing.T) {
 // must not spend a second attempt on the failed steer: one attempt per external
 // wake, and that wake was consumed by the attempt the ladder already made.
 func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
@@ -1579,6 +1602,7 @@ func steeringTurnOwner(s *Session, clientMutationID string) (owner string, deliv
 // next external wake carries the steer under its reserved id, and the goal
 // resumes at that input's settle.
 func TestRefusedLadderClaimKicksNoGoalContinuation(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -1627,6 +1651,7 @@ func TestRefusedLadderClaimKicksNoGoalContinuation(t *testing.T) {
 // persist the carrier claim. The wrapper must hold the deferred continuation
 // rather than run it into the parked steer.
 func TestRefusedLadderClaimHoldsADeferredContinuation(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	adapter.holdCall = 2 // the notification turn's model call is the held one
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
@@ -1669,6 +1694,7 @@ func TestRefusedLadderClaimHoldsADeferredContinuation(t *testing.T) {
 // the way it refuses them while a question is pending; the notification stays
 // queued and is delivered by the ladder behind the external wake's carrier.
 func TestParkedSteeringRefusesADaemonNotificationTurn(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	close(adapter.release)
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
@@ -1728,6 +1754,7 @@ func TestParkedSteeringRefusesADaemonNotificationTurn(t *testing.T) {
 // the park exists to prevent -- and the next external wake carries it under
 // its receipt's id.
 func TestUserTurnWhoseDrainFailedDoesNotReclaimTheSteerInline(t *testing.T) {
+	t.Parallel()
 	adapter := newHeldLegAdapter()
 	close(adapter.release)
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
