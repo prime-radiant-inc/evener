@@ -143,15 +143,37 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
 	turnID := persistedTurnID(turn, entryIndex)
-	// A continuation joining an open group projects under the group's turn
-	// id (the opener's), matching appendEntry and the bounded read. An
-	// opener or standalone uses its own persistedTurnID. TurnSteering is a
-	// continuation (see continuesLogicalTurn), so it is covered by this
-	// branch when it joins an open group; the prior OwningTurnID-specific
-	// else-if was unreachable and a no-op (its guard required the open
-	// group's turn id to equal OwningTurnID already).
-	if continuesLogicalTurn(turn.Kind) && acc.open && len(acc.turns) > 0 {
+	// Derive the projection turn id from the SAME grouping decision
+	// appendEntry (below) makes, so an entry is projected under the id of
+	// the logical group it is finally buffered into — not the per-entry
+	// persistedTurnID and not (for a steering opener) the previously open
+	// group's id. appendEntry owns the grouping semantics; this switch must
+	// stay in lockstep with it. The cases mirror appendEntry's switch in
+	// order:
+	//
+	//   - An opener (USER_INPUT, or goal-continuation STEERING) uses its own
+	//     persistedTurnID, which appendEntry assigns as the new group's id.
+	//   - An owner-bearing STEERING projects under its OwningTurnID whether
+	//     it joins the open group (appendEntry case 2's guard requires the
+	//     open id to equal owner, so the open group's id IS owner) or opens
+	//     a new one (appendEntry assigns owner as the new group's id). This
+	//     also matches the bounded read, which unconditionally resolves an
+	//     owner-bearing steering's record id to owner (turn_index.go).
+	//   - A continuation joining an open group projects under the group's
+	//     turn id (the opener's), the load-bearing propagation for the
+	//     echo-suppression parity (PR #2322). KEEP this branch for genuine
+	//     joins; it is correct.
+	//   - A standalone, or a continuation with no open group, uses its own
+	//     persistedTurnID, the id appendEntry assigns the group it starts.
+	switch {
+	case opensLogicalTurn(turn.Kind, turn.GoalContinuation != nil):
+		// opener: own persistedTurnID (turnID already holds it)
+	case turn.Kind == schema.TurnSteering && turn.OwningTurnID != "":
+		turnID = turn.OwningTurnID
+	case continuesLogicalTurn(turn.Kind) && acc.open && len(acc.turns) > 0:
 		turnID = acc.turns[len(acc.turns)-1].turnID
+	default:
+		// standalone or stray continuation: own persistedTurnID (turnID already holds it)
 	}
 	var items []appwire.ThreadItem
 	if project != nil {
