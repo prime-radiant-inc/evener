@@ -28,7 +28,7 @@ Every later section uses these terms with exactly these meanings.
 
 **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
 
-**Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, `hub.toml` fingerprint, facts, and running state it was minted from.
+**Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the `hub.toml` host-set fingerprint (deploy-pipeline spec §3), facts, and running state it was minted from.
 
 **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 

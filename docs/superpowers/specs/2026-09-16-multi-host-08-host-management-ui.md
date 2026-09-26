@@ -72,7 +72,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
 
-**Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, `hub.toml` fingerprint, facts, and running state it was minted from.
+**Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the `hub.toml` host-set fingerprint (§6), facts, and running state it was minted from.
 
 **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 
@@ -97,7 +97,7 @@ renders, a staged-but-unpersisted change) is never an intent.
   the finalized receipt (§5).
 - Finalizing claim (`finalizingMutation`): the same entry under a
   server-generated opaque attempt token while a foreign path finalizes it (§5).
-- Reconcile marker: the (re-read `hub.toml` fingerprint, about-to-drop staged
+- Reconcile marker: the (re-read whole-document content hash, about-to-drop staged
   entry) pair the post-rename reconcile stages in the same write as its
   cleanup (§6).
 - Pruned marker (`prunedReceipts`): the scoped key plus `{prunedAt}` a
@@ -309,7 +309,7 @@ entries in its atomic write under the mutation lock — so the read-only
 contract holds and `list` cannot contend with mutations.
 
 Before serving any admitted call — `list`/`status` included — the hub compares
-the on-disk `hub.toml` fingerprint against a cached fingerprint lock-free. On a
+the on-disk host-set fingerprint (§6) against a cached fingerprint lock-free. On a
 match the read serves immediately from the last published snapshot. On a
 mismatch the read still serves immediately, but never the raw stale snapshot:
 it synchronously filters the last published snapshot against the current
@@ -697,9 +697,14 @@ marshal: it replaces the `[[hosts]]` array and nothing else, so every other key
 the file holds — the hub's own settings, provider overlays, plugin settings,
 and the machine-managed records below — round-trips unchanged. A host entry the
 file holds but the running hub never loaded — a hand edit made while the hub
-runs — is carried through the rewrite rather than dropped; it is not live until
-the next boot (the running hub serves its boot set), which §15's
-fingerprint-bound adopt/reconcile work later makes immediate. That banner is
+runs — is carried through the rewrite rather than dropped, and it becomes live
+without a restart through §4's fingerprint-bound adopt/reconcile discipline:
+the next admitted read sees the changed fingerprint (a changed entry renders
+unavailable, and a new name is absent from the file-filtered view, until the
+async reconcile lands), and a mutation adopts the re-read file and rebuilds the
+runtime host set before it returns. Boot loads the entry directly only as the
+fallback when neither a read nor a mutation precedes the next boot; the
+single-file store has no second live source and no ongoing merge. That banner is
 how the file states the trade itself: an operator's comments,
 blank lines, key order, and formatting do not survive a rewrite, so the file
 says so before the first one. Hand edits are still read (the external-edit
@@ -750,14 +755,54 @@ with), so a UI host with a key path round-trips through a rewrite; component
 sibling specs define there: the crash-fencing spec's bootstrap-attempt fence and
 `helperInstalled` flag, the tombstone/generation records of §15, this section's
 receipts, remnants, and markers, and the `legacy_sidecar_migrated` marker a
-completed migration records. Config-path retention: the hub
+completed migration records.
+
+Machine-managed record layout: every machine-managed record lives under a
+reserved top-level key beside `[[hosts]]` — never inside a host entry, and
+never in a key the operator owns. The reserved keys are
+`legacy_sidecar_migrated` (a top-level boolean; the one machine record the
+shipped in-place store writes today, `cmd/evener-hub/app_host_manage.go`),
+`[reconcile]` (the post-rename reconcile marker: `reconcile_applied` plus the
+fingerprint it staged against), `[generations."<name>"]` (the per-name
+generation high-water mark), `[tombstones."<name>"]` (the §15 tombstone
+records), `[mutation_receipts."<scoped-key>"]` (the §5/§6 receipts, keyed by
+the five-part scoped receipt key in mutation-id / name / kind / generation /
+incarnation-id order), `[teardown_remnants."<remnant-id>"]` (the §9 teardown
+remnants), and `[host_records."<name>"]` (the per-host records the sibling
+specs define there: the crash-fencing spec's bootstrap-attempt fence and
+`helper_installed` flag, and the presence epoch). Field spellings are the
+stored fields' snake_case spelling; the prose's camelCase record names are the
+same records (`mutationReceipts` → `mutation_receipts`, `helperInstalled` →
+`helper_installed`, `reconcile-applied` → `reconcile_applied`), and where a
+sibling spec defines a record's fields, that
+spec's field set holds — this layout fixes where each record lives, not what it
+holds. A rewrite re-emits every reserved key's current value unchanged (the
+read-modify-write replaces only `hosts`), so a record this build does not
+recognize round-trips rather than being dropped, and a reserved key never
+carries operator data.
+
+Fingerprint semantics: the `hub.toml` fingerprint the read path and the
+plan/deploy path use is the **host-set fingerprint** — a canonical hash over
+the file's validated effective host entries, the same entries the registry
+serves. Machine-managed records (the layout above) and the operator's non-host
+keys are excluded by construction, so an unrelated host mutation, a receipt
+write, or a tombstone compaction cannot read as external configuration drift:
+tokens for unchanged hosts stay valid, and the read path does not schedule a
+reconcile for a file change that cannot alter a host entry. The whole-document
+content hash is a distinct value the write path uses for its own staging,
+final, and post-rename checks, where any byte change — host set or not — must
+retry the read-modify-write before it lands. (Write-path prose that names a
+`hub.toml` fingerprint a commit staged against, observed, or won by means this
+whole-document content hash; every other use — reads, token bindings,
+restarts — means the host-set fingerprint.) Config-path retention: the hub
 supports `--config` paths (`cmd/evener-hub/main.go:203` —
 `deps.loadConfig(opts.configPath, opts.configExplicit)`), but neither the runtime `Config` nor
 `WebConfig` retains the selected path, so the registry carries the canonical config
 path (absolute, resolved at startup) through startup into the web
 configuration; both the rewrite target (the selected `hub.toml` itself) and
-the `hub.toml` fingerprint bytes (read from that same path at plan/mint,
-deploy/validate, and mutation stage/final-check time) derive from it — UI
+the fingerprints derived from it (read from that same path: the host-set
+fingerprint at plan/mint and deploy/validate, the whole-document content hash
+at mutation stage/final-check time) derive from it — UI
 mutations against a `--config` hub land in the selected file and
 invalidate against the same file. File posture: the config dir's private state
 holds mode `0600` for the rewritten `hub.toml` and the operation store — temp files created
@@ -765,7 +810,12 @@ holds mode `0600` for the rewritten `hub.toml` and the operation store — temp 
 decision keeps the operator's mode until the hub's first rewrite; the rewrite
 itself creates its temp file `0600` and the rename installs that mode, and the
 operation store additionally refuses to load when readable beyond its owner
-(the bearer confirmation tokens persist in the store). Every `hub.toml`, receipt, remnant, cleared-marker, and
+(the bearer confirmation tokens persist in the store). The one-time migration's
+merged write is itself one of those rewrites — it goes through the same writer —
+so it installs `0600` at the moment a sidecar `key_path` first lands in
+`hub.toml`: a pre-decision `hub.toml` wider than `0600` does not expose the
+folded-in key path, not even until the next UI mutation, and the retired
+sidecar's owner-only read guard leaves nothing behind it. Every `hub.toml`, receipt, remnant, cleared-marker, and
 stash write is temp-file + file-fsync + rename + parent-dir-fsync — the temp
 file is fsynced before the rename and the containing directory is fsynced
 after it, so the canonical file always holds either the complete old or the
@@ -786,19 +836,23 @@ other component-03 refusal. Every live host is UI-editable: `add`/`update`/
 `remove` write the one file and no longer partition names by which file declared
 them. External hand edits are read as input, never written by the store: every
 `hub.toml` mutation re-reads the current `hub.toml` bytes under the mutation lock and
-validates the staged change against them — reusing the same `hub.toml`
-content-hash fingerprint the plan/deploy path binds into confirmation tokens
-(deploy-pipeline spec §3), or an equivalent fingerprint comparison: if the file changed since
+validates the staged change against them — reusing the host-set fingerprint
+the plan/deploy path binds into confirmation tokens (deploy-pipeline spec §3;
+a canonical hash over the file's validated effective host entries, machine-managed
+records excluded — fingerprint semantics above), or an equivalent host-set
+comparison: if the file changed since
 startup (or since the last mutation), a change already on disk is adopted (the
 live entry takes the re-read file's effective values) rather than committed
 against the stale snapshot. Final check: between staging the new `hub.toml` bytes and the atomic
 rename — still under the same mutation lock — the commit re-reads the
-`hub.toml` bytes once more and compares the content-hash fingerprint against
-the validation read; if the file changed in between, the staged bytes are
+`hub.toml` bytes once more and compares the whole-document content hash against
+the validation read (the write path's own fingerprint — any byte change, host
+set or not, must retry, because the read-modify-write re-emits every non-host
+key it read); if the file changed in between, the staged bytes are
 discarded and the stage-validate sequence retries against the new file
 (bounded retries, then the conflict-class envelope discriminator
-`concurrent-edit` — data carries the `hub.toml` fingerprint the commit staged
-against plus the fingerprint observed at refusal, so the client can re-read
+`concurrent-edit` — data carries the whole-document content hash the commit staged
+against plus the hash observed at refusal, so the client can re-read
 and retry). The re-read plus rename is not an atomic compare-and-swap, so the
 guarantee is reconciliation, not prevention: after the rename the commit
 re-reads `hub.toml` once more, and if the file changed across the rename, the
@@ -842,8 +896,19 @@ receipt says `collision-dropped`). The re-reads bound the race, they do not
 prevent it: a hand edit that lands between the final fingerprint check and the
 rename is itself overwritten by the rename (last writer wins, and the
 post-rename re-read then sees the hub's own bytes, so there is nothing left to
-reconcile). Writers are not coordinated through an OS lock, and the spec does
-not promise a compare-and-swap.
+reconcile — no log or error line is emitted, because nothing observable
+remains). That window is the documented cost of last-writer-wins — writers are
+not coordinated through an OS lock, and the spec does not promise a
+compare-and-swap — and its operator recovery is explicit: the file's banner
+states at the top that a rewrite replaces the file wholesale, so an operator
+whose hand edit was overwritten re-applies it, and the next read or mutation
+adopts the re-applied bytes through the §4 reconcile like any other hand edit.
+Every other sub-window is detected and named, never silent: an edit landing
+before the final check fails the fingerprint comparison and retries against the
+re-read bytes (bounded retries, then the typed `concurrent-edit` refusal
+carrying the staged-against and observed fingerprints), and an edit observed by
+the post-rename re-read is reconciled forward with the `collision-dropped`
+receipt naming the winning fingerprint and the dropped staged entry.
 
 `hub.toml` also carries the tombstone records (§15), so a removal's
 entry-delete plus tombstone-write is one atomic write and the tombstone set
@@ -1937,7 +2002,7 @@ snapshot or preflight facts read from the old configuration can never pass a
 generation check against the new one. Live external reconciliation: every
 `evener/host/*` admission — mutations and `plan`/`deploy` alike, plus
 `list`/`status` at most once per admission (cached fingerprint check only —
-§4) — and every boot compares the on-disk `hub.toml` fingerprint against the
+§4) — and every boot compares the on-disk host-set fingerprint (§6) against the
 in-memory fingerprint in a pre-handler step before serving the call (the
 `list`/`status` lock-free read stays lock-free and serves the file-filtered
 view on mismatch — §4): on a fingerprint match the call proceeds
@@ -2021,7 +2086,9 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   `concurrent-edit` configuration error), the machine-managed banner, an
   in-place rewrite that preserves every pre-existing host entry and every
   non-host key the file carries (including a host entry added to the file while
-  the hub runs, carried through but not live until the next boot), the one-time
+  the hub runs: carried through the rewrite, then adopted live by the §4
+  fingerprint-bound reconcile on the next read or mutation, with boot only the
+  fallback), the one-time
   `hub.toml` migration (entries and every machine-managed record survive, the
   marker is recorded, a sidecar that reappears with the marker present is
   ignored as stale and never re-merged, an identical duplicate collision drops
