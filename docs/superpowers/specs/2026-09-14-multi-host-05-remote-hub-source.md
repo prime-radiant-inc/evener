@@ -7,10 +7,9 @@ analysis is the keystone deliverable.
 
 **Citation convention.** Symbols (method constants, handler functions, files)
 are authoritative and were verified on `multi-host-pr05a..d` and
-`multi-host-pr06a-fleet-view-go`. Catalog and handler line numbers are omitted
-deliberately: they shift as methods are added and the reviewer's base
-(`origin/main`) is not the branch this spec describes. A `*.md:NNN` reference,
-where it survives, is a hint, not pinning.
+`multi-host-pr06a-fleet-view-go`, both since landed on `origin/main`. Catalog
+and handler line numbers are omitted deliberately because they shift as methods
+are added; a `*.md:NNN` reference, where it survives, is a hint, not pinning.
 
 ## Purpose
 

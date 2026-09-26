@@ -9,10 +9,10 @@ Spikes: `2026-09-14-multi-host-spikes-findings.md` (Spikes A and C).
 **Citation convention.** Symbols (package, type, method, constant, file) are
 authoritative and were verified on the implementation branches
 (`multi-host-pr04a-ssh-channel`, `multi-host-pr04b-deploy-restart`,
-`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`). Line numbers are not
-used for Go or TypeScript sources; where a non-Go line reference survives
-(docs, `install.sh`, Makefiles) treat it as a hint from the `multi-host-specs`
-working tree, not as pinning — the reviewer's base is `origin/main`.
+`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`), all since landed on
+`origin/main`. Line numbers are not used for Go or TypeScript sources; where
+a non-Go line reference survives (docs, `install.sh`, Makefiles) treat it as a
+hint, not as pinning; the reviewer's base is `origin/main`.
 
 ## Purpose
 
@@ -1320,8 +1320,8 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   names by substring in `isEvenerHubName`, and `pickSupervisor` already
   refuses ambiguity rather than taking the first match — it returns
   `ErrRestart` for more than one match, "an ambiguous listing is fatal, not a
-  fallback" (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`, pending
-  merge) — while `findHubPID` requires exactly one pid from
+  fallback" (`sshconn/version.go`, shipped with
+  `multi-host-pr04b-deploy-restart`) — while `findHubPID` requires exactly one pid from
   `lsof -ti :<port> -sTCP:LISTEN`; what it does not do is check that the named
   hub *owns the configured address*, and the bare path does not compare the
   effective user. The contract above is stricter, and the definition-matching
