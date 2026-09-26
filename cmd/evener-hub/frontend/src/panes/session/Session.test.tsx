@@ -17,7 +17,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
@@ -66,22 +66,11 @@ import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScrol
 // this suite can pin the Session-level placement without duplicating Composer's
 // own behavior tests.
 //
-// A pair of hoisted vi.mock(...) calls used to sit here, swapping each whole
-// module in the shared module registry - under isolate:false that registry
-// is shared by every file in the worker, so whichever file (this one, or any
-// other file that renders the real Composer/SessionChrome through Session.tsx
-// or directly) happens to instantiate that module graph FIRST in the worker's
-// lifetime permanently wins; a vi.mock registered afterward cannot
-// retroactively change an already-instantiated consumer's binding (see
-// shell/DockRegion.test.tsx's own comment on the same class of bug). vi.spyOn
-// mutates only the one property this file cares about, on the SAME shared
-// module object every other file also reads from, and mockRestore() in
-// afterAll hands the real components back for whatever file runs next.
-//
-// Re-spied in beforeEach below too, not just once here: some other file
-// sharing this worker calling the GLOBAL vi.restoreAllMocks() would silently
-// hand the real Composer/SessionChrome back before this file's own tests run
-// (see shell/palette/commands.test.ts's own comment on the same hazard).
+// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
+// Composer/SessionChrome back mid-file and render them. Re-stubbed in
+// beforeEach below too, not just once here: a test that restores a slot
+// without re-stubbing it (test.each has no onTestFinished) would otherwise
+// leave the real component in place for every later test in this file.
 function stubSessionSlots(): void {
   vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
     <div data-testid="composer-slot">
@@ -94,15 +83,6 @@ function stubSessionSlots(): void {
   ));
 }
 stubSessionSlots();
-
-afterAll(() => {
-  // A test that restored a slot mid-file (and, under test.each, has no
-  // onTestFinished to re-stub it) leaves vi.mocked(...).mockRestore absent;
-  // re-stub first so handing the real components back can't fail.
-  stubSessionSlots();
-  vi.mocked(ComposerModule.Composer).mockRestore();
-  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
-});
 
 // Force stop lives in the session "⋯" menu (SessionChrome) now that the inline
 // footer button is retired; this walks the same menu path a user would. Tests
@@ -313,14 +293,6 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {
