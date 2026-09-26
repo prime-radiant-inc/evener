@@ -36,13 +36,22 @@ func sessionImageFetcher(sources *appsource.Registry, ref appwire.Ref) (remoteSe
 }
 
 // proxyableSessionImage reports whether a host's answer is one of the shapes the
-// local image routes serve: non-empty bytes within the image bound whose media
-// type is the one those bytes themselves carry. A host is contract-bound to both
-// (see sessionImageFromHub), so a violation is refused rather than streamed —
-// the proxy must not become a way to serve a size or a content type the local
-// routes never do.
-func proxyableSessionImage(resp appwire.SessionImageResponse) bool {
+// local image routes serve: non-empty bytes within the image bound whose size
+// and sha are the ones those bytes carry, and whose media type is the type those
+// bytes themselves have. A host is contract-bound to all of them (see
+// sessionImageFromHub), so a violation is refused rather than streamed — the
+// proxy must not serve a size or a content type the local routes never do, nor
+// bytes under a content-addressed URL or ETag they do not answer for. wantSHA is
+// the sha the browser asked for (empty on the file-backed form).
+func proxyableSessionImage(resp appwire.SessionImageResponse, wantSHA string) bool {
 	if len(resp.Data) == 0 || int64(len(resp.Data)) > outputImageMaxBytes {
+		return false
+	}
+	if resp.Size != int64(len(resp.Data)) {
+		return false
+	}
+	sum := imageSha(resp.Data)
+	if resp.SHA != sum || (wantSHA != "" && wantSHA != sum) {
 		return false
 	}
 	mediaType, ok := supportedOutputImageMedia(resp.Data, "")
@@ -99,7 +108,7 @@ func (s *WebServer) serveRemoteSessionImage(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "remote image unavailable", sessionImageProxyStatus(err))
 		return
 	}
-	if !proxyableSessionImage(resp) {
+	if !proxyableSessionImage(resp, params.SHA) {
 		http.Error(w, "remote image unavailable", http.StatusNotFound)
 		return
 	}

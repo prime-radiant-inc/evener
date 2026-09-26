@@ -135,17 +135,18 @@ func getSessionImageRoute(t *testing.T, srv *httptest.Server, path string) *http
 // local routes answer with, and the local path must stay untouched.
 func TestSessionImageRouteProxiesRemoteSessionImageThroughHostClient(t *testing.T) {
 	png := sessionImageTestPNG
+	sha := imageSha(png)
 	srv, _, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{},
 		func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
 			return appwire.SessionImageResponse{
 				MediaType: "image/png",
 				Size:      int64(len(png)),
-				SHA:       sessionImageRouteSha,
+				SHA:       sha,
 				Data:      png,
 			}, nil
 		})
 
-	resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sessionImageRouteSha)
+	resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sha)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("remote sha route = status %d, want 200", resp.StatusCode)
@@ -163,14 +164,14 @@ func TestSessionImageRouteProxiesRemoteSessionImageThroughHostClient(t *testing.
 	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=86400, immutable" {
 		t.Fatalf("Cache-Control = %q, want the sha-addressed immutable policy", got)
 	}
-	if got := resp.Header.Get("ETag"); got != `"`+sessionImageRouteSha+`"` {
+	if got := resp.Header.Get("ETag"); got != `"`+sha+`"` {
 		t.Fatalf("ETag = %q, want the requested sha", got)
 	}
 	calls := seen()
 	if len(calls) != 1 {
 		t.Fatalf("host calls = %+v, want exactly one evener/session/image", calls)
 	}
-	if calls[0].SessionID != "t1" || calls[0].SHA != sessionImageRouteSha || calls[0].Path != "" {
+	if calls[0].SessionID != "t1" || calls[0].SHA != sha || calls[0].Path != "" {
 		t.Fatalf("host params = %+v, want the remote session id with the sha selector", calls[0])
 	}
 }
@@ -179,12 +180,13 @@ func TestSessionImageRouteProxiesRemoteSessionImageThroughHostClient(t *testing.
 // path is forwarded verbatim, and the response's own sha becomes the ETag.
 func TestSessionImageRouteProxiesRemoteDocImageThroughHostClient(t *testing.T) {
 	png := sessionImageTestPNG
+	sha := imageSha(png)
 	srv, _, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{},
 		func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
 			return appwire.SessionImageResponse{
 				MediaType: "image/png",
 				Size:      int64(len(png)),
-				SHA:       sessionImageRouteSha,
+				SHA:       sha,
 				Data:      png,
 			}, nil
 		})
@@ -204,7 +206,7 @@ func TestSessionImageRouteProxiesRemoteDocImageThroughHostClient(t *testing.T) {
 	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=60" {
 		t.Fatalf("Cache-Control = %q, want the file-backed private policy", got)
 	}
-	if got := resp.Header.Get("ETag"); got != `"`+sessionImageRouteSha+`"` {
+	if got := resp.Header.Get("ETag"); got != `"`+sha+`"` {
 		t.Fatalf("ETag = %q, want the response's own sha", got)
 	}
 	calls := seen()
@@ -350,10 +352,15 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 		}
 	})
 
-	// A host is contract-bound to serve image bytes under the 8 MiB bound with
-	// the media type those bytes carry. A violation must be refused, not
-	// streamed: the proxy must not serve a size or a content type the local
-	// routes never do.
+	// A host is contract-bound to serve image bytes under the 8 MiB bound, with
+	// the size and sha those bytes carry and the media type they themselves
+	// have. A violation must be refused, not streamed: the proxy must not serve
+	// a size or a content type the local routes never do, nor bytes under a
+	// content-addressed URL or ETag they do not answer for. Each case below
+	// keeps every other field honest so it reaches the check it names.
+	overBound := bytes.Repeat([]byte{'x'}, outputImageMaxBytes+1)
+	notAnImage := []byte("not an image")
+	html := []byte("<html></html>")
 	for _, tt := range []struct {
 		name string
 		resp appwire.SessionImageResponse
@@ -362,27 +369,45 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 			name: "over-bound bytes",
 			resp: appwire.SessionImageResponse{
 				MediaType: "image/png",
-				Size:      outputImageMaxBytes + 1,
-				SHA:       sessionImageRouteSha,
-				Data:      bytes.Repeat([]byte{'x'}, outputImageMaxBytes+1),
+				Size:      int64(len(overBound)),
+				SHA:       imageSha(overBound),
+				Data:      overBound,
 			},
 		},
 		{
 			name: "media type the bytes do not carry",
 			resp: appwire.SessionImageResponse{
 				MediaType: "image/png",
-				Size:      int64(len("not an image")),
-				SHA:       sessionImageRouteSha,
-				Data:      []byte("not an image"),
+				Size:      int64(len(notAnImage)),
+				SHA:       imageSha(notAnImage),
+				Data:      notAnImage,
 			},
 		},
 		{
 			name: "content type the local routes never serve",
 			resp: appwire.SessionImageResponse{
 				MediaType: "text/html",
-				Size:      int64(len("<html></html>")),
-				SHA:       sessionImageRouteSha,
-				Data:      []byte("<html></html>"),
+				Size:      int64(len(html)),
+				SHA:       imageSha(html),
+				Data:      html,
+			},
+		},
+		{
+			name: "size the bytes do not have",
+			resp: appwire.SessionImageResponse{
+				MediaType: "image/png",
+				Size:      int64(len(sessionImageTestPNG)) + 1,
+				SHA:       imageSha(sessionImageTestPNG),
+				Data:      sessionImageTestPNG,
+			},
+		},
+		{
+			name: "sha the bytes do not hash to",
+			resp: appwire.SessionImageResponse{
+				MediaType: "image/png",
+				Size:      int64(len(sessionImageTestPNG)),
+				SHA:       strings.Repeat("b", 64),
+				Data:      sessionImageTestPNG,
 			},
 		},
 	} {
@@ -398,4 +423,25 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 			}
 		})
 	}
+
+	// The sha-addressed route is content-addressed by the URL's own sha: bytes
+	// the host returns under a different one must not be served (the browser
+	// would cache them under that URL's ETag).
+	t.Run("sha route refuses bytes that are not the requested sha", func(t *testing.T) {
+		other := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'o', 't', 'h', 'e', 'r'}
+		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
+			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
+				return appwire.SessionImageResponse{
+					MediaType: "image/png",
+					Size:      int64(len(other)),
+					SHA:       imageSha(other),
+					Data:      other,
+				}, nil
+			})
+		resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sessionImageRouteSha)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("sha mismatch = status %d, want 404", resp.StatusCode)
+		}
+	})
 }

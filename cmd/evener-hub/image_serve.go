@@ -145,7 +145,10 @@ func scanTranscriptForImage(path, wantSha string, maxRecordBytes int, maxImageBy
 		line, complete, _, readErr := transcript.ReadLine(reader, maxRecordBytes)
 		if readErr != nil {
 			if maxImageBytes > 0 && errors.Is(readErr, transcript.ErrLineTooLong) {
-				return nil, "", false, nil
+				// An over-bound record cannot hold a servable image, but an
+				// over-bound record later in the file does not un-find an image
+				// already matched in an earlier one.
+				return matchedData, matchedMediaType, matchedData != nil, nil
 			}
 			return nil, "", false, readErr
 		}
