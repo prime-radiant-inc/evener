@@ -214,11 +214,8 @@ type supervisorSet struct {
 
 // restartRemote is the remote command that restarts the supervised hub. ok is
 // false when no safe supervised command can be built — launchd with no numeric
-// uid, or a label outside the bare-safe set — in which case the restart refuses
-// rather than falling through to the unmanaged ad hoc path (restartHub, spec 04
-// criterion 19): the label is host-derived data that must not be interpolated
-// into the remote shell, and the ad hoc path is the unguarded kill criterion 20
-// removes.
+// uid, or a label outside the bare-safe set — and the caller then falls through
+// to the guarded ad hoc path rather than naming the label in a command.
 //
 // The darwin domain argument is `gui/<uid>/<label>` with the numeric uid
 // resolved in preflight and passed as one bare-safe word: a `$(id -u)`
@@ -559,15 +556,17 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 }
 
 // restartHub restarts the host's hub: after a deploy, to replace a stale process,
-// or to settle a restart or start an earlier attempt recorded. It restarts a
-// detected supervisor (launchd/systemd) by unit or label; a hub with no
-// supervisor, or one whose launchd restart command cannot be built safely, is
-// refused with ErrRestart and emits no signal (spec 04, criteria 19-20) — the
-// component's only host interface is `ssh <dest> <command>`, so no atomic
-// process handle (pidfd or a host-side pin helper) is reachable to pin an
-// identified PID across a signal. replaced is the identity of the hub process
-// this restart expects to replace, so a non-unique version cannot make the old
-// process look like a successful replacement.
+// or to settle a restart or start an earlier attempt recorded. It prefers a
+// detected supervisor (launchd/systemd) and restarts it by unit or label;
+// otherwise — a hub with no supervisor, or one whose launchd restart command
+// cannot be built safely (no numeric uid, or a label outside the bare-safe set,
+// which is never interpolated into the remote shell) — it falls through to the
+// guarded ad hoc path: recover the listening pid, its argv, and its log, then
+// kill and relaunch. It never starts a second hub while the old one holds
+// hub.lock: the ad hoc path waits for the port to clear before relaunching.
+// replaced is the identity of the hub process this restart expects to replace, so
+// a non-unique version cannot make the old process look like a successful
+// replacement.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, replaced hubIdentity) error {
 	// Judge the restart against the build the host will actually serve, which is
 	// this controller's own only when a deploy converged the host on it
@@ -596,29 +595,26 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		}
 	}
 	if sup.kind != supervisorNone {
-		remote, ok := sup.restartRemote(facts.UID)
-		if !ok {
-			// A detected supervisor whose restart command cannot be built safely —
-			// launchd with no numeric uid from preflight, or a label outside the
-			// bare-safe set — must refuse rather than fall through to an unmanaged
-			// ad hoc launch: the label is host-derived data that must never be
-			// interpolated into the remote shell, and the ad hoc path is the
-			// unguarded check-then-act kill spec 04 criterion 20 forbids.
-			return fmt.Errorf("%w: host %q %s supervisor %q has no safely-buildable restart command; refusing to fall through to an unmanaged launch",
-				ErrRestart, host.Name, sup.kind, sup.label)
+		if remote, ok := sup.restartRemote(facts.UID); ok {
+			return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
 		}
-		return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
+		// The supervisor's restart command cannot be built safely, so fall through
+		// to the guarded ad hoc path without naming the label in any command.
 	}
 
-	// No supervisor owns the hub, so a restart could only signal the identified
-	// process directly. No atomic process handle (a pidfd, or a host-side helper
-	// holding an equivalent identity pin) is reachable through this component's
-	// `ssh <dest> <command>` interface, so the supervisorless restart refuses with
-	// ErrRestart and emits no signal instead of the check-then-act `restartBare`
-	// kill (spec 04, criterion 20). A stopped host's cold bootstrap is unaffected:
-	// it is start-only (bootstrapHub) and never reaches this branch.
-	return fmt.Errorf("%w: host %q hub has no supervisor that owns it (no live systemd unit or launchd label on the configured endpoint); a supervisorless restart cannot pin the process, so refusing to signal it",
-		ErrRestart, host.Name)
+	// No supervisor owns the hub, so the guarded ad hoc restart is the only path
+	// that can run. A stopped host's cold bootstrap is unaffected: it is
+	// start-only (bootstrapHub) and never reaches this branch.
+	if err := m.restartBare(ctx, host, replaced); err != nil {
+		return err
+	}
+	if err := m.waitHealthy(ctx, host, expectVersion, expectPin, replaced); err != nil {
+		return err
+	}
+	// A healthy replacement is serving, so any relaunch this Manager recorded for
+	// this host is settled.
+	m.clearPendingRestart(host.Name)
+	return nil
 }
 
 // restartSupervised runs a detected supervisor's restart command and verifies
@@ -691,12 +687,12 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts P
 // by listening port, recover the exact argv and log destination, stop it, and
 // relaunch detached with the recovered argv.
 //
-// It is deliberately unreachable from production since spec 04 criterion 20
-// removed the supervisorless signal: restartHub refuses before calling it, and
-// its only remaining callers are its unit tests. It is retained, unguarded
-// `kill -- <pid>` and all, and pinned by those tests, pending the tracked
-// host-side atomic-signal helper that would let a supervisorless restart pin the
-// identified process; do not wire a restart branch back to it before that lands.
+// It is the supervisorless restart path: restartHub falls through to it when no
+// supervisor owns the hub, or when a detected supervisor's restart command
+// cannot be built safely. Its guards reject a listener that does not own the
+// configured address before any `kill`, but identification and the signal are
+// separate host commands, so a PID-reuse window remains — the ad hoc path
+// validates at identification time only, and that residual window is accepted.
 func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced hubIdentity) error {
 	port := hubPort(m.hostAddr(host))
 	pid, err := m.findHubPID(ctx, host, port)
