@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
@@ -964,6 +965,55 @@ func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
 	// force_dirty:true removes it.
 	if _, err := r.removeOp(t, map[string]any{"name": "dirtylane", "force_dirty": true}); err != nil {
 		t.Fatalf("force_dirty remove should succeed: %v", err)
+	}
+}
+
+// TestWorktreeRemove_PreservesLateDirtyWithoutForceDirty covers the race
+// between the force_dirty=false preflight and git's final removal. The real-Git
+// runner wrapper mutates this disposable fixture only after the real status
+// command has reported clean, so the final real `git worktree remove` sees the
+// edit that the preflight could not have observed. This must refuse with
+// force=true alone; only force_dirty is consent to discard the late edit.
+func TestWorktreeRemove_PreservesLateDirtyWithoutForceDirty(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	path := r.addManagedWorktreeFixture(t, "late-dirty-lane")
+	lateDirty := []byte("late dirty edit\n")
+	var injected atomic.Bool
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			out, err := next(args...)
+			if err == nil && len(args) == 5 && args[0] == "-C" && args[1] == path &&
+				args[2] == "status" && args[3] == "--porcelain=v1" &&
+				args[4] == "--untracked-files=all" && injected.CompareAndSwap(false, true) {
+				if writeErr := os.WriteFile(filepath.Join(path, "main.go"), lateDirty, 0o644); writeErr != nil {
+					return out, writeErr
+				}
+			}
+			return out, err
+		}
+	}
+
+	_, err := r.removeOp(t, map[string]any{"name": "late-dirty-lane", "force": true})
+	if err == nil {
+		t.Fatal("force alone must refuse a late uncommitted edit")
+	}
+	if !strings.Contains(err.Error(), "git worktree remove failed") {
+		t.Fatalf("late dirty refusal = %v, want git's final worktree-remove refusal", err)
+	}
+	if !injected.Load() {
+		t.Fatal("late-dirty mutation did not run after the real clean preflight")
+	}
+	got, readErr := os.ReadFile(filepath.Join(path, "main.go"))
+	if readErr != nil {
+		t.Fatalf("read preserved late edit: %v", readErr)
+	}
+	if !bytes.Equal(got, lateDirty) {
+		t.Errorf("late edit = %q, want %q", got, lateDirty)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("worktree removed despite final dirty refusal: %v", statErr)
 	}
 }
 
