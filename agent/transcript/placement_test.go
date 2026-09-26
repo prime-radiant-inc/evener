@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/afero"
 
@@ -178,63 +177,20 @@ func TestPlacementStateAdvancesOnlyForRecordedEntries(t *testing.T) {
 	}
 }
 
-// resumeAfterHeaderFS opens a second writer on a new transcript the moment its
-// header's bytes land, before the creating writer has settled its tail.
-type resumeAfterHeaderFS struct {
-	afero.Fs
-	resumed chan *Writer
-}
-
-func (fs *resumeAfterHeaderFS) Create(name string) (afero.File, error) {
-	file, err := fs.Fs.Create(name)
-	if err != nil {
-		return nil, err
-	}
-	return &resumeAfterHeaderFile{File: file, fs: fs, path: name}, nil
-}
-
-type resumeAfterHeaderFile struct {
-	afero.File
-	fs      *resumeAfterHeaderFS
-	path    string
-	written bool
-}
-
-func (f *resumeAfterHeaderFile) Write(p []byte) (int, error) {
-	n, err := f.File.Write(p)
-	if f.written {
-		return n, err
-	}
-	f.written = true
-	go func() {
-		w, _, openErr := OpenWriterForSessionWithFS(afero.NewOsFs(), f.path, "")
-		if openErr != nil {
-			w = nil
-		}
-		f.fs.resumed <- w
-	}()
-	// Let a resume that can run now finish first. One that has to wait for
-	// the creating writer's tail cannot, and the create goes on.
-	select {
-	case w := <-f.fs.resumed:
-		f.fs.resumed <- w
-	case <-time.After(200 * time.Millisecond):
-	}
-	return n, err
-}
-
 func TestPreludeSurvivesAResumeBetweenHeaderAndTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	fs := &resumeAfterHeaderFS{Fs: afero.NewOsFs(), resumed: make(chan *Writer, 1)}
+	var resumed *Writer
+	fs := afterFirstWriteFs{Fs: afero.NewOsFs(), afterFirstWrite: func() {
+		var err error
+		if resumed, _, err = OpenWriterForSession(path, sharedFileHeader.SessionID); err != nil {
+			t.Fatalf("resume a transcript while it is created: %v", err)
+		}
+	}}
 	w, err := newWriterFS(fs, path, sharedFileHeader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	resumed := <-fs.resumed
-	if resumed == nil {
-		t.Fatal("the concurrent resume failed")
-	}
 	t.Cleanup(func() { _ = resumed.Close() })
 	if p := recordPlaced(t, w, steeringTurn("x"), PlaceSession); p.TurnID != appwire.SystemPreludeTurnID {
 		t.Fatalf("a new transcript's first entry is in turn %q (%s), want the prelude", p.TurnID, p.TurnKind)
