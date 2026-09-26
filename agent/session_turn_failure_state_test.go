@@ -113,9 +113,9 @@ func TestWireState_InterruptIsNotAFailedTurn(t *testing.T) {
 		_, err := sess.ProcessInput(turnCtx, "hello", nil)
 		done <- err
 	}()
-	<-blocked
+	awaitTurnFailureTestSignal(t, blocked, "the blocked model call")
 	stop()
-	<-done
+	awaitTurnFailureTestSignal(t, done, "the stopped turn to return")
 	if got := sess.WireState(); got != string(SessionIdle) {
 		t.Fatalf("WireState after Stop = %q, want idle: an interrupt is not a failed turn", got)
 	}
@@ -190,7 +190,7 @@ func TestRestore_FailedTurnResumesFailed(t *testing.T) {
 		t.Fatalf("restored WireState = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	restored.Close()
-	<-doneCh
+	awaitTurnFailureTestSignal(t, doneCh, "restored event collector drain")
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range *eventsPtr {
@@ -245,7 +245,7 @@ func TestRestore_FailedTurnWithQueuedInputResumesActive(t *testing.T) {
 		t.Fatalf("restored WireState = %q, want %q: queued input will start the next turn", got, SessionProcessing)
 	}
 	restored.Close()
-	<-doneCh
+	awaitTurnFailureTestSignal(t, doneCh, "restored event collector drain")
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range *eventsPtr {
@@ -298,7 +298,7 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 		t.Fatalf("WireState = %q, want %q: the queued message starts the next turn", got, SessionProcessing)
 	}
 	sess.Close()
-	<-doneCh
+	awaitTurnFailureTestSignal(t, doneCh, "event collector drain")
 
 	mu.Lock()
 	evs := append([]events.SessionEvent{}, (*eventsPtr)...)
@@ -322,5 +322,80 @@ func TestSession_FailedTurnWithQueuedInputEndsActiveAndOpen(t *testing.T) {
 				t.Fatalf("a failed turn with a queued message announced thread/closed: %+v", n)
 			}
 		}
+	}
+}
+
+// A restored session whose carrier turn failed while a question was still
+// pending publishes awaiting from the start: restore rebuilds the pending
+// question before it stamps SessionStart, and a pending question outranks the
+// failure (RestingWireState).
+func TestRestore_FailedTurnWithPendingQuestionResumesAwaiting(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) { return toolCallResponse(ask), nil },
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "carrier provider failure", nil, nil)
+		},
+	}})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if _, err := sess.SetHumanNote("note-restore-question-outranks-failure", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a provider failure after the carrier ran", ran, err)
+	}
+	id := sess.ID()
+	sess.Close()
+
+	meta, err := schema.LoadSessionMeta(dir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMeta(c2, withTestSessionNamer(c2, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(restored)
+	if got := restored.WireState(); got != string(SessionAwaiting) {
+		t.Fatalf("restored WireState = %q, want %q", got, SessionAwaiting)
+	}
+	restored.Close()
+	awaitTurnFailureTestSignal(t, doneCh, "restored event collector drain")
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range *eventsPtr {
+		if d, ok := ev.Data.(events.SessionStartData); ok && ev.Kind == events.EventSessionStart {
+			if d.State != string(SessionAwaiting) {
+				t.Fatalf("restored SessionStart State = %q, want %q: the pending question outranks the failure", d.State, SessionAwaiting)
+			}
+			return
+		}
+	}
+	t.Fatal("restored session emitted no SessionStart")
+}
+
+// awaitTurnFailureTestSignal waits for ch to close or deliver, failing the
+// test rather than hanging if it never does.
+func awaitTurnFailureTestSignal[T any](t *testing.T, ch <-chan T, what string) {
+	t.Helper()
+	// TRIPWIRE: every signal here comes from in-process fakes; only fires on a genuine hang.
+	select {
+	case <-ch:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
 	}
 }

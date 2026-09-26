@@ -993,6 +993,43 @@ func TestAppEventProjectorMapsFailedSessionEndWithPendingWork(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorSessionEndClosesOnlyOnAClose pins the SessionEnd
+// state table: only an end with no state, or closed, announces thread/closed
+// (the rule server/bridge.go's sessionEventClosesSession applies to the stored
+// status). Every state the agent's WireState publishes for an open session
+// maps to itself, and an unrecognized one reads idle, never closed.
+func TestAppEventProjectorSessionEndClosesOnlyOnAClose(t *testing.T) {
+	cases := []struct {
+		state      string
+		wantStatus string
+		wantClosed bool
+	}{
+		{"", appwire.ThreadStatusClosed, true},
+		{appwire.ThreadStatusClosed, appwire.ThreadStatusClosed, true},
+		{appwire.ThreadStatusIdle, appwire.ThreadStatusIdle, false},
+		{appwire.ThreadStatusAwaiting, appwire.ThreadStatusAwaiting, false},
+		{appwire.ThreadStatusActive, appwire.ThreadStatusActive, false},
+		{appwire.ThreadStatusSystemError, appwire.ThreadStatusSystemError, false},
+		{"someFutureState", appwire.ThreadStatusIdle, false},
+	}
+	for _, c := range cases {
+		t.Run("state="+c.state, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+			sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+				Reason: "test",
+				State:  c.state,
+			}})
+			if got := hasAppNotification(sessionEnd, appwire.NotifyThreadClosed); got != c.wantClosed {
+				t.Fatalf("thread/closed emitted = %v, want %v: %+v", got, c.wantClosed, sessionEnd)
+			}
+			if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != c.wantStatus {
+				t.Fatalf("status = %+v, want %q", status, c.wantStatus)
+			}
+		})
+	}
+}
+
 // TestAppEventProjectorRestoredSessionStartCarriesFailedState: a daemon
 // restored onto a transcript that ends in a failed turn stamps systemError on
 // its SessionStart (agent RestingWireState), and the thread starts Failed.

@@ -189,6 +189,7 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 		{"awaiting_end", TestAppEventProjectorMapsAwaitingSessionEnd},
 		{"failed_end", TestAppEventProjectorMapsFailedSessionEnd},
 		{"failed_end_pending_work", TestAppEventProjectorMapsFailedSessionEndWithPendingWork},
+		{"session_end_close_table", TestAppEventProjectorSessionEndClosesOnlyOnAClose},
 		{"interrupted", TestAppEventProjectorMarksInterruptedTurnCanceled},
 		{"canceled_error", TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledError},
 		{"turn_timing", TestProjectorTurnEndedStampsTiming},

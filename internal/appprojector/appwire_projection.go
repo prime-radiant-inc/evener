@@ -1348,22 +1348,30 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventSessionEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.SessionEndData](event.Data)
-		state := appwire.ThreadStatusClosed
+		// Only a real close ends the thread: an end with no state, or
+		// closed. Every other value is one the agent's WireState publishes
+		// for a session that stays open and takes the next message. This is
+		// the rule server/bridge.go's sessionEventClosesSession applies to
+		// the stored status, so the two never disagree about a close; an
+		// unrecognized value is no close there either, and reads idle here
+		// the way an unrecognized SessionStart state does.
+		var state string
 		switch data.State {
+		case "", appwire.ThreadStatusClosed:
+			state = appwire.ThreadStatusClosed
 		case appwire.ThreadStatusIdle:
 			state = appwire.ThreadStatusIdle
 		case appwire.ThreadStatusAwaiting:
 			state = appwire.ThreadStatusAwaiting
-		case appwire.ThreadStatusClosed:
-			state = appwire.ThreadStatusClosed
 		case appwire.ThreadStatusSystemError:
-			// Open and resting on a failed turn (agent RestingWireState): the
-			// session takes the next message, so this is no close.
+			// Resting on a failed turn (agent RestingWireState).
 			state = appwire.ThreadStatusSystemError
 		case appwire.ThreadStatusActive:
-			// Open with work pending (agent WireState): a message queued
-			// during a failed turn starts the next one, so this is no close.
+			// Work pending (agent WireState): a message queued during a
+			// failed turn starts the next one.
 			state = appwire.ThreadStatusActive
+		default:
+			state = appwire.ThreadStatusIdle
 		}
 		turnStatus := appwire.TurnStatusCompleted
 		if state == appwire.ThreadStatusClosed || data.Interrupted {
