@@ -167,7 +167,10 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 	if len(h.steers) != 0 {
 		t.Fatalf("failed auto-advance steered %d times: %q", len(h.steers), h.steers)
 	}
-	taskUpdatedEvent(t, h)
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 2 || event.Done != 1 || event.Remaining != 1 || event.Current != nil {
+		t.Fatalf("failed auto-advance event = %+v, want task 1 done and no current task", event)
+	}
 	if len(result.ToolState) == 0 {
 		t.Fatal("failed auto-advance returned no committed task state")
 	}
