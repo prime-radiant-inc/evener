@@ -58,8 +58,11 @@ recovery of pipeline state.
 
 This spec owns `evener/host/plan`, `evener/host/deploy`, `evener/host/restart`,
 `evener/host/operations`, the `evener/host/running` probe handler, confirmation tokens,
-operation records, the per-host gate protocol, the cross-file commit intents, and the
-union-registration generator work. It mirrors generations in the store. It consumes
+operation records, the per-host gate protocol, the cross-file commit intents, the
+union-registration generator work, and the `teardown-retry`/`teardown-recover` handler
+registration with their union catalog entry and the `teardown-unknown-key`
+discriminator (the registry spec §2 table assigns that registration here). It mirrors
+generations in the store. It consumes
 `attachUnderGate` for restart reattach.
 
 This spec does not own mutations, mutation receipts, sidecar commits, remnants,

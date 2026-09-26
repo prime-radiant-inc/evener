@@ -74,9 +74,13 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   carries the same record.)
 - **Restart identity pin: verify-then-signal accepted (Jesse, 2026-09-26).** The
   guarded verify-then-signal posture stands, supervisor-preferred (restart by
-  systemd unit or launchd label where one is identified) with the ad hoc path
-  for a supervisorless hub: a target whose identity cannot be verified is
-  refused `ErrRestart` rather than signaled. The residual check-then-act window
+  systemd unit or launchd label where one is identified and safely restartable)
+  with the guarded ad hoc path for a supervisorless hub **or where the
+  identified launchd label fails the bare-safe gate** (the label is never
+  interpolated into the remote shell): a target whose identity cannot be
+  verified is refused `ErrRestart` rather than signaled. A fall-through that
+  races launchd's respawn cannot double-serve — the address bind and `hub.lock`
+  are single-winner and the losing hub exits (`hostlock`). The residual check-then-act window
   is acknowledged, **not** closed, and no host-side restart-identity pin helper
   is planned — a `pidfd` is unreachable through the component's only host
   interface, `ssh <dest> <command>` (the crash-fencing `evener-fence` lease

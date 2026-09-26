@@ -1347,8 +1347,8 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   `ErrRestart` and start nothing** (no ad hoc launch chosen on top of an
   ambiguity), and **only no match at all** is the supervisorless branch: its
   restart runs the guarded verify-then-signal ad hoc path (check 5, and the ad
-  hoc branch below), and its only no-supervisor launch is the cold-bootstrap
-  **start**.
+  hoc branch below); the cold-bootstrap **start** is the only no-supervisor
+  launch that does not first signal an identified listener.
   **When a candidate hub definition exists but its effective address
   cannot be resolved** (no explicit `--addr` and the `--config` is unreadable or
   carries no address), the cold bootstrap **refuses with `ErrRestart` and
@@ -1657,8 +1657,9 @@ with the remote hub and its daemons still running.
   `ErrRestart` with no `kill` and no relaunch argv (the ambiguity refusal, never
   "first match" and never an ad hoc launch); zero candidates → the
   supervisorless guarded ad hoc restart, refusing `ErrRestart` with no `kill`
-  and no relaunch argv only for a listener whose identity does not verify, and
-  the cold-bootstrap **start** is the only no-supervisor launch.
+  and no relaunch argv only for a listener whose identity does not verify; the
+  cold-bootstrap **start** (no process to identify or signal) is the only
+  no-supervisor launch that does not first signal an identified listener.
 - **Health-verification tests.** Fake runner returns a body reporting the
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
@@ -1925,7 +1926,8 @@ from the component-03 registry.
   matching address), recover argv/log, `kill` it, wait for the port to clear,
   relaunch detached — remains the **operator's** out-of-band procedure for a
   supervisorless host, and the cold-bootstrap **start** (no process to identify
-  or signal) is the manager's only no-supervisor launch. See §5. `hub.lock`
+  or signal) is the manager's only no-supervisor launch that does not first
+  signal an identified listener. See §5. `hub.lock`
   stays a pure mutual-exclusion `flock` (`main.go`; `hostlock.go`); it is never
   read for a PID and never broken. Residual risk: that recipe calls `lsof`/`ps` on
   the host, so a host without those tools (or a hub the controller cannot match
