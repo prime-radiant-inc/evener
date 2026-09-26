@@ -22,7 +22,7 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/transcript"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 

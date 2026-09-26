@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )

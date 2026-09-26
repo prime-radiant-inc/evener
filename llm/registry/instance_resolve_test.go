@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 func cutoverRegistry(t *testing.T, env map[string]string, instances map[string]Provider) *Registry {

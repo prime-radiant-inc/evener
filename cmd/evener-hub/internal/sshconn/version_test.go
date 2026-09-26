@@ -16,7 +16,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 func TestDetectSupervisorTable(t *testing.T) {

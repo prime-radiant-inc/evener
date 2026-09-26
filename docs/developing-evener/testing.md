@@ -1296,7 +1296,7 @@ waits for the pipes once the context ends or the child exits, and passes the
 result through `orphanpipe.ChildErr`, which reads `exec.ErrWaitDelay` after a
 successful exit as the success it was.
 
-Prove the bound with `internal/orphanpipe/orphanpipetest` rather than a
+Prove the bound with `execsupport/orphanpipe/orphanpipetest` rather than a
 stopwatch. `New` stages the FIFOs, `WriteScript` writes the fake executable,
 `Spawn` is the shell fragment that backgrounds a grandchild holding the
 script's stdout and stderr, `AwaitStarted` waits until it holds them, and

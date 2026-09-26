@@ -5,7 +5,7 @@
 // direct child, and stops them TERM-first with a bounded KILL escalation.
 // It is the Go home of the stop_children/process-group discipline the shell
 // runners each hand-rolled. The group-signaling primitives live in
-// internal/procgroup, the one implementation every spawned-command surface
+// execsupport/procgroup, the one implementation every spawned-command surface
 // shares.
 package procgroup
 
@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	baseprocgroup "primeradiant.com/evener/internal/procgroup"
+	baseprocgroup "primeradiant.com/evener/execsupport/procgroup"
 )
 
 // Start starts cmd in its own process group. The caller keeps ownership of
