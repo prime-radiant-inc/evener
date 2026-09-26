@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -22,26 +23,29 @@ type taskToolStateEntry struct {
 }
 
 type taskToolHarness struct {
-	store   *taskpkg.TaskStore
-	steers  []string
-	emitted []events.EventData
-	reg     *tool.Registry
+	store    *taskpkg.TaskStore
+	dir      string
+	steers   []string
+	steerErr error
+	emitted  []events.EventData
+	reg      *tool.Registry
 }
 
 func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarness {
 	t.Helper()
-	store := taskpkg.NewTaskStore(t.TempDir(), "task-tool")
+	dir := t.TempDir()
+	store := taskpkg.NewTaskStore(dir, "task-tool")
 	if _, err := store.Append(inputs); err != nil {
 		t.Fatalf("append tasks: %v", err)
 	}
-	h := &taskToolHarness{store: store}
+	h := &taskToolHarness{store: store, dir: dir}
 	deps := &toolDeps{
 		emit: func(_ events.EventKind, data events.EventData) {
 			h.emitted = append(h.emitted, data)
 		},
 		steer: func(text, _ string) error {
 			h.steers = append(h.steers, text)
-			return nil
+			return h.steerErr
 		},
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
@@ -52,6 +56,15 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 	h.reg = tool.NewRegistry()
 	registerTaskTools(h.reg, deps)
 	return h
+}
+
+func (h *taskToolHarness) reopened(t *testing.T) *taskpkg.TaskStore {
+	t.Helper()
+	reloaded := taskpkg.NewTaskStore(h.dir, "task-tool")
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload committed task state: %v", err)
+	}
+	return reloaded
 }
 
 // call executes a task_list call with the given raw arguments (nil = bare
@@ -152,6 +165,88 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 	view = reloaded.View()
 	if view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskOpen {
 		t.Fatalf("durable state after failed auto-advance = %#v", view)
+	}
+}
+
+func TestTaskTool_SteerFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "start me", Prompt: "begin work"}})
+	h.steerErr = errors.New("steering unavailable")
+
+	result := h.update(t, map[string]any{"id": 1, "status": "in_progress"})
+	if result.Err != nil || result.IsError || !strings.Contains(result.Output, "post-commit current-task steering failed") {
+		t.Fatalf("steer failure result = err %v, isError=%v, output=%q; want committed-state warning", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, "steering unavailable") {
+		t.Fatalf("steer failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("steer failure emitted %d task events, want committed snapshot", len(h.emitted))
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskInProgress {
+		t.Fatalf("published state after steer failure = %#v", state)
+	}
+	view := h.store.View()
+	if len(view) != 1 || view[0].Status != taskpkg.TaskInProgress {
+		t.Fatalf("in-memory state after steer failure = %#v", view)
+	}
+	reloaded := h.reopened(t)
+	if view := reloaded.View(); len(view) != 1 || view[0].Status != taskpkg.TaskInProgress {
+		t.Fatalf("durable state after steer failure = %#v", view)
+	}
+}
+
+func TestTaskTool_AutoAdvanceSteerFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{
+		{Description: "finish me", Prompt: "finish"},
+		{Description: "advance me", Prompt: "advance"},
+	})
+	h.steerErr = errors.New("auto steering unavailable")
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError || !strings.Contains(result.Output, "post-commit auto-advance steering failed") {
+		t.Fatalf("auto steer failure result = err %v, isError=%v, output=%q; want committed-state warning", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, "auto steering unavailable") {
+		t.Fatalf("auto steer failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("auto steer failure emitted %d task events, want one final snapshot", len(h.emitted))
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskInProgress {
+		t.Fatalf("published state after auto steer failure = %#v", state)
+	}
+	reloaded := h.reopened(t)
+	if view := reloaded.View(); len(view) != 2 || view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskInProgress {
+		t.Fatalf("durable state after auto steer failure = %#v", view)
+	}
+}
+
+func TestTaskTool_TaskCompletionSteerFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish me", Prompt: "finish"}})
+	h.steerErr = errors.New("completion steering unavailable")
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError || !strings.Contains(result.Output, "post-commit task-completion steering failed") {
+		t.Fatalf("completion steer failure result = err %v, isError=%v, output=%q; want committed-state warning", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, "completion steering unavailable") {
+		t.Fatalf("completion steer failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("completion steer failure emitted %d task events, want one final snapshot", len(h.emitted))
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone {
+		t.Fatalf("published state after completion steer failure = %#v", state)
+	}
+	reloaded := h.reopened(t)
+	if view := reloaded.View(); len(view) != 1 || view[0].Status != taskpkg.TaskDone {
+		t.Fatalf("durable state after completion steer failure = %#v", view)
 	}
 }
 
