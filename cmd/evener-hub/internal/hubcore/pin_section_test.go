@@ -30,15 +30,15 @@ func TestNormalizePinSectionName(t *testing.T) {
 
 func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	first, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	first, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed || first.MemberCount != 1 {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
 	}
-	reused, changed, err := store.CreateOrReuseAndAssign("research", "session-b", time.Unix(2, 0))
+	reused, changed, err := store.CreateOrReuseAndAssign("research", "", "session-b", time.Unix(2, 0))
 	if err != nil || !changed || reused.ID != first.ID || reused.Name != "Research" || reused.MemberCount != 2 {
 		t.Fatalf("reuse = %+v, %v, %v", reused, changed, err)
 	}
-	other, _, err := store.CreateOrReuseAndAssign("Client", "session-a", time.Unix(3, 0))
+	other, _, err := store.CreateOrReuseAndAssign("Client", "", "session-a", time.Unix(3, 0))
 	if err != nil || other.MemberCount != 1 {
 		t.Fatalf("other = %+v, %v", other, err)
 	}
@@ -46,18 +46,18 @@ func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pins) != 2 || pins["session-a"].SectionID != other.ID {
+	if len(pins) != 2 || pins[SessionPinKey("", "session-a")].SectionID != other.ID {
 		t.Fatalf("pins = %+v", pins)
 	}
 }
 
 func TestPinSectionStoreCreateReusesUnicodeCaseFoldedName(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	first, changed, err := store.CreateOrReuseAndAssign("Straße", "session-a", time.Unix(1, 0))
+	first, changed, err := store.CreateOrReuseAndAssign("Straße", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed || first.MemberCount != 1 {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
 	}
-	reused, changed, err := store.CreateOrReuseAndAssign("STRASSE", "session-b", time.Unix(2, 0))
+	reused, changed, err := store.CreateOrReuseAndAssign("STRASSE", "", "session-b", time.Unix(2, 0))
 	if err != nil || !changed || reused.ID != first.ID || reused.Name != "Straße" || reused.MemberCount != 2 {
 		t.Fatalf("reuse = %+v, %v, %v", reused, changed, err)
 	}
@@ -65,11 +65,11 @@ func TestPinSectionStoreCreateReusesUnicodeCaseFoldedName(t *testing.T) {
 
 func TestPinSectionStoreEquivalentReuseDoesNotRenameOrReassign(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	first, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	first, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
 	}
-	second, changed, err := store.CreateOrReuseAndAssign("research", "session-a", time.Unix(2, 0))
+	second, changed, err := store.CreateOrReuseAndAssign("research", "", "session-a", time.Unix(2, 0))
 	if err != nil || changed || second.ID != first.ID || second.Name != "Research" {
 		t.Fatalf("reuse noop = %+v, %v, %v", second, changed, err)
 	}
@@ -84,18 +84,18 @@ func TestPinSectionStoreEquivalentReuseDoesNotRenameOrReassign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pins) != 1 || pins["session-a"].AssignedAt != time.Unix(1, 0).UTC() {
+	if len(pins) != 1 || pins[SessionPinKey("", "session-a")].AssignedAt != time.Unix(1, 0).UTC() {
 		t.Fatalf("pins = %+v", pins)
 	}
 }
 
 func TestPinSectionStoreSectionsOrderedAndMemberCountDurable(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	alpha, changed, err := store.CreateOrReuseAndAssign("beta", "session-a", time.Unix(10, 0))
+	alpha, changed, err := store.CreateOrReuseAndAssign("beta", "", "session-a", time.Unix(10, 0))
 	if err != nil || !changed {
 		t.Fatalf("create beta = %+v, %v, %v", alpha, changed, err)
 	}
-	_, changed, err = store.CreateOrReuseAndAssign("Alpha", "session-b", time.Unix(11, 0))
+	_, changed, err = store.CreateOrReuseAndAssign("Alpha", "", "session-b", time.Unix(11, 0))
 	if err != nil || !changed {
 		t.Fatalf("create alpha = %v, %v", changed, err)
 	}
@@ -106,7 +106,7 @@ func TestPinSectionStoreSectionsOrderedAndMemberCountDurable(t *testing.T) {
 	if len(sections) != 2 || sections[0].Name != "Alpha" || sections[0].MemberCount != 1 || sections[1].Name != "beta" || sections[1].MemberCount != 1 {
 		t.Fatalf("sections = %+v", sections)
 	}
-	if _, err := store.Unpin("session-a"); err != nil {
+	if _, err := store.Unpin("", "session-a"); err != nil {
 		t.Fatal(err)
 	}
 	sections, err = store.Sections()
@@ -120,7 +120,7 @@ func TestPinSectionStoreSectionsOrderedAndMemberCountDurable(t *testing.T) {
 
 func TestPinSectionStoreRenameAllowsCaseOnlyChangeAndRejectsConflicts(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
 	}
@@ -128,7 +128,7 @@ func TestPinSectionStoreRenameAllowsCaseOnlyChangeAndRejectsConflicts(t *testing
 	if err != nil || !changed || renamed.Name != "research" || renamed.MemberCount != 1 {
 		t.Fatalf("rename = %+v, %v, %v", renamed, changed, err)
 	}
-	other, changed, err := store.CreateOrReuseAndAssign("Client", "session-b", time.Unix(3, 0))
+	other, changed, err := store.CreateOrReuseAndAssign("Client", "", "session-b", time.Unix(3, 0))
 	if err != nil || !changed {
 		t.Fatalf("create other = %+v, %v, %v", other, changed, err)
 	}
@@ -139,11 +139,11 @@ func TestPinSectionStoreRenameAllowsCaseOnlyChangeAndRejectsConflicts(t *testing
 
 func TestPinSectionStoreDeleteSectionReturnsMemberCountAndCascadesAssignments(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
 	}
-	assigned, changed, err := store.Assign(section.ID, "session-b", time.Unix(2, 0))
+	assigned, changed, err := store.Assign(section.ID, "", "session-b", time.Unix(2, 0))
 	if err != nil || !changed || assigned.MemberCount != 2 {
 		t.Fatalf("assign = %+v, %v, %v", assigned, changed, err)
 	}
@@ -162,14 +162,14 @@ func TestPinSectionStoreDeleteSectionReturnsMemberCountAndCascadesAssignments(t 
 
 func TestPinSectionStoreNoOpsReturnChangedFalse(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
 	}
-	if _, changed, err := store.Assign(section.ID, "session-a", time.Unix(2, 0)); err != nil || changed {
+	if _, changed, err := store.Assign(section.ID, "", "session-a", time.Unix(2, 0)); err != nil || changed {
 		t.Fatalf("assign noop = %v, %v", changed, err)
 	}
-	if ok, err := store.Unpin("session-missing"); err != nil || ok {
+	if ok, err := store.Unpin("", "session-missing"); err != nil || ok {
 		t.Fatalf("unpin noop = %v, %v", ok, err)
 	}
 	if _, changed, err := store.Rename(section.ID, "Research", time.Unix(3, 0)); err != nil || changed {
@@ -227,11 +227,11 @@ func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnecti
 	}
 	results := make(chan result, 2)
 	go func() {
-		section, changed, err := storeA.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+		section, changed, err := storeA.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 		results <- result{section: section, changed: changed, err: err}
 	}()
 	go func() {
-		section, changed, err := storeB.CreateOrReuseAndAssign("research", "session-b", time.Unix(2, 0))
+		section, changed, err := storeB.CreateOrReuseAndAssign("research", "", "session-b", time.Unix(2, 0))
 		results <- result{section: section, changed: changed, err: err}
 	}()
 	<-entered
@@ -259,7 +259,7 @@ func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnecti
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pins) != 2 || pins["session-a"].SectionID != first.section.ID || pins["session-b"].SectionID != first.section.ID {
+	if len(pins) != 2 || pins[SessionPinKey("", "session-a")].SectionID != first.section.ID || pins[SessionPinKey("", "session-b")].SectionID != first.section.ID {
 		t.Fatalf("pins = %+v", pins)
 	}
 }
@@ -268,18 +268,18 @@ func TestPinSectionStoreLastCommittedAssignmentWinsWithoutDuplicates(t *testing.
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	storeA := NewPinSectionStore(dbPath)
 	storeB := NewPinSectionStore(dbPath)
-	firstSection, changed, err := storeA.CreateOrReuseAndAssign("One", "seed-a", time.Unix(1, 0))
+	firstSection, changed, err := storeA.CreateOrReuseAndAssign("One", "", "seed-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("seed first = %+v, %v, %v", firstSection, changed, err)
 	}
-	secondSection, changed, err := storeA.CreateOrReuseAndAssign("Two", "seed-b", time.Unix(2, 0))
+	secondSection, changed, err := storeA.CreateOrReuseAndAssign("Two", "", "seed-b", time.Unix(2, 0))
 	if err != nil || !changed {
 		t.Fatalf("seed second = %+v, %v, %v", secondSection, changed, err)
 	}
-	if ok, err := storeA.Unpin("seed-a"); err != nil || !ok {
+	if ok, err := storeA.Unpin("", "seed-a"); err != nil || !ok {
 		t.Fatalf("unpin seed-a = %v, %v", ok, err)
 	}
-	if ok, err := storeA.Unpin("seed-b"); err != nil || !ok {
+	if ok, err := storeA.Unpin("", "seed-b"); err != nil || !ok {
 		t.Fatalf("unpin seed-b = %v, %v", ok, err)
 	}
 	oldHook := pinSectionBeforeAssignmentCommitHook
@@ -296,12 +296,12 @@ func TestPinSectionStoreLastCommittedAssignmentWinsWithoutDuplicates(t *testing.
 	firstDone := make(chan error, 1)
 	secondDone := make(chan error, 1)
 	go func() {
-		_, _, err := storeA.Assign(firstSection.ID, "session-x", time.Unix(3, 0))
+		_, _, err := storeA.Assign(firstSection.ID, "", "session-x", time.Unix(3, 0))
 		firstDone <- err
 	}()
 	<-firstEntered
 	go func() {
-		_, _, err := storeB.Assign(secondSection.ID, "session-x", time.Unix(4, 0))
+		_, _, err := storeB.Assign(secondSection.ID, "", "session-x", time.Unix(4, 0))
 		secondDone <- err
 	}()
 	close(releaseFirst)
@@ -315,7 +315,7 @@ func TestPinSectionStoreLastCommittedAssignmentWinsWithoutDuplicates(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pins) != 1 || pins["session-x"].SectionID != secondSection.ID {
+	if len(pins) != 1 || pins[SessionPinKey("", "session-x")].SectionID != secondSection.ID {
 		t.Fatalf("pins = %+v", pins)
 	}
 }
@@ -325,7 +325,7 @@ func TestPinSectionStoreEntropyFailureReturnsError(t *testing.T) {
 	defer func() { pinSectionRandRead = oldRead }()
 	pinSectionRandRead = func([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	if _, _, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0)); err == nil || !strings.Contains(err.Error(), "entropy exhausted") {
+	if _, _, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0)); err == nil || !strings.Contains(err.Error(), "entropy exhausted") {
 		t.Fatalf("CreateOrReuseAndAssign error = %v", err)
 	}
 }
