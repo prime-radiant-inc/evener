@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 7: Server additions (Implementation Plan)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PRs 1 to 3 are written out in full. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. Every later item is a design-level section; turn each into a full plan (same format as PRs 1 to 3) just before it starts, against main as it is then.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. Every later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
 
 **Goal:** The hub gives the phone (and the web and the TUI) the facts the redesign's Board, Session and Hub screens need, item by item in the roadmap's value order, so the phone can switch from each fallback as its addition lands.
 
@@ -29,10 +29,10 @@
 ## Review Focus
 
 1. **A new field the codec does not list is dropped without a sound.** After PR 1 a hub field missing from the codec's key list decodes cleanly and vanishes from every row. Pinned by Task 1.2's shared fixture, which the Go side forces to name every wire field and the TS side forces the codec to keep; every field PR extends it.
-2. **A failed turn announced as closed.** The projector maps any session-end state it does not recognize to `closed` and emits `thread/closed` (`internal/appprojector/appwire_projection.go:1339-1351`), which would take the composer away from a live session. Pinned by Task 2.1's projector and server tests and Task 2.2's live-subscriber test.
-3. **Stop reads as Failed.** An interrupt ends a turn without recording a failure and must stay idle. Pinned by `TestWireState_InterruptIsNotAFailedTurn` (Task 2.2).
-4. **A restart erases Failed, or publishes idle first.** A daemon restarted after a failed turn must report Failed on its very first `thread/read` (the startup race of #251). Pinned by `TestRestore_FailedTurnResumesFailed` and `TestServe_FailedTurnReportsSystemErrorAcrossRestart` (Task 2.2).
-5. **Resting-state controls vanish on a failed session.** The parked-queue drain, the TUI's quiet force-steer and the notes wake warning key on `idle`; a session resting on a failed turn must keep them. Pinned by Task 2.3's appwire-client, web and TUI tests.
+2. **A failed turn announced as closed.** The projector maps any session-end state it does not recognize to `closed` and emits `thread/closed` (`internal/appprojector/appwire_projection.go:1339-1351`), which would take the composer away from a live session. Pinned by requirement 3's projector and server tests and requirement 6's live-subscriber test.
+3. **Stop reads as Failed.** An interrupt ends a turn without recording a failure and must stay idle. Pinned by `TestWireState_InterruptIsNotAFailedTurn` (requirement 6).
+4. **A restart erases Failed, or publishes idle first.** A daemon restarted after a failed turn must report Failed on its very first `thread/read` (the startup race of #251). Pinned by `TestRestore_FailedTurnResumesFailed` and `TestServe_FailedTurnReportsSystemErrorAcrossRestart` (requirement 6).
+5. **Resting-state controls vanish on a failed session.** The parked-queue drain, the TUI's quiet force-steer and the notes wake warning key on `idle`; a session resting on a failed turn must keep them. Pinned by requirement 5's appwire-client, web and TUI tests.
 
 ---
 
@@ -41,7 +41,7 @@
 | # | PR | Spec item | Detail | Depends on |
 |---|---|---|---|---|
 | 1 | Tolerant navigation codec | ruling 1 | full | none |
-| 2 | Failed turns settle to errored | ruling 2 | full | none |
+| 2 | Failed turns settle to errored | ruling 2 | requirements | none |
 | 3 | Approval flag on rows and attention (S2a) | S2 | full | PR 1, and a TestFlight build containing PR 1 |
 | 4 | The web rail and notifications read the approval flag | S2 | task | PR 3 |
 | 5 | Remote-host parity for questions and approvals (S2b) | S2 | task | PR 3 |
@@ -885,7 +885,7 @@ Title "feat(appwire-client): tolerant navigation codec (phase 7, PR 1)". The bod
 
 ---
 
-## PR 2: Failed turns settle to errored (Tasks 2.1-2.3)
+## PR 2: Failed turns settle to errored
 
 Jesse approved this change: "it's reasonable to fix failed turns settling to errored. it's ok for us to improve the hub". This section states PR 2's requirements. The code is written and reviewed in PR 2's own implementation PR, not here: five review rounds on this plan kept refining code that the implementation supersedes.
 
@@ -909,7 +909,7 @@ Jesse approved this change: "it's reasonable to fix failed turns settling to err
    - A failed session with a pending question publishes `awaiting`, never a transient `systemError` or `idle`.
    - A failed session with claimable queued work publishes `active`.
    - If restoration signals can't be complete before the first write, the state is republished when they are.
-5. **Resting clients.** Every check that compares a session's state to `idle` treats `systemError` as resting too: the queue drain, the notes wake warning, and the TUI's force-steer (Task 2.3's scope).
+5. **Resting clients.** Every check that compares a session's state to `idle` treats `systemError` as resting too: the queue drain, the notes wake warning, and the TUI's force-steer.
 6. **Tests.** Every channel wait is bounded, and each test is shown failing before its fix.
    - A failed turn publishes `systemError`, both live and after a restart.
    - An interrupt stays `idle`.
@@ -920,6 +920,7 @@ Jesse approved this change: "it's reasonable to fix failed turns settling to err
    - A failed-turn end with queued work projects `active` and no `thread/closed`.
    - The projector covers each value, and the TUI has its cases.
    - `TestServeModelSwitch_ProviderFailureRestoresCapability` waits for a `systemError` frame carrying `ChangeModel`. What it pins is unchanged.
+   - Resting clients: the appwire-client queue drain, the web's notes wake warning and the TUI's force-steer each get a test that `systemError` is treated as resting, like `idle`.
 7. **Gates.**
    - `go vet ./...`, `go vet -tags evenerfuzz ./...` and `GOOS=windows go vet -tags evenerfuzz ./...` in each module touched.
    - gofmt as `$(go env GOROOT)/bin/gofmt`.
@@ -1354,13 +1355,13 @@ type NavigationTaskProgress struct {
 
 ## S5: Activity pulse (PRs 14-15, design level)
 
-- **Adds.** The pulse meter's seven one-minute bars ("transcript items and tool output events", spec 16.4) and the last activity time behind "Quiet 4m" (3 to 10 minutes) and "May be stuck" (10 minutes or more).
+- **Adds.** The pulse meter's seven one-minute bars ("transcript items and tool output events", spec 16.4) and the last activity time behind "Quiet 4m" (3 to 10 minutes) and "May be stuck" (10 minutes or more). Jesse's ruling: an agent waiting on subagents is never stuck, so a session with running subagents never shows either label, and its pulse meter reflects the whole tree's activity. Counting descendant events is not enough to keep that promise: a subagent inside one long model call emits nothing for minutes, so the Quiet and May be stuck labels are suppressed outright while the session has running subagents. The hub already knows each live root's running subagents (`runningSubagentStates`, `cmd/evener-hub/internal/hubcore/tree.go` about line 932), so S5 does not wait for S3's tallies.
 - **Why not on the row.** Buckets change every minute. On the revisioned navigation resource they would move the fingerprint on every probe, bump revisions and broadcast invalidations about once a minute per working session (`navigation_service.go:957-1064`), and `NextBoundary` has no minute schedule (`:1370-1399`).
-- **Daemon (PR 14).** A per-root counter in the server, incremented from `RecordAppEvent` (`server/appwire_runtime.go:413`) and `RecordDescendantAppEvent` (`:692`) for item events and tool-output events. It is a plain increment outside the envelope, which must not sample on deltas (`server/thread_envelope.go:166-176`). A ring of one-minute buckets on the server's clock, plus the last event time. The StatusOnly root row carries `EvenerThread.Activity *ThreadActivity{minutes []int (oldest first, seven entries, the current minute last), lastActivityAt int64 (ms)}`; deep copy in `appwire/clone.go`.
-- **Hub (PR 15).** The probe keeps it on `LiveEntry`, deliberately left out of `rosterFingerprint`. A new method `evener/activity/read` returns `{sessions: [{ref, minutes, lastActivityAt}]}` for live top-level sessions; the phone polls it while the Board is on screen. Catalog row, handler, `TestHubRouterMatchesCatalog`, `TestHubRPCRegistersExpectedHandlerSet`.
+- **Daemon (PR 14).** A per-root counter in the server, incremented from `RecordAppEvent` (`server/appwire_runtime.go:413`) and `RecordDescendantAppEvent` (`:692`) for item events and tool-output events, so the counter already reflects the whole tree, per Jesse's ruling. It is a plain increment outside the envelope, which must not sample on deltas (`server/thread_envelope.go:166-176`). A ring of one-minute buckets on the server's clock, plus the last event time. The StatusOnly root row carries `EvenerThread.Activity *ThreadActivity{minutes []int (oldest first, seven entries, the current minute last), lastActivityAt int64 (ms)}`; deep copy in `appwire/clone.go`.
+- **Hub (PR 15).** The probe keeps it on `LiveEntry`, deliberately left out of `rosterFingerprint`. A new method `evener/activity/read` returns `{sessions: [{ref, minutes, lastActivityAt, runningSubagents}]}` (`runningSubagents` is the count of the root's running subagents, from `runningSubagentStates`, so the phone suppresses Quiet and May be stuck whenever it is above zero) for live top-level sessions; the phone polls it while the Board is on screen. Catalog row, handler, `TestHubRouterMatchesCatalog`, `TestHubRPCRegistersExpectedHandlerSet`.
 - **Fallback.** `updated_at`, and a single bar.
-- **Tests.** Server counter with an injected clock (minute rollover, a quiet minute is zero, descendants counted or not per the ruling); the StatusOnly row carries it; the prober decodes it; the fingerprint does not move when only activity moves; the method handler, including remote rows.
-- **Open questions.** Whether a coordinator's meter and stuck timer count its subagents (Questions for Jesse). Poll or push: polling keeps the cost with the viewer; a push would be one broadcast per probe tick per client. Remote hosts: fan the read out to attached hosts, or carry `Activity` on the remote hub's list rows (they refresh through `RemoteThreadCache` on their own cadence).
+- **Tests.** Server counter with an injected clock (minute rollover, a quiet minute is zero, descendants counted so the meter reflects the whole tree); the StatusOnly row carries it; the prober decodes it; the fingerprint does not move when only activity moves; the method handler, including remote rows. Also: a session with a running subagent and no events for 15 minutes reports no Quiet or May be stuck label.
+- **Open questions.** Poll or push: polling keeps the cost with the viewer; a push would be one broadcast per probe tick per client. Remote hosts: fan the read out to attached hosts, or carry `Activity` on the remote hub's list rows (they refresh through `RemoteThreadCache` on their own cadence).
 
 ---
 
@@ -1390,11 +1391,11 @@ type NavigationTaskProgress struct {
 
 - **Adds.** "Allow all of ~/sites/docs · For the rest of this session" on the approval dock (spec 8.4), so a batch job does not ask 214 times.
 - **Today.** Approval re-runs the one denied call with a grant carried on the context and a throwaway environment clone (`agent/session_escalation.go:216`; `agent/session_tools.go:923-935`; `agent/execenv/local.go:457-478`). No session-scoped grant exists; `isGranted` is exact equality (`agent/execenv/securepath.go:116-120`); nothing persists across a restart.
-- **Daemon (PR 20).** A session grant list of `(folder, access)` consulted at the two containment checks (`agent/execenv/securepath_fdops_unix.go:91-105` for reads, `:231-245` for writes) as a `containingRoot`-style prefix check (`securepath.go:379`), for the access kind the escalation was for. The folder is the denied path's parent directory. Refuse a scope that is the filesystem root or the home directory itself, and never cover a sensitive path (those never escalate).
+- **Daemon (PR 20).** A session grant list of `(folder, access)` consulted at the two containment checks (`agent/execenv/securepath_fdops_unix.go:91-105` for reads, `:231-245` for writes) as a `containingRoot`-style prefix check (`securepath.go:379`), for the access kind the escalation was for. The folder is the denied path's parent directory. Refuse a scope that is the filesystem root or the home directory itself, and never cover a sensitive path (those never escalate). Jesse's ruling: the grant persists across a daemon restart if that is easy; if it turns out not to be, the lane reports back before building a heavy persistence mechanism.
 - **Wire and hub (PR 21).** `SandboxEscalationRequested` gains `ScopeFolder string` with JSON `scopeFolder,omitempty`: the folder the daemon would grant. Its presence is the capability; an older daemon omits it and the phone offers "Allow once" only. `SandboxEscalationResolveParams` gains `Scope string` with JSON `scope,omitempty` (`""` is today's once, `"folder"` the folder). The hub passes it through (`app_rpc.go:1634-1645`, `local_daemon.go:466-474`).
 - **Fallback.** Allow once, repeatedly.
-- **Tests.** A folder grant auto-allows a later write under the folder without raising an escalation, and still escalates outside it or for the other access kind; a deny or an interrupt grants nothing; root and home are refused as scopes; the server handler passes the scope; `make generate`.
-- **Open questions.** Whether the grant survives a daemon restart (Questions for Jesse). The non-Unix securepath files need the same check for parity.
+- **Tests.** A folder grant auto-allows a later write under the folder without raising an escalation, and still escalates outside it or for the other access kind; a deny or an interrupt grants nothing; root and home are refused as scopes; the server handler passes the scope; `make generate`. If persistence is in scope (see the Daemon paragraph), a restart test: a grant is persisted, the daemon restarts, and a later write under the folder is still allowed without asking.
+- **Open questions.** The non-Unix securepath files need the same check for parity.
 
 ---
 
@@ -1410,7 +1411,7 @@ type NavigationTaskProgress struct {
 - **Sign-in state (PR 23).** Stop `NeedsLogin` flagging a refreshable token as expired, and record the daemon's runtime login-required failures where `evener/auth/list` can report them. Spec 12's "Expires in 3d" on the Hub sheet needs the same fix; tell the phone lane (phase 5) it depends on this PR.
 - **Fallback.** Derive from `evener/host/*` and `evener/auth/list` reads.
 - **Tests.** The derivation over fixtures (an auth-failed session, an offline host, a broken plugin), the handler, the notification firing once per change, catalog tests, the TUI coverage list.
-- **Open questions.** Dropping "expiring within a day" (Questions for Jesse). File a GitHub issue for the `NeedsLogin` misreport whichever way that goes.
+- **Open questions.** None; Jesse's ruling drops "expiring within a day" (the hub cannot know a refresh token's lifetime) and shows the notice once signing in again is actually required (issues #2468, #2479).
 
 ---
 
@@ -1461,21 +1462,21 @@ type NavigationTaskProgress struct {
 
 ## S6: Direct subagent stop (PRs 30-31, design level)
 
-- **Adds.** "Stop subagent" with a confirmation (spec 9) in place of "Ask coordinator to stop it".
+- **Adds.** "Stop subagent" with a confirmation (spec 9) in place of "Ask coordinator to stop it". Jesse's ruling: it stops that agent, not its tree. The target's own turn ends; its subagents keep running and report to it, and it takes their results when it next runs.
 - **Today.** A subagent's thread is a read-only alias: the hub refuses mutations on it (`entryForRef` skips aliases, `internal/appsource/local_daemon.go:1048-1068`), the daemon refuses any non-root target (`requireRootMutationTarget`, `server/appwire_runtime.go:2319-2386`), and aliases advertise no capabilities. The only delegate stop is the model's `job_stop` tool, which calls `delegateController.StopSubtreeAndDrive` (`agent/delegate_tree_stop.go:106-179`): durable (`EventDelegateSubtreeStopRequested`), always the whole subtree. Authorization lets the root actor stop a top-level delegate and only a delegate's parent stop a nested one (`agent/delegate_tree_controller.go:360-381`).
-- **Design.** PR 30: a daemon method `evener/delegate/stop` with params `{ref (the root), delegateId, clientMutationId}`, retry-safe like `turn/interrupt` (`lockRetrySafeMutation`), running `StopSubtreeAndDrive` as a new human actor authorized for any delegate in the root's tree, and added to the retirement and recovery admission switches (`server/appwire_retirement_admission.go:19-36`, `cmd/evener-hub/app_sources.go:328-363`). PR 31: hub routing by the root ref, a `ThreadCapabilities.StopSubagent` bit on the root thread, and the catalog. The phone maps a subagent row to its delegate ID through `EvenerDelegateInfo` (`appwire/types.go:1233-1240`).
+- **Design.** `StopSubtreeAndDrive` cascades to the whole subtree, so it cannot back "Stop subagent" as Jesse ruled it: PR 30 needs a non-cascading counterpart that ends only the targeted delegate's own turn and leaves its subagents running. PR 30: a daemon method `evener/delegate/stop` with params `{ref (the root), delegateId, clientMutationId}`, retry-safe like `turn/interrupt` (`lockRetrySafeMutation`), authorized for any delegate in the root's tree, and added to the retirement and recovery admission switches (`server/appwire_retirement_admission.go:19-36`, `cmd/evener-hub/app_sources.go:328-363`). PR 31: hub routing by the root ref, a `ThreadCapabilities.StopSubagent` bit on the root thread, and the catalog. The phone maps a subagent row to its delegate ID through `EvenerDelegateInfo` (`appwire/types.go:1233-1240`).
 - **Fallback.** Steer the coordinator.
-- **Tests.** Agent: a human stop of a nested delegate stops its subtree and records the durable event. Server: root target, an unknown delegate refused, a retry replays the receipt. Hub routing, catalog tests. No new notification: `evener/delegate/updated` already reports the result.
-- **Open questions.** Stopping any subagent, and the subtree semantics (Questions for Jesse). A direct message to a subagent is not planned: the spec's subagent screen routes talk through the coordinator.
+- **Tests.** Agent: a human stop of a nested delegate ends only its own turn and records the durable event, while its own subagents keep running and it takes their results the next time it runs. Server: root target, an unknown delegate refused, a retry replays the receipt. Hub routing, catalog tests. No new notification: `evener/delegate/updated` already reports the result.
+- **Open questions.** A direct message to a subagent is not planned: the spec's subagent screen routes talk through the coordinator.
 
 ---
 
-## Questions for Jesse
+## Jesse's answers (2026-09-26)
 
-1. Should a coordinator's pulse meter and "may be stuck" timer count its subagents' activity? I recommend yes: a coordinator waiting on 31 working subagents is busy.
-2. The hub cannot know a sign-in is "expiring within a day" (no refresh-token lifetime exists). May S11 drop that and show "sign-in expired" only when a session actually failed on it? I recommend yes.
-3. Should a scoped approval ("allow all of this folder for the rest of this session") survive a daemon restart? I recommend no: a restart asks again, so a folder grant never outlives the process that was granted it.
-4. May the phone's "Stop subagent" stop any subagent, including one another subagent started, and does it stop that subagent's whole subtree? I recommend yes to both: it is how the tree's own stop works, and you own the whole tree.
+1. **S5, activity pulse.** "an agent waiting on subagents is never stuck." A session with running subagents never shows "may be stuck" or Quiet, and its pulse meter shows the whole tree's activity.
+2. **S11, hub notices feed.** Drop "expiring within a day": the hub cannot know a refresh token's lifetime. The notice shows once signing in again is actually required (issues #2468, #2479).
+3. **S12, scoped approvals.** "approvals should survive restarts if it's easy." A scoped approval grant persists across a daemon restart. If persisting it turns out not to be easy, the lane reports back before building a heavy mechanism.
+4. **S6, direct subagent stop.** "stop on an agent should stop that agent, not its tree, i think." Stop subagent stops that one agent's turn and does not cascade to its own subagents: those keep running and report to it, and it takes their results when it next runs. The tree's existing stop cascades, so S6 needs a non-cascading stop.
 
 No planned wire change is non-additive. PR 2 reuses the existing `systemError` status value, so `ProtocolVersion` stays `evener-appwire-v5`.
 
@@ -1485,6 +1486,6 @@ No planned wire change is non-additive. PR 2 reuses the existing `systemError` s
 
 - **Spec coverage.** S2 (PRs 3, 4, 5), S1 (PR 6, S1b-S1d, the blocked documents part), S13 (PRs 12, 13), S5, S4, S3, S12, S11, S14, S7, S9, S8, S6 each have a section with the fallback from spec 18. S10 is out of scope per the roadmap. Rulings 1 to 4 map to PR 1, PR 2, Global Constraints and the PR map.
 - **Explorer report against `8cc794480`.** Its citations for `hubcore`, navigation, the codec and `appwire` hold (only `internal/sshconn` and `mobile-native/src/design/tokens.ts` changed since its base `73897272e`). One citation moved: the `MobileAPIVersion` check is now `internal/sshconn/version.go:1460`, not `:1390`. Its note that no AGENTS.md or docs rule requires a TUI case for projector changes is accurate; the rule this plan applies comes from the lane's own gate list.
-- **Placeholders.** PRs 1 to 3 carry their code. PR 4 and later name files, interfaces and tests and leave code for their own plans, as the lane's detail levels ask.
+- **Placeholders.** PR 1 and PR 3 carry their code; PR 2 is a requirements-only section. PR 4 and later name files, interfaces and tests and leave code for their own plans, as the lane's detail levels ask.
 - **Names.** `ValueRecordKeys`, `knownKeys`, `dropUnknownKeys`, `SESSION_KEYS`; `RestingWireState`, `historyEndsInTurnFailure`; `IsRestingThreadStatus` and `isSessionResting`; `ApprovalPending` (`approval_pending`, `approvalPending`); `ApprovalTool` and `ApprovalTarget`; `NavigationTaskProgress`. Each is used the same way wherever it appears.
-- **Review Focus.** Item 1: Task 1.2. Item 2: Task 2.1's projector and server tests and Task 2.2's retargeted live-subscriber test. Item 3: `TestWireState_InterruptIsNotAFailedTurn`. Item 4: `TestRestore_FailedTurnResumesFailed` and `TestServe_FailedTurnReportsSystemErrorAcrossRestart`. Item 5: Task 2.3's appwire-client, web and TUI tests.
+- **Review Focus.** Item 1: Task 1.2. Item 2: requirement 3's projector and server tests and requirement 6's retargeted live-subscriber test. Item 3: `TestWireState_InterruptIsNotAFailedTurn`. Item 4: `TestRestore_FailedTurnResumesFailed` and `TestServe_FailedTurnReportsSystemErrorAcrossRestart`. Item 5: requirement 5's appwire-client, web and TUI tests.
