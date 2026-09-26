@@ -1543,7 +1543,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
 		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
-			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
+			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,

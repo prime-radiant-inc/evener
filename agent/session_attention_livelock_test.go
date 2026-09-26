@@ -43,6 +43,10 @@ import (
 //  4. The park survives the restart the holds it mirrors survive: restore
 //     seeds it from the durable holds, so a restarted daemon cannot re-arm
 //     pending attention over a queue its user parked.
+//  5. Parked is a projection of the durable holds, read at evaluation time:
+//     no in-memory copy of the park can disagree with what the user stopped,
+//     and a Stop's deferred attention is not autonomous work — the wire
+//     state reads idle while it waits for re-engagement.
 //
 // The tests drive the real durable arm path (appendDelegateNotificationDurably
 // + armDelegateAttention), the real turn path (ProcessInputKind with
@@ -776,5 +780,82 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 	}
 	if got := restoredNotifies.Load(); got == beforeReEngage {
 		t.Fatal("re-engagement re-armed the wake without asking for a notification turn to deliver it")
+	}
+}
+
+// The rail's parked state is not stored beside the wake cache: it is a
+// projection of the durable holds, read at evaluation time. Pin the
+// projection directly — a hold set through the store alone parks the rail,
+// and clearing it through the store alone releases it, with no park or
+// unpark call in between. An in-memory flag would stay stale at exactly the
+// moments a Stop and a re-engagement race, and the stale copy is what could
+// re-open the livelock over a queue the user parked.
+func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	if s.rootAttentionRailParked() {
+		t.Fatal("a session with no holds must read unparked")
+	}
+	// The hold arrives through the store only — the way a Stop's admission
+	// writes it — with no park call.
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the hold: %v", err)
+	}
+	if !s.rootAttentionRailParked() {
+		t.Fatal("a standing durable hold must park the rail with no in-memory park write; a stored flag could disagree with the holds")
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = false
+		return nil
+	}); err != nil {
+		t.Fatalf("clear the hold: %v", err)
+	}
+	if s.rootAttentionRailParked() {
+		t.Fatal("a released hold must release the rail with no in-memory unpark write")
+	}
+}
+
+// A Stop-parked rail's deferred attention is not autonomous work: nothing
+// idle after the Stop — exactly as a parked queue reads zero for
+// pendingQueueDepth — and the busy projection returns with re-engagement.
+func TestParkedRootAttentionIsNotAutonomousWork(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_busy", "delegate:dlg_busy/delivery/1")
+
+	if got := s.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("this test is not in the state it means to be: pending attention plus a queued message must read busy before the Stop, got %q", got)
+	}
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-busy-read",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := s.WireState(); got != string(SessionIdle) {
+		t.Fatalf("a Stop-parked session projects %q; parked attention is deferred to re-engagement and must not read as autonomous work", got)
+	}
+
+	// Re-engagement restores the busy projection: the still-pending
+	// attention counts as work again once the rail is released.
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-after-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the user re-engages"}},
+	}); err != nil {
+		t.Fatalf("turn/start after the stop: %v", err)
+	}
+	if got := s.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("re-engagement must restore the busy projection, got %q", got)
 	}
 }

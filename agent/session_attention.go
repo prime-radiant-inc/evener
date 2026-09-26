@@ -710,12 +710,17 @@ func (s *Session) armRootDelegateAttention(attentionID string) {
 	if attentionID == "" || !s.isRootDelegateAttentionReceiver() {
 		return
 	}
+	// The parked rail derives from the durable holds
+	// (rootAttentionRailParked); read it before attentionMu so the store's
+	// state mutex never nests inside it. A fresh arm on a parked rail caches
+	// silently — the IDs wait for the re-engagement that clears the holds.
+	parked := s.rootAttentionRailParked()
 	s.attentionMu.Lock()
 	if s.rootAttentionWakeIDs == nil {
 		s.rootAttentionWakeIDs = make(map[string]struct{})
 	}
 	s.rootAttentionWakeIDs[attentionID] = struct{}{}
-	shouldWake := !s.rootAttentionWake && !s.rootAttentionParked
+	shouldWake := !s.rootAttentionWake && !parked
 	if shouldWake {
 		s.rootAttentionWake = true
 	}
@@ -733,6 +738,16 @@ func (s *Session) hasPendingRootDelegateAttention() bool {
 	pending := len(s.rootAttentionWakeIDs) != 0
 	s.attentionMu.Unlock()
 	return pending
+}
+
+// pendingRootDelegateAttention is hasPendingRootDelegateAttention for "is
+// this session working" reads: attention a Stop parked is not autonomous
+// work — nothing delivers it until the user re-engages — so it reads false
+// while the rail is parked, the way pendingQueueDepth reads zero for a held
+// queue (kata wms7). The raw signal stays for the rail's own machinery,
+// which must see the cached IDs to re-arm them on release.
+func (s *Session) pendingRootDelegateAttention() bool {
+	return s.hasPendingRootDelegateAttention() && !s.rootAttentionRailParked()
 }
 
 // beginRootDelegateAttentionTurn snapshots the exact durable IDs selected for
@@ -959,7 +974,7 @@ func (s *Session) beginAttentionCallback() (func(), error) {
 }
 
 func (s *Session) scheduleRootAttentionRetryLocked() {
-	if s.rootAttentionRetry.active || s.rootAttentionWake || s.rootAttentionParked || len(s.rootAttentionWakeIDs) == 0 {
+	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
 		return
 	}
 	delay := s.rootAttentionRetry.delay
@@ -970,6 +985,10 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	generation := s.rootAttentionRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		// The rail parks with the durable holds, so read them before any
+		// lock: a firing under a standing hold disarms without a wake, and
+		// the cached IDs wait for the re-engagement that clears the holds.
+		parkedAtFire := s.rootAttentionRailParked()
 		release, err := s.beginAttentionCallback()
 		if err != nil {
 			// Admission was refused for this one-shot firing (a real TryClaim
@@ -995,6 +1014,10 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			return
 		}
 		s.rootAttentionRetry.active = false
+		if parkedAtFire {
+			s.attentionMu.Unlock()
+			return
+		}
 		pending := len(s.rootAttentionWakeIDs) != 0
 		shouldWake := pending && !s.rootAttentionWake
 		if shouldWake {
@@ -1018,17 +1041,18 @@ func (s *Session) resetRootAttentionRetryLocked() {
 	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
 }
 
-// parkRootDelegateAttention parks the root attention rail when a Stop is
-// accepted, mirroring the queue and steering holds that Stop parks. The wake
-// is cleared and any paced retry cancelled; until the user re-engages,
-// nothing on this rail may wake the session. Pending IDs are never dropped —
-// they stay cached for unparkRootDelegateAttention to re-arm.
+// parkRootDelegateAttention silences the root attention rail when a Stop is
+// accepted, mirroring the queue and steering holds that Stop parks. The park
+// itself lives in those durable holds (rootAttentionRailParked derives from
+// them), so this is the rail's side of the Stop: the wake is cleared and any
+// paced retry cancelled; until the user re-engages, nothing on this rail may
+// wake the session. Pending IDs are never dropped — they stay cached for
+// unparkRootDelegateAttention to re-arm.
 // The stable-delegate drive rail is deliberately outside this park: its
 // wakes stand down at the notification admission gate, so they cost a no-op
 // cycle, never a turn.
 func (s *Session) parkRootDelegateAttention() {
 	s.attentionMu.Lock()
-	s.rootAttentionParked = true
 	s.rootAttentionWake = false
 	s.resetRootAttentionRetryLocked()
 	s.attentionMu.Unlock()
@@ -1036,11 +1060,12 @@ func (s *Session) parkRootDelegateAttention() {
 
 // unparkRootDelegateAttention releases the rail a Stop parked, at the same
 // re-engagement that releases QueueHeld (turn/start, turn/queue, drain,
-// promote). Deferred, not dropped: pending IDs re-arm the wake so a
-// notification turn delivers them after the user's own.
+// promote). The re-engagement's commit cleared the holds the park lives in;
+// what remains is the rail's side of the release: deferred, not dropped,
+// pending IDs re-arm the wake so a notification turn delivers them after the
+// user's own.
 func (s *Session) unparkRootDelegateAttention() {
 	s.attentionMu.Lock()
-	s.rootAttentionParked = false
 	shouldWake := len(s.rootAttentionWakeIDs) != 0 && !s.rootAttentionWake
 	if shouldWake {
 		s.rootAttentionWake = true
@@ -1052,13 +1077,24 @@ func (s *Session) unparkRootDelegateAttention() {
 }
 
 // rootAttentionRailParked reports whether an accepted Stop has parked the
-// attention rail; the notification admission stands an attention-only wake
-// down while it holds.
+// attention rail. The rail has no stored park of its own: parked is a
+// projection of the durable holds a Stop sets (QueueHeld, SteeringHeld),
+// read at evaluation time the same way pendingQueueDepth reads the held
+// queue. Deriving the read keeps the rail consistent with the holds by
+// construction — no interleaving of a Stop's park and a re-engagement's
+// unpark can leave a stale in-memory copy disagreeing with what the user
+// stopped, which is exactly the race the in-memory flag this replaced had.
+// While a hold stands, fresh arms cache their IDs but neither set the wake
+// flag nor notify, the paced retry stands down at fire, and an
+// attention-only notification turn stands down — the deliveries the user
+// stopped wait for the user, not the clock. The store's state mutex is read
+// without attentionMu held, per the lock order the live Stop path
+// established.
 func (s *Session) rootAttentionRailParked() bool {
-	s.attentionMu.Lock()
-	parked := s.rootAttentionParked
-	s.attentionMu.Unlock()
-	return parked
+	if s == nil || s.clientMutations == nil {
+		return false
+	}
+	return s.clientMutations.queueHeld() || s.clientMutations.steeringHeld()
 }
 
 func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
@@ -1184,9 +1220,10 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// Read the durable holds before attentionMu — the order the live Stop
 	// path established, where the store's state mutex never nests inside
 	// attentionMu. A hold that survived the restart is a Stop the user has
-	// not re-engaged, so the rebuilt rail comes up seeded from the holds its
-	// live park mirrored: parked, not armed, and a transient provider
-	// failure cannot re-open the paced retry over a queue the user parked.
+	// not re-engaged; the rebuilt rail reads parked from those holds at
+	// every gate, so it must come up unarmed while they stand, or a
+	// transient provider failure re-opens the paced retry over a queue the
+	// user parked.
 	holdsStand := s.clientMutations != nil &&
 		(s.clientMutations.queueHeld() || s.clientMutations.steeringHeld())
 	s.attentionMu.Lock()
@@ -1237,19 +1274,7 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	for _, id := range ids {
 		s.rootAttentionWakeIDs[id] = struct{}{}
 	}
-	if holdsStand {
-		// The park mirrors the holds (see rootAttentionParked), and after a
-		// restart the holds are the only copy that survived, so they are the
-		// park's seed — the same state parkRootDelegateAttention leaves, here
-		// inlined under the lock already held. Pending IDs stay cached for the
-		// re-engagement that releases the holds to re-arm.
-		s.rootAttentionParked = true
-		s.rootAttentionWake = false
-		s.resetRootAttentionRetryLocked()
-		s.attentionMu.Unlock()
-		return nil
-	}
-	shouldWake := len(ids) != 0 && !s.rootAttentionWake
+	shouldWake := len(ids) != 0 && !s.rootAttentionWake && !holdsStand
 	if shouldWake {
 		s.rootAttentionWake = true
 	}

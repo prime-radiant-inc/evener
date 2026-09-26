@@ -906,20 +906,6 @@ type Session struct {
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
-	// rootAttentionParked is the attention rail's QueueHeld: an accepted
-	// Stop sets it beside the queue and steering holds that Stop parks, and
-	// the same re-engagement points clear it. While it holds, fresh arms
-	// cache their IDs but neither set the wake flag nor notify, the paced
-	// retry stays cancelled, and an attention-only notification turn stands
-	// down — the deliveries the user stopped wait for the user, not the
-	// clock. In-memory like the wake flag it parks, but restore seeds it
-	// from the durable holds it mirrors
-	// (rearmRootDelegateAttentionFromTranscript): a Stop that survived the
-	// restart brings its rail up parked, so a restart cannot re-open the
-	// loop over a queue the user parked. A restart with no hold standing
-	// re-arms pending attention as normal — that session was never stopped,
-	// and transient failures keep their paced retry by design.
-	rootAttentionParked bool
 	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
 	// lives on stageRootDelegateAttentionCoverage and
@@ -1199,7 +1185,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
