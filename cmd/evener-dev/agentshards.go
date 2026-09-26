@@ -53,6 +53,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -810,7 +811,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
-		if start == i || surveyFailureHasMismatchedOwner(lines, i, emitted) {
+		if start == i || surveyFailureHasMismatchedOwner(lines, i) {
 			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines); ok {
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
@@ -864,7 +865,7 @@ func surveyFailureName(line string) string {
 // before a failure differs from the failing test itself. Descendant frames
 // intentionally count as mismatches: their ordinary tail can hide the
 // parent's diagnostic window, so expansion must rank the combined owners.
-func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
+func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
 		return false
@@ -886,15 +887,15 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict or a different test owns the
 // nearest context. The lines from ordinaryStart up to marker are the
-// already-selected ordinary context. Selection priority is owned ordinary
-// output, the newest parent diagnostic, descendant diagnostics, other owned
-// output, then unindented output after a foreign frame as lowest-priority
-// backfill. When the ordinary window has no lines owned by the failing test or
-// its descendants, it reserves space for both parent and descendant diagnostics
-// when both exist. Source diagnostics are associated
-// with the most recent go test RUN/CONT/NAME frame; a verdict returns ownership
-// to the failing test. If ordinary context owned by the failing test or its
-// descendants exists, expansion requires a parent-owned source diagnostic.
+// already-selected ordinary context. Selection starts with owned ordinary
+// output. When that window has no lines owned by the failing test or its
+// descendants, descendant diagnostics reserve a slot before the newest parent
+// diagnostics. With owned ordinary output, newest parent diagnostics take
+// priority over other diagnostic and ordinary backfill. Source diagnostics are
+// associated with the most recent go test RUN/CONT/NAME frame; a verdict
+// returns ownership to the failing test. If ordinary context owned by the
+// failing test or its descendants exists, expansion requires a parent-owned
+// source diagnostic.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
@@ -1008,11 +1009,14 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	if selectedCount == 0 {
 		return nil, false
 	}
+	selectedIndices := make([]int, 0, selectedCount)
+	for index := range keep {
+		selectedIndices = append(selectedIndices, index)
+	}
+	sort.Ints(selectedIndices)
 	selected := make([]string, 0, selectedCount)
-	for index := run + 1; index < marker; index++ {
-		if _, exists := keep[index]; exists {
-			selected = append(selected, lines[index])
-		}
+	for _, index := range selectedIndices {
+		selected = append(selected, lines[index])
 	}
 
 	result := make([]string, 0, len(selected)+1)
@@ -1028,22 +1032,21 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 // rather than taking fields[2] so subtest names containing spaces remain
 // associated with the right owner.
 func surveyPhase(line string) (string, string, bool) {
-	if !surveyPhaseLine(line) {
+	phase, rawOwner, ok := surveyPhaseParts(line)
+	if !ok {
 		return "", "", false
 	}
-	fields := strings.Fields(line)
-	phase := fields[1]
-	return phase, strings.Join(fields[2:], " "), true
+	return phase, strings.Join(strings.Fields(rawOwner), " "), true
 }
 
 // surveyPhaseOwner extracts the test name from the testing package's RUN,
 // CONT, or NAME frame. PAUSE is a framing boundary without an owner.
 func surveyPhaseOwner(line string) string {
-	phase, owner, ok := surveyPhase(line)
+	phase, owner, ok := surveyPhaseParts(line)
 	if !ok || phase == "PAUSE" {
 		return ""
 	}
-	return owner
+	return strings.TrimSpace(owner)
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
@@ -1052,24 +1055,32 @@ func surveyPhaseOwner(line string) string {
 // closes it off from the test name, so a test's own line that merely begins
 // with one of the words (`=== PAUSED ...`) is output.
 func surveyPhaseLine(line string) bool {
+	_, _, ok := surveyPhaseParts(line)
+	return ok
+}
+
+func surveyPhaseParts(line string) (phase, owner string, ok bool) {
 	if !strings.HasPrefix(line, "=== ") {
-		return false
+		return "", "", false
 	}
 	line = line[len("=== "):]
-	var owner string
 	switch {
 	case strings.HasPrefix(line, "RUN "):
+		phase = "RUN"
 		owner = line[len("RUN "):]
 	case strings.HasPrefix(line, "PAUSE "):
+		phase = "PAUSE"
 		owner = line[len("PAUSE "):]
 	case strings.HasPrefix(line, "CONT "):
+		phase = "CONT"
 		owner = line[len("CONT "):]
 	case strings.HasPrefix(line, "NAME "):
+		phase = "NAME"
 		owner = line[len("NAME "):]
 	default:
-		return false
+		return "", "", false
 	}
-	return strings.TrimSpace(owner) != ""
+	return phase, owner, strings.TrimSpace(owner) != ""
 }
 
 // surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,

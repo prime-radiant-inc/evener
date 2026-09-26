@@ -362,6 +362,35 @@ func TestReplaySurveyFailuresExpandsAfterEarlierFailureBlock(t *testing.T) {
 	}
 }
 
+func TestReplaySurveyFailuresDoesNotRepeatEarlierExpandedContext(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before sibling failure"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent\n"+
+			assertion+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	count := 0
+	for _, line := range got {
+		if line == assertion {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("parent assertion occurred %d times after overlapping failure expansion: %q", count, got)
+	}
+	if !slices.Equal(got, []string{
+		assertion,
+		"--- FAIL: TestSibling (0.00s)",
+		"--- FAIL: TestParent (0.00s)",
+	}) {
+		t.Fatalf("replayed overlapping failures as %q, want the earlier context once and both markers", got)
+	}
+}
+
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
 // top-level parallel shape from go test -v: a sibling resumes after the
 // parent's assertion, emits source-located diagnostics, passes, and the
