@@ -438,8 +438,9 @@ implementing — several have landed without their entry being re-marked.
   `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
   `evener`/`hub` is not a match. Several matches refuse with `ErrRestart` (no
   signal, no relaunch); when none matches it is the supervisorless branch, whose
-  only launch is the cold-bootstrap **start** (a supervisorless *restart*
-  refuses the same way — component 04, §"Stop/restart mechanics" check 5);
+  restart runs the guarded verify-then-signal ad hoc path and whose only
+  no-supervisor launch is the cold-bootstrap **start** (component 04,
+  §"Stop/restart mechanics" check 5);
   **a candidate hub definition whose effective address cannot be
   resolved refuses with `ErrRestart` and starts nothing** rather than risking a
   duplicate, unless trusted explicit supervisor metadata recorded in the host
@@ -448,9 +449,8 @@ implementing — several have landed without their entry being re-marked.
   round 17; decided 2026-09-26)** — `sshconn/version.go` restart re-reads the
   pid, recovered argv (with `--config`/`--addr` agreeing with the entry's
   configured `config_path`/`addr` after normalization), effective user, and
-  listening socket in the **same** remote command that issues the signal,
-  refusing `ErrRestart` (no signal, no relaunch) on any mismatch or on a field
-  it cannot re-read. The restart prefers the supervisor path wherever a
+  listening socket before signaling, refusing `ErrRestart` (no signal, no
+  relaunch) on any mismatch or on a field it cannot re-read. The restart prefers the supervisor path wherever a
   supervisor is identified and safely restartable (`systemctl [--user] restart`;
   launchd `kickstart -k`, which pins by label rather than PID), and takes the ad
   hoc verify-then-signal path only where no supervisor is identified. **Decided
@@ -574,9 +574,10 @@ implementing — several have landed without their entry being re-marked.
   ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`), never
   a fall-through to
   the ad hoc launch, and the same refusal applies when an identified launchd
-  label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
-  launch is reached only when **no** candidate definition matches, and only on
-  the cold-bootstrap **start** — a supervisorless *restart* refuses. Scope:
+  label fails the bare-safe gate instead of the old ad hoc fallback. When
+  **no** candidate definition matches, a supervisorless *restart* runs the
+  guarded verify-then-signal ad hoc path (design §2), and the ad hoc *launch*
+  is the cold-bootstrap **start**. Scope:
   `sshconn/version.go` (`pickSupervisor`, `detectSupervisor`,
   `detectSupervisorsFrom`, the restart path's label gate), `sshconn/version_test.go`.
   Mirrors component-04 §"Stop/restart mechanics", its supervisor test case, and

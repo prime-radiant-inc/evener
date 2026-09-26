@@ -1224,7 +1224,7 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   not a PID file**: the lock cannot be read to find or signal the process, and
   breaking it is never allowed. **Identify before killing:** the port alone is
   not identity, so a restart refuses unless all of these hold **and the signal
-  re-validates the same identity in the same remote command that signals**, and
+  re-validates the same identity immediately before signaling**, and
   refusal is `ErrRestart` naming the mismatch with no kill and no relaunch:
 
   1. exactly **one** process is listening on the configured address (two or more
@@ -1253,55 +1253,32 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      already replaced. The same normalization applies to the supervisor "owns the
      configured address" check below.
   5. the identity is **re-validated at signal time**: the pid, argv, effective
-     user, and socket from checks 1–4 are re-read in the *same* remote command
-     that issues the signal (a guarded compare-and-kill), and the signal goes out
-     only on a full match. A mismatch — including any field that cannot be
+     user, and socket from checks 1–4 are re-read before the signal is issued,
+     and the signal goes out only on a full match. A mismatch — including any field that cannot be
      re-read — refuses with `ErrRestart`, no kill, no relaunch. This shrinks the
      PID-reuse window but does **not** close it: it is still check-then-act, so
      the process can exit and its PID be reused between the re-read and the
-     signal. The identity must therefore be **pinned atomically across the
-     signal**: the signal is issued through an atomic process handle — a `pidfd`
-     opened for the identified process and used as the target of
-     `pidfd_send_signal` — or through a host-side helper that holds an equivalent
-     identity pin on the process for the whole signal. **Re-reading the start
-     time (or any other identity field) immediately before the signal is not
-     sufficient** — that is the same check-then-act with a narrower window.
-     Where neither an atomic handle nor such a helper is available for the
-     identified process, the manager **refuses with `ErrRestart` and emits no
-     signal** rather than falling back to a check-then-act kill; the bare
-     unguarded `kill` is never acceptable (see the limit below).
+     signal. **Decided by Jesse, 2026-09-26** (design §2 "Restart identity pin:
+     verify-then-signal accepted"): this verify-then-signal form is the accepted
+     answer, and the atomic `pidfd` pin this check previously demanded — a
+     `pidfd` opened for the identified process as the target of
+     `pidfd_send_signal`, or a host-side helper holding an equivalent pin — is
+     **withdrawn**. The residual window is acknowledged, not closed. The bare
+     unguarded `kill` remains unacceptable: a target whose identity cannot be
+     verified is refused rather than signaled.
      **Platform reality: no atomic-handle form is reachable today, on any
-     platform.** This is stronger than "Darwin has no `pidfd`" and it is what
-     the design actually supports: a `pidfd` must be **opened and signaled by a
-     process running on the host**, and this component's only host interface is
-     `ssh <dest> <command>` shell execution (`Runner`, §"SSH channel argv") —
-     the controller cannot call `pidfd_open` on a remote PID from a shell
-     command, and there is no host-side helper it could invoke. `pidfd_open`/
-     `pidfd_send_signal` are Linux-only, and this series specifies **no**
-     host-side pin helper, the installer provisions none (it installs `evener`
-     and `evener-dev`, both of which are evener binaries, not signal helpers),
-     and nothing in the invocation surface invokes one. The shipped ad hoc path
-     is the opposite of the requirement: `restartBare` runs an unguarded
-     `kill <pid>` (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`).
-     **Consequence — supervisorless (ad hoc) restart is unsupported on every
-     platform in this series, Linux included.** Where the manager cannot pin the
-     identified process it **refuses with `ErrRestart`, emits no signal, and
-     performs no relaunch**; it never falls back to a check-then-act `kill`. A
-     **restart-capable deployment must be supervised**, because the supervised
-     paths name a unit/label rather than a PID and need no `pidfd`:
-     `launchctl kickstart -k gui/<uid>/<label>` on darwin,
-     `systemctl [--user] restart <unit>` on linux. A supervisorless host whose
-     binary must be replaced can
-     still be deployed to (the push path is unaffected), but it cannot be
-     restarted by the controller: the restart refuses, attach fails with
-     `ErrRestart`, and the operator must supervise the hub or restart it out of
-     band (the documented recipe in
-     `docs/evener-hub-remote-operations.md`) before reconnecting. Supervisorless
-     restart becomes automated only once a host-side atomic-signal helper is
-     specified, provisioned by the installer, and invoked over the channel —
-     that helper is a tracked code follow-up (keystone §"Tracked code
-     follow-ups"), not a present fact, and until it lands no pidfd path may be
-     promised.
+     platform.** A `pidfd` must be opened and signaled by a process running on
+     the host, and this component's only host interface is `ssh <dest>
+     <command>` shell execution (`Runner`, §"SSH channel argv"); this series
+     specifies, provisions, and invokes no host-side pin helper. Under the
+     withdrawn pin that is no longer a refusal: a **supervisorless** host
+     restarts through the guarded verify-then-signal ad hoc path. A
+     **restart-capable deployment still prefers a supervisor** — the supervised
+     paths name a unit/label rather than a PID: `launchctl kickstart -k
+     gui/<uid>/<label>` on darwin, `systemctl [--user] restart <unit>` on linux
+     — and a supervisorless host whose binary must be replaced is deployed to
+     (the push path is unaffected) and restarted by the same ad hoc path, not
+     left refusing.
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
@@ -1354,10 +1331,10 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   facts it can select and start an unrelated service. The exactly-one-candidate
   rule still applies, with the same three outcomes: **several matches refuse
   `ErrRestart` and start nothing** (no ad hoc launch chosen on top of an
-  ambiguity), and **only no match at all** is the supervisorless branch: it
-  refuses the restart (`ErrRestart`, no signal, no relaunch) and its only
-  no-supervisor launch is the cold-bootstrap **start** (§"Stop/restart
-  mechanics" check 5).
+  ambiguity), and **only no match at all** is the supervisorless branch: its
+  restart runs the guarded verify-then-signal ad hoc path (check 5, and the ad
+  hoc branch below), and its only no-supervisor launch is the cold-bootstrap
+  **start**.
   **When a candidate hub definition exists but its effective address
   cannot be resolved** (no explicit `--addr` and the `--config` is unreadable or
   carries no address), the cold bootstrap **refuses with `ErrRestart` and
@@ -1380,22 +1357,16 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   the window but cannot close it, because they describe the process at
   *identification* time, not at *signal* time. Re-checking identity in the same
   remote command immediately before signaling (a guarded compare-and-kill
-     shell expression) shrinks the race but is still check-then-act — re-reading
-     the start time at signal time is no better, because the process can still
-     exit and its PID be reused between that read and the signal. Only signaling
-     through an atomic handle that pins the process identity — a `pidfd` opened
-     for the identified process, or a host-side helper holding an equivalent pin
-     — closes it, and **neither form is reachable through this component's `ssh
-     <dest> <command>` interface** (a `pidfd` must be opened by a process on the
-     host; no helper is specified, installed, or invoked): a supervisorless
-     restart therefore refuses rather than signaling, on every platform
-     (check 5, and the supervisorless branch below). The
-  shipped `restartBare` (`sshconn/version.go`) is the unguarded form: it runs
-  `kill <pid>` with no re-validation at all. **Consequence:** on a host where
-  the hub exits during identification and the PID is reused, the restart can
-  terminate an unrelated process. A refusal (`ErrRestart`, no kill, no
-     relaunch) is the safe failure: a restart that cannot pin the
-  process must prefer it to an unguarded signal.
+  shell expression) shrinks the race but is still check-then-act — re-reading
+  the start time at signal time is no better, because the process can still
+  exit and its PID be reused between that read and the signal. **This residual
+  window is accepted** (design §2 "Restart identity pin: verify-then-signal
+  accepted", Jesse 2026-09-26): the shutdown preference is a supervisor restart
+  by unit/label, and a supervisorless hub uses the guarded verify-then-signal
+  path, which refuses a target it cannot verify rather than signaling it. The
+  shipped `restartBare` (`sshconn/version.go`) takes that path: it recovers the
+  listener's argv and bound address and refuses `ErrRestart` on any mismatch
+  before signaling, and it never issues a bare `kill` on an unverified target.
 
   The restart path is then:
   1. **Supervised hub** — restart it the way its supervisor expects:
@@ -1428,19 +1399,18 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      clear**, then relaunch detached, appending to the recovered log
      (`nohup <quoted argv…> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
-     **This signal path is unavailable on every platform in this series.** No
-     atomic process handle is reachable through this component's interfaces: a
-     `pidfd` must be opened and signaled by a process on the host, the only
-     host interface here is `ssh <dest> <command>`, and no host-side pin helper
-     is specified, installed, or invoked (check 5). So on a host with no
-     supervisor the manager **refuses the restart (`ErrRestart`, no signal, no
-     relaunch) on Linux exactly as on Darwin** and the operator must supervise
-     the hub, restart it out of band with the recipe above, and reconnect; it
-     never issues the bare unguarded `kill`, because signaling an unpinned PID
-     can terminate an unrelated process after PID reuse (check 5; the limit
-     above). The recipe above is the *operator's* documented procedure, not a
-     manager-automated path, until the host-side helper is specified and
-     provisioned (keystone §"Tracked code follow-ups"). The **start** of a
+     **This ad hoc path is the manager-automated restart for a supervisorless
+     hub** (design §2 "Restart identity pin: verify-then-signal accepted",
+     Jesse 2026-09-26): the manager identifies the listener through the checks
+     above, refuses `ErrRestart` on any mismatch, and only then signals and
+     relaunches. No atomic process handle is reachable through this component's
+     interfaces — a `pidfd` must be opened and signaled by a process on the
+     host, the only host interface here is `ssh <dest> <command>`, and no
+     host-side pin helper is specified, installed, or invoked (check 5) — so the
+     residual identification/signal window is accepted, and the manager never
+     issues a bare unguarded `kill` on an unverified target (check 5; the limit
+     above). The recipe above remains the *operator's* documented procedure for
+     a restart out of band. The **start** of a
      stopped hub (the first-attach bootstrap, where no process exists to
      identify or signal) is unaffected: it has no PID to pin, so it keeps the
      detached `nohup` launch.
@@ -1858,28 +1828,23 @@ with the remote hub and its daemons still running.
     through to an unmanaged ad hoc launch; no `$(id -u)` reaches the remote
     shell.
 20. Restart safety is hardened against the identification/signal PID-reuse
-    window. The signal is a **guarded compare-and-kill**: the pid, recovered
-    argv (with `--config`/`--addr` agreeing with the entry's configured
-    `config_path`/`addr` after loopback normalization), effective user, and
-    listening socket are re-read in the *same* remote command that issues the
-    signal, and the signal goes out only on a full match; any mismatch — or any
-    field that cannot be re-read — refuses with `ErrRestart`, emitting no signal
-    and no relaunch. The bare `restartBare` (`kill <pid>`, `sshconn/version.go`)
-    is not acceptable. Because even a guarded compare-and-kill is still
-    check-then-act, the PID-reuse window is closed only by a host-side
-    **atomic process handle** — a `pidfd` for the identified process, or a
-    host-side helper holding an equivalent identity pin across the signal — and
-    re-reading the start time (or any other identity field) at signal time is
-    **not** sufficient. When neither form is available for the identified
-    process the manager refuses with `ErrRestart` and emits no signal. This
-    criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to
-    end, and its refusal is **every supervisorless host on every platform**: no
-    atomic handle is reachable through this component's `ssh <dest> <command>`
-    interface, so a supervisorless Linux hub refuses exactly as a
-    supervisorless Darwin one does, rather than signaling. A restart-capable
-    deployment must therefore be supervised (the supervised paths pin by
-    systemd unit / launchd label, not by PID), or wait for the tracked
-    host-side atomic-signal helper.
+    window by a **guarded verify-then-signal**: the pid, recovered argv (with
+    `--config`/`--addr` agreeing with the entry's configured `config_path`/
+    `addr` after loopback normalization), effective user, and listening socket
+    are re-read before the signal is issued, and the signal goes out only on a
+    full match; any mismatch — or any field that cannot be re-read — refuses
+    with `ErrRestart`, emitting no signal and no relaunch. A target whose
+    identity cannot be verified is refused rather than signaled; a bare `kill
+    <pid>` on an unverified target is never acceptable. **Decided by Jesse,
+    2026-09-26** (design §2 "Restart identity pin: verify-then-signal
+    accepted"): this is the accepted answer, and the host-side **atomic process
+    handle** (a `pidfd`, or an equivalent pin helper) is **withdrawn**; the
+    residual check-then-act window is acknowledged, not closed. The restart
+    still prefers a supervisor (the supervised paths pin by systemd unit /
+    launchd label, not by PID), and a supervisorless host restarts through the
+    guarded ad hoc path (`restartBare`), which re-validates the target before
+    signaling. This criterion makes checks 1–5 of §"Stop/restart mechanics"
+    testable end to end.
 21. A fresh host whose `run_path` does not exist is a **verified missing
     executable** preflight result (`ErrExecutableMissing`), recognized from the
     **dedicated executable probe's stable sentinel** — `test -x <run_path>`

@@ -905,7 +905,9 @@ element type.
   incarnationId: string, kind: "deploy" | "restart", state: "pending" | "running" |
   "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?:
   BoundaryEntry[], progress: ProgressEntry[], result?: {ok: bool, message: string},
-  createdAt: string, updatedAt: string, hostRemoved: bool, compacted?: true}` —
+  createdAt: string, updatedAt: string, hostRemoved: bool, compacted?: true,
+  attestation?: {operator: string, statement: "orphan-verified-absent",
+  recordId: string, boundaryRef: string, observedAt: string}}` —
   `incarnationId` is the pinned incarnation the record ran against; `orphanBoundary`
   is present exactly on records whose `state` is `orphan-unverified` (absent on every
   other state per the absent-when-unknown rule) — its element type is defined in the
@@ -913,6 +915,10 @@ element type.
   through `orphan-resolve` (absent on every other record including ordinary
   boot-transitioned `interrupted` records, per the absent-when-unknown rule — the
   marker is defined in the fencing spec §5 and cited here, never restated);
+  `attestation` is present exactly on a record resolved through `orphan-resolve`
+  with an attestation, carrying the persisted `{operator, statement, recordId,
+  boundaryRef, observedAt}` (fencing spec §§5, 9), and absent on every other
+  record;
   `compacted` is present as `true` exactly on tombstone replays
   (absent on live records). `ProgressEntry` is `{ts: string (RFC3339), message:
   string}`, bounded per record. `limit` defaults to 50 and caps at 200; responses
