@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from "vitest";
 import { createDraftRepository, type DraftPort, discardStoredDraft } from "./draftCheckpointPort";
 import { memoryDraftStorage } from "./testing/draftStorage";

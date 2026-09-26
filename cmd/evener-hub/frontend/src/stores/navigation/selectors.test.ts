@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import type { NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
 import {
   keyID,

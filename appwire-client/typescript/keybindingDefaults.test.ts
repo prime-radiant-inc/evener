@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { parseKeybinding } from "tinykeys";
 import { describe, expect, test } from "vitest";
 import { ACTIONS } from "./keybindingActions";
