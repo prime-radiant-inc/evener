@@ -1,3 +1,4 @@
+import { cleanup } from "@testing-library/react";
 import * as React from "react";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { guardConsoleOutput } from "./testConsoleGuard";
@@ -29,6 +30,12 @@ function failOnUnexpectedConsoleOutput() {
 
 afterEach(failOnUnexpectedConsoleOutput);
 afterAll(failOnUnexpectedConsoleOutput);
+
+// Testing Library registers its automatic unmount only when vitest exposes a
+// global afterEach, which it does not here, so a test's rendered trees and
+// hooks would otherwise stay mounted into the next test. Registered after the
+// console check so it runs before it: output from the unmount counts.
+afterEach(cleanup);
 
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousActEnvironment: boolean | undefined;
