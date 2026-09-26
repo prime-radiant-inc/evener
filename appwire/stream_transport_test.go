@@ -979,8 +979,8 @@ func TestStreamTransportCloseBoundedByStalledWrite(t *testing.T) {
 
 // The latch signal is the one-shot source of truth even when the recorded cause
 // is nil: a first latch(nil) followed by a second latch must not close the
-// latched channel twice, and the second latch must report that it recorded
-// nothing.
+// latched channel twice, the second latch must report that it recorded nothing,
+// and a latched transport must never answer Send with success.
 func TestStreamTransportLatchIsOneShotWithNilCause(t *testing.T) {
 	tr := NewStreamTransport(&memoryStream{r: bytes.NewReader(nil)})
 
@@ -994,6 +994,9 @@ func TestStreamTransportLatchIsOneShotWithNilCause(t *testing.T) {
 	case <-tr.latched:
 	default:
 		t.Fatal("the latch signal was not closed")
+	}
+	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`))); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Send after a nil-cause latch = %v, want ErrStreamClosed, not success", err)
 	}
 }
 

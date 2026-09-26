@@ -438,9 +438,13 @@ func (t *StreamTransport) poison(err error) {
 
 // latch records the terminal cause exactly once and closes the latched signal so
 // a Send blocked on admission wakes. It reports whether this call recorded the
-// cause; a later latch leaves the first one in place. The signal, not the
-// recorded cause, is the one-shot source of truth, so a nil cause cannot leave
-// the transport latched but "not poisoned" for the next caller.
+// cause; a later latch leaves the first one in place.
+//
+// A latched transport must always report a terminal cause — Send's latch-gated
+// admission returns poisonErr(), so a nil cause would make a finished transport
+// answer Send with success. No caller passes nil today; substituting
+// ErrStreamClosed here keeps that invariant local to the latch instead of
+// trusting every caller and every future refactor.
 func (t *StreamTransport) latch(err error) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -448,6 +452,9 @@ func (t *StreamTransport) latch(err error) bool {
 		return false
 	}
 	t.latchedOnce = true
+	if err == nil {
+		err = ErrStreamClosed
+	}
 	t.poisoned = err
 	close(t.latched)
 	return true
