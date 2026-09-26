@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1079,27 +1078,30 @@ func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
 	}
 }
 
-// captureHubStderr redirects the hub's lifecycle log destination (os.Stderr)
-// into a pipe for the duration of fn and returns what was written. Both pipe
-// ends are closed and os.Stderr restored through t.Cleanup, so an early
-// t.Fatalf or panic cannot leak a descriptor or leave stderr redirected.
+// captureHubStderr redirects the hub's log destination (os.Stderr) into a temp
+// file for the duration of fn and returns what was written. The file is closed
+// and os.Stderr restored through t.Cleanup, so an early t.Fatalf or panic
+// cannot leak a descriptor or leave stderr redirected. It captures to a file,
+// not a pipe: a pipe's writer blocks when its buffer fills, and on a busy Mac
+// that buffer is 512 bytes (#2495).
 func captureHubStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
+	stderr, err := os.CreateTemp(t.TempDir(), "hub-stderr-")
 	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
+		t.Fatalf("os.CreateTemp: %v", err)
 	}
 	t.Cleanup(func() {
 		os.Stderr = original
-		_ = writeEnd.Close()
-		_ = readEnd.Close()
+		_ = stderr.Close()
 	})
-	os.Stderr = writeEnd
+	os.Stderr = stderr
 	fn()
-	_ = writeEnd.Close()
 	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
+	data, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatalf("os.ReadFile: %v", err)
+	}
 	return string(data)
 }
 
