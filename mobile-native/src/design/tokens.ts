@@ -177,7 +177,10 @@ export function paletteFor(scheme: string | null | undefined): Palette {
  * expo-font plugin) and the app's existing machine face. Markdown's strong
  * and em reach the SemiBold, Italic and SemiBold Italic faces by trait
  * matching inside the "Source Serif 4" family, so every face here is in use
- * even where no code names it. */
+ * even where no code names it. The serif names are iPhone-only: Android
+ * resolves an embedded font by its file name (SourceSerif4_400Regular), not
+ * by these names, so there the text falls back to the system face. The
+ * redesign qualifies iPhone only (see the roadmap); Android keeps building. */
 export const fonts = {
 	serif: "SourceSerif4-Regular",
 	serifItalic: "SourceSerif4-Italic",
