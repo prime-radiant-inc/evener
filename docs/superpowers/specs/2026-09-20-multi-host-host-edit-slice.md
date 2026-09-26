@@ -22,7 +22,7 @@ Today a host can be added, connected and removed from Settings → Hosts, but no
 changed. `HostAddParams` carries name, address and key path
 (`appwire/types.go`); `evener/host/update` does not exist; `HostRow` carries
 neither the remaining entry fields nor the versions a row needs to be edited
-from. The Add dialog offers three of the seven `HostConfig` fields.
+from. The Add dialog offers three of the eight `HostConfig` fields.
 
 An operator who mistypes an address, moves a host's `hub.toml`, changes the SSH
 user, sets an `evener_path`, or adds a root must remove and re-add the host.

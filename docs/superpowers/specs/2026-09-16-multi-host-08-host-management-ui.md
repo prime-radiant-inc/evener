@@ -695,7 +695,11 @@ carries a machine-managed banner comment at its top:
 The rewrite is a read-modify-write of the whole document, not a hosts-only
 marshal: it replaces the `[[hosts]]` array and nothing else, so every other key
 the file holds — the hub's own settings, provider overlays, plugin settings,
-and the machine-managed records below — round-trips unchanged. That banner is
+and the machine-managed records below — round-trips unchanged. A host entry the
+file holds but the running hub never loaded — a hand edit made while the hub
+runs — is carried through the rewrite rather than dropped; it is not live until
+the next boot (the running hub serves its boot set), which §15's
+fingerprint-bound adopt/reconcile work later makes immediate. That banner is
 how the file states the trade itself: an operator's comments,
 blank lines, key order, and formatting do not survive a rewrite, so the file
 says so before the first one. Hand edits are still read (the external-edit
@@ -710,20 +714,28 @@ records a machine-managed marker in `hub.toml` — `legacy_sidecar_migrated` —
 and the marker, not the rename's durability alone, is what makes the retirement
 authoritative: the filesystem's directory-sync tolerance (§6 file posture) means
 a rename can be lost to a power failure, but the marker and every later mutation
-live in the one file, so a survivor of one proves the other survived. A boot that
-finds `hub.hosts.json` again with the marker present therefore ignores it as
-stale — logged, never merged, and mutations stay live — so a name the UI removed
-after a completed migration cannot come back on such a filesystem either. The retired split made a live name in
-both files a hard startup error, so the collision rule here is the migration's
-own: a name `hub.toml` already declares wins and the sidecar's duplicate is
-dropped. While an unmigrated sidecar remains, mutations are refused — no
-`hub.toml` rewrite (and no UI mutation) can land before the sidecar's entries
-are folded in or the operator fixes the file — so a name removed through the
-UI after a completed migration can never be resurrected by a rename that a
-power loss undid: no write could have acted on the merged state first. A crash
-at any point re-runs the whole migration on the next boot and converges, since
-already-merged names collide and are skipped and the set-aside rename either
-already landed or is retried. The retired sidecar's durable content is exactly
+live in the one file, so a survivor of one proves the other survived. The
+recovery rule is split by marker presence, and only by marker presence. With the marker present the sidecar is
+stale: boot never reads its entries again (it logs the stale file and, when the
+aside name is free, retries the set-aside rename), so a name the UI removed
+after the completed migration can never come back, even on a filesystem whose
+directory syncs are ignored. With the marker absent — a crash before it landed —
+the migration re-runs and converges: every already-merged name collides and is
+skipped, and the set-aside rename either already landed or is retried. Field
+conversion is a carry, not a translation: the retired sidecar's JSON used the
+same snake_case names as the file's TOML tables for every stored field (`name`,
+`ssh`, `user`, `evener_path`, `config_path`, `addr`, `roots`, `key_path`), so
+the migration is field-for-field — `address`/`keyPath` are the AppWire
+spellings and were never the sidecar's. A collision with a name `hub.toml`
+already declares has two arms, neither of which loses data silently: a
+byte-identical duplicate is dropped in the file's favor (the retired merge's
+precedence — nothing is lost), while a *differing* duplicate is refused loudly,
+both files staying untouched and mutations refused until the operator resolves
+the duplicate, because the retired merge's silent drop would discard the
+sidecar's settings (a key path, say). While an unmigrated sidecar remains,
+mutations are refused: no `hub.toml` rewrite (and no UI mutation) can land
+before the sidecar's entries are folded in or the operator fixes the file. A
+crash before the marker lands cannot have acted on the merged state yet. The retired sidecar's durable content is exactly
 its host entries: the JSON shape carries no tombstones, receipts, remnants,
 generations, high-water marks, presence epochs, or fencing records — those are
 the §15/§6 records, and they live in `hub.toml`. The merge therefore drops at
@@ -2008,10 +2020,12 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   last-good snapshot stays live and the failure surfaces as the typed
   `concurrent-edit` configuration error), the machine-managed banner, an
   in-place rewrite that preserves every pre-existing host entry and every
-  non-host key the file carries, the one-time
+  non-host key the file carries (including a host entry added to the file while
+  the hub runs, carried through but not live until the next boot), the one-time
   `hub.toml` migration (entries and every machine-managed record survive, the
-  marker is recorded, and a sidecar that reappears with the marker present is
-  ignored as stale and never re-merged), the boot-time hard-error duplicate,
+  marker is recorded, a sidecar that reappears with the marker present is
+  ignored as stale and never re-merged, an identical duplicate collision drops
+  with nothing lost, and a differing one refuses loudly), the boot-time hard-error duplicate,
   swap-failure compensation (prior `hub.toml` bytes restored, runtime reverted,
   retry re-applies cleanly), and the corrupt/schema-invalid `hub.toml` boot hard
   error, the host-admin controller live-set tests (forwarded requests reach
@@ -2216,9 +2230,12 @@ readability refusal).
    is a hard startup error.
 5. Migration: a pre-existing `hub.hosts.json` beside the selected `hub.toml`
    merges into it exactly once at boot — every sidecar entry survives in
-   `hub.toml`, the retired sidecar is renamed aside rather than deleted, and a
-   second boot does not merge again (a name removed through the UI afterwards
-   cannot resurrect).
+   `hub.toml` (an identical duplicate collision is dropped with nothing lost,
+   and a differing one refuses the migration loudly rather than dropping
+   settings), the retired sidecar is renamed aside rather than deleted, the file
+   records the migration marker, and a second boot neither merges again nor
+   reads a stale sidecar that reappears (a name removed through the UI
+   afterwards cannot resurrect).
 6. Removing a host retains its last-known-good rows as an explicitly
    stale, non-actionable tombstone (tree + action capabilities, test-pinned)
    while the manifest's `sources` array drops the host; the tombstone survives
