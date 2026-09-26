@@ -32,7 +32,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 
 **Files:**
 - Create: `mobile-native/src/board/ProjectsSection.tsx`
-- Modify: `mobile-native/src/board/BoardScreen.tsx` and `mobile-native/src/projectBrowser.ts` (reuse it, adding a catalog parameter so it can read `projects`, `test_runs` and `archived_projects`)
+- Modify: `mobile-native/src/board/BoardScreen.tsx` and `mobile-native/src/projectBrowser.ts` (reuse it: add a catalog parameter so it can read `projects`, `test_runs` and `archived_projects`, and widen `ProjectSessionTier` from `"current" | "recent"` to also include `"archived"`, since the shared `project_page` resource already carries that tier, per `appwire-client/typescript/state/navigation/types.ts` and its use in `navigationReveal.ts`; each project group then loads and exposes an `archived` page alongside `current` and `recent`)
 - Test: `mobile-native/src/projectBrowser.test.ts` and `mobile-native/src/board/ProjectsSection.test.tsx`
 
 **Requirements (spec 7.1):**
@@ -48,7 +48,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 - Rows in Projects, Test runs and Archived are quiet `BoardRow`s. A session on an offline host is `ended`, so it shows as shut down.
 - The Projects and Archived link rows from PR 2 are removed.
 
-- [ ] Steps: failing tests (the catalog parameter reads each catalog; the host grouping and offline label; fold defaults), implement, `make test-native`, then commit (`feat(native): projects, hosts, test runs and archive on the Board`). Open PR 3: "feat(native): the Board's own sections (phase 2, PR 3)".
+- [ ] Steps: failing tests (the catalog parameter reads each catalog; a project group's `archived` page loads and folds by default alongside `current` and `recent`; the host grouping and offline label; fold defaults), implement, `make test-native`, then commit (`feat(native): projects, hosts, test runs and archive on the Board`). Open PR 3: "feat(native): the Board's own sections (phase 2, PR 3)".
 
 ---
 
@@ -62,11 +62,11 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 - Test: `mobile-native/src/board/notices.test.ts`, `mobile-native/src/board/boardData.test.ts` and `mobile-native/src/board/Notices.test.tsx`
 
 **Interfaces:**
-- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" | "Plugins" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; liveRows: readonly NavigationSessionSummary[]; projectRows: readonly NavigationSessionSummary[] }): Notice[]`.
+- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" | "Plugins" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; loadedRows: readonly NavigationSessionSummary[] }): Notice[]`. `loadedRows` is `BoardScreen`'s union of every page it has loaded so far: Live, each pinned category, Projects' `current`/`recent`/`archived` groups, test runs and archived projects. A session can be visible only through one of these, so all of them count.
 
 **Requirements (spec 7.1, ruling 8):**
 - **Sign-in:** one notice per provider with `needsLogin`: "<provider> sign-in expired". Its action "Sign in" opens today's provider sign-in flow for that provider. #2483 is fixing `needsLogin` to mean "access token expired and no refresh token", so a sign-in that refreshes silently stops tripping the notice. A rejected refresh isn't recorded anywhere yet (#2479), so the notice can't fire for that case until #2479 lands.
-- **Host:** one notice per offline source: "<label> is offline · 3 sessions", where the count is the number of loaded rows whose `host_id` is that source. The action "Details" opens `HubSettings` until phase 5.
+- **Host:** one notice per offline source: "<label> is offline · 3 sessions", where the count is the number of distinct `loadedRows` (deduped by `ref`, since a pinned live session appears in both Live and its category) whose `host_id` is that source. The action "Details" opens `HubSettings` until phase 5.
 - **Plugin:** one notice per broken plugin: "<plugin> is broken". Its action "Plugins" opens today's `Plugins` screen. That route takes only `{ hubId }`, so opening at that plugin's row (spec 7.1) waits for phase 5's Hub; the notice already names the plugin.
 - **Placement and style:** notices sit under the chips as rows: `exclamationmark.triangle.fill` in amber, the sentence in `inkHi`, the action in `accentInk`. No tinted box. They disappear when resolved.
 - **Reads:**
@@ -74,7 +74,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
   - `evener/plugin/list` on focus and every 5 minutes while the Board is focused.
   - The sources come from the manifest.
 
-- [ ] Steps: failing tests (the pure `notices` table, the reads and polling with fake timers, and rendering), implement, `make test-native`, then commit (`feat(native): Board notices`).
+- [ ] Steps: failing tests (the pure `notices` table, including a host count deduped across rows loaded from more than one section; the reads and polling with fake timers; and rendering), implement, `make test-native`, then commit (`feat(native): Board notices`).
 
 ### Task 15: Search
 
@@ -93,7 +93,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
   - `evener/search { query }` is debounced 250ms. A newer query wins, and a query change clears stale results.
   - **Sessions** lists `live` and then `past` results, each with a state mark from `boardState` over `{ state }` and the age.
   - **Projects** lists the loaded projects catalog filtered by name or `working_dir`, case-insensitive.
-  - Tapping a session opens it; tapping a project scrolls to it in the Projects section and unfolds it.
+  - Tapping a session opens it; tapping a project scrolls to it and unfolds it, in whichever of Task 10's groupings is showing: directly in the Projects section ("Project, then host" mode), or inside its host group in the Hosts section ("Host, then project" mode). This needs Task 10's `ProjectsSection`. PR 5 starts alongside PR 3, not after it, so if PR 3 hasn't landed yet when this task ships, land the rest of Task 15 first and wire the project tap once PR 3 merges.
 - **Recent searches** show when the field is empty: the last 8 queries submitted with a tap on a result, kept in kv-store under `evener.native.recent-searches.${hubId}` and cleared by `forgetBoardForHub`, with a "Clear" action.
 - **Retire today's search:** `RosterSearch` and `rosterSearch.ts` are deleted if nothing else uses them. Check first with `grep -rn "rosterSearch\|RosterSearch" mobile-native/src`.
 
