@@ -195,6 +195,7 @@ func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {
 
 // TestCovJobListFilterFromArgs covers jobListFilterFromArgs (session_tools_jobs.go lines 1664-1698).
 func TestCovJobListFilterFromArgs(t *testing.T) {
+	t.Parallel()
 	// Default filter.
 	f, err := jobListFilterFromArgs(map[string]any{})
 	if err != nil || f.Limit != defaultJobListLimit || f.Offset != 0 {

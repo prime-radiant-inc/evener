@@ -2,7 +2,7 @@ import type { HostRow, LaunchConfigResolved } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
@@ -80,6 +80,8 @@ afterEach(() => {
   resetLaunchConfigHostStoresForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   window.history.pushState({}, "", "/");
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("with this hub selected the section issues the plain launch calls and never the proxy", async () => {
@@ -219,6 +221,11 @@ function forwardedResolveCalls(fake: FakeClient, host: string): number {
 // re-resolves this working directory, so a launch.toml that changed on the host
 // (or a trust decision made elsewhere) reaches the pane.
 test("a launch-config change for the selected host re-resolves the in-repo config", async () => {
+  // The re-read waits out a 250ms debounce (useConnectedEffect.ts). Fake
+  // timers own that clock, and the stubbed `jest` global lets Testing
+  // Library's findBy/waitFor polls advance it, so the wait costs no real time.
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   localStorage.setItem("lastCwd", "/repo");
   const fake = connectFakeClient();
   let hash = "beta-hash";

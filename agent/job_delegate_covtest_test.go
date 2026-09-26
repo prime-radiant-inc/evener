@@ -65,6 +65,7 @@ func TestSendMessageFailed(t *testing.T) {
 // TestSandboxHostFacts_NilSession covers the nil-session path in
 // sandboxHostFacts (lines 137-138).
 func TestSandboxHostFacts_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	facts := s.sandboxHostFacts()
 	// Should return real prober facts, not panic.

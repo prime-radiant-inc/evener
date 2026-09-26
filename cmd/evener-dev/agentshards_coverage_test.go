@@ -242,6 +242,794 @@ func TestReplaySurveyFailuresShowsAssertionContext(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresFindsParentAssertionThroughSubtests is the issue
+// #2121 regression in Go 1.27's order: the parent assertion precedes a
+// subtest's source diagnostics, the parent FAIL follows them, and the
+// subtest's buffered verdict follows the parent marker. The parent assertion
+// is outside the marker's nearby framework-delimited window, but must still
+// reach the survey summary.
+func TestReplaySurveyFailuresFindsParentAssertionThroughSubtests(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		assertion string
+	}{
+		{"TestRetirementTreeSettleDrainsPendingRootAttention", "    retirement_test.go:42: pending root attention was not drained"},
+		{"TestRetirementDelegateIdleEntrypointsClaimFirst", "    retirement_test.go:84: first idle entrypoint did not claim"},
+	} {
+		var log strings.Builder
+		fmt.Fprintf(&log, "=== RUN   %s\n", tc.name)
+		log.WriteString(tc.assertion + "\n")
+		fmt.Fprintf(&log, "=== RUN   %s/subtest\n", tc.name)
+		for i := range surveyContextBefore + 1 {
+			_, _ = fmt.Fprintf(&log, "    subtest_test.go:%d: subtest diagnostic\n", i+1)
+		}
+		fmt.Fprintf(&log, "--- FAIL: %s (0.00s)\n", tc.name)
+		fmt.Fprintf(&log, "    --- FAIL: %s/subtest (0.00s)\n", tc.name)
+
+		gotLines := replayLines(t, writeSurveyLog(t, log.String()), 10)
+		got := strings.Join(gotLines, "\n")
+		if !strings.Contains(got, tc.assertion) {
+			t.Errorf("%s parent assertion was omitted from replay: %q", tc.name, got)
+		}
+		if len(gotLines) > surveyContextBefore+2 {
+			t.Errorf("%s replayed %d lines, want at most %d", tc.name, len(gotLines), surveyContextBefore+2)
+		}
+	}
+}
+
+// TestReplaySurveyFailuresExpandedBlockKeepsAfterContext covers the expanded
+// parent path: its after-context can contain an indented nested failure, which
+// must not be skipped when the expansion selects older parent diagnostics.
+func TestReplaySurveyFailuresExpandedBlockKeepsAfterContext(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"    parent_test.go:42: parent assertion\n"+
+			"=== RUN   TestParent/subtest\n"+
+			"--- PASS: TestParent/subtest (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n"+
+			"    --- FAIL: TestParent/subtest (0.00s)\n"+
+			"        child_test.go:9: nested assertion\n"+
+			"=== RUN   TestNext\n")
+
+	want := []string{
+		"    parent_test.go:42: parent assertion",
+		"--- FAIL: TestParent (0.00s)",
+		"    --- FAIL: TestParent/subtest (0.00s)",
+		"        child_test.go:9: nested assertion",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("expanded failure replayed %q, want parent and nested diagnostics %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresPrefersLateParentAssertion covers a parallel log in
+// which earlier diagnostics from the parent or its subtests precede the
+// parent's assertion, while another test's verdict sits immediately before
+// the parent's verdict. The later assertion is the useful failure detail.
+func TestReplaySurveyFailuresPrefersLateParentAssertion(t *testing.T) {
+	const assertion = "    parent_test.go:99: late parent assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    child_test.go:%d: earlier diagnostic\n", i+1)
+	}
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestParallelSibling\n")
+	log.WriteString("--- PASS: TestParallelSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("late parent assertion was omitted from replay: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics covers
+// source-located t.Log/t.Error output from a nested subtest. Those lines are
+// newer than the parent's assertion, but the parent assertion must still win
+// a bounded diagnostic excerpt.
+func TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before nested output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestParent/subtest\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    nested_test.go:%d: nested diagnostic\n", i+1)
+	}
+	log.WriteString("--- PASS: TestParent/subtest (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was crowded out by nested diagnostics: %q", got)
+	}
+}
+
+func TestReplaySurveyFailuresExpandsAfterEarlierFailureBlock(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before sibling failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("    sibling_test.go:1: sibling output\n")
+	log.WriteString("--- FAIL: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted after an earlier failure block: %q", got)
+	}
+}
+
+func TestReplaySurveyFailuresDoesNotRepeatEarlierExpandedContext(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before sibling failure"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent\n"+
+			assertion+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	count := 0
+	for _, line := range got {
+		if line == assertion {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("parent assertion occurred %d times after overlapping failure expansion: %q", count, got)
+	}
+	if !slices.Equal(got, []string{
+		"--- FAIL: TestSibling (0.00s)",
+		assertion,
+		"--- FAIL: TestParent (0.00s)",
+	}) {
+		t.Fatalf("replayed overlapping failures as %q, want each assertion beside its owning marker", got)
+	}
+}
+
+func TestReplaySurveyFailuresKeepsFallbackContextAtBlockLimit(t *testing.T) {
+	const assertion = "    parent_test.go:5: parent assertion at block limit"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent\n"+
+			assertion+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"=== NAME  TestParent\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 1)
+	count := 0
+	for _, line := range got {
+		if line == assertion {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("parent assertion occurred %d times at the block limit: %q", count, got)
+	}
+}
+
+func TestReplaySurveyFailuresKeepsDeferredLinesAndLaterAssertion(t *testing.T) {
+	const assertion = "    parent_test.go:99: real assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("=== NAME  TestParent\n")
+	for i := 1; i <= surveyContextBefore; i++ {
+		fmt.Fprintf(&log, "    parent output line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestSibling (0.00s)\n")
+	log.WriteString("=== NAME  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, writeSurveyLog(t, log.String()), 10)
+	assertionCount := 0
+	for _, line := range got {
+		if line == assertion {
+			assertionCount++
+		}
+	}
+	if assertionCount != 1 {
+		t.Fatalf("parent assertion occurred %d times: %q", assertionCount, got)
+	}
+	for i := 1; i <= surveyContextBefore; i++ {
+		line := fmt.Sprintf("parent output line %d", i)
+		fullLine := "    " + line
+		count := 0
+		for _, gotLine := range got {
+			if gotLine == fullLine {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("deferred parent line %q occurred %d times: %q", line, count, got)
+		}
+	}
+}
+
+func TestReplaySurveyFailuresDefersFailedChildDiagnosticToParent(t *testing.T) {
+	const childDiagnostic = "    child_test.go:7: failed child assertion"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent/child\n"+
+			childDiagnostic+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	want := []string{
+		"--- FAIL: TestSibling (0.00s)",
+		childDiagnostic,
+		"--- FAIL: TestParent (0.00s)",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want child diagnostic beside parent failure %q", got, want)
+	}
+}
+
+func TestReplaySurveyFailuresKeepsChildDiagnosticBeforeRepeatedParentRun(t *testing.T) {
+	const childDiagnostic = "    child_test.go:7: failed child assertion"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent/child\n"+
+			childDiagnostic+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"=== RUN   TestParent\n"+
+			"=== NAME  TestParent\n"+
+			"    parent_test.go:8: later parent output\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	want := []string{
+		childDiagnostic,
+		"--- FAIL: TestSibling (0.00s)",
+		"    parent_test.go:8: later parent output",
+		"--- FAIL: TestParent (0.00s)",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want child diagnostic before the repeated parent run %q", got, want)
+	}
+}
+
+func TestReplaySurveyFailuresKeepsUnselectedSiblingContext(t *testing.T) {
+	const siblingDiagnostic = "    sibling_test.go:2: sibling assertion S"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent\n"+
+			"    parent_test.go:1: parent assertion A\n"+
+			"=== NAME  TestSibling\n"+
+			siblingDiagnostic+"\n"+
+			"--- FAIL: TestParent (0.00s)\n"+
+			"=== NAME  TestSibling\n"+
+			"    sibling_test.go:3: sibling assertion T\n"+
+			"--- FAIL: TestSibling (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	count := 0
+	for _, line := range got {
+		if line == siblingDiagnostic {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("unselected sibling diagnostic occurred %d times: %q", count, got)
+	}
+}
+
+// TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
+// top-level parallel shape from go test -v: a sibling resumes after the
+// parent's assertion, emits source-located diagnostics, passes, and the
+// parent then fails. The sibling's newer lines must not claim the parent slot.
+func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before sibling output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== PAUSE TestParent\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("=== PAUSE TestSibling\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== CONT  TestSibling\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    sibling_test.go:%d: sibling diagnostic\n", i+1)
+	}
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was crowded out by sibling diagnostics: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership covers Go 1.27's
+// real parallel shape: a sibling emits a diagnostic, testing switches output
+// ownership with NAME, and the parent emits its assertion before more sibling
+// diagnostics. The parent assertion must survive, while the first sibling
+// diagnostic must not be promoted into the parent's diagnostic budget.
+func TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership(t *testing.T) {
+	const (
+		firstSibling = "    sibling_test.go:1: first sibling diagnostic"
+		assertion    = "    parent_test.go:99: parent assertion after NAME"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== PAUSE TestParent\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("=== PAUSE TestSibling\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString("=== CONT  TestSibling\n")
+	log.WriteString(firstSibling + "\n")
+	log.WriteString("=== NAME  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    sibling_test.go:%d: later sibling diagnostic\n", i+2)
+	}
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted after NAME frame: %q", got)
+	}
+	if strings.Contains(got, firstSibling) {
+		t.Fatalf("first sibling diagnostic was favored as parent output: %q", got)
+	}
+	if strings.Contains(got, "later sibling diagnostic") {
+		t.Fatalf("later sibling diagnostic was backfilled into parent output: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName covers a
+// child failure whose diagnostic is separated from the parent's verdict by a
+// sibling's NAME-owned output. The child diagnostic is still the useful
+// context even though the nearby ordinary window contains only the sibling.
+func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T) {
+	const (
+		childDiagnostic = "    child_test.go:5: child failure"
+		siblingOutput   = "    sibling_test.go:1: sibling output"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString(siblingOutput + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("child diagnostic was omitted across sibling NAME output: %q", got)
+	}
+	if strings.Contains(got, siblingOutput) {
+		t.Fatalf("sibling output was promoted into parent failure context: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic covers a parent
+// whose later passing child owns the ordinary context nearest the parent
+// verdict. The earlier failed child's diagnostic must still reach the excerpt.
+func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
+	const (
+		parentDiagnostic       = "    parent_test.go:3: using fixture x"
+		newestParentDiagnostic = "    parent_test.go:4: using fixture y"
+		childDiagnostic        = "    child_test.go:5: child failure"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(parentDiagnostic + "\n")
+	log.WriteString(newestParentDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child1\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child2\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    child_test.go:%d: passing child log\n", i+9)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child1 (0.00s)\n")
+	log.WriteString("    --- PASS: TestParent/child2 (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, newestParentDiagnostic) {
+		t.Fatalf("newest parent diagnostic was omitted behind later child output: %q", got)
+	}
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("earlier failed child diagnostic was omitted behind later child output: %q", got)
+	}
+}
+
+func TestReplaySurveyFailuresKeepsOrdinaryChildDiffWhenReservingDiagnostics(t *testing.T) {
+	const (
+		parentDiagnostic = "    parent_test.go:3: parent assertion"
+		childDiagnostic  = "    child_test.go:10: mismatch (-want +got)"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(parentDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	for i := 1; i <= surveyContextBefore-1; i++ {
+		fmt.Fprintf(&log, "    diff line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, parentDiagnostic) {
+		t.Fatalf("parent diagnostic was omitted from replay: %q", got)
+	}
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("failed-child diagnostic was omitted from replay: %q", got)
+	}
+	for i := 2; i <= surveyContextBefore-1; i++ {
+		line := fmt.Sprintf("diff line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("ordinary child diff line %q was omitted from replay: %q", line, got)
+		}
+	}
+	if strings.Contains(got, "diff line 1") {
+		t.Fatalf("oldest child diff line should yield to the parent and child diagnostics: %q", got)
+	}
+}
+
+func TestReplaySurveyFailuresKeepsFullOrdinaryTailWithoutParentDiagnostic(t *testing.T) {
+	const childDiagnostic = "    child_test.go:10: mismatch (-want +got)"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/sibling\n")
+	log.WriteString("    sibling_test.go:1: older sibling diagnostic\n")
+	log.WriteString("--- PASS: TestParent/sibling (0.00s)\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	for i := 1; i < surveyContextBefore; i++ {
+		fmt.Fprintf(&log, "    diff line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if strings.Contains(got, "older sibling diagnostic") {
+		t.Fatalf("older sibling diagnostic was substituted into the ordinary tail: %q", got)
+	}
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("failed-child diagnostic was omitted from the ordinary tail: %q", got)
+	}
+	for i := 1; i < surveyContextBefore; i++ {
+		line := fmt.Sprintf("diff line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("ordinary child diff line %q was omitted from the full tail: %q", line, got)
+		}
+	}
+}
+
+func TestReplaySurveyFailuresKeepsFullOrdinaryTailWithoutFailedChildDiagnostic(t *testing.T) {
+	const parentDiagnostic = "    parent_test.go:10: parent assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/sibling\n")
+	log.WriteString("    sibling_test.go:1: older sibling diagnostic\n")
+	log.WriteString("--- PASS: TestParent/sibling (0.00s)\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString("--- PASS: TestParent/child (0.00s)\n")
+	log.WriteString(parentDiagnostic + "\n")
+	for i := 1; i < surveyContextBefore; i++ {
+		fmt.Fprintf(&log, "    output line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if strings.Contains(got, "older sibling diagnostic") {
+		t.Fatalf("older sibling diagnostic was substituted into the ordinary tail: %q", got)
+	}
+	if !strings.Contains(got, parentDiagnostic) {
+		t.Fatalf("parent diagnostic was omitted from the ordinary tail: %q", got)
+	}
+	for i := 1; i < surveyContextBefore; i++ {
+		line := fmt.Sprintf("output line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("ordinary parent output line %q was omitted from the full tail: %q", line, got)
+		}
+	}
+}
+
+func TestReplaySurveyFailuresFindsFailedChildBeyondAfterWindow(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child1\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child2\n")
+	log.WriteString("    child_test.go:9: passing child log\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	for i := 2; i <= surveyContextAfter+1; i++ {
+		fmt.Fprintf(&log, "    --- PASS: TestParent/child%d (0.00s)\n", i)
+	}
+	log.WriteString("    --- FAIL: TestParent/child1 (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("failed child diagnostic beyond after-context was omitted: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput
+// keeps an owned child diagnostic ahead of unindented output after a sibling
+// NAME frame, which cannot be attributed to either test.
+func TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "sibling direct output line %d\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("child diagnostic was omitted ahead of sibling direct output: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected covers
+// indented sibling output between a sibling NAME frame and the parent's
+// verdict. It cannot be expanded as owned context, so the ordinary block must
+// be retained instead of being replaced by a marker-only excerpt.
+func TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected(t *testing.T) {
+	const output = "    sibling_test.go:1: sibling output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString(output + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, output) {
+		t.Fatalf("sibling-owned ordinary output was dropped from fallback replay: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail covers
+// non-diagnostic sibling output after NAME. A full ordinary tail must not
+// consume the expansion budget before the parent's source diagnostic is
+// selected.
+func TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail(t *testing.T) {
+	const assertion = "    parent_test.go:101: parent assertion before sibling tail"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    sibling output line %d\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted ahead of a long sibling tail: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresExpandsPastMismatchedNameBoundary covers a parent
+// failure with no sibling verdict before it: the sibling's NAME frame is the
+// nearest framework boundary, so ordinary framing would omit the parent's
+// earlier assertion instead of invoking the owner-aware expansion.
+func TestReplaySurveyFailuresExpandsPastMismatchedNameBoundary(t *testing.T) {
+	const assertion = "    parent_test.go:101: parent assertion before sibling output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString("    sibling_test.go:1: sibling diagnostic\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted across mismatched NAME boundary: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsNestedMultilineContinuation covers a parent
+// with many earlier subtest diagnostics followed by a failing last subtest's
+// non-diagnostic multiline output. The nested owner is still part of the
+// failing parent, so expansion must not replace that continuation with the
+// earlier diagnostics.
+func TestReplaySurveyFailuresKeepsNestedMultilineContinuation(t *testing.T) {
+	const continuation = "        - last subtest diff continuation line 2"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/earlier\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    earlier_test.go:%d: earlier diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/last\n")
+	log.WriteString("        - last subtest diff line 1\n")
+	log.WriteString(continuation + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, continuation) {
+		t.Fatalf("nested multiline continuation was replaced by earlier diagnostics: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsNestedMultilineContinuationWithParentDiagnostic
+// covers the same tail when expansion also finds one parent-owned diagnostic.
+// The ordinary tail must win over older source diagnostics so a failing
+// subtest's multiline diff remains readable.
+func TestReplaySurveyFailuresKeepsNestedMultilineContinuationWithParentDiagnostic(t *testing.T) {
+	const continuation = "        - last subtest diff continuation line 2"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("    parent_test.go:1: parent diagnostic\n")
+	log.WriteString("=== RUN   TestParent/earlier\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    earlier_test.go:%d: earlier diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/last\n")
+	log.WriteString("        - last subtest diff line 1\n")
+	log.WriteString(continuation + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/last (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, continuation) {
+		t.Fatalf("nested multiline continuation was replaced by parent diagnostics: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsFailingChildDiagnosticAfterParentSetup covers
+// parent setup logs that fill the diagnostic budget before a child fails. The
+// child's source diagnostic must survive because it belongs to the ordinary
+// tail and to the failing test's descendant.
+func TestReplaySurveyFailuresKeepsFailingChildDiagnosticAfterParentSetup(t *testing.T) {
+	const boom = "    child_test.go:5: boom"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== CONT  TestParent\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    setup_test.go:%d: parent setup diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(boom + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, boom) {
+		t.Fatalf("failing child diagnostic was omitted after parent setup logs: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsNewestOwnedTail pins the bounded overflow rule
+// for ordinary descendant output: the newest lines survive around the
+// reserved parent assertion as one contiguous tail.
+func TestReplaySurveyFailuresKeepsNewestOwnedTail(t *testing.T) {
+	const assertion = "    parent_test.go:101: parent assertion before child output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "        child output line %d\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted: %q", got)
+	}
+	if strings.Contains(got, "        child output line 1\n") {
+		t.Fatalf("oldest owned line was retained instead of dropping the oldest: %q", got)
+	}
+	for i := 2; i <= surveyContextBefore; i++ {
+		line := fmt.Sprintf("        child output line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("contiguous newest owned tail line %d was omitted: %q", i, got)
+		}
+	}
+}
+
+// TestReplaySurveyFailuresExpandsChildDiagnosticWithEmptyWindow covers a
+// mismatched NAME owner whose verdict leaves no ordinary context before the
+// parent marker. Expansion must still surface the failing child's diagnostic.
+func TestReplaySurveyFailuresExpandsChildDiagnosticWithEmptyWindow(t *testing.T) {
+	const diagnostic = "    child_test.go:7: boom"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== CONT  TestParent\n"+
+			"=== RUN   TestParent/child\n"+
+			diagnostic+"\n"+
+			"=== NAME  TestSibling\n"+
+			"--- PASS: TestSibling (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n"+
+			"    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, path, 10), "\n")
+	if !strings.Contains(got, diagnostic) {
+		t.Fatalf("child diagnostic was omitted from empty-window expansion: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup covers
+// an ordinary window with no lines owned by the failing test or descendant,
+// where a sibling verdict sits immediately before the parent failure. The
+// child's diagnostic must outrank older parent setup.
+func TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	const newestParentSetup = "    setup_test.go:11: parent setup diagnostic"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    setup_test.go:%d: parent setup diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("child diagnostic was omitted after verbose parent setup: %q", got)
+	}
+	if !strings.Contains(got, newestParentSetup) {
+		t.Fatalf("newest parent setup diagnostic was omitted: %q", got)
+	}
+}
+
+func TestSurveyFailureNameIgnoresPanicMarker(t *testing.T) {
+	if got := surveyFailureName("panic: child process died"); got != "" {
+		t.Fatalf("panic marker got failure name %q, want empty", got)
+	}
+}
+
+// TestReplaySurveyFailuresHandlesBufferedNestedVerdicts is a source-order
+// smoke/contract test for the Go 1.27 flushToParent shape: a sibling's
+// top-level PASS precedes its indented nested verdicts, then the parent's
+// unframed output precedes its FAIL. It intentionally is not a discriminator
+// for the rejected nested-owner parser; it asserts that the parent's
+// assertion and output survive this buffered source order.
+func TestReplaySurveyFailuresHandlesBufferedNestedVerdicts(t *testing.T) {
+	const (
+		assertion = "    parent_test.go:110: parent assertion before sibling output"
+		parentLog = "parent buffered output after sibling verdicts"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("    --- PASS: TestSibling/sub (0.00s)\n")
+	log.WriteString("    --- PASS: TestSibling/sub2 (0.00s)\n")
+	log.WriteString(parentLog + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted after buffered nested verdicts: %q", got)
+	}
+	if !strings.Contains(got, parentLog) {
+		t.Fatalf("parent output lost ownership after buffered nested verdicts: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework
@@ -284,6 +1072,29 @@ func TestReplaySurveyFailuresKeepsUnindentedFailureOutput(t *testing.T) {
 	}
 	if wantFirst := fmt.Sprintf("WORKER: output line %d", surveyContextAfter); got[0] != wantFirst {
 		t.Fatalf("excerpt starts at %q, want %q: the before bound keeps the %d output lines nearest the verdict", got[0], wantFirst, surveyContextBefore)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsUnindentedOutputAfterSiblingName covers direct
+// output after a sibling NAME frame when the parent already has an assertion.
+// The output is unindented, so it cannot be distinguished from the parent's
+// direct output and must remain in the bounded excerpt.
+func TestReplaySurveyFailuresKeepsUnindentedOutputAfterSiblingName(t *testing.T) {
+	const (
+		assertion = "    parent_test.go:42: parent assertion"
+		output    = "parent child-process stderr"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString("    sibling_test.go:1: sibling log\n")
+	log.WriteString(output + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) || !strings.Contains(got, output) {
+		t.Fatalf("parent assertion or direct output was omitted after sibling NAME: %q", got)
 	}
 }
 

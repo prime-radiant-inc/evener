@@ -1411,9 +1411,21 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 		}
 		// Recovery must reach ownership cancellation even when the serial worker
 		// is awaiting an unresponsive daemon. Other mutations retain FIFO order.
+		// recoveryRunning is cleared here, before the response is enqueued —
+		// not in a defer after handleAndEnqueue returns, which races the same
+		// response's delivery to the client: the send loop still has to
+		// dequeue and transmit the frame, and nothing would order that against
+		// a deferred clear running in this goroutine. Clearing before the
+		// enqueue instead orders it with a real guarantee: a channel send
+		// happens before the corresponding receive completes, so the send
+		// loop can never dequeue (and so never transmit) this response until
+		// after the flag is already false.
 		go func() {
-			defer func() { c.mu.Lock(); c.recoveryRunning = false; c.mu.Unlock() }()
-			c.handleAndEnqueue(ctx, msg)
+			resp := c.handleRecovered(ctx, msg)
+			c.mu.Lock()
+			c.recoveryRunning = false
+			c.mu.Unlock()
+			c.enqueueDispatched(ctx, resp)
 		}()
 		return true
 	}
@@ -1764,15 +1776,28 @@ func (c *Connection) inflightSlowReads() string {
 // covers the receive loop's goroutine), and the inline path shares the
 // barrier so both dispatch modes contain a panic identically.
 func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) {
+	c.enqueueDispatched(ctx, c.handleRecovered(ctx, msg))
+}
+
+// handleRecovered is handleAndEnqueue's panic barrier without the immediate
+// enqueue, for a caller that must act on the outcome — success or panic —
+// before the response can reach the transport. The force-stop dispatch is
+// the one caller: it clears the connection's recovery-busy flag from the
+// returned response, strictly before enqueueing it, so the clear is ordered
+// before the send loop can ever dequeue and transmit the frame (a channel
+// send happens before the corresponding receive completes), and a client
+// that pipelines a second force stop right behind the first can never
+// observe the flag still set for a recovery that has already finished.
+func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message) (resp appwire.Message) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
 			if msg.Request != nil {
-				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
+				resp = appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request"))
 			}
 		}
 	}()
-	c.enqueueDispatched(ctx, c.HandleMessage(ctx, msg))
+	return c.HandleMessage(ctx, msg)
 }
 
 // methodOf names a message's method for the panic log; a frame that is

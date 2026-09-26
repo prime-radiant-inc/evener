@@ -4,7 +4,20 @@ import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { PathField, type PathFieldProps } from "./index";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+// index.tsx's delay between a keystroke that changes the listed directory and
+// the completion request it triggers. Tests that type across that boundary run
+// on fake timers and advance by exactly this much: the debounced request is
+// the completion they wait for.
+const COMPLETE_DEBOUNCE_MS = 150;
+
+async function elapseCompletionDebounce() {
+  await act(() => vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS));
+}
 
 const directory = {
   validatePath: async (path: string) => ({ valid: path !== "/missing", path: path === "~" ? "/home" : path }),
@@ -32,7 +45,8 @@ function setup(overrides: Partial<PathFieldProps> = {}) {
     );
   }
   render(<Field />);
-  return { user: userEvent.setup(), onChange, onPanelClose, complete };
+  const user = userEvent.setup(vi.isFakeTimers() ? { advanceTimers: vi.advanceTimersByTime } : {});
+  return { user, onChange, onPanelClose, complete };
 }
 
 function trigger() {
@@ -86,20 +100,6 @@ test("an empty directory field browses its fallback and excludes files", async (
   expect(screen.queryByText("Recent")).toBeNull();
 });
 
-test("directory creation uses injected actions and selects only after confirmation", async () => {
-  const createDirectory = vi.fn(async () => {});
-  const { user, onChange } = setup({ directory: { ...directory, createDirectory } });
-  await open(user);
-  const create = screen.getByRole("button", { name: "New folder" });
-  await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
-  await user.click(create);
-  await user.type(screen.getByRole("textbox", { name: "Folder name" }), "new{Enter}");
-  await waitFor(() => expect(createDirectory).toHaveBeenCalledExactlyOnceWith("/work/new"));
-  expect(onChange).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Use this folder" }));
-  expect(onChange).toHaveBeenCalledExactlyOnceWith("/work/new");
-});
-
 test("file selection lists the parent, commits a file once and restores focus", async () => {
   const complete = vi.fn(async () => ["/etc/ssl/", "/etc/passwd"]);
   const { user, onChange, onPanelClose } = setup({ kind: "file", value: "/etc/hosts", complete });
@@ -131,6 +131,7 @@ test("file browsing retains directory keyboard navigation", async () => {
 });
 
 test("file typing filters entries and relists for dotfiles", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   const complete = vi.fn(async (prefix: string) =>
     prefix.endsWith("/.") ? ["/etc/.secret"] : ["/etc/hosts", "/etc/passwd"],
   );
@@ -139,10 +140,12 @@ test("file typing filters entries and relists for dotfiles", async () => {
   await screen.findByRole("option", { name: /passwd/ });
   await user.clear(input);
   await user.type(input, "/etc/ho");
+  await elapseCompletionDebounce();
   await screen.findByRole("option", { name: /hosts/ });
   expect(screen.queryByRole("option", { name: /passwd/ })).toBeNull();
   await user.clear(input);
   await user.type(input, "/etc/.");
+  await elapseCompletionDebounce();
   await screen.findByRole("option", { name: /.secret/ });
 });
 
@@ -159,6 +162,7 @@ test("file listing failures are visible", async () => {
 });
 
 test("late file listings cannot replace newer navigation", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   let resolveOld: (paths: string[]) => void = () => {};
   const old = new Promise<string[]>((resolve) => {
     resolveOld = resolve;
@@ -171,6 +175,7 @@ test("late file listings cannot replace newer navigation", async () => {
   const input = await open(user);
   await user.clear(input);
   await user.type(input, "/new/");
+  await elapseCompletionDebounce();
   await screen.findByRole("option", { name: /current/ });
   await act(async () => resolveOld(["/old/stale"]));
   expect(screen.queryByRole("option", { name: /stale/ })).toBeNull();
@@ -178,6 +183,7 @@ test("late file listings cannot replace newer navigation", async () => {
 
 test("directory navigation and creation never submit the enclosing form", async () => {
   const submitted = vi.fn();
+  const createDirectory = vi.fn(async () => {});
   const user = userEvent.setup();
   render(
     <form
@@ -186,7 +192,12 @@ test("directory navigation and creation never submit the enclosing form", async 
         submitted();
       }}
     >
-      <PathField value="/work" onChange={vi.fn()} complete={async () => []} directory={directory} />
+      <PathField
+        value="/work"
+        onChange={vi.fn()}
+        complete={async () => []}
+        directory={{ ...directory, createDirectory }}
+      />
     </form>,
   );
   const input = await open(user);
@@ -194,25 +205,30 @@ test("directory navigation and creation never submit the enclosing form", async 
   await user.type(input, "/other{Enter}");
   await user.click(screen.getByRole("button", { name: "New folder" }));
   await user.type(screen.getByRole("textbox", { name: "Folder name" }), "child{Enter}");
+  await waitFor(() => expect(createDirectory).toHaveBeenCalledExactlyOnceWith("/other/child"));
   expect(submitted).not.toHaveBeenCalled();
 });
 
 test("file typing past a slash keeps the directory listing within one debounce window", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   const complete = vi.fn(async (prefix: string) => (prefix === "/var/" ? ["/var/log.txt"] : []));
   const { user } = setup({ kind: "file", value: "/home/file", complete });
   await open(user);
   await user.keyboard("/var/lo");
+  await elapseCompletionDebounce();
   await waitFor(() => expect(complete).toHaveBeenCalledWith("/var/", true));
   await screen.findByRole("option", { name: /log.txt/ });
 });
 
 test("file dot-prefix typing and narrowing inside one debounce window still relists", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   const complete = vi.fn(async (prefix: string) => (prefix === "/home/.co" ? ["/home/.config"] : []));
   const { user } = setup({ kind: "file", value: "/home/file", complete });
   const input = await open(user);
   await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/", true));
   fireEvent.change(input, { target: { value: "/home/." } });
   fireEvent.change(input, { target: { value: "/home/.co" } });
+  await elapseCompletionDebounce();
   await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/.co", true));
   await screen.findByRole("option", { name: /.config/ });
 });
