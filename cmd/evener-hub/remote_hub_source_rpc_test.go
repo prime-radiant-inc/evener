@@ -794,12 +794,15 @@ func TestHubRPCThreadReadDoesNotStampRemoteImageURLs(t *testing.T) {
 // A remote hub stamps its own origin-relative image routes before replying:
 // /s/<session>/images/<sha> for sha-addressed bytes and /doc/image?session=<...>
 // &path=<...> for file-backed output images. Such a route is only meaningful
-// against the remote origin: if it reaches the browser, the browser resolves it
-// against this hub's own origin for a session this hub does not have, which 404s
-// or, on a session-id collision, serves another session's bytes. While the
-// controller-side proxy is staged, every root-relative route must be
-// neutralized; external and data: URLs still resolve directly and must survive.
-func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
+// against the remote origin, so the outbound translation rewrites both forms
+// onto the host-qualified controller routes the browser must fetch them from
+// (`/s/h1:<session>/...`, `/doc/image?session=h1%3A<session>...`) — the bytes
+// then come from the owning host through the proxy, never from this hub's own
+// filesystem. External and data: URLs still resolve directly and must survive.
+//
+// Old assertion: both stamped routes were blanked while the proxy was staged
+// (URL == ""). New assertion: each is the host-qualified route.
+func TestHubRPCThreadReadRewritesRemoteImageRoutes(t *testing.T) {
 	sha := strings.Repeat("a", 64)
 	const external = "https://images.example.test/plot.png"
 	const docImage = "/doc/image?session=remote-session&path=shot.png"
@@ -875,34 +878,39 @@ func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 	if len(item.OutputImages) != 4 {
 		t.Fatalf("output images = %+v, want all remote descriptors preserved", item.OutputImages)
 	}
-	if got := item.OutputImages[0].URL; got != "" {
-		t.Fatalf("remote output image route = %q, want the controller-relative route neutralized", got)
+	if got, want := item.OutputImages[0].URL, "/s/h1:remote-session/images/"+sha; got != want {
+		t.Fatalf("remote output image route = %q, want %q", got, want)
 	}
 	if got := item.OutputImages[0].SHA; got != sha {
-		t.Fatalf("output image sha = %q, want %q preserved for the staged proxy", got, sha)
+		t.Fatalf("output image sha = %q, want %q preserved for the proxy's sha form", got, sha)
 	}
 	if got := item.OutputImages[1].URL; got != external {
 		t.Fatalf("external output image URL = %q, want %q preserved", got, external)
 	}
-	if got := item.OutputImages[2].URL; got != "" {
-		t.Fatalf("remote /doc/image URL = %q, want it neutralized (it would resolve against the controller origin)", got)
+	if got, want := item.OutputImages[2].URL, "/doc/image?session=h1%3Aremote-session&path=shot.png"; got != want {
+		t.Fatalf("remote /doc/image URL = %q, want %q", got, want)
 	}
 	if got := item.OutputImages[2].Path; got != "shot.png" {
-		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the staged proxy", got)
+		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the proxy", got)
 	}
 	if got := item.OutputImages[3].URL; got != inline {
 		t.Fatalf("data: output image URL = %q, want %q preserved", got, inline)
 	}
-	if len(item.Images) != 2 || item.Images[0].URL != "" || item.Images[1].URL != "" {
-		t.Fatalf("remote input images = %+v, want both controller-relative routes neutralized", item.Images)
+	if len(item.Images) != 2 ||
+		item.Images[0].URL != "/s/h1:remote-session/images/"+sha ||
+		item.Images[1].URL != "/doc/image?session=h1%3Aremote-session&path=shot.png" {
+		t.Fatalf("remote input images = %+v, want both host-qualified controller routes", item.Images)
 	}
 }
 
 // evener/subagentPreview returns a remote thread's items exactly as thread/read
-// does, so it must run the same origin-relative image neutralization. Without it
-// a remote item's root-relative route reaches the browser, which resolves it
-// against the controller origin (404, or another session's bytes on a collision).
-func TestHubRPCSubagentPreviewNeutralizesRemoteImageRoutes(t *testing.T) {
+// does, so it must run the same image URL rewrite. Without it a remote item's
+// root-relative route reaches the browser, which resolves it against the
+// controller origin (404, or another session's bytes on a collision).
+//
+// Old assertion: the stamped route was blanked (URL == ""). New assertion: it
+// is the host-qualified controller route.
+func TestHubRPCSubagentPreviewRewritesRemoteImageRoutes(t *testing.T) {
 	const external = "https://images.example.test/plot.png"
 	sha := strings.Repeat("a", 64)
 	remoteRoute := "/s/remote-session/images/" + sha
@@ -964,8 +972,8 @@ func TestHubRPCSubagentPreviewNeutralizesRemoteImageRoutes(t *testing.T) {
 	if len(preview.Items) != 1 || len(preview.Items[0].Images) != 2 {
 		t.Fatalf("preview items = %+v, want the single remote image item with both input images", preview.Items)
 	}
-	if got := preview.Items[0].Images[0].URL; got != "" {
-		t.Fatalf("remote preview image route = %q, want it neutralized", got)
+	if got, want := preview.Items[0].Images[0].URL, "/s/h1:remote-session/images/"+sha; got != want {
+		t.Fatalf("remote preview image route = %q, want %q", got, want)
 	}
 	if got := preview.Items[0].Images[1].URL; got != external {
 		t.Fatalf("external preview image URL = %q, want %q preserved", got, external)
