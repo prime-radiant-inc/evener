@@ -2019,7 +2019,7 @@ git commit -m "feat(native): the in-app alert banner"
 1. **One center, one feed.** `AlertsProvider` (inside `ConnectionProvider`) owns one `AlertCenter` on the real clock, whose haptic callback is `haptic(kind)`, and one `AlertFeed` over it. It follows `alertPreferences()` with `center.setPreferences` on mount and on every change.
 2. **Its own reads.** It creates one `createBoardController()` per hub and calls `setClient(client)` whenever `useConnection().client` changes, as the Board does. It never pauses it: the Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. This costs a second set of navigation reads while the Board or a Session is in front; say so in the PR description.
 3. **Feeding the center.**
-   - Sessions: on each controller snapshot that is `loaded`, not `retained`, with the Needs you section complete (`needsYou.remaining === 0`, so the first observation is never a partial baseline whose later pages alert old news) and Live's first page loaded, call `feed.observeSessions(liveBands(live.rows, needsYou.rows, seenMarkers(hubId).isSeen), offlineRefs)`, where `offlineRefs` holds the refs of rows in either list with `offline: true`.
+   - Sessions: on each controller snapshot that is `loaded`, not `retained`, with the Needs you section complete (`needsYou.remaining === 0`, so the first observation is never a partial baseline whose later pages alert old news) and Live's first page loaded, call `feed.observeSessions(liveBands(live.rows, needsYou.rows, (row) => seen.isSeen(row)), offlineRefs)`, with `const seen = seenMarkers(hubId)`, where `offlineRefs` holds the refs of rows in either list with `offline: true`. `isSeen` is a `SeenMarkers` method that reads `this` (phase 2's `boardMemory.ts`), so it goes in a closure, never as `seenMarkers(hubId).isSeen`.
    - Notices: this controller reads auth as the Board's does (phase 2 Task 14), and never plugins, since a plugin notice never alerts (ruling 5). If phase 2's controller polls `evener/plugin/list` whenever it isn't paused, give `createBoardController` an option that turns those reads off, and use it here. Once the auth read has landed, call `feed.observeNotices(notices({ auth, sources, plugins: [], loadedRows }))` with the manifest's sources and the rows this controller has loaded (Live's first page and Needs you). Its host counts can be lower than the Board's, which loads more pages; phase 2 already calls that count a floor.
 4. **Baselines.** A new client (a different non-null object: the app came back to the foreground, or a closed connection was replaced) calls `feed.rebaseline()`. Another hub calls `center.reset()` and `feed.rebaseline()`, and replaces the controller.
 5. **What's on screen.** `App.tsx` gives `NavigationContainer` a ref from `createNavigationContainerRef<Routes>()` and passes the top route to `useReportRoute()`'s function from `onReady` and from `onStateChange`. That function calls `center.setScreen(alertScreenFor(route))`, and holds one hold token while the route is in `SHEET_ROUTES` (ruling 7).
@@ -2052,7 +2052,7 @@ it("counts phase 5's sheets as sheets", () => {
 });
 ```
 
-`AlertsProvider.test.tsx` drives the provider through a scripted hub, the `boundary()` fake of `src/projectBrowser.test.ts` answering `evener/navigation/read` with `wireV2` as phase 2's `boardData.test.ts` does. Mock `../ConnectionProvider` (a `useConnection` whose `client` the test swaps), `./nativeAlertPreferences` (a store over memory), `../haptics` and `../board/nativeBoardMemory`. A probe component reads `useAlertSnapshot()`. Cover:
+`AlertsProvider.test.tsx` drives the provider through a scripted hub, the `boundary()` fake of `src/projectBrowser.test.ts` answering `evener/navigation/read` with `wireV2` as phase 2's `boardData.test.ts` does. Mock `../ConnectionProvider` (a `useConnection` whose `client` the test swaps), `./nativeAlertPreferences` (a store over memory), `../haptics` and `../board/nativeBoardMemory`, whose `seenMarkers` returns a real `SeenMarkers` over a memory store, never an object literal, so a call that loses its receiver fails every case below. A probe component reads `useAlertSnapshot()`. Cover:
 - the first reads (a session already failed) show no banner;
 - an invalidation that re-reads Needs you with a new question shows that session's banner;
 - a Needs you section with `remaining > 0` is not observed until its last page lands, so its second page alerts nothing;
@@ -2847,7 +2847,9 @@ export function sendLabel(action: SendAction, questionPending: boolean, connecte
 // The durable request for a message sent while offline (spec 8.5, ruling
 // 12). It is fenced to the session instance the phone last saw, the same
 // fence an online send carries (conversation.ts submitMutation), so a session
-// that restarted meanwhile refuses it and its ghost says so.
+// that restarted meanwhile refuses it and its ghost says so. A thread with no
+// instance id is fenced with its thread id, as the online send is and as the
+// hub stamps a daemon's thread (appsource/local_daemon.go).
 import type { InputItem } from "@evener/appwire-client";
 import type { ConversationMutationRequest } from "../../../mobile/src/state/conversationMutation";
 
@@ -2891,6 +2893,8 @@ git commit -m "feat(native): Send while offline keeps the message and sends it w
 ### Task 15: What you left behind sends itself
 
 A message sent offline in a session you then left waits in the outbox with no screen to send it: only an open session screen registers its target (`createNativeMutationHost`, `nativeMutationHost.ts:57-108`). So does anything admitted for a session no screen has open, such as phase 2's Board Stop (`stopSession`, which submits through the runtime). The web sends every target with waiting records on each ready connection (`handleReady`, `cmd/evener-hub/frontend/src/stores/threads.ts:2702-2767`). This task does the same, and also looks again whenever a record lands for a target nobody holds. It reuses phase 4's `settleTarget` (phase 4 Task 2), which releases a registered target with a read that leaves the connection's subscription alone. That also covers a session screen under the Reader or a subagent: it keeps its target but doesn't read while covered (phase 4 ruling 11), so on a ready connection the flush settles its target for it when something on it waits to be sent.
+
+A target nobody holds is settled whatever its records hold, as `handleReady` reads every stored target. The read is how the phone confirms a send whose answer was lost: a record the hub's read reflects is settled (`reconcileIdentities`), and one the hub proves it never received goes back to the outbox to send (`restoreProvenAbsent`, `mutationOutboxStorage.ts:492`). Spec 14 shows "Couldn't confirm this was sent" only when "delivery can't be confirmed after reconnecting".
 
 **Files:**
 - Create: `mobile-native/src/outbox/outboxFlush.ts`, `mobile-native/src/outbox/nativeOutboxFlush.ts` and `mobile-native/src/outbox/outboxFlush.test.ts`
@@ -3310,6 +3314,7 @@ Spec 7.5 sends a Board action taken offline "to the outbox", and phase 3 left th
 
 **Files:**
 - Modify: phase 2's `src/board/rowActions.ts`, `SwipeRow.tsx`, `RowMenu.tsx` and `SelectBar.tsx` (phase 2 Tasks 12 and 13), and the function there that lists a row's menu actions per state
+- Modify: phase 2's `src/board/BoardScreen.tsx`, which holds the `NavigationActions` its row actions use (`archiveSession`, `pinSession`): the reconcile on the ready transition
 - Test: phase 2's `rowActions.test.ts`, `RowMenu.test.tsx` and `BoardScreen.test.tsx`
 
 **Interfaces:**
@@ -3321,7 +3326,10 @@ Spec 7.5 sends a Board action taken offline "to the outbox", and phase 3 left th
 2. They come back the moment the connection is ready again, with no refresh.
 3. An organization change whose answer the connection lost before it arrived settles itself when the connection returns: the Board calls its `NavigationActions`' `reconcile()` when the connection turns ready while it is focused, as `usePinNavigation` does (`usePinNavigation.ts:109-111`). The row stays dimmed until then, and nothing asks you to refresh.
 
-- [ ] **Step 1: Write the failing tests.** The menu function returns only the read marks offline and every action online, per state. Rendered offline, a row's trailing swipe shows only More, and its leading swipe has no Archive. The Board's `NavigationActions` reconciles on the ready transition while focused, and not while blurred.
+- [ ] **Step 1: Write the failing tests.**
+  - The menu function returns only the read marks offline and every action online, per state.
+  - Rendered offline, a row's trailing swipe shows only More, and its leading swipe has no Archive.
+  - In `BoardScreen.test.tsx`: archive a row while connected, then drop the connection before the hub answers, so the journal holds an uncertain archive. When the mocked connection goes from `"reconnecting"` to `"ready"` while the Board is focused, the Board's `NavigationActions.reconcile()` runs once (its read-back of the journal's checkpoint, `navigationActions.ts:164-209`), and the row's dimming follows the hub's answer. The same transition while the Board is blurred reads nothing.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/board`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass**, then `npm run check`.
