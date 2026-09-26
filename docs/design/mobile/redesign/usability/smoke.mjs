@@ -162,6 +162,13 @@ async function runChecks(page, scheme) {
     await tapRole('radio', 'Drop them'); await tapRole('button', 'Next question'); await tapRole('checkbox', 'Job tools'); await tapRole('button', 'Send answers');
     await logHas(page, 'answer', (e) => e.answers[0] === 'Drop them');
   });
+  await check(S('flow-other-answer-brings-composer'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-audit')`); await sleep(400);
+    if (await page.locator('textarea[aria-label="Message"]').count()) throw new Error('the composer shows while the question dock is open');
+    await tapRole('button', 'Other answer');
+    const focused = await ev(page, 'document.activeElement && document.activeElement.getAttribute("aria-label")');
+    if (focused !== 'Message') throw new Error('Other answer… did not put the cursor in the composer (focused: ' + focused + ')');
+  });
   await check(S('flow-approve'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-mirror')`); await sleep(400);
     await tapRole('button', 'Allow this file only');
@@ -177,10 +184,27 @@ async function runChecks(page, scheme) {
     await logHas(page, 'send', (e) => e.mode === 'steer');
   });
   await check(S('flow-row-tap-and-next'), page, async () => {
-    await reset(page); await tap('Audit Tool Descriptions for Implied Options');
-    await logHas(page, 'row_tap', (e) => e.sessionId === 's-audit');
+    await reset(page); await tap('Host Project Hierarchy UI Mockups');
+    await logHas(page, 'row_tap', (e) => e.sessionId === 's-hier');
     await page.getByRole('button', { name: 'Go to the next session that needs you' }).tap(); await sleep(400);
-    await logHas(page, 'next', (e) => e.from === 's-audit' && !!e.to);
+    await logHas(page, 'next', (e) => e.from === 's-hier' && !!e.to);
+  });
+  await check(S('flow-next-hidden-while-asking'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-audit')`); await sleep(400);
+    const n = await page.locator('.next-cap').count();
+    if (n) throw new Error('the Next capsule shows while the question dock is open');
+  });
+  await check(S('flow-hold-next-for-list'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-hier')`); await sleep(400);
+    const box = await page.locator('.next-cap').boundingBox();
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
+    await sleep(700);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await sleep(300);
+    await logHas(page, 'needs_list_open', (e) => e.how === 'hold');
+    const log = await ev(page, 'window.__proto.log');
+    if (log.some((e) => e.type === 'next')) throw new Error('holding Next also went to the next session');
   });
   // A finger dragged in from the left edge, the way the back gesture starts.
   const edgeSwipe = async (y) => {
@@ -267,6 +291,12 @@ async function runChecks(page, scheme) {
     await ev(page, `EV.linkMenu(EV.sess('s-pr2138'), EV.sess('s-pr2138').urls[1])`); await sleep(300);
     await tapRole('menuitem', 'Remove link');
     await logHas(page, 'link_remove', (e) => e.url.endsWith('/checks'));
+  });
+  await check(S('flow-board-file-back-to-session'), page, async () => {
+    await reset(page);
+    await page.locator('[data-session="s-hier"] .att').first().tap(); await sleep(500);
+    const stack = await ev(page, 'EV.S.nav.map((n) => n.name).join(">")');
+    if (stack !== 'board>session>reader') throw new Error('a plan opened from the Board should sit on its session; the stack is ' + stack);
   });
   await check(S('flow-launch'), page, async () => {
     await reset(page); await page.locator('button[aria-label="New session"]').tap(); await sleep(400);

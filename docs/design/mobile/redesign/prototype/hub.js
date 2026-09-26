@@ -19,18 +19,18 @@
         <span class=${"conn-dot" + (S.conn === "live" ? "" : S.conn === "reconnecting" ? " reconnecting" : " offline")}></span>${S.conn === "live" ? "Connected · live" : S.conn === "reconnecting" ? "Reconnecting…" : "Offline"} · evener ${hubHost.version} · up to date
       </div>
       <div class="glabel">Fleet</div>
-      <div class="group">${h(EV.Gi, { icon: I.host({ s: 17 }), iconBg: "#5B6770", label: "Hosts", value: html`${S.hosts.length}${offline ? html` <span class="tag red">${offline} offline</span>` : mismatch ? html` <span class="tag gray">${mismatch} on another version</span>` : ""}`, chev: true, onClick: () => EV.openSheet("hosts", {}) })}</div>
+      <div class="group">${h(EV.Gi, { icon: I.host({ s: 17 }), label: "Hosts", value: html`${S.hosts.length}${offline ? html` <span class="tag red">${offline} offline</span>` : mismatch ? html` <span class="tag gray">${mismatch} on another version</span>` : ""}`, chev: true, onClick: () => EV.openSheet("hosts", {}) })}</div>
       <div class="glabel">Setup</div>
       <div class="group">
-        ${h(EV.Gi, { icon: I.key({ s: 17 }), iconBg: "#2F6F8F", label: "Providers", value: html`${S.providers.length}${needSign ? html` <span class="tag amber">${needSign} to sign in</span>` : ""}`, chev: true, onClick: () => EV.openSheet("providers", {}) })}
-        ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), iconBg: "#3C7A5A", label: "Plugins", value: html`${S.plugins.length}${updates ? html` <span class="tag blue">${updates} update</span>` : ""}`, chev: true, onClick: () => EV.openSheet("plugins", {}) })}
-        ${h(EV.Gi, { icon: I.compose({ s: 17 }), iconBg: "#6B5B95", label: "Recipes", value: S.recipes.length, chev: true, onClick: () => EV.openSheet("recipes", {}) })}
+        ${h(EV.Gi, { icon: I.key({ s: 17 }), label: "Providers", value: html`${S.providers.length}${needSign ? html` <span class="tag amber">${needSign} to sign in</span>` : ""}`, chev: true, onClick: () => EV.openSheet("providers", {}) })}
+        ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), label: "Plugins", value: html`${S.plugins.length}${updates ? html` <span class="tag blue">${updates} update</span>` : ""}`, chev: true, onClick: () => EV.openSheet("plugins", {}) })}
+        ${h(EV.Gi, { icon: I.compose({ s: 17 }), label: "Recipes", value: S.recipes.length, chev: true, onClick: () => EV.openSheet("recipes", {}) })}
       </div>
       <div class="glabel">This phone</div>
       <div class="group">
-        ${h(EV.Gi, { icon: I.outline({ s: 17 }), iconBg: "#7A7A70", label: "Display", value: S.prefs.theme, chev: true, onClick: () => EV.openSheet("display", {}) })}
-        ${h(EV.Gi, { icon: I.bubble({ s: 17 }), iconBg: "#C07A1A", label: "In-app alerts", chev: true, onClick: () => EV.openSheet("alerts", {}) })}
-        ${h(EV.Gi, { icon: I.host({ s: 17 }), iconBg: "#4E4E48", label: "Hubs", value: "1", chev: true, onClick: () => EV.openSheet("hubs", {}) })}
+        ${h(EV.Gi, { icon: I.outline({ s: 17 }), label: "Display", value: S.prefs.theme, chev: true, onClick: () => EV.openSheet("display", {}) })}
+        ${h(EV.Gi, { icon: I.bubble({ s: 17 }), label: "In-app alerts", chev: true, onClick: () => EV.openSheet("alerts", {}) })}
+        ${h(EV.Gi, { icon: I.hub({ s: 17 }), label: "Hubs", value: "1", chev: true, onClick: () => EV.openSheet("hubs", {}) })}
       </div>
       <div class="glabel">About</div>
       <div class="group">
@@ -46,7 +46,7 @@
     const S = EV.S;
     const hubV = EV.host("magic-kingdom").version;
     return html`<${EV.Sheet} title="Hosts" left=${Back("Hub")} size="stacked">
-      <div class="group">${S.hosts.map((x) => h(EV.Gi, { key: x.id, icon: I.host({ s: 17 }), iconBg: x.state === "offline" ? "var(--ink-low)" : "#5B6770",
+      <div class="group">${S.hosts.map((x) => h(EV.Gi, { key: x.id, icon: I.host({ s: 17 }),
         label: x.id, sub: (x.state === "offline" ? "Offline" : x.state === "connecting" ? "Connecting…" : "Connected") + " · " + x.os + " · " + S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length + " live",
         value: x.version !== hubV ? html`<span class="tag amber">${x.version}</span>` : x.state === "offline" ? html`<span class="tag red">Offline</span>` : null, chev: true,
         onClick: () => { EV.log("host_open", { host: x.id }); EV.openSheet("host", { hostId: x.id }); } }))}</div>
@@ -205,7 +205,7 @@
     return html`<${EV.Sheet} title="Hubs" left=${Back("Hub")} size="stacked">
       <div class="group"><button class="gi"><span style="width:22px;display:flex;color:var(--accent)">${I.check({ s: 18 })}</span><span class="gl">magic-kingdom<small>100.113.28.18:9180 · connected</small></span><span></span></button></div>
       <div class="glabel">Add a hub</div>
-      <div class="group">${h(EV.Gi, { icon: I.camera({ s: 17 }), iconBg: "var(--accent)", label: "Scan pairing code", onClick: () => EV.toast("Opens the camera in the app") })}${h(EV.Gi, { icon: I.doc({ s: 17 }), iconBg: "var(--ink-mid)", label: "Paste pairing link", onClick: () => EV.toast("Paste the link from Settings → Mobile app") })}</div>
+      <div class="group">${h(EV.Gi, { icon: I.camera({ s: 17 }), label: "Scan pairing code", onClick: () => EV.toast("Opens the camera in the app") })}${h(EV.Gi, { icon: I.doc({ s: 17 }), label: "Paste pairing link", onClick: () => EV.toast("Paste the link from Settings → Mobile app") })}</div>
       <div class="gfoot">In Evener on your computer, open Settings, then Mobile app, to show a pairing code.</div>
     </${EV.Sheet}>`;
   };

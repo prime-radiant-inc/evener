@@ -64,7 +64,7 @@
         branch: L.branch === "New worktree branch" ? (L.branchName || "lane-" + id.slice(-4)) : "main", live: true, archived: false, unseen: false, attachments: [], subs: null, tasks: null, goal: null, notes: null,
         usage: { in: 0, out: 0, cache: 0 }, cost: "~$0.00", workSec: 0, ctx: { used: 4, window: m.ctx || 200 }, failedTools: 0, updatedAt: now, startedAt: now, actAt: now, pulse: [0, 0, 0, 0, 0, 0.4, 0.8] };
       S2.sessions.push(s);
-      S2.transcripts[id] = [{ t: "time", label: "Just now" }, { t: "sys", text: "Started on " + L.host + " · " + L.model + " · " + L.effort + " · " + L.plugins.length + " plugins" }, { t: "user", text: L.prompt.trim() }, { t: "think", live: true }];
+      S2.transcripts[id] = [{ t: "time", label: "Just now" }, { t: "sys", text: "Started on " + L.host + " · " + EV.modelLabel(L.model, L.effort) + " · " + L.plugins.length + " plugins" }, { t: "user", text: L.prompt.trim() }, { t: "think", live: true }];
       S2.lastUsed = { host: L.host, project: L.project, model: L.model, effort: L.effort, plugins: L.plugins.slice(), access: L.access, branch: L.branch };
       EV.log("start_session", { sessionId: id, host: L.host, project: L.project, model: L.model, effort: L.effort, plugins: L.plugins.slice().sort(), access: L.access, branch: L.branch, prompt: L.prompt.trim(), images: L.images });
       EV.closeAllSheets();
@@ -78,7 +78,6 @@
         <textarea ref=${ref} id="launch-prompt" rows="4" placeholder="What should the agent do?" value=${L.prompt} onInput=${(e) => { L.prompt = e.currentTarget.value; EV.update(); }} aria-label="What should the agent do?"></textarea>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
           <button class="cbtn" aria-label="Attach images" onClick=${() => { L.images++; EV.log("launch_attach", {}); EV.update(); }}>${I.plus({ s: 18 })}${L.images ? " " + L.images + " image" + (L.images > 1 ? "s" : "") : ""}</button>
-          <span style="font-size:12px;color:var(--ink-low)">Dictation works from the keyboard mic</span>
         </div>
       </div>
       <div class="recipes" role="radiogroup" aria-label="Recipes">
@@ -88,21 +87,21 @@
         <button class="chip" onClick=${() => EV.openSheet("saveRecipe", {})} aria-label="Save as recipe">${I.plus({ s: 14 })} Save</button>
       </div>
       <div class="recipe-sum">${L.recipe ? "Sets " : "Custom: "}${[L.host, L.project, m.name + " " + L.effort, L.plugins.length + " plugins", L.access].join(" · ")}</div>
-      ${L.error ? html`<div class="notice" style="background:var(--danger-bg);border-color:var(--danger-edge);grid-template-columns:22px 1fr"><span class="ic" style="color:var(--danger)">${I.failed({ s: 16 })}</span><span class="txt">${L.error}</span></div>` : null}
+      ${L.error ? html`<div class="notice boxed" style="background:var(--danger-bg);border-color:var(--danger-edge);grid-template-columns:22px 1fr"><span class="ic" style="color:var(--danger)">${I.failed({ s: 16 })}</span><span class="txt">${L.error}</span></div>` : null}
       ${L.note ? html`<div class="gfoot" style="padding-top:10px">${L.note}</div>` : null}
       <div class="glabel">Where</div>
       <div class="group">
-        ${h(EV.Gi, { icon: I.host({ s: 17 }), iconBg: "#5B6770", label: "Host", value: html`<span class=${"conn-dot" + (hst.state === "offline" ? " offline" : "")}></span>${L.host}`, chev: true, onClick: () => EV.openSheet("pickHost", {}) })}
-        ${h(EV.Gi, { icon: I.folder({ s: 17 }), iconBg: "#8A6D3B", label: "Project", value: L.project, chev: true, onClick: () => EV.openSheet("pickProject", {}) })}
-        ${h(EV.Gi, { icon: I.branch({ s: 17 }), iconBg: "#6B5B95", label: "Branch", value: L.branch === "New worktree branch" ? "New: " + (L.branchName || "lane") : "Current (main)", chev: true, onClick: () => EV.openSheet("pickBranch", {}) })}
+        ${h(EV.Gi, { icon: I.host({ s: 17 }), label: "Host", value: html`<span class=${"conn-dot" + (hst.state === "offline" ? " offline" : "")}></span>${L.host}`, chev: true, onClick: () => EV.openSheet("pickHost", {}) })}
+        ${h(EV.Gi, { icon: I.folder({ s: 17 }), label: "Project", value: L.project, chev: true, onClick: () => EV.openSheet("pickProject", {}) })}
+        ${h(EV.Gi, { icon: I.branch({ s: 17 }), label: "Branch", value: L.branch === "New worktree branch" ? "New: " + (L.branchName || "lane") : "Current (main)", chev: true, onClick: () => EV.openSheet("pickBranch", {}) })}
       </div>
       <div class="glabel">Agent</div>
       <div class="group">
-        ${h(EV.Gi, { icon: I.cpu({ s: 17 }), iconBg: "#2F6F8F", label: "Model", sub: m.provider, value: m.name, chev: true, onClick: () => EV.openSheet("model", { target: "launch" }) })}
+        ${h(EV.Gi, { icon: I.cpu({ s: 17 }), label: "Model", sub: m.provider, value: m.name, chev: true, onClick: () => EV.openSheet("model", { target: "launch" }) })}
         <div class="gi static" style="display:block;padding:10px 0 12px"><div style="padding:0 14px 8px"><div style="font-size:17px">Effort</div><div style="color:var(--ink-low);font-size:13px">How long it thinks before acting</div></div>
           ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: L.effort, onChange: (e) => { L.effort = e; L.recipe = null; EV.log("launch_effort", { effort: e }); EV.update(); }, disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}</div>
-        ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), iconBg: "#3C7A5A", label: "Plugins", value: L.plugins.length + " of " + S.plugins.length, chev: true, onClick: () => EV.openSheet("pickPlugins", {}) })}
-        ${h(EV.Gi, { icon: I.shield({ s: 17 }), iconBg: "#7A5C3C", label: "Access", sub: { "Full access": "Read and write anywhere", "Workspace write": "Writes inside the project; asks first elsewhere", "Read-only": "Reads only", "Restricted": "Only allowed tools; no network" }[L.access], value: L.access, chev: true, onClick: () => EV.openSheet("pickAccess", {}) })}
+        ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), label: "Plugins", value: L.plugins.length + " of " + S.plugins.length, chev: true, onClick: () => EV.openSheet("pickPlugins", {}) })}
+        ${h(EV.Gi, { icon: I.shield({ s: 17 }), label: "Access", sub: { "Full access": "Read and write anywhere", "Workspace write": "Writes inside the project; asks first elsewhere", "Read-only": "Reads only", "Restricted": "Only allowed tools; no network" }[L.access], value: L.access, chev: true, onClick: () => EV.openSheet("pickAccess", {}) })}
       </div>
       <div class="gfoot">Host, plugins and access are fixed once the session starts. Model and effort can change later.</div>
       <div class="group" style="margin-top:14px">${h(EV.Gi, { label: "More options", sub: "Context strategy, subagent depth, turn limit", chev: true, onClick: () => EV.openSheet("moreOptions", {}) })}</div>
@@ -149,7 +148,7 @@
       <div class="glabel">Recent on ${L.host}</div>
       <div class="group">${list.map((p) => html`<button class="gi" key=${p.id} onClick=${() => pick(p.id)}><span style="width:22px;display:flex;color:var(--accent)">${L.project === p.id ? I.check({ s: 18 }) : null}</span><span class="gl">${p.id}<small style="font-family:var(--mono);font-size:12px">~/${p.path || ""}</small></span><span></span></button>`)}</div>
       <div class="group" style="margin-top:16px">${h(EV.Gi, { label: "Browse folders on " + L.host + "…", cls: "accent", onClick: () => setBrowse(!browse) })}</div>
-      ${browse ? html`<div class="glabel" style="text-transform:none;font-family:var(--mono)">${root}</div><div class="group">${["prime-radiant-inc", "c-to-wasm", "superpowers", "house", "scratch"].map((d) => h(EV.Gi, { key: d, icon: I.folder({ s: 16 }), iconBg: "#8A6D3B", label: d, chev: true, onClick: () => { if (!S.projects.find((p) => p.id === d)) S.projects.push({ id: d, path: "git/" + d }); pick(d); } }))}</div>` : null}
+      ${browse ? html`<div class="glabel" style="text-transform:none;font-family:var(--mono)">${root}</div><div class="group">${["prime-radiant-inc", "c-to-wasm", "superpowers", "house", "scratch"].map((d) => h(EV.Gi, { key: d, icon: I.folder({ s: 16 }), label: d, chev: true, onClick: () => { if (!S.projects.find((p) => p.id === d)) S.projects.push({ id: d, path: "git/" + d }); pick(d); } }))}</div>` : null}
     </${EV.Sheet}>`;
   };
 
@@ -220,7 +219,7 @@
     };
     return html`<${EV.Sheet} title="Save as recipe" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} right=${html`<button class="text-btn strong" disabled=${!name.trim()} onClick=${save}>Save</button>`} size="medium">
       <div class="field" style="margin-top:8px"><input placeholder="Recipe name" value=${name} onInput=${(e) => setName(e.currentTarget.value)} aria-label="Recipe name" /></div>
-      <div class="gfoot">${L.host} · ${L.project} · ${L.model} · ${L.effort} · ${L.plugins.length} plugins · ${L.access}</div>
+      <div class="gfoot">${L.host} · ${L.project} · ${EV.modelLabel(L.model, L.effort)} · ${L.plugins.length} plugins · ${L.access}</div>
     </${EV.Sheet}>`;
   };
 })();

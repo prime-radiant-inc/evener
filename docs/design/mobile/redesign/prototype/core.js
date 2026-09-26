@@ -46,6 +46,7 @@
         alerts: { failures: true, questions: true, finished: false, hold: true, haptics: true }, hintUses: 0 },
       drafts: {},
       noteDrafts: {},
+      composeOpen: {},
       noteState: {},
       images: {},
       queue: {},
@@ -80,7 +81,15 @@
   EV.sess = (id) => EV.S.sessions.find((s) => s.id === id);
   EV.host = (id) => EV.S.hosts.find((x) => x.id === id);
   EV.model = (id) => EV.S.models.find((m) => m.id === id) || { id, name: id, provider: "", ctx: 0, efforts: ["low", "medium", "high", "xhigh", "max"] };
+  // A model is called by its display name wherever people read it, with
+  // the effort after it: "GLM 5.3 Vision · XHigh", never the raw id.
+  EV.modelLabel = (id, effort) => EV.model(id).name + (effort ? " · " + EV.cap(effort) : "");
   EV.multiHost = () => EV.S.hosts.length > 1;
+  const mode = (xs) => { const n = {}; let best = null; xs.forEach((x) => { n[x] = (n[x] || 0) + 1; if (best == null || n[x] > n[best]) best = x; }); return best; };
+  EV.usual = function () {
+    const live = EV.S.sessions.filter((s) => s.live && !s.archived);
+    return { project: mode(live.map((s) => s.project)), host: mode(live.map((s) => s.host)) };
+  };
 
   EV.fmtAgo = function (ms) {
     const s = Math.max(0, Math.round(ms / 1000));
@@ -142,22 +151,22 @@
   EV.tally = function (s) {
     const list = EV.S.subagents[s.id];
     if (!list) return s.subs ? Object.assign({}, s.subs) : null;
-    const t = { run: 0, wait: 0, fail: 0, done: 0 };
+    const t = { run: 0, fail: 0, done: 0 };
     const walk = (arr) => arr.forEach((g) => {
-      if (g.state === "running") t.run++; else if (g.state === "waiting") t.wait++; else if (g.state === "failed") t.fail++; else t.done++;
+      if (g.state === "running") t.run++; else if (g.state === "failed") t.fail++; else t.done++;
       if (g.children) walk(g.children);
     });
     walk(list);
     return t;
   };
-  EV.tallyTotal = (t) => (t ? t.run + t.wait + t.fail + t.done : 0);
+  EV.tallyTotal = (t) => (t ? t.run + t.fail + t.done : 0);
 
   EV.activityLine = function (s) {
     const st = EV.stateOf(s);
     if (st === "stuck") return { text: "May be stuck · no updates for " + EV.fmtAgo(Date.now() - s.updatedAt), cls: "attention" };
     const quiet = Date.now() - s.updatedAt;
-    if (quiet > 3 * 60 * 1000) return { text: "Quiet " + EV.fmtAgo(quiet), cls: "" };
-    return { text: s.activity || "Working", cls: "" };
+    if (quiet > 3 * 60 * 1000) return { text: "Quiet " + EV.fmtAgo(quiet), cls: "activity" };
+    return { text: s.activity || "Working", cls: "activity" };
   };
 
   // ---------- navigation ----------
@@ -297,7 +306,7 @@
     question: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="currentColor" /><path d="M9.2 9.3a2.9 2.9 0 1 1 4.1 2.6c-.8.4-1.3 1-1.3 1.9v.6" stroke="#fff" stroke-width="2.3" fill="none" stroke-linecap="round" /><circle cx="12" cy="17.6" r="1.35" fill="#fff" /></svg>`,
     hand: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><path d="M7.4 12.2V6.3a1.5 1.5 0 0 1 3 0v5M10.4 11.3V4.7a1.5 1.5 0 0 1 3 0v6.6M13.4 11.3V5.6a1.5 1.5 0 0 1 3 0v7.2M16.4 12.8V8.9a1.5 1.5 0 0 1 3 0v5.4c0 4.1-3 7.2-6.9 7.2-2.4 0-4.1-.9-5.5-2.8L4.3 14.9a1.5 1.5 0 0 1 2.3-1.9l.8 1" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" /></svg>`,
     warn: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 3.4a2 2 0 0 1 3.4 0l8.3 14.4a2 2 0 0 1-1.7 3H3.7a2 2 0 0 1-1.7-3z" fill="currentColor" /><path d="M12 9v4.6" stroke="#fff" stroke-width="2.3" stroke-linecap="round" /><circle cx="12" cy="17" r="1.3" fill="#fff" /></svg>`,
-    restart: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="currentColor" /><path d="M16.2 9.2A4.8 4.8 0 1 0 16.8 13" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" /><path d="M16.9 5.8v3.6h-3.6" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>`,
+    restart: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="currentColor" /><path d="M7.9 10.5A4.4 4.4 0 0 1 16.1 10.5M16.1 13.5A4.4 4.4 0 0 1 7.9 13.5" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" /><path d="M17.7 9.9 14.5 11.1 16.9 12.6zM6.3 14.1 9.5 12.9 7.1 11.4z" fill="#fff" stroke="#fff" stroke-width=".8" stroke-linejoin="round" /></svg>`,
     pin: (o) => sv(html`<path d="M12 16v5" /><path d="M8.5 3.5h7l-1 6 3.5 3.5v1.5H6V13l3.5-3.5z" />`, o),
     archive: (o) => sv(html`<rect x="3" y="4" width="18" height="5" rx="1.5" /><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4" />`, o),
     stop: (o) => html`<svg width=${(o && o.s) || 14} height=${(o && o.s) || 14} viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor" /></svg>`,
@@ -315,6 +324,9 @@
     checklist: (o) => sv(html`<path d="M4 6.5l1.6 1.6L8.5 5M4 12.5l1.6 1.6 2.9-3.1M4 18.5l1.6 1.6 2.9-3.1M11.5 7h8.5M11.5 13h8.5M11.5 19h8.5" />`, o),
     target: (o) => sv(html`<circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="1" fill="currentColor" />`, o),
     note: (o) => sv(html`<rect x="4.5" y="3.5" width="15" height="17" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" />`, o),
+    hub: (o) => sv(html`<circle cx="12" cy="12.5" r="2.6" /><circle cx="12" cy="4" r="1.9" /><circle cx="4.6" cy="18" r="1.9" /><circle cx="19.4" cy="18" r="1.9" /><path d="M12 6v3.9M6.2 16.8l3.6-2.6M17.8 16.8l-3.6-2.6" />`, o),
+    power: (o) => sv(html`<path d="M12 3.5v8" /><path d="M7.1 6.6a7.5 7.5 0 1 0 9.8 0" />`, o),
+    copy: (o) => sv(html`<rect x="8.5" y="8.5" width="11" height="12" rx="2" /><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2" />`, o),
     person: (o) => sv(html`<circle cx="12" cy="8" r="3.6" /><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6" />`, o),
     sparkle: (o) => sv(P("M12 3.5c.6 4.3 2.7 6.4 7 7-4.3.6-6.4 2.7-7 7-.6-4.3-2.7-6.4-7-7 4.3-.6 6.4-2.7 7-7z"), o),
     link: (o) => sv(html`<path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7l-1.2 1.2" /><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1.2-1.2" />`, o),
@@ -338,14 +350,28 @@
   const I = EV.I;
 
   // ---------- shared components ----------
+  // The pulse meter: one bar per minute, oldest on the left and faintest.
+  // Every meter shares one fixed scale (the hub reports activity on a
+  // fleet-wide log scale, 0 to 1), so two meters can be compared. A minute
+  // with nothing in it leaves only the baseline, so a session going quiet
+  // shows a flat right end instead of a shorter glyph.
   EV.Pulse = function ({ values, off, flat }) {
     const vals = values || [0, 0, 0, 0, 0, 0, 0];
-    const max = Math.max(0.15, ...vals);
     const isFlat = flat || vals.every((v) => v < 0.05);
-    return html`<span class=${"pulse" + (off ? " off" : isFlat ? " flat" : "")} aria-hidden="true">${vals.map((v) => html`<i style=${"height:" + Math.max(2, Math.round((v / max) * 14)) + "px"}></i>`)}</span>`;
+    const last = vals.length - 1;
+    return html`<span class=${"pulse" + (off ? " off" : isFlat ? " flat" : "")} aria-hidden="true">${vals.map((v, i) => html`<i style=${"height:" + (v < 0.05 ? 0 : Math.max(2, Math.round(Math.min(1, v) * 13))) + "px;opacity:" + (0.45 + (0.55 * i) / last).toFixed(2)}></i>`)}</span>`;
+  };
+  // The whole fleet's activity, for the Board header: each minute is the
+  // working sessions' activity summed and put back on the same scale.
+  EV.fleetPulse = function () {
+    const working = EV.S.sessions.filter((s) => s.live && !s.archived && s.state === "working");
+    return [0, 1, 2, 3, 4, 5, 6].map((i) => Math.min(1, working.reduce((a, s) => a + (s.pulse[i] || 0), 0) / 6));
   };
 
-  EV.Mark = function ({ s, size }) {
+  // still: a working session gets a plain running dot instead of its pulse
+  // meter, for places that aren't watching it (pinned sections, the
+  // Projects tree, the session's own title).
+  EV.Mark = function ({ s, size, still }) {
     const st = EV.stateOf(s);
     const offline = EV.S.conn !== "live" || (EV.host(s.host) && EV.host(s.host).state === "offline");
     if (st === "failed") return html`<span class="mk danger" title="Failed">${I.failed({ s: size })}</span>`;
@@ -354,16 +380,19 @@
     if (st === "warning") return html`<span class="mk attention" title="Warning">${I.warn({ s: size })}</span>`;
     if (st === "restart") return html`<span class="mk attention" title="Restart needed">${I.restart({ s: size })}</span>`;
     if (st === "stuck") return html`<span class="mk" title="May be stuck"><span class="hollow"></span></span>`;
-    if (st === "working") return html`<span class="mk" title="Working">${h(EV.Pulse, { values: s.pulse, off: offline })}</span>`;
+    if (st === "working") return still ? html`<span class="mk" title="Working"><span class=${"run-dot" + (offline ? " off" : "")}></span></span>` : html`<span class="mk" title="Working">${h(EV.Pulse, { values: s.pulse, off: offline })}</span>`;
     if (st === "yourmove" && s.unseen) return html`<span class="mk" title="Finished, not yet seen"><span class="dot"></span></span>`;
     return html`<span class="mk"></span>`;
   };
 
+  // The subagent strip reads as progress: finished work fills from the
+  // left in ink, then failures in red (never thinner than 3pt, so 2 of 55
+  // still shows), then running work in green. Once everything is done the
+  // strip says nothing, so it isn't drawn.
   EV.Strip = function ({ t, wide }) {
-    if (!t) return null;
-    const tot = EV.tallyTotal(t) || 1;
-    const seg = (n, c) => (n ? html`<i class=${c} style=${"width:" + (n / tot) * 100 + "%"}></i>` : null);
-    return html`<span class=${"strip" + (wide ? " wide" : "")} aria-hidden="true">${seg(t.fail, "s-fail")}${seg(t.run, "s-run")}${seg(t.wait, "s-wait")}${seg(t.done, "s-done")}</span>`;
+    if (!t || (!t.run && !t.fail)) return null;
+    const seg = (n, c, min) => (n ? html`<i class=${c} style=${"flex:" + n + " 1 " + (min ? "3px" : "0px") + ";min-width:" + (min ? "3px" : "1px")}></i>` : null);
+    return html`<span class=${"strip" + (wide ? " wide" : "")} aria-hidden="true">${seg(t.done, "s-done")}${seg(t.fail, "s-fail", true)}${seg(t.run, "s-run")}</span>`;
   };
 
   EV.Switch = function ({ on, onChange, label }) {
@@ -376,9 +405,9 @@
   const cap = (s) => (s === "xhigh" ? "XHigh" : s.charAt(0).toUpperCase() + s.slice(1));
   EV.cap = cap;
 
-  EV.Gi = function ({ icon, iconBg, label, sub, value, chev, onClick, cls, right }) {
+  EV.Gi = function ({ icon, label, sub, value, chev, onClick, cls, right }) {
     return html`<button class=${"gi" + (icon ? " icon" : "") + (cls ? " " + cls : "") + (onClick ? "" : " static")} onClick=${onClick}>
-      ${icon ? html`<span class="gic" style=${"background:" + (iconBg || "var(--ink-mid)")}>${icon}</span>` : html`<span></span>`}
+      ${icon ? html`<span class="gic">${icon}</span>` : html`<span></span>`}
       <span class="gl">${label}${sub ? html`<small>${sub}</small>` : null}</span>
       <span class="gv">${value}${right}${chev ? html`<span class="chev">${I.chevR()}</span>` : null}</span>
     </button>`;
@@ -524,12 +553,13 @@
     return html`<div class="menu-layer"><div class="menu-scrim" onClick=${onScrim}></div>${Comp ? h(Comp, m) : null}</div>`;
   }
 
-  EV.ListMenu = function ({ items, top, right, preview, title }) {
+  EV.ListMenu = function ({ items, top, right, preview, title, header }) {
     return html`<div class="menu-wrap" style=${"top:" + (top || 140) + "px"}>
       ${preview || null}
-      <div class=${"menu" + (right ? " right" : "")} role="menu" aria-label=${title || "Menu"}>
+      <div class=${"menu" + (right ? " right" : "") + (header ? " wide" : "")} role="menu" aria-label=${title || "Menu"}>
+        ${header ? html`<div class="mh">${header}</div>` : null}
         ${items.filter(Boolean).map((it) => html`<button role="menuitem" class=${"mi" + (it.danger ? " danger" : "") + (it.sep ? " sepd" : "") + (it.sub ? " two" : "")} onClick=${() => { if (!it.keep) EV.closeMenu(); it.run(); }}>
-          <span>${it.label}${it.sub ? html`<small>${it.sub}</small>` : null}</span>${it.checked ? html`<span class="chk">${I.check({ s: 18 })}</span>` : it.icon ? html`<span class="ic">${it.icon}</span>` : null}
+          ${it.checked != null ? html`<span class="chk lead">${it.checked ? I.check({ s: 17 }) : null}</span>` : null}<span style="flex:1;min-width:0">${it.label}${it.sub ? html`<small>${it.sub}</small>` : null}</span>${it.checked == null && it.icon ? html`<span class="ic">${it.icon}</span>` : null}
         </button>`)}
       </div>
     </div>`;

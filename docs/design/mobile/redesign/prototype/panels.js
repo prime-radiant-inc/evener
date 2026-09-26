@@ -7,9 +7,10 @@
 
   // ---------- subagents ----------
   function subMark(g) {
-    if (g.state === "running") return h(EV.Pulse, { values: [0.3, 0.7, 0.5, 0.9, 0.4, 0.8, 0.6].map((v, i) => ((v * 10 + g.id.length + i) % 10) / 10 + 0.1) });
+    // One pulse meter per view: here that's the session's, so a running
+    // subagent gets a plain running mark.
+    if (g.state === "running") return html`<span class="mk"><span class="run-dot"></span></span>`;
     if (g.state === "failed") return html`<span class="mk danger">${I.failed()}</span>`;
-    if (g.state === "waiting") return html`<span class="mk"><span class="hollow low"></span></span>`;
     return html`<span class="mk low">${I.check({ s: 16 })}</span>`;
   }
 
@@ -19,9 +20,9 @@
     const body = html`<div class="row" style=${depth ? "padding-left:" + (16 + depth * 22) + "px" : ""}>
       <div class="mark">${subMark(g)}</div>
       <div style="min-width:0">
-        <div class="l1"><span class="title" style="font-size:16px">${g.title}</span><span class="age">${EV.fmtAgo(g.ago * 1000)}</span></div>
+        <div class="l1"><span class="title" style="font-size:16px">${g.title}</span><span class="age">${g.state === "running" ? EV.fmtDur(g.elapsed * 1000) : EV.fmtAgo(g.ago * 1000) + " ago"}</span></div>
         <div class=${"why" + (g.state === "failed" ? " danger" : "")}>${stopping && g.state !== "stopped" ? "Stop requested from the coordinator" : g.line}</div>
-        <div class="meta"><span class="mono">${g.model}</span>${g.lane ? html`<span class="sep"></span><span>own branch <span class="mono">${g.lane}</span></span>` : null}<span class="sep"></span><span>${EV.fmtDur(g.elapsed * 1000)}</span><span class="sep"></span><span>${g.tokens} tokens</span></div>
+        <div class="meta"><span>${EV.modelLabel(g.model)}</span>${g.lane ? html`<span class="sep"></span><span class="host">${I.branch({ s: 12 })}<span class="mono">${g.lane}</span></span>` : null}<span class="sep"></span><span>${g.tokens} tokens</span></div>
       </div>
     </div>`;
     return html`${h(EV.SwipeRow, { onTap: tap }, body)}${(g.children || []).map((c) => html`<${SubRow} key=${c.id} g=${c} sessionId=${sessionId} depth=${(depth || 0) + 1} />`)}`;
@@ -31,14 +32,14 @@
     const S = EV.S;
     const s = EV.sess(sessionId);
     const list = S.subagents[sessionId] || [];
-    const t = EV.tally(s) || { run: 0, wait: 0, fail: 0, done: 0 };
+    const t = EV.tally(s) || { run: 0, fail: 0, done: 0 };
     const [filter, setFilter] = useState("all");
     const [q, setQ] = useState("");
     const [doneOpen, setDoneOpen] = useState(false);
     const ok = (g) => !q || g.title.toLowerCase().includes(q.toLowerCase());
     const by = (st) => list.filter((g) => g.state === st && ok(g));
     const running = by("running").sort((a, b) => a.ago - b.ago);
-    const groups = { failed: by("failed"), running, waiting: by("waiting"), done: by("done").concat(by("stopped")) };
+    const groups = { failed: by("failed"), running, done: by("done").concat(by("stopped")) };
     const chip = (k, label, n) => html`<button class=${"chip" + (filter === k ? " on" : "")} onClick=${() => { setFilter(k); EV.log("subagent_filter", { sessionId, filter: k }); }}>${label} <span class="n">${n}</span></button>`;
     const show = (k) => filter === "all" || filter === k;
     return html`<div style="display:flex;flex-direction:column;height:100%">
@@ -49,11 +50,10 @@
       </div></div>
       <div class="scroll">
         <div style="padding:12px 16px 4px">${h(EV.Strip, { t, wide: true })}</div>
-        <div class="chips" style="top:0">${chip("all", "All", EV.tallyTotal(t))}${chip("running", "Running", t.run)}${chip("waiting", "Waiting", t.wait)}${chip("failed", "Failed", t.fail)}${chip("done", "Done", t.done)}</div>
+        <div class="chips" style="top:0">${chip("all", "All", EV.tallyTotal(t))}${chip("running", "Running", t.run)}${chip("failed", "Failed", t.fail)}${chip("done", "Done", t.done)}</div>
         ${list.length > 8 ? html`<div class="search-field">${I.search({ s: 16 })}<input placeholder="Filter subagents" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Filter subagents" /></div>` : null}
         ${show("failed") && groups.failed.length ? html`<div class="sec-h">Failed <span class="n">${groups.failed.length}</span></div>${groups.failed.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}` : null}
         ${show("running") && groups.running.length ? html`<div class="sec-h">Running <span class="n">${groups.running.length}</span></div>${groups.running.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}` : null}
-        ${show("waiting") && groups.waiting.length ? html`<div class="sec-h">Waiting on the coordinator <span class="n">${groups.waiting.length}</span></div>${groups.waiting.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}` : null}
         ${show("done") && groups.done.length ? (filter === "done" ? html`<div class="sec-h">Done <span class="n">${groups.done.length}</span></div>${groups.done.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}`
           : html`<button class=${"fold" + (doneOpen ? " open" : "")} style="margin-top:8px" onClick=${() => setDoneOpen(!doneOpen)}><span class="lbl">Done <span class="cnt">${groups.done.length}</span></span><span class="chev">${I.chevR()}</span></button>${doneOpen ? groups.done.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`) : null}`) : null}
         <div style="height:30px"></div>
@@ -74,7 +74,7 @@
       ] },
     ];
     if (g.state === "failed") items.push({ t: "agent", md: "The fix I tried moves the lock, but the test still fails on the third run. I think the drain signal is lost when settle holds the lock. I'm out of attempts." });
-    if (g.state === "done" || g.state === "waiting") items.push({ t: "agent", md: "**Report:** " + g.line + "." });
+    if (g.state === "done") items.push({ t: "agent", md: "**Report:** " + g.line + "." });
     if (g.state === "stopped") items.push({ t: "sys", text: "Stopped by the coordinator at your request" });
     return items;
   }
@@ -84,8 +84,8 @@
     const s = EV.sess(sessionId);
     const g = EV.findSub(sessionId, subId) || { title: "Subagent", state: "done", line: "", model: s.model, ago: 60, elapsed: 60, tokens: "0" };
     const tr = subTranscript(g, s);
-    const canStop = ["running", "failed", "waiting"].includes(g.state) && !S.stopRequests[subId];
-    const lbl = { running: "Running", failed: "Failed", done: "Done", waiting: "Waiting on the coordinator", stopped: "Stopped" }[g.state];
+    const canStop = ["running", "failed"].includes(g.state) && !S.stopRequests[subId];
+    const lbl = { running: "Running", failed: "Failed", done: "Done", stopped: "Stopped" }[g.state];
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row">
         <div class="lead"><button class="icon-btn back-btn" onClick=${EV.pop} aria-label="Back">${I.chevL({ s: 22 })}</button></div>
@@ -160,11 +160,11 @@
       <div class="group">${items.map((it) => {
         if (it.kind === "Artifact") {
           const a = S.artifacts[it.id];
-          return h(EV.Gi, { key: it.id, icon: I.artifact({ s: 17 }), iconBg: "var(--accent)", label: a.title, sub: "Artifact · v" + a.version + " · updated " + EV.fmtAgo(a.ago * 1000) + " ago", chev: true, onClick: () => open(it) });
+          return h(EV.Gi, { key: it.id, icon: I.artifact({ s: 17 }), label: a.title, sub: "Artifact · v" + a.version + " · updated " + EV.fmtAgo(a.ago * 1000) + " ago", chev: true, onClick: () => open(it) });
         }
         const d = S.docs[it.path] || { lines: 0, ago: 0, changed: [] };
         const ch = d.changed.length && !S.readDocs[it.path];
-        return h(EV.Gi, { key: it.path, icon: I.doc({ s: 17 }), iconBg: "var(--ink-mid)", label: EV.docTitle(it.path), sub: it.kind + " · " + it.path.split("/").pop() + " · " + EV.fmtAgo(d.ago * 1000) + " ago", value: ch ? html`<span class="dot"></span>` : null, chev: true, onClick: () => open(it) });
+        return h(EV.Gi, { key: it.path, icon: I.doc({ s: 17 }), label: EV.docTitle(it.path), sub: it.kind + " · " + it.path.split("/").pop() + " · " + EV.fmtAgo(d.ago * 1000) + " ago", value: ch ? html`<span class="dot"></span>` : null, chev: true, onClick: () => open(it) });
       })}</div>
       ${!items.length ? html`<div class="empty">This session hasn't written or linked any files yet.</div>` : null}
     </${EV.Sheet}>`;
@@ -201,7 +201,6 @@
     });
     const pressed = EV.S.menu && EV.S.menu.path === path && EV.S.menu.block === i && !EV.S.menu.liEl;
     return html`<div class=${"rblock" + (changed ? " changed" : "") + (pressed ? " sel" : "")} data-block=${i} ...${lp}>
-      ${changed ? html`<span class="chg-label">Changed</span>` : null}
       <div dangerouslySetInnerHTML=${{ __html: b.html }}></div>
       ${count ? html`<button class="cmark" onPointerDown=${(e) => e.stopPropagation()} onPointerUp=${(e) => e.stopPropagation()} onClick=${(e) => { e.stopPropagation(); EV.openSheet("comments", { path, sessionId }); }}>${I.bubble({ s: 12 })} ${count}</button>` : null}
     </div>`;
@@ -214,6 +213,9 @@
     const scrollRef = useRef(null);
     const firstRead = useRef(!S.readDocs[path]);
     const [ci, setCi] = useState(-1);
+    // The document's own heading is its title, so the nav bar shows the title
+    // only once that heading has scrolled out of view.
+    const [pastTitle, setPastTitle] = useState(false);
     const blocks = EV.useMemoBlocks(path, doc.md);
     const comments = S.comments[path] || [];
     const changed = firstRead.current ? doc.changed : [];
@@ -249,7 +251,7 @@
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row">
         <div class="lead"><button class="icon-btn back-btn" onClick=${EV.pop} aria-label="Back">${I.chevL({ s: 22 })}</button></div>
-        <div class="nav-title" style="cursor:default"><div class="t">${(blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop()}</div><div class="s"><span style="overflow:hidden;text-overflow:ellipsis;min-width:0">${doc.kind} · ${path.split("/").pop()} · ${EV.fmtAgo(doc.ago * 1000)} ago</span></div></div>
+        <div class="nav-title" style="cursor:default">${pastTitle ? html`<div class="t">${(blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop()}</div>` : null}<div class=${pastTitle ? "s" : "s solo"}><span style="overflow:hidden;text-overflow:ellipsis;min-width:0">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago</span></div></div>
         <div class="trail">
           <button class="icon-btn" aria-label="Outline" onClick=${() => EV.openSheet("outline", { path })}>${I.outline()}</button>
           <button class="icon-btn" aria-label="Document menu" onClick=${() => EV.openMenu({ kind: "list", top: 96, right: true, title: "Document", items: [
@@ -259,14 +261,14 @@
           ] })}>${I.dots()}</button>
         </div>
       </div></div>
-      <div class="scroll" ref=${scrollRef}>
-        ${changed.length ? html`<div class="changes-bar"><span>${changed.length} change${changed.length > 1 ? "s" : ""} since you last read</span><span class="arrows"><button class="icon-btn" style="height:32px;min-width:32px" aria-label="Previous change" onClick=${() => goChange(-1)}>${h(I.chevL, { s: 16 })}</button><button class="icon-btn" style="height:32px;min-width:32px" aria-label="Next change" onClick=${() => goChange(1)}>${I.chevR({ s: 16 })}</button></span></div>` : null}
+      <div class="scroll" ref=${scrollRef} onScroll=${(e) => { const past = e.currentTarget.scrollTop > 64; if (past !== pastTitle) setPastTitle(past); }}>
+        ${changed.length ? html`<div class="changes-bar"><span>${changed.length} change${changed.length > 1 ? "s" : ""} since you read it yesterday</span><span class="arrows"><button class="icon-btn" style="height:32px;min-width:32px" aria-label="Previous change" onClick=${() => goChange(-1)}>${h(I.chevL, { s: 16 })}</button><button class="icon-btn" style="height:32px;min-width:32px" aria-label="Next change" onClick=${() => goChange(1)}>${I.chevR({ s: 16 })}</button></span></div>` : null}
         ${hint ? html`<div class="hint" style="margin:10px 16px 0;padding:8px 10px;background:var(--inset);border-radius:10px">${I.bubble({ s: 14 })}<span>Touch and hold a paragraph to comment on it or quote it. <button class="mini-btn" style="padding:0 4px" onClick=${() => { S.readerHintDismissed = true; EV.update(); }}>Got it</button></span></div>` : null}
         <article class="reader" aria-label=${path}>
           ${blocks.map((b, i) => h(RBlock, { key: i, b, i, path, sessionId, changed: changed.includes(i), count: comments.filter((c) => c.block === i).length, onComment }))}
         </article>
       </div>
-      <div class="bottom">${h(EV.NextBar, { exceptId: sessionId })}<div class="review-bar">
+      <div class="bottom"><div class="review-bar">
         <button class="btn quiet" onClick=${() => EV.openSheet("comments", { path, sessionId })}>${I.bubble({ s: 16 })} Comments${comments.length ? " " + comments.length : ""}</button>
         <span style="display:flex;gap:6px">
           <button class="btn primary" onClick=${() => { EV.log("review_sheet", { path, comments: comments.length }); EV.openSheet("review", { path, sessionId }); }}>Send review</button>
@@ -394,7 +396,6 @@
       </div></div>
       ${failed && !ready ? html`<div class="scroll"><div class="empty"><b>${a.title}</b>${a.summary}<div style="margin-top:12px">This artifact can't run over this connection. Open it on a computer on the same network as the hub.</div></div></div>`
         : html`<iframe ref=${ref} class="art-frame" title=${a.title} sandbox="allow-scripts" srcdoc=${a.html}></iframe>`}
-      <div class="bottom">${h(EV.NextBar, { exceptId: sessionId })}</div>
     </div>`;
   }
   EV.screens.artifact = ArtifactViewer;

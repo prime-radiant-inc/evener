@@ -104,11 +104,11 @@
 
   const sessions = [
     // Needs you
-    base({ id: "s-retry", title: "Fix Endless Provider Retry Loop", state: "failed", host: "paradise-park", model: "gpt-5.6", effort: "high", ago: 2 * M, started: 3 * H,
-      why: "Failed: codex-jesse-fsck.com sign-in expired (401)", subs: { run: 0, wait: 1, fail: 1, done: 2 }, cost: "~$6.80", branch: "fix-retry-loop",
+    base({ id: "s-retry", title: "Fix Endless Provider Retry Loop", state: "failed", tasks: { done: 2, total: 4, current: "Cap retries per provider", items: ["Reproduce the retry loop","Find where 401s are retried","Cap retries per provider","Surface the sign-in error"] }, host: "paradise-park", model: "gpt-5.6", effort: "high", ago: 2 * M, started: 3 * H,
+      why: "Failed: codex-jesse-fsck.com sign-in expired (401)", subs: { run: 0, fail: 1, done: 3 }, cost: "~$6.80", branch: "fix-retry-loop",
       usage: { in: 11.4e6, out: 0.42e6, cache: 8.1e6 }, ctx: { used: 188, window: 400 }, failedTools: 5 }),
     base({ id: "s-audit", title: "Audit Tool Descriptions for Implied Options", state: "question", model: "glm-5.3-vision", ago: 14 * M, started: 55 * M,
-      why: "Asks: keep or drop the implied options?", subs: { run: 0, wait: 0, fail: 0, done: 8 }, cost: "~$3.10", ctx: { used: 71, window: 200 },
+      why: "Asks: keep or drop the implied options?", subs: { run: 0, fail: 0, done: 8 }, cost: "~$3.10", ctx: { used: 71, window: 200 },
       usage: { in: 8.8e6, out: 0.31e6, cache: 6.2e6 } }),
     base({ id: "s-mirror", title: "Mirror Docs Site Locally", state: "approval", project: "prime-radiant-inc.github.io", model: "deepseek-4.1-flash", effort: "high", ago: 21 * M, started: 34 * M,
       why: "Wants to write outside the workspace: ~/sites/docs", plugins: ["superpowers", "elements-of-style", "superpowers-chrome"], cost: "~$0.40",
@@ -120,23 +120,23 @@
     base({ id: "s-hier", title: "Host Project Hierarchy UI Mockups", state: "yourmove", unseen: true, model: "glm-5.3-vision", ago: 62 * M, started: 3 * H,
       why: "Three layouts are ready for review. I recommend B: hosts as badges inside projects…",
       attachments: [{ kind: "Plan", path: "docs/superpowers/plans/2026-09-25-host-project-hierarchy.md" }, { kind: "Artifact", id: "a-hier", title: "Hierarchy layouts" }],
-      subs: { run: 0, wait: 0, fail: 0, done: 6 }, cost: "~$5.90",
+      subs: { run: 0, fail: 0, done: 6 }, cost: "~$5.90",
       urls: [{ id: "u-hplan", url: "file:///home/jesse/git/evener/docs/superpowers/plans/2026-09-25-host-project-hierarchy.md", label: "Hierarchy plan", addedBy: "agent" }] }),
     base({ id: "s-flakes", title: "Find Test Flakes in GitHub Issues", state: "yourmove", unseen: true, model: "gpt-5.6-luna", effort: "high", ago: 8 * M, started: 70 * M,
       why: "I found 11 open flake reports. Four are the same race in delegate settle…",
-      attachments: [{ kind: "Doc", path: "docs/design/flake-triage.md" }], subs: { run: 0, wait: 0, fail: 0, done: 5 }, cost: "~$2.70" }),
+      attachments: [{ kind: "Doc", path: "docs/design/flake-triage.md" }], subs: { run: 0, fail: 0, done: 5 }, cost: "~$2.70" }),
     base({ id: "s-jobdisp", title: "Redesign Failed Job Display", state: "yourmove", unseen: true, model: "glm-5.3-vision", ago: 25 * M, started: 4 * H, category: "release",
       why: "Done. Failed jobs now show the exit code and the last 20 lines inline. PR #2331 is green.",
-      subs: { run: 0, wait: 0, fail: 1, done: 11 }, cost: "~$8.20",
+      subs: { run: 0, fail: 1, done: 11 }, cost: "~$8.20",
       notes: { agent: "PR #2331 is green. I'll merge once you've looked at the new failed-job card." },
       urls: [{ id: "u-2331", url: "https://github.com/prime-radiant-inc/evener/pull/2331", label: "PR #2331", addedBy: "agent" }] }),
     base({ id: "s-branch", title: "Idiomatic Branch Naming for Delegates", state: "yourmove", unseen: true, model: "glm-5.3", ago: 3 * H, started: 6 * H,
       why: "Spec updated with your naming rules. Ready for your review.",
-      attachments: [{ kind: "Spec", path: "docs/superpowers/specs/2026-09-22-delegate-lane-branch-names.md" }], subs: { run: 0, wait: 0, fail: 0, done: 3 }, cost: "~$1.90" }),
+      attachments: [{ kind: "Spec", path: "docs/superpowers/specs/2026-09-22-delegate-lane-branch-names.md" }], subs: { run: 0, fail: 0, done: 3 }, cost: "~$1.90" }),
 
     // Working
     base({ id: "s-pr2138", title: "Get PR 2138 Test Clean", state: "working", ago: 5, started: 38 * M, category: "release",
-      activity: "Waiting on 31 subagents", subs: { run: 31, wait: 3, fail: 2, done: 18 }, tasks: { done: 3, total: 7, current: "Fix the settle/drain race" },
+      activity: "Waiting on 31 subagents", subs: { run: 31, fail: 2, done: 21 }, tasks: { done: 3, total: 7, current: "Fix the settle/drain race", items: ["Group the failures by cause","Write the settle-race plan","Start the -race subagents","Fix the settle/drain race","Run the flaky tests 200 times","Confirm CI is green","Summarize for review"] },
       goal: { text: "PR 2138 green on CI without skipped tests", status: "active" }, cost: "~$19.60", usage: { in: 46.1e6, out: 1.9e6, cache: 38.8e6 }, ctx: { used: 38, window: 256 },
       attachments: [{ kind: "Plan", path: "docs/superpowers/plans/2026-09-25-settle-race.md" }], notes: { human: "Don't skip or quarantine tests. Fix causes.", agent: "Race is in retirement drain vs tree settle; see plan." },
       urls: [
@@ -145,21 +145,21 @@
         { id: "u-splan", url: "file:///home/jesse/git/evener/docs/superpowers/plans/2026-09-25-settle-race.md", label: "Settle race plan", addedBy: "agent" },
       ] }),
     base({ id: "s-tasklist", title: "Rework Inline Task List Display", state: "working", model: "glm-5.3-vision", ago: 3, started: 12 * M,
-      activity: "Running go test ./cmd/evener-hub/...", subs: { run: 3, wait: 0, fail: 0, done: 1 }, tasks: { done: 1, total: 4, current: "Fold the task card to one line" }, cost: "~$1.30" }),
-    base({ id: "s-stumble", title: "Diagnose and Fix Tool Use Stumbles", state: "working", model: "glm-5.2-vision", ago: 8, started: 65 * M,
-      activity: "Editing agent/tool_repair.go", subs: { run: 4, wait: 0, fail: 0, done: 5 }, cost: "~$7.70" }),
+      activity: "Running go test ./cmd/evener-hub/...", subs: { run: 3, fail: 0, done: 1 }, tasks: { done: 1, total: 4, current: "Fold the task card to one line", items: ["Measure the task card","Fold the task card to one line","Handle the empty state","Update the screenshots"] }, cost: "~$1.30" }),
+    base({ id: "s-stumble", title: "Diagnose and Fix Tool Use Stumbles", state: "working", tasks: { done: 2, total: 5, current: "Repair malformed tool arguments", items: ["Collect stumbles from last week","Group them by tool","Repair malformed tool arguments","Tighten the tool descriptions","Rerun the stumble corpus"] }, model: "glm-5.2-vision", ago: 8, started: 65 * M,
+      activity: "Editing agent/tool_repair.go", subs: { run: 4, fail: 0, done: 5 }, cost: "~$7.70" }),
     base({ id: "s-gateway", title: "Design Gateway Token Command MVP", state: "working", model: "muse-spark-1.3", effort: "high", ago: 2, started: 22 * M,
       activity: "Thinking", plugins: ["superpowers", "elements-of-style", "go"], cost: "~$2.10" }),
-    base({ id: "s-wasm", title: "Port Allocator to WASM Target", state: "working", project: "c-to-wasm", host: "paradise-park", model: "k3", effort: "high", ago: 12 * M, started: 51 * M, stuck: true,
-      activity: "Running make test-wasm", subs: { run: 2, wait: 0, fail: 0, done: 1 }, plugins: ["superpowers", "go", "iterative-development"], cost: "~$1.60" }),
-    base({ id: "s-resume", title: "Fix Missing Prompt on Session Resume", state: "working", ago: 4, started: 6 * M,
+    base({ id: "s-wasm", title: "Port Allocator to WASM Target", state: "working", tasks: { done: 4, total: 6, current: "Link against the new symbol table", items: ["Build the allocator for wasm32","Replace the mmap calls","Fix the alignment asserts","Generate the symbol table","Link against the new symbol table","Run the allocator tests in wasmtime"] }, project: "c-to-wasm", host: "paradise-park", model: "k3", effort: "high", ago: 12 * M, started: 51 * M, stuck: true,
+      activity: "Running make test-wasm", subs: { run: 2, fail: 0, done: 1 }, plugins: ["superpowers", "go", "iterative-development"], cost: "~$1.60" }),
+    base({ id: "s-resume", title: "Fix Missing Prompt on Session Resume", state: "working", tasks: { done: 1, total: 3, current: "Replay the pending prompt on resume", items: ["Find where the prompt is dropped","Replay the pending prompt on resume","Add a resume test"] }, ago: 4, started: 6 * M,
       activity: "Reading agent/session_resume.go", cost: "~$0.30" }),
     base({ id: "s-readintent", title: "Fix Missing File Read Intent Lines", state: "working", model: "glm-5.3-vision", ago: 6, started: 17 * M,
-      activity: "Running make lint", subs: { run: 1, wait: 0, fail: 0, done: 2 }, cost: "~$1.10" }),
+      activity: "Running make lint", subs: { run: 1, fail: 0, done: 2 }, cost: "~$1.10" }),
     base({ id: "s-landing", title: "Draft Agent Directory Landing Copy", state: "working", project: "alltheagents-org", model: "gpt-6-astra", effort: "high", ago: 9, started: 9 * M,
       activity: "Writing site/index.md", plugins: ["superpowers", "elements-of-style", "frontend-design"], cost: "~$0.90" }),
-    base({ id: "s-sdk", title: "Lift Ask Dock Into Shared Client", state: "working", host: "paradise-park", model: "glm-5.3-vision", ago: 11, started: 29 * M,
-      activity: "Running npm test in appwire-client/typescript", subs: { run: 2, wait: 0, fail: 0, done: 4 }, cost: "~$2.40" }),
+    base({ id: "s-sdk", title: "Lift Ask Dock Into Shared Client", state: "working", tasks: { done: 5, total: 9, current: "Move the ask dock reducer into the package", items: ["Inventory the ask dock state","Write the package interface","Move the option model","Move the answer formatter","Port the tests","Move the ask dock reducer into the package","Point the web at the package","Point the phone at the package","Delete the old copies"] }, host: "paradise-park", model: "glm-5.3-vision", ago: 11, started: 29 * M,
+      activity: "Running npm test in appwire-client/typescript", subs: { run: 2, fail: 0, done: 4 }, cost: "~$2.40" }),
 
     // Idle (seen)
     base({ id: "s-diff", title: "Evener Differentiation Rationale Doc", state: "idle", model: "glm-5.3-vision", ago: 2 * H, started: 5 * H, category: "research", why: "", cost: "~$1.20" }),
@@ -183,7 +183,7 @@
 
     // Archived
     base({ id: "s-gocache", title: "Investigate Go Test Caching", state: "shutdown", live: false, archived: true, ago: 6 * D, started: 6 * D + 2 * H, model: "deepseek-4.1-flash" }),
-    base({ id: "s-fuzz", title: "Harvest Fuzz Corpus Across Modules", state: "shutdown", live: false, archived: true, ago: 8 * D, started: 9 * D, subs: { run: 0, wait: 0, fail: 12, done: 455 } }),
+    base({ id: "s-fuzz", title: "Harvest Fuzz Corpus Across Modules", state: "shutdown", live: false, archived: true, ago: 8 * D, started: 9 * D, subs: { run: 0, fail: 12, done: 455 } }),
     base({ id: "s-audit1", title: "Audit Tool Descriptions First Pass", state: "shutdown", live: false, archived: true, ago: 9 * D, started: 9 * D + H }),
     base({ id: "s-pairing", title: "Pairing Endpoint Review", state: "shutdown", live: false, archived: true, ago: 12 * D, started: 12 * D + H }),
     base({ id: "s-daemon", title: "Daemon Idle Retirement Timer", state: "shutdown", live: false, archived: true, ago: 15 * D, started: 15 * D + H }),
@@ -216,7 +216,7 @@
       line: ["Running go test ./agent/...", "Reading agent/delegate_runtime.go", "Editing agent/retirement.go", "Searching for settleTree", "Running go test -race ./internal/hubcore", "Thinking"][i % 6] });
   }
   for (let i = 0; i < 3; i++) {
-    swarm.push({ id: "g-wait-" + i, title: swarmNames[(i + 40) % swarmNames.length], state: "waiting", model: "deepseek-4.1-flash", ago: (3 + i) * M, elapsed: (8 + i) * M, tokens: "300K", line: "Finished; waiting for the coordinator to read its report" });
+    swarm.push({ id: "g-wait-" + i, title: swarmNames[(i + 40) % swarmNames.length], state: "done", model: "deepseek-4.1-flash", ago: (3 + i) * M, elapsed: (8 + i) * M, tokens: "300K", line: "Finished and reported back" });
   }
   for (let i = 0; i < 18; i++) {
     swarm.push({ id: "g-done-" + i, title: swarmNames[(i + 20) % swarmNames.length], state: "done", model: "deepseek-4.1-flash", ago: (10 + i * 2) * M, elapsed: (5 + i % 9) * M, tokens: (90 + i * 23) + "K", line: ["Tests pass", "No race found in this path", "Fixed and verified", "Report written"][i % 4] });
@@ -228,7 +228,7 @@
       { id: "r-1", title: "Find where retries are scheduled", state: "done", model: "gpt-5.6", ago: 2 * H, elapsed: 9 * M, tokens: "380K", line: "Found the loop in llm/retry.go" },
       { id: "r-2", title: "Write a test for the 429 loop", state: "done", model: "gpt-5.6", ago: 90 * M, elapsed: 12 * M, tokens: "410K", line: "Test reproduces the endless retry" },
       { id: "r-3", title: "Cap retries with backoff", state: "failed", model: "gpt-5.6", ago: 3 * M, elapsed: 18 * M, tokens: "520K", line: "Failed: provider sign-in expired" },
-      { id: "r-4", title: "Check other providers for the same loop", state: "waiting", model: "gpt-5.6", ago: 4 * M, elapsed: 6 * M, tokens: "150K", line: "Finished; waiting for the coordinator" },
+      { id: "r-4", title: "Check other providers for the same loop", state: "done", model: "gpt-5.6", ago: 4 * M, elapsed: 6 * M, tokens: "150K", line: "Finished and reported back" },
     ],
     "s-tasklist": [
       { id: "t-1", title: "Update TaskCard tests", state: "running", model: "glm-5.3-vision", ago: 4, elapsed: 5 * M, tokens: "160K", line: "Running npm test" },
@@ -239,12 +239,11 @@
   };
   function genericSubs(prefix, s) {
     const out = [];
-    const c = s.subs || { run: 0, wait: 0, fail: 0, done: 0 };
+    const c = s.subs || { run: 0, fail: 0, done: 0 };
     const pick = (i) => swarmNames[(prefix.length * 7 + i * 3) % swarmNames.length];
     let k = 0;
     for (let i = 0; i < c.fail; i++) out.push({ id: prefix + k, title: pick(k++), state: "failed", model: s.model, ago: 20 * M, elapsed: 9 * M, tokens: "300K", line: "Failed: tests still failing after 3 attempts" });
     for (let i = 0; i < c.run; i++) out.push({ id: prefix + k, title: pick(k++), state: "running", model: s.model, ago: 10, elapsed: 4 * M, tokens: "180K", line: "Working" });
-    for (let i = 0; i < c.wait; i++) out.push({ id: prefix + k, title: pick(k++), state: "waiting", model: s.model, ago: 2 * M, elapsed: 6 * M, tokens: "120K", line: "Finished; waiting for the coordinator" });
     for (let i = 0; i < c.done; i++) out.push({ id: prefix + k, title: pick(k++), state: "done", model: s.model, ago: 40 * M, elapsed: 7 * M, tokens: "150K", line: "Report written" });
     return out;
   }
@@ -269,7 +268,7 @@
     { t: "act", steps: [
       { i: "Read the tool definitions", g: "agent/internal/tool/definitions.go", s: "ok", out: "1,412 lines, 61 tools" },
       { i: "Found every argument schema", g: "grep -n \"Parameters:\" agent/internal/tool", s: "ok" },
-      { i: "Started 8 subagents to check tool groups", g: "delegate × 8", s: "ok" },
+      { i: "Started 8 subagents to check tool groups", s: "ok" },
     ] },
     { t: "sub", id: "s-audit-g0", title: "Check file tools", state: "done", line: "5 implied options in file tools" },
     { t: "sub", id: "s-audit-g1", title: "Check job tools", state: "done", line: "4 implied options in job tools" },
@@ -296,7 +295,7 @@
     { t: "agent", md: "I'll count where sessions actually live first, then have three subagents mock one layout each, and a fourth review them side by side." },
     { t: "act", steps: [
       { i: "Counted sessions per project and host", g: "evener/navigation/read", s: "ok", out: "evener: 88%  c-to-wasm: 9%  other: 3%\nmagic-kingdom: 91%  paradise-park: 9%" },
-      { i: "Started 4 subagents", g: "delegate × 4", s: "ok" },
+      { i: "Started 4 subagents", s: "ok" },
     ] },
     { t: "sub", id: "h-a", title: "Mock layout A: project, then host", state: "done", line: "Layout A mock written" },
     { t: "sub", id: "h-b", title: "Mock layout B: host badges in projects", state: "done", line: "Layout B mock written" },
@@ -339,8 +338,8 @@
     { t: "user", text: "Also make sure the race test runs under -race on Linux, not just macOS.", kind: "steer" },
     { t: "agent", md: "Good call. I added a Linux `-race` run to the plan and gave it its own subagent on magic-kingdom." },
     { t: "act", live: true, steps: [
-      { i: "Started 31 subagents for -race runs and fixes", g: "delegate × 31", s: "ok" },
-      { i: "Waiting on subagents", g: "31 running · 3 waiting", s: "run" },
+      { i: "Started 31 subagents for -race runs and fixes", s: "ok" },
+      { i: "Waiting on subagents", g: "31 running · 2 failed · 21 done", s: "run" },
     ] },
   ];
 
@@ -411,7 +410,7 @@
   T["s-flakes"] = [
     { t: "time", label: "Today 1:45 PM" },
     { t: "user", text: "Find every open flake report in GitHub issues and tell me which ones are the same bug." },
-    { t: "act", steps: [{ i: "Listed flake issues", g: "gh issue list --label flake --state open", s: "ok", out: "11 issues" }, { i: "Started 5 subagents to group them", g: "delegate × 5", s: "ok" }] },
+    { t: "act", steps: [{ i: "Listed flake issues", g: "gh issue list --label flake --state open", s: "ok", out: "11 issues" }, { i: "Started 5 subagents to group them", s: "ok" }] },
     { t: "doc", path: "docs/design/flake-triage.md", kind: "Doc" },
     { t: "agent", md: "I found 11 open flake reports. **Four are the same race in delegate settle** (#2121, #2263, #1394, #1418); two are cold-cache CI noise; five are unrelated one-offs. The triage doc groups them and proposes one fix per group." },
   ];
@@ -628,5 +627,7 @@ draw();parent.postMessage({type:'ready'},'*');
     { id: "s-sandbox", kind: "session", title: "Sandbox Network Egress Audit", project: "evener", ago: 2 * D, prompt: "Audit which tools can reach the network under restricted sandbox mode." },
   ];
 
+  // Finished runs in the fixtures take about 40 seconds a step.
+  for (const tr of Object.values(T)) tr.forEach((it) => { if (it.t === "act" && !it.live && it.dur == null) it.dur = 30 + it.steps.length * 40; });
   window.EV_DATA = { hosts, providers, models, marketplaces, plugins, recipes, projects, categories, sessions, subagents, transcripts: T, asks: ASKS, approvals: APPROVALS, docs, artifacts, search, defaultPlugins, archivedTotal: 271 };
 })();

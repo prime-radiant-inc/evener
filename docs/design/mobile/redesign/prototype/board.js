@@ -38,7 +38,8 @@
   // ---------- row ----------
   // Why a session is on the Board. Rows that need you lead with a word for
   // the kind of need, so a question, an approval, a failure and a restart
-  // are told apart by words as well as by their marks.
+  // are told apart by words as well as by their marks. Only that word takes
+  // the state's color; the reason, which is what you read, stays ink.
   EV.whyParts = function (s) {
     const st = EV.stateOf(s);
     const rest = (s.why || "").replace(/^(Failed|Asks):\s*/, "");
@@ -49,30 +50,49 @@
     if (st === "warning") return { label: "Warning", text: rest, cls: "attention", two: true };
     if (st === "stuck") return { label: "May be stuck", text: "no updates for " + EV.fmtAgo(Date.now() - s.updatedAt), cls: "attention" };
     if (st === "working") return EV.activityLine(s);
-    if (s.state === "yourmove" && s.unseen) return { text: "“" + s.why.replace(/…$/, "") + "…”", cls: "", two: true };
+    if (s.state === "yourmove" && s.unseen) return { text: s.why, cls: "excerpt", two: true };
     return null;
   };
   const whyFor = EV.whyParts;
   EV.WhyText = function ({ w }) {
-    return w.label ? html`<b style="font-weight:600">${w.label}</b> · ${w.text}` : w.text;
+    return w.label ? html`<b class="wl">${w.label}</b> · ${w.text}` : w.text;
   };
 
+  // A row's last line says where the session is in its own plan: its task
+  // list, done of total, and the task it's on. That says more than a
+  // subagent count, which is the same at minute 2 and minute 40, so
+  // subagents appear only as an exception, when some failed. The strip and
+  // the full counts live on the session's Subagents chip.
   function Meta({ s }) {
     const t = EV.tally(s);
-    const tot = EV.tallyTotal(t);
+    const k = s.tasks;
     const parts = [];
-    if (tot) parts.push(html`<span>${h(EV.Strip, { t })}</span>`, html`<span>${tot} subagent${tot === 1 ? "" : "s"}${t.fail ? html`<span class="bad">, ${t.fail} failed</span>` : null}</span>`);
-    parts.push(html`<span>${s.project}</span>`);
-    if (EV.multiHost()) parts.push(html`<span>${s.host}</span>`);
-    if (EV.S.prefs.showModel) parts.push(html`<span class="mono">${s.model}</span>`);
-    return html`<div class="meta">${parts.map((p, i) => (i === 0 || (tot && i === 1) ? p : html`<span class="sep"></span>${p}`))}</div>`;
+    if (k && k.done < k.total) parts.push(html`<span class="task">${I.checklist({ s: 13 })}<b>${k.done}/${k.total}</b>${k.current ? html`<span class="tt">${k.current}</span>` : null}</span>`);
+    if (t && t.fail) parts.push(html`<span class="bad">${t.fail} subagent${t.fail === 1 ? "" : "s"} failed</span>`);
+    // Project and host only when they aren't the fleet's usual ones, so the
+    // ones that do print stand out.
+    const u = EV.usual();
+    if (s.project !== u.project) parts.push(html`<span>${s.project}</span>`);
+    if (EV.multiHost() && s.host !== u.host) parts.push(html`<span class="host">${I.host({ s: 12 })}${s.host}</span>`);
+    if (EV.S.prefs.showModel) parts.push(html`<span>${EV.modelLabel(s.model)}</span>`);
+    if (!parts.length) return null;
+    return html`<div class="meta">${parts.map((p, i) => (i === 0 ? p : html`<span class="sep"></span>${p}`))}</div>`;
   }
+
+  EV.openFileFromBoard = function (s, a) {
+    const S = EV.S;
+    const file = a.kind === "Artifact" ? { name: "artifact", id: a.id, sessionId: s.id } : { name: "reader", path: a.path, sessionId: s.id };
+    S.nav = [S.nav[0], { name: "session", id: s.id, key: ++S.navSeq, from: "board" }, Object.assign(file, { key: ++S.navSeq })];
+    S.navAnim = { type: "push", key: S.navSeq, until: Date.now() + 330 };
+    EV.onScreenChange();
+    EV.update();
+  };
 
   function Attachments({ s }) {
     if (!s.attachments || !s.attachments.length || !(s.state === "yourmove")) return null;
     const stop = (e) => e.stopPropagation();
     return html`<div class="atts">${s.attachments.slice(0, 2).map((a) => html`<button class="att" onPointerDown=${stop} onPointerUp=${stop}
-      onClick=${(e) => { e.stopPropagation(); EV.log("attachment_open", { sessionId: s.id, kind: a.kind, target: a.path || a.id, from: "board" }); EV.markSeen(s); if (a.kind === "Artifact") EV.push("artifact", { id: a.id, sessionId: s.id }); else EV.push("reader", { path: a.path, sessionId: s.id }); }}>
+      onClick=${(e) => { e.stopPropagation(); EV.log("attachment_open", { sessionId: s.id, kind: a.kind, target: a.path || a.id, from: "board" }); EV.markSeen(s); EV.openFileFromBoard(s, a); }}>
       <span style="display:flex;color:var(--ink-mid)">${a.kind === "Artifact" ? I.artifact({ s: 15 }) : I.doc({ s: 15 })}</span><b>${a.kind}</b><span class="p">${a.kind === "Artifact" ? a.title : EV.docTitle(a.path)}</span></button>`)}</div>`;
   }
 
@@ -102,7 +122,7 @@
       EV.openSession(s.id, { from: context || "board" });
     };
     const body = html`<div class=${"row" + (quiet ? " quiet" : "") + (EV.isNeeds(s) && !quiet ? " two-line" : "") + (flash ? " flash" : "") + (sel && S.board.selected[s.id] ? " selected" : "")} data-session=${s.id}>
-      <div class="mark">${sel ? html`<span class=${"sel-box" + (S.board.selected[s.id] ? " on" : "")}>${S.board.selected[s.id] ? I.check({ s: 14 }) : null}</span>` : h(EV.Mark, { s })}</div>
+      <div class="mark">${sel ? html`<span class=${"sel-box" + (S.board.selected[s.id] ? " on" : "")}>${S.board.selected[s.id] ? I.check({ s: 14 }) : null}</span>` : h(EV.Mark, { s, still: !!context && (context === "projects" || context.startsWith("category:")) })}</div>
       <div style="min-width:0">
         <div class="l1"><span class="title">${s.title}</span><span class="age">${draft ? html`<span class="draft">Draft</span>` : null}${age}</span></div>
         ${why ? html`<div class=${"why" + (why.cls ? " " + why.cls : "") + (why.two ? " two" : "")}>${h(EV.WhyText, { w: why })}</div>` : null}
@@ -181,7 +201,7 @@
     const preview = html`<div class="preview">
       <div style="display:flex;gap:8px;align-items:center">${h(EV.Mark, { s })}<div class="pt">${s.title}</div></div>
       ${why ? html`<div class=${"pw" + (why.cls ? " why " + why.cls : "")}>${h(EV.WhyText, { w: why })}</div>` : null}
-      <div class="pm">${t ? h(EV.Strip, { t }) : null}${t ? html`<span>${EV.tallyTotal(t)} subagents</span><span>·</span>` : null}<span>${s.project}</span><span>·</span><span>${s.host}</span><span>·</span><span style="font-family:var(--mono);font-size:12px">${s.model} · ${s.effort}</span></div>
+      <div class="pm">${s.tasks ? html`<span>${s.tasks.done}/${s.tasks.total} tasks</span><span>·</span>` : null}${t ? html`<span>${EV.tallyTotal(t)} subagents${t.fail ? ", " + t.fail + " failed" : ""}</span><span>·</span>` : null}<span>${s.project}</span><span>·</span><span>${s.host}</span><span>·</span><span>${EV.modelLabel(s.model, s.effort)}</span></div>
       ${lastAgent ? html`<div class="px">${EV.plain(lastAgent.md, 240)}</div>` : null}
     </div>`;
     EV.openMenu({ kind: "list", items, preview, top: 90, title: "Session actions" });
@@ -226,12 +246,22 @@
     const your = all.filter((s) => EV.band(s) === "yourmove");
     const work = all.filter((s) => EV.band(s) === "working");
     const idle = all.filter((s) => EV.band(s) === "idle");
+    // The whole fleet in one line, so the first screen says what's working
+    // even when Needs you fills it. Each count jumps to its band.
+    const go = (k, band) => { EV.log("jump", { to: k, from: "summary" }); if (k === "idle") EV.S.board.collapsed.idle = false; EV.S.board.jump = band; EV.update(); };
+    const sum = [
+      needs.length ? html`<button class="ls needs" onClick=${() => go("needs", "needs")}><b>${needs.length}</b> need you</button>` : null,
+      your.length ? html`<button class="ls" onClick=${() => go("finished", "your")}><b>${your.length}</b> finished</button>` : null,
+      work.length ? html`<button class="ls work" onClick=${() => go("working", "work")}><span class="run-dot"></span><b>${work.length}</b> working</button>` : null,
+      idle.length ? html`<button class="ls" onClick=${() => go("idle", "idle")}><b>${idle.length}</b> idle</button>` : null,
+    ].filter(Boolean);
     return html`<section aria-label="Live">
       <div id="sec-live"></div>
+      ${sum.length > 1 ? html`<div class="live-sum" role="navigation" aria-label="Live sessions by state">${sum}</div>` : null}
       ${needs.length ? html`<${SectionHead} id="band-needs" label="Needs you" n=${needs.length} />${needs.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="needs" />`)}` : null}
       ${your.length ? html`<${SectionHead} id="band-your" label="Finished" n=${your.length} />${your.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="yourmove" />`)}` : null}
       ${work.length ? html`<${SectionHead} id="band-work" label="Working" n=${work.length} />${work.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="working" />`)}` : null}
-      ${idle.length ? html`<div style="margin-top:8px"><${Fold} id="idle" label="Idle" n=${idle.length}>${idle.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} quiet=${true} context="idle" />`)}</${Fold}></div>` : null}
+      ${idle.length ? html`<div style="margin-top:8px" id="band-idle"><${Fold} id="idle" label="Idle" n=${idle.length}>${idle.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} quiet=${true} context="idle" />`)}</${Fold}></div>` : null}
       ${!all.length ? html`<div class="empty"><b>Nothing's running</b>Start a session to put an agent to work.<div style="margin-top:14px"><button class="btn primary" onClick=${() => EV.openNew("empty")}>New session</button></div></div>` : null}
     </section>`;
   }
@@ -294,7 +324,7 @@
     const lp = EV.useLongPress(() => onLong && onLong(), () => { S.board.open[id] = !open; EV.log("tree_toggle", { id, open: !open }); EV.update(); });
     return html`<button class=${"tree-h" + (level === 2 ? " l2" : "") + (open ? " open" : "")} aria-expanded=${open ? "true" : "false"} ...${lp}>
       <span style="display:flex;justify-content:center;color:var(--ink-mid)">${dot || (level === 2 ? I.host({ s: 16 }) : I.folder({ s: 18 }))}</span>
-      <span style="min-width:0"><span class="nm">${pinned ? html`<span style="color:var(--attention-ink);display:flex">${I.pin({ s: 14 })}</span>` : null}${name}</span>${sub ? html`<span class="sub">${sub}</span>` : null}</span>
+      <span style="min-width:0"><span class="nm">${pinned ? html`<span style="color:var(--ink-low);display:flex">${I.pin({ s: 14 })}</span>` : null}${name}</span>${sub ? html`<span class="sub">${sub}</span>` : null}</span>
       <span class="ct">${count}</span>
       <span class="chev">${I.chevR()}</span>
     </button>`;
@@ -428,7 +458,7 @@
     const scrollRef = useRef(null);
     useEffect(() => {
       if (!S.board.jump || !scrollRef.current) return;
-      const target = S.board.jump.startsWith("cat:") ? "sec-cat-" + S.board.jump.slice(4) : { live: "sec-live", needs: "band-needs", projects: "sec-projects", archived: "sec-archived" }[S.board.jump];
+      const target = S.board.jump.startsWith("cat:") ? "sec-cat-" + S.board.jump.slice(4) : { live: "sec-live", needs: "band-needs", your: "band-your", work: "band-work", idle: "band-idle", projects: "sec-projects", archived: "sec-archived" }[S.board.jump];
       S.board.jump = null;
       const el = target && scrollRef.current.querySelector("#" + target);
       if (el) scrollRef.current.scrollTo({ top: Math.max(0, el.offsetTop - 50), behavior: "smooth" });
@@ -444,10 +474,9 @@
     const selN = Object.values(S.board.selected).filter(Boolean).length;
     const ns = notices();
     return html`<div style="display:flex;flex-direction:column;height:100%">
-      <div class="nav"><div class="nav-row">
-        <div class="lead"><button class="hub-btn" onClick=${() => EV.openSheet("hub", {})} aria-label="Hub: magic-kingdom">
-          <span class=${"conn-dot" + (conn === "live" ? "" : conn === "reconnecting" ? " reconnecting" : " offline")}></span>magic-kingdom<span style="color:var(--ink-low);display:flex">${I.chevD({ s: 12 })}</span></button></div>
-        <div></div>
+      <div class="nav"><div class="nav-row board-nav">
+        <div class="lead"><button class="hub-btn" onClick=${() => EV.openSheet("hub", {})} aria-label=${"Hub: magic-kingdom, " + (conn === "live" ? "connected" : conn === "reconnecting" ? "reconnecting" : "offline")}>
+          ${h(EV.Pulse, { values: EV.fleetPulse(), off: conn !== "live" })}magic-kingdom<span style="color:var(--ink-low);display:flex">${I.chevD({ s: 12 })}</span></button></div>
         <div class="trail"><button class="icon-btn" aria-label="Search" onClick=${() => { S.board.searching = true; EV.log("search_open_field", {}); EV.update(); }}>${I.search()}</button></div>
       </div></div>
       <div class="scroll" ref=${scrollRef}>
@@ -483,8 +512,8 @@
                  <span class="status">${selN} selected</span>
                  <button class="text-btn strong" style="justify-self:end" disabled=${!selN} onClick=${() => EV.bulkMenu()}>Actions</button>`
           : html`<button class="text-btn" style="justify-self:start" onClick=${() => { S.board.selecting = true; EV.log("select_mode", {}); EV.update(); }}>Select</button>
-                 <span class="status">${conn === "live" ? html`<span class="conn-dot"></span>Live` : conn === "reconnecting" ? html`<span class="conn-dot reconnecting"></span>Reconnecting…` : html`<span class="conn-dot offline"></span>Offline · updated ${EV.fmtAgo(Date.now() - S.connSince)} ago`}</span>
-                 <span style="justify-self:end"><button class="compose-btn" aria-label="New session" onClick=${() => EV.openNew("board")}>${I.compose({ s: 21 })}</button></span>`}
+                 <span class="status">${conn === "live" ? null : conn === "reconnecting" ? html`<span class="conn-dot reconnecting"></span>Reconnecting…` : html`<span class="conn-dot offline"></span>Offline · updated ${EV.fmtAgo(Date.now() - S.connSince)} ago`}</span>
+                 <span style="justify-self:end"><button class="icon-btn compose-btn" aria-label="New session" onClick=${() => EV.openNew("board")}>${I.compose({ s: 24 })}</button></span>`}
       </div></div>
     </div>`;
   }

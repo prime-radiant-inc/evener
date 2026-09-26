@@ -59,14 +59,14 @@
     return html`<div class=${"act" + (open ? " open" : "")}>
       <button class="act-h" onClick=${toggle} aria-expanded=${open ? "true" : "false"}>
         <span class="chev">${I.chevR({ s: 12 })}</span>
-        <span>${it.live ? html`<span style="color:var(--alive-ink);font-weight:600">Working</span> · ` : null}${sum.n} step${sum.n === 1 ? "" : "s"} · ${sum.txt}${sum.fails ? html` <span class="bad">(${sum.fails} failed)</span>` : null}</span>
+        <span>${it.live ? html`<span style="color:var(--alive-ink);font-weight:600">Working</span> · ` : null}${sum.n} step${sum.n === 1 ? "" : "s"}${it.dur ? " · " + EV.fmtDur(it.dur * 1000) : ""} · ${sum.txt}${sum.fails ? html` <span class="bad">(${sum.fails} failed)</span>` : null}</span>
       </button>
       ${open ? html`<div class="steps">${it.steps.map((st, j) => {
         const ek = key + ":" + j;
         const eopen = S.expanded[ek] != null ? S.expanded[ek] : L >= 4;
         return html`<div>
           <button class="step" onClick=${() => { S.expanded[ek] = !eopen; EV.log("evidence_toggle", { sessionId: sid, step: st.i, open: !eopen }); EV.update(); }}>
-            <span class="st">${st.s === "fail" ? html`<span class="mk danger" style="width:14px;height:14px">${I.failed({ s: 13 })}</span>` : st.s === "run" ? h(EV.Pulse, { values: [0.3, 0.6, 0.4, 0.9, 0.5, 0.8, 0.7] }) : html`<span style="color:var(--ink-low);display:flex">${I.check({ s: 13 })}</span>`}</span>
+            <span class="st">${st.s === "fail" ? html`<span class="mk danger" style="width:14px;height:14px">${I.failed({ s: 13 })}</span>` : st.s === "run" ? html`<span class="mk" style="width:14px;height:14px"><span class="run-dot"></span></span>` : html`<span style="color:var(--ink-low);display:flex">${I.check({ s: 13 })}</span>`}</span>
             <span><span class="in">${st.i}</span>${st.g ? html`<br /><span class="tg">${st.g}</span>` : null}</span>
           </button>
           ${eopen && (st.out || st.diff) ? h(Evidence, { st }) : null}
@@ -77,7 +77,7 @@
 
   function UserMsg({ it, s }) {
     const lp = EV.useLongPress(() => EV.openMenu({ kind: "list", top: 250, title: "Message", preview: html`<div class="preview"><div class="pw" style="color:var(--ink-hi)">${it.text}</div></div>`, items: [
-      { label: "Copy", icon: I.doc({ s: 18 }), run: () => EV.toast("Copied") },
+      { label: "Copy", icon: I.copy({ s: 18 }), run: () => EV.toast("Copied") },
       { label: "Quote in reply", icon: I.quote({ s: 18 }), run: () => EV.quoteIntoDraft(s.id, it.text) },
       { label: "Fork from here", icon: I.branch({ s: 18 }), run: () => EV.fork(s, it.text) },
     ] }));
@@ -86,7 +86,7 @@
 
   function AgentMsg({ it, s }) {
     const lp = EV.useLongPress(() => EV.openMenu({ kind: "list", top: 250, title: "Message", preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${EV.plain(it.md, 260)}</div></div>`, items: [
-      { label: "Copy", icon: I.doc({ s: 18 }), run: () => EV.toast("Copied") },
+      { label: "Copy", icon: I.copy({ s: 18 }), run: () => EV.toast("Copied") },
       { label: "Quote in reply", icon: I.quote({ s: 18 }), run: () => EV.quoteIntoDraft(s.id, it.md.replace(/[*#`]/g, "").split("\n")[0]) },
     ] }));
     return html`<div class="a-msg" ...${lp} dangerouslySetInnerHTML=${{ __html: EV.md(it.md) }}></div>`;
@@ -103,12 +103,12 @@
       case "think": return it.live && s.state === "working" ? html`<div class="think live">${I.diamond({ s: 12 })} Thinking… · ~1.2K tokens</div>` : html`<div class="think">${I.diamond({ s: 12 })} Thought for ${it.secs || 12}s</div>`;
       case "sub": {
         const g = EV.findSub(s.id, it.id) || it;
-        const cls = { running: "run", failed: "fail", done: "done", waiting: "wait" }[g.state] || "done";
-        const label = { running: "running", failed: "failed", done: "done", waiting: "waiting" }[g.state] || g.state;
-        return html`<button class="sub-item" onClick=${() => { EV.log("subagent_open", { sessionId: s.id, subagentId: it.id, from: "transcript" }); EV.push("subagent", { sessionId: s.id, subId: it.id }); }}>
-          <span style="padding-top:2px;color:var(--ink-mid);display:flex">${I.people({ s: 17 })}</span>
-          <span style="min-width:0"><span class="nm">${g.title}</span><br /><span class="ln">${g.line || it.line}</span></span>
-          <span class=${"pill " + cls}>${label}</span>
+        const cls = { running: "run", failed: "fail" }[g.state] || "done";
+        const word = { run: "running", fail: "failed", done: "done" }[cls];
+        return html`<button class=${"sub-item " + cls} onClick=${() => { EV.log("subagent_open", { sessionId: s.id, subagentId: it.id, from: "transcript" }); EV.push("subagent", { sessionId: s.id, subId: it.id }); }}
+          aria-label=${"Subagent " + g.title + ", " + word}>
+          <span class="si-h"><span class="nm">${g.title}</span><span class="st">${word}${g.elapsed ? " · " + EV.fmtDur(g.elapsed * 1000) : ""}</span></span>
+          <span class="ln">${g.line || it.line}</span>
         </button>`;
       }
       case "doc": {
@@ -138,10 +138,12 @@
         : a === "retry" ? html`<button class="btn primary" onClick=${() => EV.retry(s)}>${I.retry({ s: 16 })} Retry</button>`
         : html`<button class="btn primary" onClick=${() => EV.restart(s)}>${I.retry({ s: 16 })} Restart session</button>`)}</div>`}</div>`;
       case "ask": {
+        if (s.state === "question") return null;
         const qs = S.asks[it.id] || [];
         return html`<div class="q-hist"><div class="q">${qs[0] ? qs[0].q : "Question"}</div><div class="a">${qs.length > 1 ? qs.length + " questions · " : ""}Answer below</div></div>`;
       }
       case "appr": {
+        if (s.state === "approval") return null;
         const a = S.approvals[it.id];
         return html`<div class="q-hist"><div class="q">Approval needed</div><div class="a">${a.what}: <span style="font-family:var(--mono);font-size:13px">${a.target}</span></div></div>`;
       }
@@ -282,6 +284,7 @@
 
   EV.resolveAsk = function (s, ask, qa, text, how) {
     const S = EV.S;
+    delete S.composeOpen[s.id];
     const tr = S.transcripts[s.id];
     const i = tr.indexOf(ask);
     tr[i] = { t: "qhist", qs: qa };
@@ -305,6 +308,7 @@
   // job asks again for its next file; the scoped choice ends the prompts.
   EV.decideApproval = function (s, decision) {
     const S = EV.S;
+    delete S.composeOpen[s.id];
     const tr = S.transcripts[s.id];
     const i = tr.findIndex((x) => x.t === "appr");
     const a = S.approvals[tr[i].id];
@@ -360,16 +364,16 @@
       if (!it) return null;
       const a = S.approvals[it.id];
       return html`<div class="dock appr" role="region" aria-label="Approval needed">
-        <div class="dock-h"><span>Approval needed</span></div>
         <div class="dock-b">
-          <div class="what">${a.what}</div>
+          <div class="what"><span class="mk attention">${I.hand({ s: 17 })}</span>${a.what}</div>
           <div class="tgt">${a.tool}  ${a.target}</div>
           <div class="md">${a.explain || a.mode}</div>
         </div>
         <div class="appr-choices">
-          ${a.scope ? html`<button class="choice" onClick=${() => EV.decideApproval(s, "scope")}><b>Allow all of <span class="mono">${a.scope}</span></b><small>For the rest of this session</small></button>` : null}
-          <button class="choice" onClick=${() => EV.decideApproval(s, true)}><b>${a.scope ? "Allow this file only" : "Allow once"}</b><small>${a.scope ? "It will ask again for the next one" : "Just this action"}</small></button>
-          <button class="choice deny" onClick=${() => EV.decideApproval(s, false)}><b>Deny</b></button>
+          ${a.scope ? html`<button class="abtn" onClick=${() => EV.decideApproval(s, "scope")}><b>Allow all of <span class="mono">${a.scope}</span></b><small>For the rest of this session</small></button>` : null}
+          <button class="abtn" onClick=${() => EV.decideApproval(s, true)}><b>${a.scope ? "Allow this file only" : "Allow once"}</b><small>${a.scope ? "It will ask again for the next one" : "Just this action"}</small></button>
+          <button class="abtn deny" onClick=${() => EV.decideApproval(s, false)}><b>Deny</b></button>
+          ${S.composeOpen[s.id] ? null : html`<button class="text-btn" style="font-size:15px;height:36px" onClick=${() => { EV.log("approval_reply", { sessionId: s.id }); S.composeOpen[s.id] = true; S.focusComposer = s.id; EV.update(); }}>Tell the agent something else…</button>`}
         </div>
       </div>`;
     }
@@ -411,7 +415,7 @@
         })}</div>
       </div>
       <div class="dock-f">
-        <span style="display:flex;gap:4px">${st.i > 0 ? html`<button class="btn quiet" onClick=${() => { st.i--; EV.update(); }}>Back</button>` : html`<button class="btn quiet" onClick=${() => { EV.log("other_answer", { sessionId: s.id }); S.focusComposer = s.id; EV.update(); }}>Other answer…</button>`}</span>
+        <span style="display:flex;gap:4px">${st.i > 0 ? html`<button class="btn quiet" onClick=${() => { st.i--; EV.update(); }}>Back</button>` : html`<button class="btn quiet" onClick=${() => { EV.log("other_answer", { sessionId: s.id }); S.composeOpen[s.id] = true; S.focusComposer = s.id; EV.update(); }}>Other answer…</button>`}</span>
         ${last ? html`<button class="btn primary" disabled=${!sel.length} onClick=${send}>${qs.length > 1 ? "Send answers" : "Send answer"}</button>`
           : html`<button class="btn primary" disabled=${!sel.length} onClick=${() => { st.i++; EV.update(); }}>Next question</button>`}
       </div>
@@ -427,24 +431,23 @@
       const since = EV.fmtDur(Date.now() - (s.actAt || s.updatedAt));
       left = html`<button class="live" onClick=${() => EV.S.scrollBottom = s.id}>${h(EV.Pulse, { values: s.pulse, off: EV.S.conn !== "live" })}<span class="t">${s.activity}${s.activity === "Thinking" ? "…" : ""} · ${since}</span></button>`;
     } else if (st === "stuck") left = html`<span class="live amber"><span class="hollow"></span><span class="t">May be stuck · no updates for ${EV.fmtAgo(Date.now() - s.updatedAt)}</span></span>`;
-    else if (st === "failed") left = html`<span class="live" style="color:var(--danger-ink)"><span class="t">Failed · details above</span></span>`;
-    else if (st === "shutdown") left = html`<span class="live"><span class="t">Shut down · sending a message resumes it</span></span>`;
-    else if (st === "restart") left = html`<span class="live amber"><span class="t">Needs a restart · see above</span></span>`;
-    else left = html`<span class="live"><span class="t">Finished ${EV.fmtAgo(Date.now() - s.updatedAt)} ago</span></span>`;
+    else return null;
     return html`<div class="tray">${left}</div>`;
   }
 
-  // Other sessions that need you, and a way to go to the next one. Sits above
-  // the tray or ask dock (and the Reader's review bar) so it can't be mistaken
-  // for part of this session. Alerts held while you read are counted as "new".
-  EV.NextBar = function NextBar({ exceptId }) {
-    const others = EV.needsCount(exceptId);
-    const held = EV.S.held.length;
-    if (!others) return null;
-    return html`<div class="next-bar">
-      <button class="nb-list" onClick=${() => { EV.log("needs_list_open", { from: exceptId }); EV.openSheet("needsList", { exceptId }); }} aria-label=${"See the " + others + " other sessions that need you"}>${held ? html`<b>${held} new</b> · ` : null}${others} other session${others === 1 ? " needs" : "s need"} you</button>
-      <button class="nb-next" onClick=${() => EV.goNext(exceptId)} aria-label="Go to the next session that needs you">Next ${I.chevR({ s: 12 })}</button>
-    </div>`;
+  // The way on to the next session that needs you: a small capsule floating
+  // at the trailing edge above the tray or composer. It shows only when
+  // you're free to move on (this session isn't asking you anything), and
+  // it carries the next session's mark, so you know what kind of thing is
+  // next. Back already carries the count. Touch and hold for the list.
+  EV.NextCapsule = function NextCapsule({ exceptId }) {
+    const S = EV.S;
+    const heldIds = S.held.map((a) => a.sessionId);
+    const next = EV.needsOrder().filter((x) => x.id !== exceptId).sort((a, b) => heldIds.includes(b.id) - heldIds.includes(a.id))[0];
+    const lp = EV.useLongPress(() => { EV.log("needs_list_open", { from: exceptId, how: "hold" }); EV.openSheet("needsList", { exceptId }); }, () => EV.goNext(exceptId));
+    if (!next) return null;
+    return html`<button class="next-cap" ...${lp} onKeyDown=${(e) => { if (e.key === "Enter") EV.goNext(exceptId); }}
+      aria-label=${"Go to the next session that needs you: " + next.title}>${h(EV.Mark, { s: next, size: 15 })}<span>Next</span>${I.chevR({ s: 12 })}</button>`;
   };
 
   // What needs you, as a short list to choose from, newest alerts first.
@@ -473,6 +476,7 @@
       if (S.focusComposer === s.id && ta.current) { S.focusComposer = null; ta.current.focus(); }
       if (ta.current) { ta.current.style.height = "auto"; ta.current.style.height = Math.min(140, ta.current.scrollHeight) + "px"; }
     });
+    const asking = s.state === "question" || s.state === "approval";
     const ph = s.state === "question" ? "Answer or ask…" : working ? "Tell the agent something…" : s.state === "shutdown" ? "Message to resume" : "Message";
     const m = EV.model(s.model);
     const offline = S.conn !== "live";
@@ -494,8 +498,8 @@
             { label: "Photo library", icon: I.photo({ s: 18 }), run: () => { imgs.push(1); S.images[s.id] = imgs; EV.log("attach", { sessionId: s.id, source: "library" }); EV.update(); } },
             { label: "Camera", icon: I.camera({ s: 18 }), run: () => { imgs.push(1); S.images[s.id] = imgs; EV.log("attach", { sessionId: s.id, source: "camera" }); EV.update(); } },
           ] })}>${I.plus({ s: 20 })}</button>
-          <button class="cbtn model" aria-label=${"Model " + m.name + ", effort " + s.effort} onClick=${() => EV.openSheet("model", { target: "session", sessionId: s.id })}>${m.name} · ${EV.cap(s.effort)}</button>
-          <button class="cbtn" aria-label="Commands and skills" style="font:600 17px var(--mono)" onClick=${() => EV.openSheet("commands", { sessionId: s.id })}>/</button>
+          ${asking ? null : html`<button class="cbtn model" aria-label=${"Model " + m.name + ", effort " + s.effort} onClick=${() => EV.openSheet("model", { target: "session", sessionId: s.id })}>${m.name} · ${EV.cap(s.effort)}</button>`}
+          ${asking ? null : html`<button class="cbtn" aria-label="Commands and skills" style="font:600 17px var(--mono)" onClick=${() => EV.openSheet("commands", { sessionId: s.id })}>/</button>`}
           <span class="sp"></span>
           ${primary}
         </div>
@@ -561,7 +565,9 @@
     const files = tr.filter((x) => x.t === "doc" || x.t === "art").length;
     const fileNew = tr.some((x) => x.t === "doc" && S.docs[x.path] && S.docs[x.path].changed.length && !S.readDocs[x.path]);
     const q = S.queue[s.id] || [];
-    const subtitle = { working: "Working · " + EV.fmtAgo(Date.now() - s.startedAt), stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", warning: "Warning", restart: "Needs a restart", yourmove: "Finished", idle: "Idle", shutdown: "Shut down" }[st] || "";
+    const asking = s.state === "question" || s.state === "approval";
+    const nextShown = !asking && needs > 0;
+    const subtitle = { working: "Working · " + EV.fmtAgo(Date.now() - s.startedAt), stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", warning: "Warning", restart: "Needs a restart", yourmove: "Finished · " + EV.fmtAgo(Date.now() - s.updatedAt) + " ago", idle: "Idle · " + EV.fmtAgo(Date.now() - s.updatedAt) + " ago", shutdown: "Shut down" }[st] || "";
 
     const onTitleDown = (e) => { titleSw.current = { x: e.clientX, y: e.clientY }; };
     const onTitleUp = (e) => {
@@ -572,7 +578,7 @@
       if (Math.abs(dx) < 8) { EV.log("session_sheet_open", { sessionId: s.id }); EV.openSheet("session", { sessionId: s.id }); }
     };
     const menu = () => EV.openMenu({ kind: "list", top: 96, right: true, title: "Session menu", items: [
-      { label: "Detail: " + EV.level(s.id), icon: I.outline({ s: 18 }), run: () => setTimeout(() => EV.detailMenu(s), 30) },
+      { label: "Detail level", sub: EV.level(s.id) + " · " + LEVEL_HELP[EV.level(s.id)], icon: I.outline({ s: 18 }), run: () => setTimeout(() => EV.detailMenu(s), 30) },
       { label: "Find in session", icon: I.search({ s: 18 }), run: () => EV.openSheet("find", { sessionId: s.id }) },
       files ? { label: "Files & artifacts", icon: I.doc({ s: 18 }), run: () => EV.openSheet("files", { sessionId: s.id }) } : null,
       tot ? { label: "Subagents", icon: I.people({ s: 18 }), run: () => EV.push("subagents", { sessionId: s.id }) } : null,
@@ -582,7 +588,7 @@
       { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) },
       { label: "New session like this", icon: I.compose({ s: 18 }), run: () => EV.openNew("like", { like: s.id }) },
       { label: s.archived ? "Unarchive" : "Archive", icon: I.archive({ s: 18 }), run: () => { EV.setArchived(s, !s.archived); } },
-      s.live ? { label: "Shut down…", icon: I.x({ s: 18 }), danger: true, run: () => setTimeout(() => EV.confirmShutdown(s), 30) } : null,
+      s.live ? { label: "Shut down…", icon: I.power({ s: 18 }), danger: true, run: () => setTimeout(() => EV.confirmShutdown(s), 30) } : null,
     ] });
 
     const onScroll = (e) => {
@@ -597,13 +603,12 @@
           <div class="lead"><button class="icon-btn back-btn" onClick=${EV.pop} aria-label=${"Back to Board" + (needs ? ", " + needs + " need you" : "")}>${I.chevL({ s: 22 })}${needs ? html`<span class="badge">${needs}</span>` : null}</button></div>
           <div class="nav-title" role="button" tabindex="0" aria-label=${s.title + ". " + subtitle + ". Session info"} onPointerDown=${onTitleDown} onPointerUp=${onTitleUp} onKeyDown=${(e) => { if (e.key === "Enter") EV.openSheet("session", { sessionId: s.id }); }} style="touch-action:pan-y">
             <div class="t">${s.title}</div>
-            <div class="s">${st === "working" ? h(EV.Pulse, { values: s.pulse, off: S.conn !== "live" }) : h(EV.Mark, { s, size: 13 })}<span>${subtitle}</span><span style="color:var(--ink-low);display:flex" aria-hidden="true">${I.chevR({ s: 10 })}</span></div>
+            <div class="s">${h(EV.Mark, { s, size: 13, still: true })}<span>${subtitle}</span><span style="color:var(--ink-low);display:flex" aria-hidden="true">${I.chevR({ s: 10 })}</span></div>
           </div>
           <div class="trail"><button class="icon-btn" aria-label="Session menu" onClick=${menu}>${I.dots()}</button></div>
         </div>
         ${S.conn !== "live" ? html`<div class="banner-thin"></div>` : null}
         <div class="ctx-chips">
-          <button class="cchip view" onClick=${() => EV.detailMenu(s)} aria-label=${"Detail level " + EV.level(s.id)}>${I.outline({ s: 15 })} Detail: ${EV.level(s.id)}</button>
           ${tot ? html`<button class="cchip" onClick=${() => EV.push("subagents", { sessionId: s.id })}>${I.people({ s: 15 })} Subagents ${h(EV.Strip, { t })}<span class="n">${tot}</span>${t.fail ? html`<span class="rd"></span>` : null}</button>` : null}
           ${files ? html`<button class="cchip" onClick=${() => EV.openSheet("files", { sessionId: s.id })}>${I.doc({ s: 15 })} Files <span class="n">${files}</span>${fileNew ? html`<span class="bd"></span>` : null}</button>` : null}
           ${s.tasks ? html`<button class="cchip" onClick=${() => EV.openSheet("tasks", { sessionId: s.id })}>${I.checklist({ s: 15 })} Tasks <span class="n">${s.tasks.done}/${s.tasks.total}</span></button>` : null}
@@ -612,7 +617,7 @@
         </div>
         ${h(EV.NotesBar, { s })}
       </div>
-      <div class="scroll" ref=${scrollRef} onScroll=${onScroll}>
+      <div class=${"scroll" + (nextShown ? " has-next" : "")} ref=${scrollRef} onScroll=${onScroll}>
         <div class="tx">
           ${tr.map((it, i) => html`<${Item} key=${i} it=${it} s=${s} idx=${i} />`)}
           ${h(Ghosts, { s })}
@@ -620,9 +625,9 @@
         ${newCount ? html`<button class="new-pill" style="position:sticky;bottom:10px" onClick=${() => { scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); setNewCount(0); }}>${I.down({ s: 14 })} ${newCount} new</button>` : null}
       </div>
       <div class="bottom">
-        ${h(EV.NextBar, { exceptId: s.id })}
-        ${s.state === "question" || s.state === "approval" ? h(AskDock, { s }) : h(Tray, { s })}
-        ${h(Composer, { s })}
+        ${asking ? null : h(EV.NextCapsule, { exceptId: s.id })}
+        ${asking ? h(AskDock, { s }) : h(Tray, { s })}
+        ${asking && !S.composeOpen[s.id] && !S.dockMin[s.id] ? null : h(Composer, { s })}
       </div>
     </div>`;
   }
@@ -636,7 +641,7 @@
   };
   EV.detailMenu = function (s) {
     EV.openMenu({ kind: "list", top: 110, right: true, title: "Detail level",
-      preview: html`<div class="preview"><div class="pt">Detail level</div><div class="pw">How much of the agent's work this conversation shows, including what's already there</div></div>`,
+      header: "How much of the agent's work this session shows",
       items: LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.update(); } })) });
   };
 
@@ -725,7 +730,7 @@
       else if (sel.model !== s.model || sel.effort !== s.effort) {
         const changedModel = sel.model !== s.model;
         s.model = sel.model; s.effort = sel.effort;
-        EV.addItem(s.id, { t: "sys", text: changedModel ? "Model changed to " + sel.model + " · " + sel.effort : "Effort changed to " + sel.effort });
+        EV.addItem(s.id, { t: "sys", text: changedModel ? "Model changed to " + EV.modelLabel(sel.model, sel.effort) : "Effort changed to " + EV.cap(sel.effort) });
         EV.log("model_change", { sessionId: s.id, model: sel.model, effort: sel.effort });
         EV.toast("Applies from the next turn");
       }
@@ -776,10 +781,10 @@
   EV.sheets.tasks = function ({ sessionId }) {
     const s = EV.sess(sessionId);
     const t = s.tasks || { done: 0, total: 0 };
-    const names = ["Group the failures by cause", "Write the settle-race plan", "Start the -race subagents", "Fix the settle/drain race", "Run the flaky tests 200 times", "Confirm CI is green", "Summarize for review"];
+    const names = t.items || Array.from({ length: t.total }, (_, i) => "Task " + (i + 1));
     return html`<${EV.Sheet} title="Tasks" right=${h(Done)} size="large">
       ${!s.tasks ? html`<div class="empty">No tasks yet. The agent creates tasks as it plans.</div>` : html`
-      <div class="group">${names.slice(0, t.total).map((n, i) => html`<div class="gi static" key=${i}><span style=${"display:flex;color:" + (i < t.done ? "var(--alive)" : i === t.done ? "var(--accent)" : "var(--ink-low)")}>${i < t.done ? I.check({ s: 18 }) : i === t.done ? h(EV.Pulse, { values: s.pulse }) : html`<span style="width:16px;height:16px;border-radius:8px;border:1.5px solid var(--edge-strong)"></span>`}</span>
+      <div class="group">${names.slice(0, t.total).map((n, i) => html`<div class="gi static" key=${i}><span style=${"display:flex;color:" + (i < t.done ? "var(--alive)" : i === t.done ? "var(--accent)" : "var(--ink-low)")}>${i < t.done ? I.check({ s: 18 }) : i === t.done ? html`<span class="run-dot"></span>` : html`<span style="width:16px;height:16px;border-radius:8px;border:1.5px solid var(--edge-strong)"></span>`}</span>
         <span class="gl" style=${i < t.done ? "color:var(--ink-mid)" : i === t.done ? "font-weight:600" : ""}>${i === t.done && t.current ? t.current : n}</span><span></span></div>`)}</div>
       <div class="gfoot">${t.done} of ${t.total} done.</div>`}
     </${EV.Sheet}>`;
