@@ -807,7 +807,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
-		if start == i {
+		if start == i || surveyFailureHasMismatchedOwner(lines, i, emitted) {
 			if expanded, ok := expandSurveyFailure(lines, i, emitted); ok {
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
@@ -846,6 +846,23 @@ func surveyFailureName(line string) string {
 		name = name[:end]
 	}
 	return strings.TrimSpace(name)
+}
+
+// surveyFailureHasMismatchedOwner reports whether the nearest ownership frame
+// before a failure belongs to another test. That frame can be a hard excerpt
+// boundary, leaving the parent's assertion outside the ordinary proximity
+// window even though owner-aware expansion can still recover it.
+func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return false
+	}
+	for index := marker - 1; index >= emitted; index-- {
+		if owner := surveyPhaseOwner(lines[index]); owner != "" {
+			return owner != name
+		}
+	}
+	return false
 }
 
 // surveyDiagnosticLine matches the source location that testing prefixes on

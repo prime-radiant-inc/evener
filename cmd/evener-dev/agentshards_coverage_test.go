@@ -407,6 +407,26 @@ func TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresExpandsPastMismatchedNameBoundary covers a parent
+// failure with no sibling verdict before it: the sibling's NAME frame is the
+// nearest framework boundary, so ordinary framing would omit the parent's
+// earlier assertion instead of invoking the owner-aware expansion.
+func TestReplaySurveyFailuresExpandsPastMismatchedNameBoundary(t *testing.T) {
+	const assertion = "    parent_test.go:101: parent assertion before sibling output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString("    sibling_test.go:1: sibling diagnostic\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted across mismatched NAME boundary: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework
