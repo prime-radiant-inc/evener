@@ -379,10 +379,11 @@ type Manager struct {
 	// non-interactive PATH) was re-deployed on every reconnect, interrupting the
 	// host's sessions each time.
 	resolvedTargets map[string]string
-	// pendingRestarts records, per host, the restart command (a bare relaunch, or
-	// a supervisor's restart) recorded before it ran, with the identity of the hub
-	// it was meant to replace. A restart that left no listener, or that left the
-	// old process serving, leaves this set, and the next Ensure retries it.
+	// pendingRestarts records, per host, the restart command (a supervisor's
+	// restart, or a recorded bootstrap start) recorded before it ran, with the
+	// identity of the hub it was meant to replace. A restart that left no
+	// listener, or that left the old process serving, leaves this set, and the
+	// next Ensure retries it.
 	pendingRestarts map[string]pendingRestartState
 }
 

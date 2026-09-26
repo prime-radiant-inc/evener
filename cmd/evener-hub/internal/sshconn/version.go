@@ -617,7 +617,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	// ErrRestart and emits no signal instead of the check-then-act `restartBare`
 	// kill (spec 04, criterion 20). A stopped host's cold bootstrap is unaffected:
 	// it is start-only (bootstrapHub) and never reaches this branch.
-	return fmt.Errorf("%w: host %q hub is not supervised (no systemd unit or launchd label); a supervisorless restart cannot pin the process, so refusing to signal it",
+	return fmt.Errorf("%w: host %q hub has no supervisor that owns it (no live systemd unit or launchd label on the configured endpoint); a supervisorless restart cannot pin the process, so refusing to signal it",
 		ErrRestart, host.Name)
 }
 
@@ -690,6 +690,13 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts P
 // restartBare implements the doc's four-step ad hoc-hub restart: find the pid
 // by listening port, recover the exact argv and log destination, stop it, and
 // relaunch detached with the recovered argv.
+//
+// It is deliberately unreachable from production since spec 04 criterion 20
+// removed the supervisorless signal: restartHub refuses before calling it, and
+// its only remaining callers are its unit tests. It is retained, unguarded
+// `kill -- <pid>` and all, and pinned by those tests, pending the tracked
+// host-side atomic-signal helper that would let a supervisorless restart pin the
+// identified process; do not wire a restart branch back to it before that lands.
 func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced hubIdentity) error {
 	port := hubPort(m.hostAddr(host))
 	pid, err := m.findHubPID(ctx, host, port)
