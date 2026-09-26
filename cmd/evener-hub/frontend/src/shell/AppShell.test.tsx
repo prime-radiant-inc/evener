@@ -365,7 +365,7 @@ async function warmRoute(
   // "evener/settings/overview", so it settles into a scripted-looking
   // "no handler" error) - settingsOverviewStore is a module singleton, so
   // that leftover error/inflight bookkeeping must not survive into this
-  // file's own tests or the next file in the worker.
+  // file's own tests.
   resetSettingsOverviewStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
@@ -424,31 +424,6 @@ afterEach(() => {
   // GeneralSection, whose mount effect touches settingsOverviewStore for
   // real - same module-singleton reasoning as warmRoute's own reset above.
   resetSettingsOverviewStoreForTests();
-  // Rendering <AppShell/> above calls notifications/index.ts's
-  // initNotifications() at module scope (guarded by its own "only once"
-  // flag), wiring its reconnect detector to whichever FakeClient this test
-  // connected to "ready". Left unreset, that detector's stale "sawReady"
-  // flag makes a later file's own fresh ready-client connect read as a
-  // spurious reconnect, firing an unexpected navigationStore.refresh() into that
-  // file's own fetch-call assertions (see App.test.tsx's identical reset
-  // and its own comment; ConnectionBanner.test.tsx's Retry test was a
-  // confirmed victim of this exact leak before this reset was added).
-  //
-  // AppShell.tsx's module-scope initNotifications() call only ever fires
-  // once per worker (its own "only once" guard), so leaving it reset would
-  // leave the engine permanently uninitialized for the rest of this
-  // isolate:false worker - so it is re-run immediately below, restoring the
-  // same state a fresh module evaluation would have left (kata p5w9's
-  // identical pattern below). initNotifications() seeds its
-  // `sawReady`/baseline snapshot from whatever connectionStore/navigationStore
-  // hold AT THIS MOMENT, so both are forced back to their neutral
-  // pre-render values FIRST - seeding from a still-"ready" connectionStore
-  // (as this test's own render left it moments ago) would wrongly arm the
-  // "reconnect" detector this reset exists to neutralize.
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetNavigationStoreForTests();
-  resetNotificationsForTests();
-  initNotifications();
   vi.unstubAllGlobals();
 });
 
