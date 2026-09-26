@@ -1394,8 +1394,9 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	return nil
 }
 
-// reopenAttentionTranscriptDurably rebuilds the writer sequence from complete
-// records, establishes a fresh filesystem barrier, and preserves the session's
+// reopenAttentionTranscriptDurably reopens the writer from complete records
+// (its sequence continues the file's shared tail, which the old writer still
+// holds open), establishes a fresh filesystem barrier, and preserves the session's
 // live failure accounting before publishing the replacement handle. The caller
 // holds attentionMu, which serializes this lifecycle with every transcript use.
 func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, path, sessionID string) (*transcript.Writer, delegateAttentionFold, error) {
@@ -1442,7 +1443,7 @@ func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, pa
 
 // stabilizeAttentionForStop repairs a writer whose failed durable append also
 // failed rollback. Closing and reopening establishes a durability boundary and
-// restores the writer's sequence from the transcript before stop can release
+// continues the writer's sequence from the file's shared tail before stop can release
 // the generation. If rollback removed the marker, the stop records a discard.
 func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	if s == nil || attentionID == "" {
