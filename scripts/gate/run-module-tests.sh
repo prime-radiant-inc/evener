@@ -445,7 +445,7 @@ run_module() {
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then
 		# ~8s subpackages, sequential). Overlapping the two phases was measured
-		# and made things worse: the agent module shares WAVE2 with five other
+		# and made things worse: the agent module shares WAVE2 with six other
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0

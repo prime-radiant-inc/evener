@@ -154,10 +154,17 @@
     EV.update();
   };
   EV.pin = function (s, catId) {
+    const prev = s.category;
     s.category = catId;
     const c = EV.S.categories.find((x) => x.id === catId);
     EV.log("pin", { sessionId: s.id, category: c ? c.name : catId });
-    EV.toast("Pinned to " + (c ? c.name : catId), () => { s.category = null; EV.log("unpin", { sessionId: s.id, undo: true }); EV.update(); });
+    EV.toast("Pinned to " + (c ? c.name : catId), () => {
+      s.category = prev;
+      const pc = prev && EV.S.categories.find((x) => x.id === prev);
+      if (pc) EV.log("pin", { sessionId: s.id, category: pc.name, undo: true });
+      else EV.log("unpin", { sessionId: s.id, undo: true });
+      EV.update();
+    });
     EV.update();
   };
   EV.unpin = function (s) {
@@ -515,10 +522,14 @@
     const S = EV.S;
     const ids = Object.keys(S.board.selected).filter((k) => S.board.selected[k]);
     const done = () => { S.board.selecting = false; S.board.selected = {}; EV.update(); };
+    // Only offered when Release still exists: "Delete category" can remove
+    // it, and a hardcoded id/label here would pin into a category no
+    // section renders while the toast and log still claimed Release.
+    const release = S.categories.find((c) => c.id === "release");
     EV.openMenu({ kind: "list", top: 420, title: "Selected sessions", preview: html`<div class="preview"><div class="pt">${ids.length} selected</div></div>`, items: [
-      { label: "Archive", icon: I.archive({ s: 18 }), run: () => { ids.forEach((id) => { EV.sess(id).archived = true; }); EV.log("bulk_archive", { ids }); EV.toast("Archived " + ids.length, () => { ids.forEach((id) => { EV.sess(id).archived = false; }); EV.update(); }); done(); } },
+      { label: "Archive", icon: I.archive({ s: 18 }), run: () => { const newlyArchived = ids.map(EV.sess).filter((s) => !s.archived); newlyArchived.forEach((s) => { s.archived = true; }); EV.log("bulk_archive", { ids }); EV.toast("Archived " + ids.length, () => { newlyArchived.forEach((s) => { s.archived = false; }); EV.log("bulk_unarchive", { ids: newlyArchived.map((s) => s.id), undo: true }); EV.update(); }); done(); } },
       { label: "Mark as read", icon: I.check({ s: 18 }), run: () => { ids.forEach((id) => { const s = EV.sess(id); if (s.state === "yourmove") s.unseen = false; }); EV.log("bulk_read", { ids }); done(); } },
-      { label: "Pin to Release", icon: I.pin({ s: 18 }), run: () => { ids.forEach((id) => { EV.sess(id).category = "release"; }); EV.log("bulk_pin", { ids, category: "Release" }); EV.toast("Pinned " + ids.length + " to Release"); done(); } },
+      release ? { label: "Pin to " + release.name, icon: I.pin({ s: 18 }), run: () => { ids.forEach((id) => { EV.sess(id).category = release.id; }); EV.log("bulk_pin", { ids, category: release.name }); EV.toast("Pinned " + ids.length + " to " + release.name); done(); } } : null,
     ] });
   };
 

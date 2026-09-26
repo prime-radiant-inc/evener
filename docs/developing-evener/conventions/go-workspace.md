@@ -1,7 +1,8 @@
 # Working in the Go workspace
 
-evener is a `go.work` workspace of eight modules: the root plus `agent`,
-`llm`, `auth`, `envvars`, `invariant`, `identifier`, and `fuzz`. Most of
+evener is a `go.work` workspace of nine modules: the root plus `agent`,
+`llm`, `auth`, `envvars`, `invariant`, `identifier`, `execsupport`, and `fuzz`.
+Most of
 what is surprising about working here follows from that one fact.
 
 ## `./...` covers one module, not the repo
