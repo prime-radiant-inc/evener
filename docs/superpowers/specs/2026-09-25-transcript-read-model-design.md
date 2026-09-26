@@ -110,7 +110,8 @@ later file projection"). Restarting a daemon already changes what clients see.
    - A file read that is ahead of the live stream changes nothing.
    - A merge never removes a history item. Only a replacement does. A higher
      boot generation, a new incarnation on a latest-window read, a newer
-     resync epoch, and an authoritative daemonless read all trigger one; so
+     resync epoch, and an authoritative daemonless read (for the position
+     range it returns, not the whole history; see Reads) all trigger one; so
      does a boot-generation token whose form or owner differs from the one
      the client holds (see Descendants, under Crash/boot generation), even
      when its counter is numerically lower. This list is a summary; the
@@ -366,9 +367,10 @@ delivery and stop goroutines at any time: model-bound attention STEERING
   call ID harmless.
 - Item `id` derives from the key and keeps today's kind prefixes.
 - **Server-side steering identity.** A steering item's id is `item_steering_<entryIndex>`,
-  where `entryIndex` is the entry's ordinal plus one — the same number as its
-  position's `entry` and its transcript key's ordinal, so it is unique the same
-  way every other entry-ordinal-keyed item's id is. The server derives it the
+  where `entryIndex` is the entry's ordinal plus one. That is the same number
+  as its position's `entry`; its transcript key encodes the bare ordinal
+  (`internal/transcriptindex/key.go`). So it is unique the same way every
+  other entry-ordinal-keyed item's id is. The server derives it the
   same way live and on reload; the client never mints it. The item still
   carries the steer request's `ClientMutationID`, so a client that sent the
   steer matches its own request to the resulting history item without needing
@@ -558,8 +560,9 @@ thread's history over it.
 
 **Quarantine.** A single entry that fails to decode — a line whose bytes are
 not a well-formed entry — does not fail the thread. It is quarantined: the
-entry projects as its own turn holding one visible "unreadable entry" item
-naming its ordinal, and the thread's history continues past it, live and on
+entry projects as its own turn, with turn ID `turn_unreadable_<ordinal>`
+(`internal/transcriptindex/build.go`), holding one visible "unreadable entry"
+item naming its ordinal, and the thread's history continues past it, live and on
 reload alike. Quarantine applies only to a decode failure, never to a builder
 error over an entry that did decode; a builder error goes through the rebuild
 and failed-state path above instead, so a failure that a whole-file rebuild
@@ -663,8 +666,9 @@ calls is recorded (`agent/session_model_call.go:994-996`).
   recorded length, so entries recorded just before the close still reach
   clients as `history/updated`, then stops. A later read of the same thread id
   (a released delegate read again) recreates its history lazily. Its epoch
-  never goes backwards: the recreated history starts at least at the epoch its
-  predecessor ended with, for the life of the boot generation.
+  never goes backwards: the server keeps each closed history's last epoch by
+  thread ID (`server/thread_histories.go`), and the recreated history starts
+  at least at that epoch, for the life of the boot generation.
 
 **Persisted instead of ephemeral.**
 - These become presentational entries: `tool_repair`, `goal_ended`,
@@ -841,7 +845,8 @@ The index is a derived sidecar file. It is rebuilt whenever validation fails, an
 it holds three tables of fixed-size records.
 
 - **Item records**, sorted by position. Each one holds:
-  - the position and key
+  - the position; the key is derived at read time from the position and the
+    turn (`ItemKey`), not stored
   - a slot reference to its turn's summary record
   - its contributors: the byte offset and length of the entry that opens the
     item, and of the entry that completes it (for a tool item, the TOOL_RESULTS
