@@ -1174,36 +1174,18 @@ test("each control's spoken name is its bare verb - no chord glyphs in the name 
 
 // The boxed <kbd> runs are gone from inside the buttons - three nested boxes
 // dominated the button they annotated. The chord still has to be DISCOVERABLE,
-// which is what each button's Tooltip is for.
-test("no button renders a chord hint inside itself; the chord lives in the button's tooltip", async () => {
-  const user = userEvent.setup();
+// which is what each button's Tooltip is for: controlTooltips.test.ts pins
+// every label, and the hover tests below prove a label reaches its bubble.
+test("no button renders a chord hint inside itself", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
 
   for (const control of [stopButton(), submitButton(), steerButton()]) {
     expect(control.querySelector("kbd")).toBeNull();
     expect(control.textContent).not.toMatch(/↵/);
   }
-
-  // Tooltip shows after its own 300ms delay; user-event's fake-free setup
-  // advances real time, so this waits for the bubble rather than assuming it.
-  await user.hover(submitButton());
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toContain(`${modWord}+Enter`);
-});
-
-test("the Steer tooltip names the chord that fires it", async () => {
-  const user = userEvent.setup();
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-  });
-  await user.hover(steerButton());
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toContain("Shift+Enter");
 });
 
 // Density: the control row is the 24px (xs) size. Three nested gaps plus the
@@ -1285,23 +1267,13 @@ test("with nothing running, Send is the primary and there is no Steer to outrank
 // The label is stable across states even though the ROUTE isn't: a mid-turn
 // Send queues (turn/queue, proven by the routing tests below) but still reads
 // "Send", because the change is one of timing, not of verb. The tooltip is
-// where the timing is spelled out.
-test("Send keeps its label while a turn runs, and its tooltip explains the queueing", async () => {
-  const user = userEvent.setup();
+// where the timing is spelled out (controlTooltips.test.ts).
+test("Send keeps its label while a turn runs", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   expect(submitButton().textContent).toBe("Send");
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toMatch(/queue until the agent stops/i);
-});
-
-test("Send's tooltip says it sends now when nothing is running", async () => {
-  const user = userEvent.setup();
-  await mountComposer("ref_a", { status: { type: "idle" } });
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toMatch(/send now/i);
 });
 
 // cezn: Send and Steer sit side by side while a turn runs, and Send's own
@@ -2012,30 +1984,11 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
   expect(editor.textContent).toBe("abc\n");
 });
 
-// The chord a hint advertises has to track the preference that actually fires
-// it: enterToSend on means bare Enter submits, so the tooltip must say Enter,
-// not Mod+Enter. Now asserted on the tooltip, since that's where the chord
-// moved.
-test("the submit tooltip's chord switches from Mod+Enter to a bare Enter when enterToSend is on", async () => {
-  const user = userEvent.setup();
-  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
-
-  await mountComposer("ref_a");
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toContain(`${modWord}+Enter`);
-
-  cleanup();
-  prefsStore.getState().setEnterToSend(true);
-  await mountComposer("ref_a");
-  await user.hover(submitButton());
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toMatch(/·\s*Enter$/);
-  expect(tip.textContent).not.toContain(modWord);
-});
-
 // enterToSend on makes Shift+Enter a literal newline rather than a steer (see
 // handleKeyDown), so Steer's tooltip must stop advertising a chord that no
-// longer reaches it.
+// longer reaches it. controlTooltips.test.ts pins every Send and Steer label;
+// this is Steer's one real hover, proving the preference and the label reach
+// the bubble.
 test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter away from it", async () => {
   prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
