@@ -37,11 +37,11 @@ func TestSessionRefMatchesIDNoMatch(t *testing.T) {
 }
 
 func TestSessionRefMatchesIDClusterPrefix(t *testing.T) {
-	// The top-level session resolver returns ("", false) for a cluster prefix.
+	// The top-level session resolver refuses a cluster prefix outright.
 	s := &WebServer{}
-	id, ok := s.resolveTopLevelSessionRef(context.Background(), "cluster:foo")
-	if ok || id != "" {
-		t.Fatalf("cluster: prefix should return empty/false, got %q %v", id, ok)
+	session, err := s.resolveTopLevelSessionRef(context.Background(), "cluster:foo")
+	if err == nil || session != (pinSession{}) {
+		t.Fatalf("cluster: prefix should be refused, got %+v %v", session, err)
 	}
 }
 
