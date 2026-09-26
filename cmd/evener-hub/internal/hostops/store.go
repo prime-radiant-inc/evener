@@ -475,6 +475,7 @@ type recordFile struct {
 	Record
 	HostRemoved *bool           `json:"hostRemoved"`
 	Result      json.RawMessage `json:"result"`
+	Progress    json.RawMessage `json:"progress"`
 }
 
 // resultFile is the decode shape of a record's terminal result: `ok` is a
@@ -493,6 +494,18 @@ func (f recordFile) record() (Record, error) {
 	}
 	record := f.Record
 	record.HostRemoved = *f.HostRemoved
+	if len(f.Progress) > 0 {
+		if jsonFieldIsNull(f.Progress) {
+			return Record{}, fmt.Errorf("record %q carries a null progress list", f.ID)
+		}
+		var progress []ProgressEntry
+		decoder := json.NewDecoder(bytes.NewReader(f.Progress))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&progress); err != nil {
+			return Record{}, fmt.Errorf("record %q carries an unparseable progress list", f.ID)
+		}
+		record.Progress = progress
+	}
 	if len(f.Result) > 0 {
 		raw := f.Result
 		if jsonFieldIsNull(raw) {
@@ -543,7 +556,7 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	if !utf8.Valid(raw) {
 		return snapshot{}, fmt.Errorf("%w: %s is not valid UTF-8", ErrStoreCorrupt, path)
 	}
-	if err := rejectDuplicateObjectKeys(raw); err != nil {
+	if err := validateStoreKeys(raw); err != nil {
 		return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
 	}
 	var file storeFile
@@ -720,7 +733,24 @@ func ensureStoreDir(fs afero.Fs, dir string, sync func(afero.Fs, string) error) 
 			return err
 		}
 	}
-	if parent != dir {
+	// The parent entry that carries each level of the store's own chain is synced
+	// on every write, not only on creation: a level an earlier attempt created
+	// before its parent's sync landed has to converge, and a crash before that
+	// entry is durable loses the level and the store with it. The chain is bounded
+	// by the store's own shape — the `hostops` directory and the state root that
+	// carries it — and levels above that belong to whoever created the state root.
+	levels := []string{dir}
+	if parent := filepath.Dir(dir); parent != dir {
+		levels = append(levels, parent)
+	}
+	for _, level := range levels {
+		parent := filepath.Dir(level)
+		if parent == level {
+			continue
+		}
+		if _, err := lstat(fs, parent); err != nil {
+			continue
+		}
 		if err := sync(fs, parent); err != nil {
 			return err
 		}
@@ -784,16 +814,67 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 	return perm, true
 }
 
-// rejectDuplicateObjectKeys refuses a JSON document in which any object names the
-// same key twice. The decoder keeps the last occurrence silently, so a file
-// carrying two `records` fields — or two fields of one record — would be read as
-// the reduced state and then rewritten in that shape, losing whatever the earlier
-// occurrence held. A corrupted file is refused, never quietly reinterpreted.
-func rejectDuplicateObjectKeys(raw []byte) error {
+// ownedObjectKeys is the canonical field set of every object this store itself
+// decodes, keyed by the object's path inside the file. An object not named here is
+// opaque — a raw field's interior, whose schema the crash-fencing spec owns — so
+// its keys are not this store's to judge.
+var ownedObjectKeys = map[string]map[string]struct{}{
+	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records"),
+	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
+		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
+		"createdAt", "updatedAt", "hostRemoved", "sequence"),
+	"records[].result":     keysOf("ok", "message"),
+	"records[].progress[]": keysOf("ts", "message"),
+}
+
+// keysOf builds one canonical key set.
+func keysOf(names ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+// validateStoreKeys is the file-level walk: the objects this store decodes must
+// carry only their canonical keys.
+func validateStoreKeys(raw []byte) error {
+	return validateKeys(raw, ownedObjectKeys)
+}
+
+// validateRawFieldKeys is the walk over one opaque raw field: the store does not
+// judge its keys, but it must still refuse one that names a key twice, because the
+// bytes are written verbatim and the file must mean one thing.
+func validateRawFieldKeys(raw json.RawMessage) error {
+	return validateKeys(raw, nil)
+}
+
+// validateKeys walks a JSON document's token stream and refuses two shapes a
+// writer of this store never produces:
+//
+//   - a key in an object this store decodes that is not the canonical name — the
+//     decoder matches struct fields case-insensitively, so `Records` would
+//     otherwise decode into `records` and be rewritten in the canonical spelling,
+//     and two case variants of one name could overwrite each other; and
+//   - any object that names a key twice, which the decoder silently collapses to
+//     the last occurrence, so a file carrying two `records` fields would be read
+//     as the reduced state and rewritten that way.
+//
+// A raw field's interior is left alone: those bytes are written and read verbatim,
+// so nothing the store does can reinterpret them.
+func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 	type frame struct {
 		object    bool
 		expectKey bool
+		path      string
+		lastKey   string
 		seen      map[string]struct{}
+	}
+	top := func(stack []*frame) *frame {
+		if len(stack) == 0 {
+			return nil
+		}
+		return stack[len(stack)-1]
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	var stack []*frame
@@ -804,17 +885,24 @@ func rejectDuplicateObjectKeys(raw []byte) error {
 		}
 		if err != nil {
 			// A document this walk cannot read is corrupt at the load, exactly as
-			// the decoder would report it; there is nothing to answer about
-			// duplicate keys in a document that has no shape.
+			// the decoder would report it; there is nothing to answer about keys
+			// in a document that has no shape.
 			return err
 		}
 		switch value := token.(type) {
 		case json.Delim:
 			switch value {
-			case '{':
-				stack = append(stack, &frame{object: true, expectKey: true, seen: map[string]struct{}{}})
-			case '[':
-				stack = append(stack, &frame{})
+			case '{', '[':
+				parent := top(stack)
+				nested := &frame{object: value == '{', expectKey: value == '{', seen: map[string]struct{}{}}
+				if parent == nil {
+					nested.path = ""
+				} else if parent.object {
+					nested.path = joinKeyPath(parent.path, parent.lastKey)
+				} else {
+					nested.path = parent.path + "[]"
+				}
+				stack = append(stack, nested)
 			case '}', ']':
 				if len(stack) == 0 {
 					continue
@@ -822,41 +910,56 @@ func rejectDuplicateObjectKeys(raw []byte) error {
 				stack = stack[:len(stack)-1]
 				// The container that just closed was the parent object's value, so
 				// the parent's next token is a key again.
-				if len(stack) > 0 && stack[len(stack)-1].object {
-					stack[len(stack)-1].expectKey = true
+				if parent := top(stack); parent != nil && parent.object {
+					parent.expectKey = true
 				}
 			}
 		case string:
-			top := topFrame(stack)
-			if top == nil || !top.object {
+			parent := top(stack)
+			if parent == nil || !parent.object {
 				continue
 			}
-			if !top.expectKey {
+			if !parent.expectKey {
 				// A string value, so the object's next token is a key again.
-				top.expectKey = true
+				parent.expectKey = true
 				continue
 			}
-			if _, duplicate := top.seen[value]; duplicate {
-				return fmt.Errorf("object names the key %q twice", value)
+			if canonical, isOwned := owned[parent.path]; isOwned {
+				if _, ok := canonical[value]; !ok {
+					return fmt.Errorf("object %s carries the key %q, which is not one this store writes",
+						pathLabel(parent.path), value)
+				}
 			}
-			top.seen[value] = struct{}{}
-			top.expectKey = false
+			if _, duplicate := parent.seen[value]; duplicate {
+				return fmt.Errorf("object %s names the key %q twice", pathLabel(parent.path), value)
+			}
+			parent.seen[value] = struct{}{}
+			parent.lastKey = value
+			parent.expectKey = false
 		default:
 			// A scalar in an object is a value, so the object's next token is a
 			// key again.
-			if top := topFrame(stack); top != nil && top.object {
-				top.expectKey = true
+			if parent := top(stack); parent != nil && parent.object {
+				parent.expectKey = true
 			}
 		}
 	}
 }
 
-// topFrame is the innermost open container of a walk, nil outside every one.
-func topFrame[T any](stack []*T) *T {
-	if len(stack) == 0 {
-		return nil
+// joinKeyPath extends a parent object's path with the key naming a nested value.
+func joinKeyPath(parent, key string) string {
+	if parent == "" {
+		return key
 	}
-	return stack[len(stack)-1]
+	return parent + "." + key
+}
+
+// pathLabel names an object path in a refusal.
+func pathLabel(path string) string {
+	if path == "" {
+		return "the store file"
+	}
+	return path
 }
 
 // rejectNonStoreFileKind refuses a path that is not a store file this store may

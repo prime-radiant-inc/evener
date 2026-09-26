@@ -259,7 +259,7 @@ func validateRecord(record Record) error {
 		{record.FencingEpoch, "fencing epoch"},
 		{record.OrphanBoundary, "orphan boundary"},
 	} {
-		if err := rejectDuplicateObjectKeys(field.raw); err != nil {
+		if err := validateRawFieldKeys(field.raw); err != nil {
 			return fmt.Errorf("%w: record %q carries a %s that names a key twice: %w",
 				ErrInvalidRecord, record.ID, field.what, err)
 		}

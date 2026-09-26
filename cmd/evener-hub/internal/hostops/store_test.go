@@ -255,6 +255,10 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			strings.Replace(record, `"host":"h1"`, `"host":"h1","host":"h2"`, 1) + `]}`,
 		"duplicate key inside a raw field": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"fencingEpoch":{"bootId":"a","bootId":"b","opSeq":3}`, 1) + `]}`,
+		// The writer omits progress until there is something to carry, so a
+		// present null is not a shape it produced.
+		"null progress list": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"progress":null`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -900,15 +904,25 @@ func TestTheFirstWriteSyncsTheDirectoryThatCarriesANewStore(t *testing.T) {
 
 	createTestRecord(t, store, "h1")
 	dir := filepath.Dir(path)
-	if len(synced) != 2 || synced[0] != filepath.Dir(dir) || synced[1] != dir {
-		t.Fatalf("the first write synced %v, want the parent %q that carries the store directory, then the directory %q the rename landed in",
-			synced, filepath.Dir(dir), dir)
+	want := []string{filepath.Dir(dir), filepath.Dir(filepath.Dir(dir)), dir}
+	if len(synced) != len(want) {
+		t.Fatalf("the first write synced %v, want the store chain's parent entries then the directory the rename landed in: %v", synced, want)
+	}
+	for i := range want {
+		if synced[i] != want[i] {
+			t.Fatalf("the first write synced %v, want %v", synced, want)
+		}
 	}
 
 	synced = nil
 	createTestRecord(t, store, "h2")
-	if len(synced) != 2 || synced[0] != filepath.Dir(dir) || synced[1] != dir {
-		t.Fatalf("a later write synced %v, want the same two directories", synced)
+	if len(synced) != len(want) {
+		t.Fatalf("a later write synced %v, want the same entries every write: %v", synced, want)
+	}
+	for i := range want {
+		if synced[i] != want[i] {
+			t.Fatalf("a later write synced %v, want %v", synced, want)
+		}
 	}
 }
 
@@ -931,7 +945,17 @@ func TestTheFirstWriteSyncsEveryLevelItCreates(t *testing.T) {
 
 	createTestRecord(t, store, "h1")
 	dir := filepath.Dir(path)
-	want := []string{scratch, filepath.Dir(stateRoot), stateRoot, dir}
+	// Each created level's parent as that level is created, interleaved with the
+	// store chain's parent-entry syncs as the walk bottoms out, then the directory
+	// the rename landed in:
+	//   creating `state`  -> sync(scratch)
+	//   walk for `state`  -> sync(parent of scratch)
+	//   creating `evener` -> sync(state)
+	//   walk for `evener` -> sync(scratch)
+	//   creating `hostops` -> sync(evener)
+	//   walk for `hostops` -> sync(state)
+	//   the rename        -> sync(hostops)
+	want := []string{scratch, filepath.Dir(scratch), filepath.Dir(stateRoot), scratch, stateRoot, filepath.Dir(stateRoot), dir}
 	if len(synced) != len(want) {
 		t.Fatalf("the write synced %v, want one entry per level (and the store directory): %v", synced, want)
 	}
@@ -1165,10 +1189,11 @@ func TestTransitionRefusesARawFieldThatIsNotValidUTF8(t *testing.T) {
 	reopenFresh(t, path)
 }
 
-// TestRejectDuplicateObjectKeys pins the walker's state machine: keys inside
-// nested objects and array elements are checked, repeated values are not
-// duplicates, and a clean document passes.
-func TestRejectDuplicateObjectKeys(t *testing.T) {
+// TestValidateRawFieldKeys pins the raw-field walk's state machine: a duplicate
+// key anywhere in an opaque field is refused (the bytes are written verbatim, so
+// the file must mean one thing), while the keys themselves are not the store's to
+// judge — a foreign schema's own field names pass.
+func TestValidateRawFieldKeys(t *testing.T) {
 	refused := []string{
 		`{"a":1,"a":2}`,
 		`{"a":{"b":1,"b":2}}`,
@@ -1177,21 +1202,49 @@ func TestRejectDuplicateObjectKeys(t *testing.T) {
 		`{"a":"x","a":"y"}`,
 	}
 	for _, body := range refused {
-		if err := rejectDuplicateObjectKeys([]byte(body)); err == nil {
+		if err := validateRawFieldKeys(json.RawMessage(body)); err == nil {
 			t.Fatalf("duplicate key in %s was accepted", body)
 		}
 	}
 	accepted := []string{
 		`{}`,
 		`[]`,
-		`{"a":1,"b":2}`,
+		`{"bootId":"a","opSeq":3}`,
 		`{"a":{"b":1},"c":{"b":2}}`,
 		`{"a":["x","x"],"b":true,"c":null}`,
+		`[{"host":"h1","kind":"local-linux"},{"host":"h2"}]`,
+	}
+	for _, body := range accepted {
+		if err := validateRawFieldKeys(json.RawMessage(body)); err != nil {
+			t.Fatalf("clean raw field %s was refused: %v", body, err)
+		}
+	}
+}
+
+// TestValidateStoreKeysRefusesKeysTheStoreNeverWrites pins the canonical-name half
+// of the file walk. encoding/json matches struct fields case-insensitively, so
+// `Records` or `Host` would decode into the canonical fields and be rewritten in
+// their spelling, and two case variants of one name could overwrite each other.
+func TestValidateStoreKeysRefusesKeysTheStoreNeverWrites(t *testing.T) {
+	refused := []string{
+		`{"Version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"Records":[]}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(recordJSON("00000000000000000001", "pending"), `"host":"h1"`, `"Host":"h1"`, 1) + `]}`,
+		`{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(terminalRecordJSON("00000000000000000001", 1), `"hostRemoved":false`, `"hostRemoved":false,"result":{"OK":true,"message":"x"}`, 1) + `]}`,
+	}
+	for _, body := range refused {
+		if err := validateStoreKeys([]byte(body)); err == nil {
+			t.Fatalf("non-canonical key in %s was accepted", body)
+		}
+	}
+	accepted := []string{
 		validStoreJSON,
 	}
 	for _, body := range accepted {
-		if err := rejectDuplicateObjectKeys([]byte(body)); err != nil {
-			t.Fatalf("clean document %s was refused: %v", body, err)
+		if err := validateStoreKeys([]byte(body)); err != nil {
+			t.Fatalf("clean store %s was refused: %v", body, err)
 		}
 	}
 }
@@ -1220,4 +1273,84 @@ func TestTransitionRefusesARawFieldThatNamesAKeyTwice(t *testing.T) {
 	}
 	// The store the refusals protected still loads.
 	reopenFresh(t, path)
+}
+
+// TestOpenAcceptsAProgressListAndRefusesItsAbsenceInAWrittenShape pins the progress
+// field's presence rule from both sides: an entry list and an empty list are the
+// shapes the writer produces, a present null is not.
+func TestOpenAcceptsAProgressListAndRefusesItsAbsenceInAWrittenShape(t *testing.T) {
+	withProgress := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running",` +
+		`"generation":7,"incarnationId":"inc-1","progress":[{"ts":"2026-09-26T12:00:00Z","message":"pushed"}],` +
+		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, withProgress)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a store carrying progress: %v", err)
+	}
+	stored, ok := store.Record("00000000000000000001")
+	if !ok {
+		t.Fatalf("record not loaded")
+	}
+	if len(stored.Progress) != 1 || stored.Progress[0].Message != "pushed" {
+		t.Fatalf("progress lost on load: %+v", stored.Progress)
+	}
+
+	empty := strings.Replace(withProgress, `"progress":[{"ts":"2026-09-26T12:00:00Z","message":"pushed"}]`, `"progress":[]`, 1)
+	emptyPath := StorePath(t.TempDir())
+	writeRawStore(t, emptyPath, 0o600, empty)
+	if _, err := Open(emptyPath); err != nil {
+		t.Fatalf("Open on a store carrying an empty progress list: %v", err)
+	}
+}
+
+// TestTheChainSyncsConvergeAfterAFailedAttempt pins the reason the parent-entry
+// syncs repeat on every write rather than only on creation: a write whose sync
+// failed may already have created a level, and only repeating the syncs lets that
+// level's entry become durable.
+func TestTheChainSyncsConvergeAfterAFailedAttempt(t *testing.T) {
+	root := t.TempDir()
+	path := StorePath(root)
+	var synced []string
+	failing := filepath.Dir(root)
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		synced = append(synced, dir)
+		if dir == failing {
+			return errors.New("directory sync fault")
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+
+	if _, err := store.Create(NewRecord{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	}); err == nil {
+		t.Fatalf("a write whose chain sync failed reported success")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused write left the store file behind")
+	}
+
+	synced = nil
+	failing = ""
+	if _, err := store.Create(NewRecord{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	}); err != nil {
+		t.Fatalf("Create after the fault cleared: %v", err)
+	}
+	found := false
+	for _, dir := range synced {
+		if dir == filepath.Dir(root) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the retry synced %v, want the level whose entry the failed attempt left unsynced (%q)", synced, filepath.Dir(root))
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the retry did not land the store file: %v", err)
+	}
 }
