@@ -912,12 +912,12 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearest context. The lines from ordinaryStart up to marker are the
 // already-selected ordinary context. Selection starts with owned ordinary
 // output or, when that window has no lines owned by the failing test or its
-// descendants, descendant diagnostics. Either path reserves one slot for each
-// present diagnostic kind: the parent and the failed child each get priority.
-// Newest parent diagnostics then fill up to all but the failed-child reservation,
-// followed by failed-child diagnostics; remaining slots are backfilled from
-// owned diagnostics, then owned output, then unindented ordinary-window lines
-// owned by other tests.
+// descendants, descendant diagnostics. A diagnostic kind reserves a slot only
+// when its newest candidate would otherwise be dropped from the current
+// ordinary tail after other reservations. Newest parent diagnostics then fill
+// up to all but the failed-child reservation, followed by failed-child
+// diagnostics; remaining slots are backfilled from owned diagnostics, then
+// owned output, then unindented ordinary-window lines owned by other tests.
 // Source diagnostics are associated with the most recent go test RUN/CONT/NAME
 // frame; a verdict returns ownership to the failing test. If ordinary context
 // owned by the failing test or its descendants exists, expansion requires a
@@ -1008,16 +1008,13 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	if len(ordinaryOwnedCandidates) > 0 && !hasFailureDiagnostic {
 		return nil, false
 	}
-	reserveParentDiagnostic := len(parentDiagnosticCandidates) > 0 && parentDiagnosticCandidates[len(parentDiagnosticCandidates)-1] < ordinaryStart
-	reserveFailedChildDiagnostic := len(failedChildDiagnosticCandidates) > 0 && failedChildDiagnosticCandidates[len(failedChildDiagnosticCandidates)-1] < ordinaryStart
+	reserveParentDiagnostic := false
+	reserveFailedChildDiagnostic := false
 	candidateInOrdinaryTail := func(candidates []int, ordinaryBudget int) bool {
 		if len(candidates) == 0 || ordinaryBudget <= 0 {
 			return false
 		}
 		candidate := candidates[len(candidates)-1]
-		if candidate < ordinaryStart {
-			return false
-		}
 		start := len(ordinaryOwnedCandidates) - ordinaryBudget
 		if start < 0 {
 			start = 0
@@ -1039,11 +1036,11 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 		ordinaryBudget := maxExpandedLines - reservedDiagnostics
 		changed := false
-		if !reserveParentDiagnostic && !candidateInOrdinaryTail(parentDiagnosticCandidates, ordinaryBudget) {
+		if !reserveParentDiagnostic && len(parentDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(parentDiagnosticCandidates, ordinaryBudget) {
 			reserveParentDiagnostic = true
 			changed = true
 		}
-		if !reserveFailedChildDiagnostic && !candidateInOrdinaryTail(failedChildDiagnosticCandidates, ordinaryBudget) {
+		if !reserveFailedChildDiagnostic && len(failedChildDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(failedChildDiagnosticCandidates, ordinaryBudget) {
 			reserveFailedChildDiagnostic = true
 			changed = true
 		}
