@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-biome lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-serial-tests lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-biome lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -94,6 +94,19 @@ lint-eval:
 ##   internal type.
 lint-internal: build-dev
 	$(call run_quiet_lint,./evener-dev internalcheck)
+
+## Fail on an agent test that runs serially for no reason: it neither calls
+## t.Parallel() nor reaches process-wide state, and its doc comment gives no
+## reason ("Not parallel: ..."). See cmd/evener-serialtestcheck.
+## proves: Every serial top-level agent test either reaches the environment,
+##   working directory, default logger, a global test setter, or an
+##   unreviewed package-level write, or says why it is serial.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: None beyond the Go toolchain; static AST analysis only.
+## fails-when: A serial agent test reaches no process-wide state and states no
+##   reason.
+lint-serial-tests: build-dev
+	$(call run_quiet_lint,./evener-dev serialtestcheck)
 
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
@@ -254,7 +267,7 @@ lint-package-imports:
 lint-biome: web-preflight
 	$(call run_quiet_lint,cd cmd/evener-hub/frontend && npm run lint)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-biome secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-serial-tests lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-biome secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, frontend
 ## Biome, and secrets.

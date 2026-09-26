@@ -83,6 +83,27 @@ here (vite-cache digest, tmux palette capture, auth stopwatch, composer
 projection refresh) turned out to be an awaitable completion nobody was
 awaiting, and zero were fixed by widening a timeout.
 
+## Agent Tests Run in Parallel by Default
+
+A top-level Go test without `t.Parallel()` runs alone, one at a time. The
+agent package once ran 3,800 tests that way, three quarters of its `-race`
+lane, though only a few hundred touched anything another test could see.
+Start every agent test with `t.Parallel()` unless it reaches process-wide
+state: the environment or working directory, the default logger, a global
+test setter (`Set…ForTesting`), or a package-level variable it writes (a
+seam, an override stack, a hook). Such a test stays serial, and says why in
+its doc comment when the reason is not visible in its own body
+(`Not parallel: shortenCloseCascadeBudget pushes the package-wide budget`).
+
+`make lint-serial-tests` (part of `make lint`) fails on a serial agent test
+that reaches no such state and gives no reason. It leans serial: an
+unreviewed package write anywhere the test reaches counts as shared state,
+so it never asks for `t.Parallel()` on a test behind a new global seam, and
+it matches calls by name, so it catches self-contained tests rather than
+proving every serial test it passes must be serial. A
+memo cache that synchronizes itself is added to `synchronizedCaches` in
+`cmd/evener-serialtestcheck` only after reading every write to it.
+
 ## Destructive Operations and the Tooling Test Estate
 
 Four standing rules (Jesse, 2026-08-17), set after a shell test suite's
