@@ -1250,3 +1250,16 @@ rather than resolved in prose here:
   length would not reach the highest version already written, or
   re-deriving the update log from surviving record versions, before a
   caller passes it a client-recorded (not-necessarily-current) length.
+- **Cross-version schema skew on a shared sidecar.** `readMeta` accepts a
+  build whose `format`/`projection` match, but nothing records which
+  binary's `schema.Turn`/`llm.Message` shape built it. Reads decode
+  contributor entries with `agent/transcript.DecodeValidatedEntry`, which
+  skips the strict unknown-field check `DecodeEntry` applies everywhere
+  else (deliberately, since the index re-decodes only bytes it already
+  validated once, at build time, in the same process). An index one binary
+  built and a different (older or newer) binary later reads would silently
+  drop fields the reader's schema doesn't declare, instead of failing the
+  whole transcript the way every other reader does. Needs either the
+  reader to re-run the strict decode when the build might predate it, or a
+  schema/decoder identity folded into `projectionID` so a mismatched build
+  fails closed into a rebuild.

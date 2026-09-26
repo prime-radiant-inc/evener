@@ -404,6 +404,14 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 		{"negative header offset", func(t *testing.T, dir string) {
 			rewriteMetaField(t, dir, "header_offset", `-1`)
 		}},
+		{"self-consistent but fabricated huge length", func(t *testing.T, dir string) {
+			// header_offset+header_length<=length holds, so only bounding
+			// length against the real transcript catches this (roborev
+			// finding on PR #2303, round 3).
+			rewriteMetaField(t, dir, "length", `1099511627776`)
+			rewriteMetaField(t, dir, "header_length", `1099511627776`)
+			rewriteMetaField(t, dir, "header_offset", `0`)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

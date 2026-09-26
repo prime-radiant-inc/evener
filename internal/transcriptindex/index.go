@@ -232,7 +232,20 @@ func (x *Index) adopt(m meta) error {
 	if m.Items > items || m.Turns > turns || m.Updates > updates {
 		return fmt.Errorf("%w: meta counts records the tables lack", errCorrupt)
 	}
-	if m.HeaderLength < 0 || m.HeaderOffset < 0 || m.HeaderOffset+m.HeaderLength > m.Length {
+	transcriptInfo, err := x.transcript.Stat()
+	if err != nil {
+		return err
+	}
+	// Bound every persisted offset/length against the real transcript before
+	// readHeader allocates from them: a self-consistent but fabricated or
+	// stale-build meta.json (Length itself unchecked) would otherwise pass
+	// the header_offset+header_length<=Length inequality and still panic
+	// make([]byte, ...) with an enormous or negative HeaderLength.
+	if m.Length < 0 || m.Length > transcriptInfo.Size() {
+		return fmt.Errorf("%w: length exceeds the transcript", errCorrupt)
+	}
+	if m.HeaderLength < 0 || m.HeaderOffset < 0 || m.HeaderLength > maxLineBytes ||
+		m.HeaderOffset > m.Length || m.HeaderLength > m.Length-m.HeaderOffset {
 		return fmt.Errorf("%w: header_offset/header_length outside the covered transcript", errCorrupt)
 	}
 	info, err := x.strings.file.Stat()
