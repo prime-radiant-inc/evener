@@ -4,10 +4,10 @@
   "title": "Design System: Evener Native Project Browser",
   "extensions": {
     "colorMeta": {
-      "light-background": { "role": "neutral", "displayName": "Paper background", "canonical": "#fafaf8" },
-      "dark-background": { "role": "neutral", "displayName": "Night background", "canonical": "#121417" },
-      "light-accent": { "role": "primary", "displayName": "Cobalt accent", "canonical": "#315ad7" },
-      "dark-accent": { "role": "primary", "displayName": "Night cobalt accent", "canonical": "#9cb4ff" }
+      "light-background": { "role": "neutral", "displayName": "Paper background", "canonical": "#FAF9F6" },
+      "dark-background": { "role": "neutral", "displayName": "Night background", "canonical": "#191918" },
+      "light-accent": { "role": "primary", "displayName": "Accent", "canonical": "#0064C2" },
+      "dark-accent": { "role": "primary", "displayName": "Night accent", "canonical": "#459EFF" }
     },
     "typographyMeta": {
       "project-header": { "displayName": "Project header", "purpose": "Project names in the expandable browser." },
@@ -27,7 +27,7 @@
       "refersTo": "project-header",
       "description": "Illustrative documentation preview translated from the native expandable project header.",
       "html": "<div class=\"ds-project-header\"><button class=\"ds-project-toggle\" aria-expanded=\"true\"><span class=\"ds-chevron\"></span><span>Research</span><small>4</small></button><button class=\"ds-project-more\" aria-label=\"Open Research project details\">•••</button></div>",
-      "css": ".ds-project-header{display:flex;align-items:center;margin:16px 20px 0;border-bottom:1px solid #d8dcd9}.ds-project-toggle{display:flex;align-items:center;gap:12px;flex:1;min-height:52px;padding:0;border:0;background:transparent;color:#202326;font:600 19px/23px system-ui}.ds-project-toggle small{margin-left:auto;color:#62676d;font:400 13px/19px system-ui}.ds-project-more{min-width:44px;min-height:44px;border:0;background:transparent;color:#62676d;font-size:16px}.ds-project-toggle:focus-visible,.ds-project-more:focus-visible{outline:2px solid #315ad7;outline-offset:2px}"
+      "css": ".ds-project-header{display:flex;align-items:center;margin:16px 20px 0;border-bottom:1px solid #DDDCD4}.ds-project-toggle{display:flex;align-items:center;gap:12px;flex:1;min-height:52px;padding:0;border:0;background:transparent;color:#252521;font:600 19px/23px system-ui}.ds-project-toggle small{margin-left:auto;color:#5F5F57;font:400 13px/19px system-ui}.ds-project-more{min-width:44px;min-height:44px;border:0;background:transparent;color:#5F5F57;font-size:16px}.ds-project-toggle:focus-visible,.ds-project-more:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
     },
     {
       "name": "Session row",
@@ -35,7 +35,7 @@
       "refersTo": "session-row",
       "description": "Illustrative documentation preview translated from the native open session row.",
       "html": "<button class=\"ds-session-row\"><span>Build the release checklist</span><small>Working</small></button>",
-      "css": ".ds-session-row{display:flex;flex-direction:column;align-items:flex-start;gap:4px;width:calc(100% - 60px);min-height:68px;margin-left:40px;padding:12px 20px 12px 0;border:0;border-bottom:1px solid #d8dcd9;background:transparent;color:#202326;text-align:left;font:400 17px/23px system-ui}.ds-session-row small{color:#62676d;font:400 13px/19px system-ui}.ds-session-row:focus-visible{outline:2px solid #315ad7;outline-offset:-2px}"
+      "css": ".ds-session-row{display:flex;flex-direction:column;align-items:flex-start;gap:4px;width:calc(100% - 60px);min-height:68px;margin-left:40px;padding:12px 20px 12px 0;border:0;border-bottom:1px solid #DDDCD4;background:transparent;color:#252521;text-align:left;font:400 17px/23px system-ui}.ds-session-row small{color:#5F5F57;font:400 13px/19px system-ui}.ds-session-row:focus-visible{outline:2px solid #0064C2;outline-offset:-2px}"
     },
     {
       "name": "Search field",
@@ -43,7 +43,7 @@
       "refersTo": "search-field",
       "description": "Illustrative documentation preview translated from the native keyboard search controls.",
       "html": "<label class=\"ds-search\"><input aria-label=\"Search sessions\" placeholder=\"Search sessions\"><button>Search</button><button>Clear</button></label>",
-      "css": ".ds-search{display:flex;align-items:center;gap:8px;padding:0 20px 8px}.ds-search input{flex:1;min-width:0;min-height:48px;padding:12px;border:1px solid #d8dcd9;border-radius:9px;background:#eeefeb;color:#202326;font:400 17px/25px system-ui}.ds-search button{min-width:44px;min-height:44px;padding:8px;border:0;background:transparent;color:#315ad7;font:600 16px/20px system-ui}.ds-search input:focus-visible,.ds-search button:focus-visible{outline:2px solid #315ad7;outline-offset:2px}"
+      "css": ".ds-search{display:flex;align-items:center;gap:8px;padding:0 20px 8px}.ds-search input{flex:1;min-width:0;min-height:48px;padding:12px;border:1px solid #DDDCD4;border-radius:9px;background:#F4F3EE;color:#252521;font:400 17px/25px system-ui}.ds-search button{min-width:44px;min-height:44px;padding:8px;border:0;background:transparent;color:#0064C2;font:600 16px/20px system-ui}.ds-search input:focus-visible,.ds-search button:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
     }
   ],
   "narrative": {

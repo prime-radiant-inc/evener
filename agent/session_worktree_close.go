@@ -52,7 +52,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 
 	// The whole close cascade shares ONE budget (spec §P0, Implementation-order
 	// item 4): reuse an incoming cascade deadline, or mint one here when this is
-	// the initiating close. LaneClosePassBudget bounds evaluation + disposal git
+	// the initiating close. The close-cascade budget bounds evaluation + disposal git
 	// work only — never the touch+unlock tail below.
 	budgetCtx, cancel := ensureCloseBudget(ctx)
 	defer cancel()
@@ -182,28 +182,51 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 // nil in production.
 var closeBudgetMintHook func()
 
+type closeBudgetContextKey struct{}
+
+func closePassBudget(ctx context.Context) time.Duration {
+	if ctx != nil {
+		if budget, ok := ctx.Value(closeBudgetContextKey{}).(time.Duration); ok {
+			return budget
+		}
+	}
+	return laneClosePassBudget()
+}
+
 // ensureCloseBudget returns a context carrying the shared close-cascade deadline.
 // When ctx already carries a deadline (a descendant reached through the close
-// cascade), it is reused unchanged so per-session budgets never stack; otherwise
-// this is the initiating close and a fresh LaneClosePassBudget deadline is minted.
+// cascade), it is reused unchanged so per-session budgets never stack. The
+// budget value is attached separately from the deadline so every close phase
+// keeps using the value minted by the initiating close even if a test override
+// changes while the cascade is running.
 func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Value(closeBudgetContextKey{}).(time.Duration); ok {
+		return ctx, func() {}
+	}
+	budget := laneClosePassBudget()
+	ctx = context.WithValue(ctx, closeBudgetContextKey{}, budget)
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
 	}
 	if closeBudgetMintHook != nil {
 		closeBudgetMintHook()
 	}
-	return context.WithTimeout(ctx, LaneClosePassBudget)
+	return context.WithTimeout(ctx, budget)
 }
 
 // laneCloseReleaseBudget bounds one session's close-time lock-release pass. It
-// reserves half of LaneClosePassBudget, the same split closeStopJoinContext
+// reserves half of the close-cascade budget, the same split closeStopJoinContext
 // makes and for the same reason: child sessions close serially inside the
 // parent's close, and every one of them runs this pass on a budget of its own.
 // Halving caps that amplification — a wedged git costs the cascade budget plus
-// (K children + 1) x LaneClosePassBudget/2 rather than (K + 1) x the full
+// (K children + 1) x budget/2 rather than (K + 1) x the full
 // budget.
-func laneCloseReleaseBudget() time.Duration { return LaneClosePassBudget / 2 }
+func laneCloseReleaseBudget(ctx context.Context) time.Duration {
+	return closePassBudget(ctx) / 2
+}
 
 // closeStopJoinContext reserves half of the shared close budget for the
 // bounded joins and teardown that follow the delegate stop. A stop driver can
@@ -216,28 +239,44 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	budget := LaneClosePassBudget / 2
+	cascadeBudget := closePassBudget(ctx)
+	budget := cascadeBudget / 2
 	cascadeDeadline, bounded := ctx.Deadline()
 	if bounded {
-		budget = CloseStopJoinBudget(time.Until(cascadeDeadline))
+		budget = closeStopJoinBudget(time.Until(cascadeDeadline), cascadeBudget)
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, budget)
-	if ObserveCloseStopJoin != nil && bounded {
+	if bounded {
 		if stopDeadline, ok := stopCtx.Deadline(); ok {
-			ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
+			if ObserveCloseStopJoin != nil {
+				ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
+			}
+			if ObserveCloseStopJoinBudget != nil {
+				ObserveCloseStopJoinBudget(stopDeadline, cascadeDeadline, cascadeBudget)
+			}
 		}
 	}
 	return stopCtx, cancel
 }
 
 // CloseStopJoinBudget is the rule closeStopJoinContext bounds a stop join by,
-// given what the cascade has left: half of LaneClosePassBudget when at least
+// given what the cascade has left: half of the close-cascade budget when at least
 // that much remains, else half of the remainder, so a nested stop cannot
 // consume the time its parent has left. EXPORTED so the cmd/evener
 // wedged-delegate run tests check the close tree against this rule rather
 // than a copy of it that can drift.
 func CloseStopJoinBudget(remaining time.Duration) time.Duration {
-	budget := LaneClosePassBudget / 2
+	return CloseStopJoinBudgetForCascade(remaining, laneClosePassBudget())
+}
+
+// CloseStopJoinBudgetForCascade applies the stop-join split using the immutable
+// budget captured by the initiating close cascade.
+func CloseStopJoinBudgetForCascade(remaining, cascadeBudget time.Duration) time.Duration {
+	return closeStopJoinBudget(remaining, cascadeBudget)
+}
+
+func closeStopJoinBudget(remaining, cascadeBudget time.Duration) time.Duration {
+	budget := cascadeBudget / 2
 	if remaining < budget {
 		budget = remaining / 2
 	}
@@ -250,8 +289,13 @@ func CloseStopJoinBudget(remaining time.Duration) time.Duration {
 // close tree's wiring -- that the hopeless stop join is bounded to its half of
 // the budget rather than the whole cascade -- off these two deadlines instead
 // of off wall-clock time, which host load can stretch past any ceiling. Nil in
-// production; the same convention as LaneClosePassBudget.
+// production; the same convention as the close-cascade budget.
 var ObserveCloseStopJoin func(stopDeadline, cascadeDeadline time.Time)
+
+// ObserveCloseStopJoinBudget is the context-independent observation seam for
+// callers that need the exact immutable cascade budget used by a stop join.
+// ObserveCloseStopJoin remains unchanged for compatibility.
+var ObserveCloseStopJoinBudget func(stopDeadline, cascadeDeadline time.Time, cascadeBudget time.Duration)
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
 // not reach before the budget expired (spec §P0, rev-9.1 finding O2): touch the
@@ -504,12 +548,12 @@ func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent,
 // markers held that this pass exists to clear. laneCloseReleaseBudget keeps the
 // independent budget from amplifying across a subtree — see its doc comment for
 // the bound.
-func (s *Session) unlockOwnManagedWorktreeAtClose() {
+func (s *Session) unlockOwnManagedWorktreeAtClose(closeCtx context.Context) {
 	st := s.worktreeStateSnapshot()
 	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), laneCloseReleaseBudget())
+	ctx, cancel := context.WithTimeout(context.Background(), laneCloseReleaseBudget(closeCtx))
 	defer cancel()
 	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/orphanpipe/orphanpipetest"
+	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
 )
 
 // TestEvenerLaunchCheckDeadlineDoesNotWaitForAnOrphanedPipeHolder pins that the

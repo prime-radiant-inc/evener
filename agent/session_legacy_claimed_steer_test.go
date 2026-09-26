@@ -13,6 +13,7 @@ import (
 // to accepted and queues it exactly once, rather than leaving it neither
 // queued nor finalized.
 func TestRestoreQueuesALegacyClaimedSteerOnce(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()

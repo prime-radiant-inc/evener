@@ -37,6 +37,7 @@ func (a *stubProbeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream,
 }
 
 func TestTurnsToMessages_AttentionResolutionIsTransparent(t *testing.T) {
+	t.Parallel()
 	const callID = "probe-call"
 	marker := delegateAttentionResolutionTurn("private-attention", delegateAttentionConsumed)
 	turns := []schema.Turn{

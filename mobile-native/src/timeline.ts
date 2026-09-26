@@ -1,4 +1,4 @@
-import type { MobileTimelineItem } from "../../mobile/src/conversation/project";
+import type { MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
@@ -55,7 +55,7 @@ export type TimelineRow =
 
 // A question option row's React key (TimelineItem.tsx's "question" case): the
 // option's POSITION in the question, never its label. The store's publish
-// bounds every label a timeline question row carries (project.ts's
+// bounds every label a timeline question row carries (projectedRows.ts's
 // truncateItem through boundQuestion, at MAX_ITEM_BYTES), so two options whose
 // labels share a prefix past the bound cut to the same string — a key that
 // reads the label keys both rows identically. Options render in the order the

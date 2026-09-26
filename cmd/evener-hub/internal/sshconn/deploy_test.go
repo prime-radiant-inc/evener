@@ -18,8 +18,8 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/remoteinstall"
-	"primeradiant.com/evener/internal/shellquote"
 )
 
 // TestBuildLdflagsStampsControllerBuildinfo proves the deployed binary is
@@ -170,7 +170,7 @@ func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
 }
 
 // TestDeployRefusesARunTargetThatCannotServeAHub pins the round-22 decision that
-// the run target must be `evener`. install.sh ships both `evener` and
+// the run target must be `evener`. Release archives carry both `evener` and
 // `evener-dev`, but `evener-dev` is the development/test tooling binary
 // (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a host
 // configured to run it installs "successfully" and then fails preflight, health,
@@ -346,7 +346,7 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 		t.Fatalf("installerDirs(evener_path) = (%q,%q,%q), want (/opt/evener/bin,/opt/evener/share/evener/bin,/opt/evener/bin/evener)", bindir, share, target)
 	}
 
-	// Round 22: install.sh still ships evener-dev, but it is the development
+	// Round 22: release archives still carry evener-dev, but it is the development
 	// tooling binary and can never serve a hub, so it is not a run target the
 	// installer may be pointed at (component-04 criterion 17). The refusal is
 	// the terminal run-target sentinel the installer shares with the push path

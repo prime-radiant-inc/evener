@@ -34,7 +34,7 @@ var apiLogMarshalRecord = apilog.MarshalRecord
 var apiLogOpenFile = openPrivateAPILogFile
 var apiLogFileWrite = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
 var apiLogFileSync = func(f *os.File) error { return f.Sync() }
-var apiLogFileClose = func(f *os.File) error { return f.Close() }
+var apiLogFileClose = closePrivateAPILogFile
 
 var errAPILoggerClosed = errors.New("API logger is closed")
 

@@ -92,6 +92,7 @@ func releaseRefreshFixtureLeases(t *testing.T, slots map[string]*sandbox.Session
 // release the leases it already took, or the stranded handles hold their slots
 // for the life of a process that never installs them.
 func TestScratchRefreshReleasesReacquiredLeasesOnOpenError(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -136,6 +137,7 @@ func TestScratchRefreshReleasesReacquiredLeasesOnOpenError(t *testing.T) {
 // displace and release it, which would drop the first consumer's rows and
 // release the handles it reacquired mid-restore.
 func TestScratchRefreshConcurrentSeedKeepsFirstPool(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	const firstConsumer = "01REFRESHSEEDFIRST1"
 	const firstBinding = "b-seed-first"
@@ -193,6 +195,7 @@ func TestScratchRefreshConcurrentSeedKeepsFirstPool(t *testing.T) {
 // the pool's — a consumer row that merely EXISTS is not proof the binding it
 // names is still the live one.
 func TestScratchRefreshAdoptsRowsMovedAfterPoolBuild(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -249,6 +252,7 @@ func TestScratchRefreshAdoptsRowsMovedAfterPoolBuild(t *testing.T) {
 // the refresh drops its reacquires and re-derives instead of installing rows a
 // superseded revision produced.
 func TestScratchRefreshRechecksRevisionBeforeInstall(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -308,6 +312,7 @@ func TestScratchRefreshRechecksRevisionBeforeInstall(t *testing.T) {
 // readers run, and a read that misses the committed row is a real bug, not a
 // scheduling race.
 func TestParkedWorktreeBindingIDReadsUnderConcurrentPoolMutation(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -920,6 +925,7 @@ func TestScratchBorrowDeclinesATerminallyReleasedDirectory(t *testing.T) {
 // borrow's manifest revalidation passes, leaving the seal as the declining
 // verdict.
 func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -990,6 +996,7 @@ func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
 // and the borrow's manifest revalidation passes, leaving the seal as the
 // declining verdict.
 func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -1239,6 +1246,7 @@ func TestScratchBorrowSerializesWithManifestReclamation(t *testing.T) {
 // treatment: the claim is released, the kind is marked pending, and the caller
 // reprovisions fresh scratch.
 func TestScratchAdoptionDeclinesATransferTheManifestDereferenced(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -1560,6 +1568,7 @@ func TestScratchSharedBorrowDeclineKeepsTheKindPending(t *testing.T) {
 // the ownership the snapshot read — and declines through the pending-marked
 // not-installed report so the caller reprovisions fresh scratch.
 func TestScratchBorrowDeclinesAMovedBinding(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -1973,6 +1982,7 @@ func TestScratchRefreshDeclineDropsRowsTheManifestNoLongerHolds(t *testing.T) {
 // current row could still reach. The fold now reconciles the whole pool
 // against the manifest it lands under.
 func TestScratchRefreshReconcilesEntriesTheManifestNoLongerReferences(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -2251,6 +2261,7 @@ func TestRestoreKeepsFreshScratchWhenStaleAdoptedClaimStillHeld(t *testing.T) {
 // adoption while the pooled handle forever fails the re-probe against
 // itself. The refresh must leave the slot unmarked and the handle pooled.
 func TestScratchRefreshNeverContendsPoolOwnedHandle(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -2305,6 +2316,7 @@ func TestScratchRefreshNeverContendsPoolOwnedHandle(t *testing.T) {
 // install path drops it when it finds the slot pool-owned instead of leaving
 // the wedged-looking state behind forever.
 func TestScratchRefreshClearsStaleContendedMarkBesidePooledHandle(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -2422,6 +2434,7 @@ func TestScratchUpsertRetriesLockContention(t *testing.T) {
 // without the hold, an update landing in that window installs rows a
 // revision the manifest already superseded.
 func TestScratchRefreshInstallWindowBlocksManifestUpdates(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -2479,6 +2492,7 @@ func TestScratchRefreshInstallWindowBlocksManifestUpdates(t *testing.T) {
 // declines, the pass releases its handles and retries, and the rows land in
 // the pool the session publishes next.
 func TestScratchRefreshFoldSkipsDetachedPool(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -2535,6 +2549,7 @@ func TestScratchRefreshFoldSkipsDetachedPool(t *testing.T) {
 // retry, never a restore failure — the pass hands its reacquired leases back
 // and the next pass re-derives against the now-free lock.
 func TestScratchRefreshRetriesOpenLockContention(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	const consumerID = "01REFRESHOPENLOCK1"
 	const bindingID = "b-open-lock"
@@ -2578,6 +2593,7 @@ func TestScratchRefreshRetriesOpenLockContention(t *testing.T) {
 // the install hold itself; the holder then never releases inside the window,
 // so the loser deterministically exhausts the bound.
 func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	const holderConsumer = "01REFRESHHOLDWIN1"
 	const holderBinding = "b-hold-window"
@@ -2659,6 +2675,7 @@ func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
 // close-once — an unguarded close panics on the retry pass instead of
 // exercising the retry (round 5).
 func TestScratchRefreshRetriesInstallHoldContentionClears(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3048,6 +3065,7 @@ func TestContendedSlotWithoutLiveAllocationKeepsBindingRow(t *testing.T) {
 // another binding owns — was promoted to a lease-owning slot. The manifest
 // would then claim the target owns a lease that was never transferred.
 func TestSwapKeepsBorrowedSlotsNonOwning(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3430,6 +3448,7 @@ func TestResumedRootKeepsTheEnvScratchAcrossSpellings(t *testing.T) {
 // working directory instead of the retained scratch. The wrapper must
 // carry the canonical absolute path.
 func TestRebuildSandboxWrapperCanonicalizesTheScratchDir(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
@@ -3465,6 +3484,7 @@ func TestRebuildSandboxWrapperCanonicalizesTheScratchDir(t *testing.T) {
 // through the same growing spacing sandbox.RetryScratchLockContention
 // applies, so a hold that ends between passes leaves the retry bound intact.
 func TestScratchRefreshBacksOffLockContention(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3525,6 +3545,7 @@ func TestScratchRefreshBacksOffLockContention(t *testing.T) {
 // overwritten by the retry's replay of the stale snapshot. The retry must
 // recompute the row from the manifest as it stands on each attempt.
 func TestScratchUpsertRetryKeepsConcurrentRoleUpdate(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3773,6 +3794,7 @@ func TestContendedSlotPendingSurvivesEnvironmentSwap(t *testing.T) {
 // that moved since its row was derived, so the closure re-derives instead of
 // overwriting.
 func TestScratchUpsertWindowKeepsConcurrentRoleUpdate(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3879,6 +3901,7 @@ func TestScratchAdoptionAbsorbsContendedOwnClaim(t *testing.T) {
 // and decline — the same clean exit the install's seal path takes — instead of
 // failing the restore.
 func TestScratchRefreshOpenDeclinesOnReleasedManifest(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3926,6 +3949,7 @@ func TestScratchRefreshOpenDeclinesOnReleasedManifest(t *testing.T) {
 // must clear the published rows exactly like the pass-start decline (the
 // round-24 contract).
 func TestScratchRefreshOpenDeclineDropsThePublishedRows(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -3997,6 +4021,7 @@ func TestScratchRefreshOpenDeclineDropsThePublishedRows(t *testing.T) {
 // and the install silently returned, leaving later scratch publications without
 // a binding row or consumer role.
 func TestScratchReinstallRegistersAfterManifestReset(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -4040,6 +4065,7 @@ func TestScratchReinstallRegistersAfterManifestReset(t *testing.T) {
 // manifest reference, slot, or pin until some later mint happened to
 // publish it.
 func TestScratchReinstallRepinsOwnedScratchAfterManifestReset(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -4214,6 +4240,7 @@ func TestChildTeardownReleasesTheSeededPool(t *testing.T) {
 // or slot naming a directory the session is still working in, breaking
 // continuity on every later restore.
 func TestScratchReinstallKeepsLiveLeasedScratch(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -4280,6 +4307,7 @@ func TestScratchReinstallKeepsLiveLeasedScratch(t *testing.T) {
 // the consumer row keeps naming it, its slot keeps naming the retained
 // directory, and the fresh mint pins as the pending fallback it is.
 func TestScratchReinstallAdoptsTheCarriedConsumerBinding(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -4363,6 +4391,7 @@ func TestScratchReinstallAdoptsTheCarriedConsumerBinding(t *testing.T) {
 // reader rejects with no later reset left to repair it. The reset itself
 // now reports whether it performed the carry, computed under its own lock.
 func TestScratchReinstallAdoptsWhenAReleaseRacesTheInstall(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -4661,6 +4690,7 @@ func TestScratchReinstallPreservesTheDisplacedCurrentBinding(t *testing.T) {
 // no wrapper to run commands through. Both production call sites pre-check
 // the fact this test exercises directly.
 func TestReprovisionKeepsTheWrapperForAnOwnedSandboxScratch(t *testing.T) {
+	t.Parallel()
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
 	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
@@ -4732,6 +4762,7 @@ func TestScratchOwnClaimReadsContentionAtomically(t *testing.T) {
 // retry closure must recompute its rows too, or a role update committed while a
 // refused attempt waited on the lock is overwritten by the stale replay.
 func TestScratchNewBindingRetryKeepsConcurrentRoleUpdate(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {

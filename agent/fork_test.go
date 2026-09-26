@@ -160,7 +160,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Read child transcript via readTranscript and verify structure.
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -194,6 +194,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 }
 
 func TestForkAndAsidePreserveCheapModel(t *testing.T) {
+	t.Parallel()
 	operations := []struct {
 		name   string
 		create func(string, string) (string, error)
@@ -322,6 +323,7 @@ func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
 }
 
 func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		transform func(string) string

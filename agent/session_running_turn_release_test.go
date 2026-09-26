@@ -18,6 +18,7 @@ import (
 // the turn that held the name, and nothing re-enters it: waking the serve loop
 // (the acquire side's answer, kata ajg5) re-runs mint, never release.
 func TestReleaseRunningTurnIDRecoversFromARefusedWrite(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	turnID, refusal := h.sess.mintRunningTurnID()
 	if refusal != turnNameMinted || turnID == "" {
@@ -59,6 +60,7 @@ func TestReleaseRunningTurnIDRecoversFromARefusedWrite(t *testing.T) {
 // session that can never start another turn. Retrying that forever hides it
 // behind a timer; saying so once and stopping is the honest failure.
 func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	turnID, refusal := h.sess.mintRunningTurnID()
 	if refusal != turnNameMinted || turnID == "" {
@@ -139,6 +141,7 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 // Deleting the reset makes this test red: the second episode arms no retry and
 // fires the terminal warning immediately.
 func TestReleaseRunningTurnIDResetsRetryBudgetOnExhaustion(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	turnID, refusal := h.sess.mintRunningTurnID()
 	if refusal != turnNameMinted || turnID == "" {

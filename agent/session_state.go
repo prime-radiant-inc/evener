@@ -77,7 +77,7 @@ func (s *Session) WireState() string {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
 }
 
 func (s *Session) hasPendingStableDelegateAttention() bool {
@@ -325,7 +325,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path)
+		_, entries, _, err := readTranscript(path, s.stateDir)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
 			retained = retainedFrom(entries)

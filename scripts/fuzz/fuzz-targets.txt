@@ -5,7 +5,7 @@
 #             "rapid"  — a Test* func driven by rapid.Check during ordinary
 #             `go test -run`; or "test" — a support-only reachability check.
 #             Native and Rapid rows are machine-checked against source.
-#   module    the go.work module dir ("." or "agent"/"llm"/"auth").
+#   module    the go.work module dir ("." or "agent"/"llm"/"auth"/"execsupport").
 #   package-relpath  the package relative to that module.
 #   name      the FuzzXxx (native) or TestXxx (rapid/test) function name.
 #   coverpkg  optional: the package(s) the target really exercises, when that
@@ -28,8 +28,8 @@ native:.:./appwire:FuzzTranscriptItemLimitNormalization
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
 native:.:./internal/appitempaging:FuzzCursorCodec
-native:.:./internal/valueexpr:FuzzValueexprScan
-native:.:./internal/valueexpr:FuzzValueexprTokenExpiry
+native:execsupport:./valueexpr:FuzzValueexprScan
+native:execsupport:./valueexpr:FuzzValueexprTokenExpiry
 native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
 native:agent:./schema:FuzzSessionMetaRoundTrip

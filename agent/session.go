@@ -1185,7 +1185,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }

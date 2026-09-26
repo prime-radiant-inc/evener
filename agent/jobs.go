@@ -220,20 +220,16 @@ type jobManager struct {
 var defaultCloseGrace = 5 * time.Second
 
 // Delegate-lane disposal tunables (auto-delegate-lane-disposal spec §Constants).
-// Package vars, not consts, so tests can override and restore them without
-// waiting wall-clock time.
+// Package vars hold the mutex and override stack so tests can shorten the
+// shipped budget without waiting wall-clock time.
+const defaultLaneClosePassBudget = 30 * time.Second
+
 var (
-	// LaneClosePassBudget bounds the P0 close disposal and the P3 close pass
-	// TOGETHER — one shared deadline per close cascade (ensureCloseBudget mints
-	// it), and since #382 it also bounds close's WaitGroup joins. It bounds
-	// git/history work only; the budget-exempt touch+unlock tail runs after
-	// expiry, so shutdown never blocks on git yet no lane is left locked.
-	//
-	// Exported for the same reason as DrainStallTimeout: the only end-to-end
-	// shape that exercises a teardown blocked on an uncancellable operation is a
-	// whole one-shot `evener run`, which lives in another module. Nothing in
-	// production assigns it.
-	LaneClosePassBudget = 30 * time.Second
+	laneClosePassBudgetMu sync.RWMutex
+	// laneClosePassBudgetOverrides holds the active temporary budgets. The
+	// override pointers let each restore closure remove its own entry even when
+	// nested scopes finish out of order.
+	laneClosePassBudgetOverrides []*closePassBudgetOverride
 	// laneTailWarnThreshold is the lane count above which the budget-exempt
 	// touch+unlock tail earns a second aggregated warning (a pathological
 	// session leaked far more lanes than a close pass can collect).
@@ -248,6 +244,43 @@ var (
 	// stays untouched until the hand-off window has passed.
 	laneGrace = 30 * time.Minute
 )
+
+type closePassBudgetOverride struct {
+	budget time.Duration
+}
+
+func laneClosePassBudget() time.Duration {
+	laneClosePassBudgetMu.RLock()
+	defer laneClosePassBudgetMu.RUnlock()
+	if n := len(laneClosePassBudgetOverrides); n > 0 {
+		return laneClosePassBudgetOverrides[n-1].budget
+	}
+	return defaultLaneClosePassBudget
+}
+
+// SetLaneClosePassBudget installs a temporary close-cascade budget and returns
+// a restore function. The restore is safe to call once, and overrides can be
+// restored in any order without clobbering a still-active nested scope. This
+// is intended for end-to-end tests that need to shorten the shipped budget
+// without racing a close already running in the background.
+func SetLaneClosePassBudget(d time.Duration) (restore func()) {
+	override := &closePassBudgetOverride{budget: d}
+	laneClosePassBudgetMu.Lock()
+	laneClosePassBudgetOverrides = append(laneClosePassBudgetOverrides, override)
+	laneClosePassBudgetMu.Unlock()
+
+	return sync.OnceFunc(func() {
+		laneClosePassBudgetMu.Lock()
+		defer laneClosePassBudgetMu.Unlock()
+		for i, active := range laneClosePassBudgetOverrides {
+			if active != override {
+				continue
+			}
+			laneClosePassBudgetOverrides = slices.Delete(laneClosePassBudgetOverrides, i, i+1)
+			return
+		}
+	})
+}
 
 func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Lock()
