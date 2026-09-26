@@ -45,6 +45,17 @@ const legacyHostSidecarFileName = "hub.hosts.json"
 // resurrect through it.
 const legacyHostSidecarAsideSuffix = ".migrated"
 
+// legacySidecarMigratedKey is the machine-managed key a successful migration
+// records in hub.toml. It is what makes the retirement authoritative rather
+// than only the rename's durability: on a filesystem whose directories cannot
+// be synced (the tolerance hubTOMLSyncDir shares with the hub's other stores), a
+// power loss can bring hub.hosts.json back after the UI has removed a host it
+// carried — and a later boot that finds the marker in hub.toml knows the sidecar
+// has already been folded in, so it ignores the stale file instead of
+// re-merging names the UI removed. The marker rides the same atomic write as the
+// merged host set, so any mutation that survives proves it survived too.
+const legacySidecarMigratedKey = "legacy_sidecar_migrated"
+
 // hostManagerConfig carries what the host-management handlers need. The
 // registry is the controller's live one in production — the same
 // *hostreg.Registry the SSH manager dials through and the attach handler
@@ -301,6 +312,14 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 // path (no config file) skips the write; the in-memory store stays
 // authoritative for the process lifetime.
 func writeHubTOMLHosts(path string, entries []hostreg.Host) error {
+	return writeHubTOMLHostsMarked(path, entries, false)
+}
+
+// writeHubTOMLHostsMarked is writeHubTOMLHosts plus the migration's marker:
+// when migrated is true the same atomic write records
+// legacySidecarMigratedKey, so the rewritten file itself says the retired
+// sidecar has been folded in.
+func writeHubTOMLHostsMarked(path string, entries []hostreg.Host, migrated bool) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -309,6 +328,9 @@ func writeHubTOMLHosts(path string, entries []hostreg.Host) error {
 		return err
 	}
 	doc["hosts"] = hubTOMLHostTables(entries)
+	if migrated {
+		doc[legacySidecarMigratedKey] = true
+	}
 	var buf bytes.Buffer
 	buf.WriteString(hostTOMLBanner)
 	if err := toml.NewEncoder(&buf).Encode(doc); err != nil {
@@ -798,10 +820,14 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 // A name hub.toml already declares wins: the migration drops the sidecar's
 // duplicate in the file's favor (the retired split made a live name in both
 // files a hard startup error, so this precedence is the migration's own rule).
-// The caller poisons writes on any failure, including a failed set-aside
-// rename: no mutation can land while an unmigrated sidecar remains, so a name
-// removed through the UI after a completed migration can never resurrect from
-// a lost rename. A sidecar that fails to parse or validate is not migrated at
+// The same atomic write records `legacy_sidecar_migrated` in hub.toml, and the
+// marker — not the rename's durability alone — is what makes the retirement
+// authoritative: a later boot that finds the sidecar again with the marker
+// present ignores it as stale, so a name removed through the UI after a
+// completed migration can never be resurrected by a rename a power loss undid,
+// even on a filesystem that ignores directory syncs. The caller poisons writes
+// on any other failure, including a failed set-aside rename: no mutation can
+// land while an unmigrated sidecar remains. A sidecar that fails to parse or validate is not migrated at
 // all — both files stay untouched and the caller poisons writes. A crash at any
 // point re-runs the whole migration on the next boot and converges, because
 // already-merged names collide with the live set and are skipped, and the
@@ -819,6 +845,15 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 			return nil
 		}
 		return fmt.Errorf("read legacy host sidecar: %w", err)
+	}
+	// A sidecar that reappears after a recorded migration is stale — the
+	// marker and every mutation since are in the same file, so a survivor of
+	// one survived both. Ignore it rather than re-merging names the UI may
+	// have removed (the case a directory sync the filesystem ignores cannot
+	// rule out).
+	if doc, docErr := readHubTOMLDocument(m.cfg.configPath); docErr == nil && doc[legacySidecarMigratedKey] == true {
+		m.logf("stale legacy host sidecar %s ignored: %s already records the migration", path, m.cfg.configPath)
+		return nil
 	}
 	entries, err := parseLegacyHostSidecar(data)
 	if err != nil {
@@ -851,7 +886,7 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 		m.cfg.store.add(e)
 		m.registerSource(e)
 	}
-	if err := m.persistHosts(m.cfg.store.snapshot()); err != nil {
+	if err := m.persistHostsMarked(m.cfg.store.snapshot(), true); err != nil {
 		return err
 	}
 	aside := path + legacyHostSidecarAsideSuffix
@@ -1454,10 +1489,16 @@ func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host) e
 // (hubTOMLPostRenameError) is not a plain refusal — the file holds the new
 // entries — so the callers compensate the live state before reporting it.
 func (m *hubHostManager) persistHosts(entries []hostreg.Host) error {
+	return m.persistHostsMarked(entries, false)
+}
+
+// persistHostsMarked is persistHosts with the migration's marker; only the
+// migration passes true.
+func (m *hubHostManager) persistHostsMarked(entries []hostreg.Host, migrated bool) error {
 	if err := m.cfg.store.poisoned(); err != nil {
 		return fmt.Errorf("hub.toml %s not rewritten: %w (fix the legacy host sidecar or remove its unloaded entries first)", m.cfg.configPath, err)
 	}
-	return writeHubTOMLHosts(m.cfg.configPath, entries)
+	return writeHubTOMLHostsMarked(m.cfg.configPath, entries, migrated)
 }
 
 // rollbackHubTOML re-persists previous after a post-write live mutation failed,

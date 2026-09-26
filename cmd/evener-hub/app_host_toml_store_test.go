@@ -288,6 +288,56 @@ func TestHubTOMLMigrationMergesSidecarOnce(t *testing.T) {
 	}
 }
 
+// TestHubTOMLMigrationIgnoresAStaleReappearedSidecar pins the marker rule:
+// once the migration is recorded in hub.toml, a hub.hosts.json that shows up
+// again — a rename a power loss undid on a filesystem that ignores directory
+// syncs — is stale and must be ignored, never re-merged, so a name the UI
+// removed while the sidecar was gone cannot come back. Mutations keep working
+// (nothing is unmigrated).
+func TestHubTOMLMigrationIgnoresAStaleReappearedSidecar(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	migrated := []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}
+	if err := writeHubTOMLHostsMarked(configPath, migrated, true); err != nil {
+		t.Fatalf("seed migrated hub.toml: %v", err)
+	}
+	// The retired sidecar reappears, still carrying a host the UI removed while
+	// it was gone.
+	sidecar := legacySidecarPathFor(configPath)
+	sidecarBytes := []byte(`{"hosts":[{"name":"gone","ssh":"gone.example"}]}`)
+	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	var logs []string
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
+	if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "gone"}); err == nil {
+		t.Fatal("the stale sidecar re-merged a host the UI had removed")
+	}
+	if len(logs) == 0 {
+		t.Fatal("a stale sidecar produced no log line at startup")
+	}
+	// Nothing is unmigrated, so mutations keep working; the retired file is
+	// left where it is (never read again), and a new add lands normally.
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}}); err != nil {
+		t.Fatalf("Add after a stale sidecar = %v, want success", err)
+	}
+	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "new"}) {
+		t.Fatalf("hub.toml after the add = %v, want alpha + new", got)
+	}
+	if data, err := os.ReadFile(sidecar); err != nil || !bytes.Equal(data, sidecarBytes) {
+		t.Fatalf("stale sidecar touched: %q, %v", data, err)
+	}
+}
+
 // TestHubTOMLMigrationSetAsideSyncFailureIsLoudAndRetryable pins the
 // migration's crash-safety story: when the set-aside rename's directory sync
 // fails, the merged hub.toml is already durable, the sidecar still exists, and
