@@ -1256,12 +1256,16 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      user, and socket from checks 1–4 are re-read at signal time, in the step
      immediately before the signal, and the signal goes out only on a full
      match. A mismatch — including any field that cannot be re-read — refuses
-     with `ErrRestart`, no kill, no relaunch. **Implementation status:** the
-     shipped `restartBare` (`sshconn/version.go`) runs these checks at
-     *identification* time and does not yet re-read at signal time; the
-     at-signal re-read is the required contract for this check, exactly as the
-     effective-user rule above is, and the residual identification/signal window
-     is the one the 2026-09-26 decision accepts (design §2). This shrinks the
+     with `ErrRestart`, no kill, no relaunch. **Implementation status:** the shipped `restartHub`
+     (`sshconn/version.go`) refuses the supervisorless branch with `ErrRestart`
+     and never calls `restartBare`; `restartBare` is unreachable from production
+     (its only callers are unit tests) and, where it runs, validates only the
+     single listener, the recovered argv shape, and the bound-address match, at
+     identification time. The required code delta (design §2, [04] tracked
+     follow-up) is to make the guarded ad hoc path the supervisorless branch and
+     add the at-signal re-read here, so the effective-user comparison (check 3)
+     and the at-signal re-read are both pending; the residual identification/
+     signal window is the one the 2026-09-26 decision accepts. This shrinks the
      PID-reuse window but does **not** close it: it is still check-then-act, so
      the process can exit and its PID be reused between the re-read and the
      signal. **Decided by Jesse, 2026-09-26** (design §2 "Restart identity pin:
@@ -1280,7 +1284,9 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      helper (the crash-fencing `evener-fence` lease wrapper is a fencing helper,
      not a restart-identity pin). Under the
      withdrawn pin that is no longer a refusal: a **supervisorless** host
-     restarts through the guarded verify-then-signal ad hoc path. A
+     restarts through the guarded verify-then-signal ad hoc path
+     (implementation status, check 5: the shipped `restartHub` still refuses
+     this branch). A
      **restart-capable deployment still prefers a supervisor** — the supervised
      paths name a unit/label rather than a PID: `launchctl kickstart -k
      gui/<uid>/<label>` on darwin, `systemctl [--user] restart <unit>` on linux
@@ -1419,8 +1425,8 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      host-side restart-identity pin helper is specified, installed, or invoked
      (check 5) — so the
      residual identification/signal window is accepted, and the manager never
-     issues a bare unguarded `kill` on an unverified target (check 5; the limit
-     above). The recipe above remains the *operator's* documented procedure for
+     issues a bare unguarded `kill` on an unverified target (check 5 and its
+     implementation status; the limit above). The recipe above remains the *operator's* documented procedure for
      a restart out of band. The **start** of a
      stopped hub (the first-attach bootstrap, where no process exists to
      identify or signal) is unaffected: it has no PID to pin, so it keeps the
@@ -1854,11 +1860,12 @@ with the remote hub and its daemons still running.
     residual check-then-act window is acknowledged, not closed. The restart
     still prefers a supervisor (the supervised paths pin by systemd unit /
     launchd label, not by PID), and a supervisorless host restarts through the
-    guarded ad hoc path (`restartBare`), which must re-read the target at signal
-    time per check 5 (implementation status there: the shipped path validates
-    at identification time only, and the residual window is the accepted one).
-    This criterion makes checks 1–5 of §"Stop/restart mechanics" testable end
-    to end.
+    guarded ad hoc path, which must re-read the target at signal time per check
+    5. The shipped `restartHub` still refuses the supervisorless branch with
+    `ErrRestart` and `restartBare` is unreachable from production, so the
+    guarded ad hoc path (implementation status, check 5) is required work, not
+    shipped behavior. This criterion makes checks 1–5 of §"Stop/restart
+    mechanics" testable end to end.
 21. A fresh host whose `run_path` does not exist is a **verified missing
     executable** preflight result (`ErrExecutableMissing`), recognized from the
     **dedicated executable probe's stable sentinel** — `test -x <run_path>`
@@ -1906,7 +1913,8 @@ from the component-03 registry.
 - **How the host hub is stopped for restart (resolved, with identification).**
   No new host-side RPC is needed in v1: restart through the host's supervisor
   when one is identified unambiguously; when **none** is identified the manager
-  runs the guarded verify-then-signal ad hoc restart itself, refusing
+  runs the guarded verify-then-signal ad hoc restart itself (implementation
+  status, check 5: the shipped `restartHub` still refuses this branch), refusing
   `ErrRestart` (no signal, no relaunch) only for a listener whose identity does
   not verify. The ops doc's recipe — find the listener by port with `lsof`,
   verify *what it is* (single listener, evener hub argv, effective SSH user,
