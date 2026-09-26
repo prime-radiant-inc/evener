@@ -1325,27 +1325,31 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 	return out
 }
 
+// liveEntryFromProbe publishes a probe's answer as a roster entry. It copies
+// through CloneLiveEntry, so the roster never shares a slice, map or pointer
+// with the prober's result, and a field added to both types is copied in one
+// place.
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
-	return LiveEntry{
+	return CloneLiveEntry(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
 		Status:                result.Status,
-		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
+		ActiveFlags:           result.ActiveFlags,
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
-		PendingEscalations:    append([]appwire.SandboxEscalationRequested(nil), result.PendingEscalations...),
+		PendingEscalations:    result.PendingEscalations,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
-		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
-		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
-		RunningJobs:           cloneRunningJobs(result.RunningJobs),
-		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
-		Lifecycle:             cloneDaemonLifecycle(result.Lifecycle),
+		RunningSubagentIDs:    result.RunningSubagentIDs,
+		RunningSubagentStates: result.RunningSubagentStates,
+		RunningJobs:           result.RunningJobs,
+		CompletedJobs:         result.CompletedJobs,
+		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
-		Watches:               cloneWatches(result.Watches),
-		ChildWatches:          cloneChildWatches(result.ChildWatches),
-		Tasks:                 appwire.CloneTaskAggregate(result.Tasks),
-	}
+		Watches:               result.Watches,
+		ChildWatches:          result.ChildWatches,
+		Tasks:                 result.Tasks,
+	})
 }
 
 // RefreshEntry confirms one freshly spawned daemon without depending on other

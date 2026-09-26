@@ -740,6 +740,12 @@ func TestRosterRefreshCarriesEscalationCardsAndFiresOnAReplacedCard(t *testing.T
 	if !ok || !slices.Equal(live.PendingEscalations, []appwire.SandboxEscalationRequested{first}) {
 		t.Fatalf("published entry = %+v, want the probe's card", live)
 	}
+	// The roster owns its copy: editing the probe's card after Refresh must
+	// not reach the published entry.
+	prober.result.PendingEscalations[0].DeniedPath = "mutated"
+	if live, _ := r.Find("01PARENT"); live.PendingEscalations[0].DeniedPath != first.DeniedPath {
+		t.Fatalf("published card changed through the probe result: %+v", live.PendingEscalations)
+	}
 
 	changes := 0
 	r.SetOnChange(func() { changes++ })
