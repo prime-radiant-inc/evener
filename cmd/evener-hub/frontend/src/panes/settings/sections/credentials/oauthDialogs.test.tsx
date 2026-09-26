@@ -184,7 +184,7 @@ describe("OAuthRedirectDialog", () => {
     // shell/rail/Rail.test.tsx's identical convention), so a same-text toast
     // from an earlier test could otherwise satisfy findByText before this
     // test's own flow has actually completed.
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
   });
 
@@ -224,7 +224,7 @@ describe("OAuthRedirectDialog", () => {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       }),
     );
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(within(screen.getByRole("dialog")).queryByText(/no client connected/)).toBeNull();
   });
 

@@ -8941,23 +8941,27 @@ test("a new message composed after a saved snapshot can still dispatch", async (
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
-test("a message composed during a saved read dispatches its first delivery", async () => {
-  const fake = connectFakeClient("connecting");
-  const saved = deferred<ThreadReadResponse>();
-  fake.on("thread/read", () => saved.promise);
-  const delivered = deferred<void>();
-  fake.on("turn/queue", (params) => {
-    delivered.resolve();
-    return { receipt: mutationReceipt(params.clientMutationId) };
-  });
-  fake.emitReady();
-  const hydration = threadsStore.getState().ensureThread("ref_a");
-  await threadsStore.getState().queue("ref_a", "new message during hydration");
-  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
-  saved.resolve(readResponse("ref_a", { status: { type: "notLoaded" } }));
-  await hydration;
-  await delivered.promise;
-  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+test("a message composed during a saved read dispatches when the read completes", async () => {
+  // The outbox's periodic scan would also find this message, seconds later.
+  // With the interval faked and never advanced, only the hydration's own
+  // completion can deliver it.
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient("connecting");
+    const saved = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => saved.promise);
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    const hydration = threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().queue("ref_a", "new message during hydration");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    saved.resolve(readResponse("ref_a", { status: { type: "notLoaded" } }));
+    await hydration;
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("reload after a failed restart write reconciles persisted uncertainty with the resumed daemon", async () => {
