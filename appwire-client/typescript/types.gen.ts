@@ -2475,6 +2475,19 @@ export interface SessionDeleteResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionImageParams {
+  sessionId: string;
+  sha?: string;
+  path?: string;
+}
+
+export interface SessionImageResponse {
+  mediaType: string;
+  size: number;
+  sha?: string;
+  data: string;
+}
+
 export interface SessionPinAssignParams {
   sessionRef: string;
   sectionId?: string;
@@ -3606,6 +3619,7 @@ export const METHOD_NAMES = [
   "evener/host/remove",
   "evener/host/update",
   "evener/host/pushCredentials",
+  "evener/session/image",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3818,6 +3832,7 @@ export interface MethodTypes {
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
+  "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }
 
 export interface NotificationTypes {

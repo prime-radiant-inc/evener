@@ -101,16 +101,16 @@ type navigationBuildInputs struct {
 
 	// These maps are decorations captured with Tree. IDs may be a node ID or its
 	// canonical ref; projection checks both without consulting a live roster.
-	Live                map[string]bool
-	Renameable          map[string]bool
-	SessionFavorite     map[string]bool
-	ProjectFavorite     map[string]bool
-	PinSectionBySession map[string]string
-
+	Live            map[string]bool
+	Renameable      map[string]bool
+	SessionFavorite map[string]bool
+	ProjectFavorite map[string]bool
 	// PinSections and PinAssignments are used when callers retain the durable
-	// pin snapshot instead of precomputing PinSectionBySession.
+	// pin snapshot. PinAssignments is keyed by the (source, session id) pair a
+	// pin is stored under, so one source's pin never decorates another source's
+	// row that shares its bare ID.
 	PinSections    []hubcore.PinSection
-	PinAssignments map[string]hubcore.SessionPin
+	PinAssignments map[hubcore.ArchiveKey]hubcore.SessionPin
 }
 
 type navigationProjection struct {
@@ -240,20 +240,13 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 	if out.ProjectFavorite, err = cloneBool(in.ProjectFavorite); err != nil {
 		return navigationBuildInputs{}, err
 	}
-	out.PinSectionBySession = make(map[string]string, len(in.PinSectionBySession))
-	for key, value := range in.PinSectionBySession {
-		if err := ctx.Err(); err != nil {
-			return navigationBuildInputs{}, err
-		}
-		out.PinSectionBySession[key] = value
-	}
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
-	for id, assignment := range in.PinAssignments {
+	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
+	for key, assignment := range in.PinAssignments {
 		if err := ctx.Err(); err != nil {
 			return navigationBuildInputs{}, err
 		}
-		out.PinAssignments[id] = assignment
+		out.PinAssignments[key] = assignment
 	}
 	out.Tree, err = in.Tree.SnapshotContext(ctx)
 	if err != nil {
@@ -270,9 +263,8 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.Renameable = cloneNavigationBoolMap(in.Renameable)
 	out.SessionFavorite = cloneNavigationBoolMap(in.SessionFavorite)
 	out.ProjectFavorite = cloneNavigationBoolMap(in.ProjectFavorite)
-	out.PinSectionBySession = cloneNavigationStringMap(in.PinSectionBySession)
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
+	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
 	maps.Copy(out.PinAssignments, in.PinAssignments)
 	return out
 }
@@ -308,12 +300,6 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 		return nil
 	}
 	out := make(map[string]bool, len(in))
-	maps.Copy(out, in)
-	return out
-}
-
-func cloneNavigationStringMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
 	maps.Copy(out, in)
 	return out
 }
@@ -1548,15 +1534,6 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		}
 		byID[section.ID] = navigationPinSection{id: section.ID, name: section.Name, memberCount: section.MemberCount}
 	}
-	assignment := cloneNavigationStringMap(p.inputs.PinSectionBySession)
-	for sessionID, pin := range p.inputs.PinAssignments {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if assignment[sessionID] == "" {
-			assignment[sessionID] = pin.SectionID
-		}
-	}
 	for _, node := range p.pinCandidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1565,10 +1542,7 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		if err != nil {
 			continue
 		}
-		sectionID := assignment[node.ID]
-		if sectionID == "" {
-			sectionID = assignment[ref.String()]
-		}
+		sectionID := p.pinSectionIDFor(ref)
 		section, ok := byID[sectionID]
 		if !ok || sectionID == "" {
 			continue
@@ -1658,7 +1632,7 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	}
 	if _, exists := p.locations[ref.String()]; !exists {
 		summary := navigationProjector{projection: p}.projectShallow(node)
-		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionFor(node.ID, ref.String()), Session: &summary}
+		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
 	for _, child := range node.Children {
 		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
@@ -1746,7 +1720,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 	if !updated.IsZero() {
 		updatedAt = &updated
 	}
-	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
+	pinned := p.projection.pinSectionIDFor(ref) != ""
 	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
@@ -2032,28 +2006,17 @@ func (p navigationProjection) renameable(id, ref string) bool {
 func (p navigationProjection) sessionFavorite(id, ref string) bool {
 	return p.inputs.SessionFavorite[id] || p.inputs.SessionFavorite[ref]
 }
-func (p navigationProjection) pinSectionFor(id, ref string) string {
-	if value := p.inputs.PinSectionBySession[id]; value != "" {
-		if p.pinSectionIDs[value] {
-			return value
-		}
+
+// pinSectionIDFor is the one pin lookup every consumer shares: the section a
+// row's own (source, session id) pair is assigned to, or "" when no durable
+// section holds it. Callers pass the row's canonical ref, which already
+// carries the source, so no lookup can fall back to a bare ID.
+func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
+	assignment, ok := p.inputs.PinAssignments[hubcore.SessionPinKey(ref.HostID, ref.SessionID)]
+	if !ok || !p.pinSectionIDs[assignment.SectionID] {
+		return ""
 	}
-	if value := p.inputs.PinSectionBySession[ref]; value != "" {
-		if p.pinSectionIDs[value] {
-			return value
-		}
-	}
-	if assignment, ok := p.inputs.PinAssignments[id]; ok {
-		if p.pinSectionIDs[assignment.SectionID] {
-			return assignment.SectionID
-		}
-	}
-	if assignment, ok := p.inputs.PinAssignments[ref]; ok {
-		if p.pinSectionIDs[assignment.SectionID] {
-			return assignment.SectionID
-		}
-	}
-	return ""
+	return assignment.SectionID
 }
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {

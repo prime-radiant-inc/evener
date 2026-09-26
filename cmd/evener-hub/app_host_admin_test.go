@@ -394,6 +394,11 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// search, subagent preview), and the proxy method itself (no chaining).
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
+	//
+	// The session image fetch is denied for the same reason as the proxy method:
+	// it is the controller's own image-route call, resolving against the
+	// recipient's local session state, so a peer hub must not be able to drive
+	// it by forwarding the request.
 	policy := map[string]bool{
 		"evener/archive/set":                false,
 		"evener/auth/apiKey/clear":          true,
@@ -492,6 +497,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/session-pin/assign":               false,
 		"evener/session-pin/unpin":                false,
 		"evener/session/delete":                   false,
+		"evener/session/image":                    false,
 		"evener/settings/agentsDoc/get":           true,
 		"evener/settings/agentsDoc/set":           true,
 		"evener/settings/keybindings/get":         false,
