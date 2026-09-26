@@ -879,7 +879,8 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict or a different test owns the
 // nearest context. The lines from ordinaryStart up to marker are the
-// already-selected ordinary context; its non-diagnostic tail is preferred so
+// already-selected ordinary context. When a parent-owned diagnostic exists it
+// is selected first; otherwise the ordinary non-diagnostic tail is preferred so
 // multiline output remains intact. Source diagnostics are associated with the
 // most recent go test RUN/CONT/NAME frame; a completed child or sibling returns
 // ownership to its parent. Parent-owned diagnostics are preferred over nested
@@ -907,6 +908,8 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	type candidate struct {
 		index       int
 		line        string
+		owner       string
+		ordinary    bool
 		diagnostic  bool
 		parentLevel bool
 	}
@@ -932,6 +935,8 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 		candidates = append(candidates, candidate{
 			index:       run + 1 + index,
 			line:        line,
+			owner:       owner,
+			ordinary:    run+1+index >= ordinaryStart,
 			diagnostic:  diagnostic,
 			parentLevel: parentLevel,
 		})
@@ -943,8 +948,8 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	const maxExpandedLines = surveyContextBefore
 	keep := make([]bool, len(candidates))
 	selectedCount := 0
-	selectNewest := func(selectCandidate func(candidate) bool) {
-		for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+	selectNewest := func(limit int, selectCandidate func(candidate) bool) {
+		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
 			if keep[i] || !selectCandidate(candidates[i]) {
 				continue
 			}
@@ -952,16 +957,48 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 			selectedCount++
 		}
 	}
-	selectNewest(func(candidate candidate) bool {
-		return candidate.index >= ordinaryStart && !candidate.diagnostic
-	})
-	selectNewest(func(candidate candidate) bool {
-		return candidate.diagnostic && candidate.parentLevel
-	})
-	selectNewest(func(candidate candidate) bool {
+	ordinaryBudget := maxExpandedLines
+	if parentDiagnostic {
+		ordinaryBudget--
+	}
+	ordinaryOwned := func(candidate candidate) bool {
+		return candidate.ordinary &&
+			(candidate.owner == name || strings.HasPrefix(candidate.owner, name+"/"))
+	}
+	ordinaryCount := 0
+	for _, candidate := range candidates {
+		if ordinaryOwned(candidate) {
+			ordinaryCount++
+		}
+	}
+	if ordinaryCount <= ordinaryBudget {
+		for index, candidate := range candidates {
+			if ordinaryOwned(candidate) {
+				keep[index] = true
+				selectedCount++
+			}
+		}
+	} else {
+		for index, candidate := range candidates {
+			if ordinaryOwned(candidate) {
+				keep[index] = true
+				selectedCount++
+				break
+			}
+		}
+		selectNewest(ordinaryBudget, func(candidate candidate) bool {
+			return ordinaryOwned(candidate)
+		})
+	}
+	if parentDiagnostic {
+		selectNewest(maxExpandedLines, func(candidate candidate) bool {
+			return candidate.diagnostic && candidate.parentLevel
+		})
+	}
+	selectNewest(maxExpandedLines, func(candidate candidate) bool {
 		return candidate.diagnostic
 	})
-	selectNewest(func(candidate candidate) bool {
+	selectNewest(maxExpandedLines, func(candidate candidate) bool {
 		return !candidate.diagnostic
 	})
 	selected := make([]candidate, 0, selectedCount)
