@@ -10,7 +10,12 @@ import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
 import { clientServesHub } from "./connectionIdentity";
-import { type HubConnection, type HubTokenSource, useHubConnection } from "./hubConnection";
+import {
+	type HubConnection,
+	type HubTokenSource,
+	reconnectDelay,
+	useHubConnection,
+} from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
@@ -99,8 +104,31 @@ function mount(overrides: Partial<HubConnectionInputs> = {}) {
 	return { hook, input, renders, setError: input.setError };
 }
 
+/** Fails `current` with `reason`, after installing a fresh client as the one
+ * the hook's next dial gets; returns that client. */
+async function failInto(
+	current: FakeHubClient,
+	reason: TerminalReason = null,
+): Promise<FakeHubClient> {
+	const next = new FakeHubClient();
+	harness.client = next;
+	await act(async () => {
+		current.fail(reason);
+	});
+	return next;
+}
+
+/** Advances the fake clock by `ms` inside act(), so a retry that falls due
+ * redials before the test looks. */
+async function elapse(ms: number): Promise<void> {
+	await act(async () => {
+		vi.advanceTimersByTime(ms);
+	});
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 it("stays idle with no client until a profile, origin and foreground are all present", () => {
@@ -208,6 +236,8 @@ it("reports fatal only for a protocol close, clearing again once a fresh attempt
 });
 
 it("does not report fatal for an ordinary transport close", async () => {
+	// Fake timers hold the retry this close arms, so the test sees the close.
+	vi.useFakeTimers();
 	const fake = new FakeHubClient();
 	harness.client = fake;
 	const { hook } = mount();
@@ -270,6 +300,9 @@ it("does not record a client that never proved ready", async () => {
 	expect(hook.result.current.state).toBe("closed");
 	// A failed dial establishes nothing either — the client stays unknown.
 	expect(clientServesHub(fake, "hub-b")).toBe(true);
+	// Unmount before the test ends, or the failed dial's catch handler and the
+	// retry timer this close armed run after it, outside act().
+	hook.unmount();
 });
 
 // Round 85's follow-up: a token fetch that fails outright is this attempt's
@@ -281,6 +314,11 @@ it("does not record a client that never proved ready", async () => {
 // report, and the verdict never outlives its attempt: a fresh attempt that
 // fetches and dials fine leaves "closed" behind.
 it("reports closed, not connecting, when token acquisition fails", async () => {
+	// Fake timers hold the retry this close arms, so the test sees the close
+	// (the same hazard "does not report fatal for an ordinary transport
+	// close" has: a real 0ms retry can fire inside the test's own act() and
+	// redial before an assertion reads the state it armed on).
+	vi.useFakeTimers();
 	const fake = new FakeHubClient();
 	harness.client = fake;
 	const { hook, input, setError } = mount({
@@ -301,4 +339,144 @@ it("reports closed, not connecting, when token acquisition fails", async () => {
 	await act(async () => {});
 	act(() => fake.succeed());
 	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
+});
+
+it("waits at once, then 1, 2, 4, 8 and 16 seconds, then every 30 seconds", () => {
+	expect([0, 1, 2, 3, 4, 5, 6, 12].map(reconnectDelay)).toEqual([
+		0, 1000, 2000, 4000, 8000, 16000, 30000, 30000,
+	]);
+});
+
+it.each([
+	{ label: "NaN", input: Number.NaN, expected: 0 },
+	{ label: "positive infinity", input: Number.POSITIVE_INFINITY, expected: 0 },
+	{ label: "negative infinity", input: Number.NEGATIVE_INFINITY, expected: 0 },
+	{ label: "a fraction short of a step", input: 1.9, expected: 1000 },
+	{ label: "a fraction just past a step", input: 2.1, expected: 2000 },
+	{ label: "a fraction below one", input: 0.5, expected: 0 },
+])("treats $label failures as $expected ms, not NaN or a fractional wait", ({ input, expected }) => {
+	expect(reconnectDelay(input)).toBe(expected);
+});
+
+it("a caller-bumped attempt cancels a pending auto-retry timer, leaving exactly one connection attempt", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook, input } = mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	await elapse(0);
+	// Backed off to the 1s step: this failure arms reconnectDelay(1).
+	const third = await failInto(second);
+	input.attempt = 1;
+	hook.rerender();
+	await act(async () => {});
+	expect(third.state).toBe("connecting");
+	act(() => third.succeed());
+	expect(hook.result.current.state).toBe("ready");
+	// The stale auto-retry the earlier failure armed must not survive the
+	// manual retry: advancing past its old 1s delay must not reopen the
+	// now-ready connection a second time.
+	await elapse(1000);
+	expect(hook.result.current).toEqual({ client: third, state: "ready", fatal: false });
+	expect(third.listenerCount).toBe(2);
+});
+
+it("tries a closed connection again on its own, backing off between attempts", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook } = mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	expect(hook.result.current.state).toBe("closed");
+	await elapse(0);
+	expect(second.state).toBe("connecting");
+	const third = await failInto(second);
+	await elapse(999);
+	expect(third.state).toBe("idle");
+	await elapse(1);
+	expect(third.state).toBe("connecting");
+	await act(async () => {
+		third.succeed();
+	});
+	expect(hook.result.current.state).toBe("ready");
+});
+
+it("starts the backoff over once a connection reaches ready", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	await elapse(0);
+	await act(async () => {
+		second.succeed();
+	});
+	const third = await failInto(second);
+	await elapse(0);
+	expect(third.state).toBe("connecting");
+});
+
+it("never retries a connection no retry can fix", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook } = mount();
+	await act(async () => {});
+	const second = await failInto(first, "protocol");
+	expect(hook.result.current.fatal).toBe(true);
+	await elapse(60_000);
+	expect(second.state).toBe("idle");
+});
+
+it("leaves a backgrounded app alone and tries at once on returning", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook, input } = mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	// rerender() runs its own act(), so it stays outside the async ones.
+	input.foreground = false;
+	hook.rerender();
+	await elapse(60_000);
+	expect(second.state).toBe("idle");
+	input.foreground = true;
+	hook.rerender();
+	await act(async () => {});
+	expect(second.state).toBe("connecting");
+});
+
+it.each([
+	{
+		label: "a switched hub",
+		change: { activeId: "hub-b", activeOrigin: "https://b.test" },
+	},
+	{ label: "a bumped attempt", change: { attempt: 1 } },
+])("$label resets the backoff to the start, not where it left off", async ({ change }) => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook, input } = mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	await elapse(0);
+	const third = await failInto(second);
+	await elapse(1000);
+	// Backed off to the 2s step: this failure arms reconnectDelay(2).
+	await failInto(third);
+	const fresh = new FakeHubClient();
+	harness.client = fresh;
+	Object.assign(input, change);
+	hook.rerender();
+	await act(async () => {});
+	expect(fresh.state).toBe("connecting");
+	const afterFreshFailure = await failInto(fresh);
+	// A fresh generation's first failure backs off from the start (spec 14: at
+	// once) - it must not continue the old generation's count. Elapsing only
+	// 0ms distinguishes reconnectDelay(0) from the 2s the old count would give.
+	await elapse(0);
+	expect(afterFreshFailure.state).toBe("connecting");
 });
