@@ -47,7 +47,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 4. **Which alerts have switches.** Failures (on), questions and approvals (on) and finished results (off) have switches (spec 12). Warnings, restart-needed and notices always alert, as in the prototype's `EV.alert`.
 5. **Notice alerts.** A provider sign-in that expired and a host that went offline alert when they appear while the Board isn't on screen. A broken plugin never alerts: the Board checks plugins only while it is on screen (phase 2 ruling 8), where its notice row already shows.
 6. **A coalesced banner counts each session once,** and a session that alerts again updates its own entry. (The prototype counted it twice.)
-7. **Holds.** Banners wait while the Reader is open (and the artifact viewer, once it exists), while you type (the composer focused with text in it, so sending lets them go, as the prototype's Hub row says: "They show when you leave the document or send"), and while a sheet is up: phase 5's sheet routes and every React Native `Modal` (Question 2). They show 200ms after the last hold ends, the prototype's delay after the composer blurs, so the screen you land on counts first: landing on the session that alerted answers it.
+7. **Holds.** Banners wait while the Reader is open (and the artifact viewer, once it exists), while you type (the composer focused with text in it, so sending lets them go, as the prototype's Hub row says: "They show when you leave the document or send"), and while a sheet is up: phase 5's sheet routes and every React Native `Modal` (Question 2). They show 200ms after the last hold ends, the prototype's delay after the composer blurs, so the screen you land on counts first: landing on the session that alerted answers it. A hold keeps new banners back; one already showing when a hold starts finishes its 8 seconds, as in the prototype, since it sits below the nav bar, never over the composer, and a sheet presents above it.
 8. **Haptics.** A banner buzzes once, when it drops in; alerts that join it don't. Every haptic in spec 16.6 answers to the one Haptics switch (phase 3 ruling 5).
 9. **Alerts read the fleet with their own board controller, never paused.** The Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. That costs a second set of navigation reads while the Board or a Session is in front; sharing one controller is a later consolidation.
 10. **The connection clock counts only time in front.** The app closes its connection in the background (`ConnectionProvider`), so returning never flashes "Offline". "Updated 3m ago" still counts from when the data was last live, background included.
@@ -598,7 +598,7 @@ PR B's first three tasks are pure; Task 6 adds the haptics every later task play
   - `interface Banner { id: number; alerts: readonly Alert[] }`
   - `interface AlertSnapshot { banner: Banner | null; held: number; recent: readonly string[] }`
   - `type AlertScreen = { kind: "board" } | { kind: "session"; ref: string } | { kind: "other" }`
-  - `type BannerTarget = { kind: "session"; ref: string } | { kind: "needsYou" } | { kind: "notice"; key: string }`
+  - `type BannerTarget = { kind: "session"; ref: string; title: string } | { kind: "needsYou" } | { kind: "notice"; key: string }`
   - `type Haptic = "warning" | "light"`
   - `interface AlertTimer { now(): number; setTimeout(callback: () => void, ms: number): unknown; clearTimeout(handle: unknown): void }`
   - `BANNER_MS`, `COALESCE_MS`, `RELEASE_MS`, `needsYou(alert): boolean`
@@ -678,7 +678,7 @@ describe("a banner (spec 13.3)", () => {
 	it("says where a tap goes, and goes", () => {
 		const { alerts } = center();
 		alerts.offer(session("a"));
-		expect(alerts.tap()).toEqual({ kind: "session", ref: "a" });
+		expect(alerts.tap()).toEqual({ kind: "session", ref: "a", title: "Session a" });
 		expect(alerts.getSnapshot().banner).toBeNull();
 		alerts.offer(hostOffline);
 		expect(alerts.tap()).toEqual({ kind: "notice", key: "host:paradise-park" });
@@ -1021,7 +1021,7 @@ export type AlertScreen = { kind: "board" } | { kind: "session"; ref: string } |
 
 /** Where a tapped banner goes. */
 export type BannerTarget =
-	| { kind: "session"; ref: string }
+	| { kind: "session"; ref: string; title: string }
 	| { kind: "needsYou" }
 	| { kind: "notice"; key: string };
 
@@ -1152,7 +1152,9 @@ export class AlertCenter {
 		this.publish();
 		const [only] = banner.alerts;
 		if (only === undefined || banner.alerts.length > 1) return { kind: "needsYou" };
-		return only.kind === "notice" ? { kind: "notice", key: only.key } : { kind: "session", ref: only.ref };
+		return only.kind === "notice"
+			? { kind: "notice", key: only.key }
+			: { kind: "session", ref: only.ref, title: only.title };
 	}
 
 	/** Next took you on: it serves the held sessions itself now, so they
@@ -1229,8 +1231,9 @@ export class AlertCenter {
 			this.publish();
 			return;
 		}
-		// A held notice shows only when no session waits; the Board lists it
-		// either way (the prototype's releaseHeld).
+		// A held notice shows only when no session waits, and then only the
+		// latest; the Board lists every notice either way (the prototype's
+		// releaseHeld).
 		const next = sessions[0] ?? [...waiting].reverse().find((alert) => alert.kind === "notice");
 		if (next === undefined) this.publish();
 		else this.show(next);
@@ -2021,7 +2024,7 @@ git commit -m "feat(native): the in-app alert banner"
 5. **What's on screen.** `App.tsx` gives `NavigationContainer` a ref from `createNavigationContainerRef<Routes>()` and passes the top route to `useReportRoute()`'s function from `onReady` and from `onStateChange`. That function calls `center.setScreen(alertScreenFor(route))`, and holds one hold token while the route is in `SHEET_ROUTES` (ruling 7).
 6. **The host.** `AlertBannerHost` renders inside `NavigationContainer`, after the navigator, as an absolutely positioned container with `pointerEvents="box-none"`, `left` and `right` 0, and `top = getDefaultHeaderHeight(frame, false, insets.top) + 4` from `useSafeAreaFrame()` and `useSafeAreaInsets()`: just below the nav bar, never over it (spec 13.3; round 1 problem 3). It renders `AlertBanner` keyed by the banner's `id`, or nothing.
 7. **A tap.** `center.tap()`, then:
-   - a session: `navigation.dispatch(StackActions.push("Conversation", { hubId, ref, title }))`, with the alert's title, so Back returns to where you were (spec 6);
+   - a session: `navigation.dispatch(StackActions.push("Conversation", { hubId, ref, title }))`, with the target's `ref` and `title` and the active hub's id from `useConnection()` (the center is reset for every hub), so Back returns to where you were (spec 6);
    - a coalesced banner: `navigation.dispatch(StackActions.popTo("Sessions"))`, then `requestBoardJump("needsYou")`;
    - a notice: the Board's own `openNotice(navigation, notice)` for `useNoticeFor()(key)`. A notice that resolved since the banner dropped in opens nothing.
 8. **Swipe and touch** go to `center.dismiss()` and `center.touch(down)`.
@@ -2723,7 +2726,7 @@ Phase 3 disables Send while offline (its ruling 4): the durable submitter refuse
 3. **Never read.** A session this phone hasn't read since launch (`store.getState().conversation` is unset) has no instance to fence with (ruling 12), so its Send stays disabled offline, and the draft stays. `sendAction` is never asked there. A thread whose hub status is `notLoaded` is a shut-down session the phone did read, and routes to `"resume"`.
 4. **Words.** The placeholder is `composerPlaceholder` of the connected routing, so it describes the session rather than the outbox. Send's accessibility label offline is "Send when you're back online", or "Send answer when you're back online" while a question is pending.
 5. **Answers.** The dock's "Send answer" admits offline through the same `offlineRequest` path, with the composed text as one text input, and marks the batch sent as `sendAnswers` does online.
-6. **The refusal left online.** `NATIVE_MUTATION_HOST_UNAVAILABLE` becomes "Couldn't keep this message on the phone. Try again." It now means only that the mutations database couldn't open. Remove its allowance from `calmCopy.test.ts`.
+6. **The refusal left online.** `NATIVE_MUTATION_HOST_UNAVAILABLE` becomes "Couldn't keep this message on the phone. Try again." With offline sends going straight to the runtime, it shows only when the screen has no live host while connected: the host couldn't be created (the mutations database or the client binding, `screens.tsx:1038-1052`), or the connection dropped in the same instant. Trying again covers both. Keep the host guard in `createDurableSubmitter`, and remove the constant's allowance from `calmCopy.test.ts`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3076,6 +3079,25 @@ it("keeps a message it can't settle, and lets its session go", async () => {
 	await outbox.stop();
 });
 
+it("lets go of a target it can't settle, and still sends the others", async () => {
+	const outbox = runtime();
+	await outbox.submit(message({ targetRef: "ref-1" }));
+	await outbox.submit(message({ targetRef: "ref-2" }));
+	const client = new FakeClient("ready");
+	// ref-1's answer is malformed, so settling it throws.
+	client.on("thread/read", (params) => ((params as { ref: string }).ref === "ref-1" ? ({} as never) : read("ref-2")));
+	client.on("turn/start", applied);
+	const flush = new OutboxFlush(() => outbox);
+
+	flush.bind("hub-1", client);
+
+	await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
+	expect((client.calls.find((call) => call.method === "turn/start")?.params as { ref: string }).ref).toBe("ref-2");
+	expect(outbox.hasTarget("hub-1", "ref-1")).toBe(false);
+	flush.dispose();
+	await outbox.stop();
+});
+
 it("sends only the active hub's messages, and nothing while the connection isn't ready", async () => {
 	const outbox = runtime();
 	await outbox.submit(message({ hubId: "hub-2" }));
@@ -3116,7 +3138,7 @@ it("reads the hub and ref out of a composite target key", () => {
 });
 ```
 
-The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails without the `hasTarget` check, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, and the fifth without the storage watch.
+The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails without the `hasTarget` check, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, the fifth without the storage watch, and the seventh when one target's failure stops the rest.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -3217,19 +3239,14 @@ export class OutboxFlush {
 			if (generation !== this.generation) return;
 			const target = parseTargetKey(key);
 			if (target === null || target.hubId !== hubId || this.owned.has(key)) continue;
-			if (runtime.hasTarget(hubId, target.ref)) {
-				// A session screen holds this target. Under the Reader or a
-				// subagent it doesn't read, so after a reconnect its waiting
-				// message would wait for a trip back: settle it for the screen,
-				// which keeps its registration.
-				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, target.ref, client);
-				continue;
+			try {
+				await this.settle(runtime, key, hubId, target.ref, client, generation);
+			} catch {
+				// A read or storage failure leaves this target's records where
+				// they are, for the next ready connection or the next record,
+				// and the other targets still go.
+				this.release(key);
 			}
-			this.owned.set(key, runtime.registerTarget(hubId, target.ref, client));
-			const settled = await runtime.settleTarget(hubId, target.ref, client);
-			if (generation !== this.generation) return;
-			if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key);
-			else this.release(key);
 		}
 	}
 
@@ -3237,8 +3254,35 @@ export class OutboxFlush {
 		this.bind(null, null);
 	}
 
+	private async settle(
+		runtime: FlushRuntime,
+		key: string,
+		hubId: string,
+		ref: string,
+		client: AppwireClientLike,
+		generation: number,
+	): Promise<void> {
+		if (runtime.hasTarget(hubId, ref)) {
+			// A session screen holds this target. Under the Reader or a subagent
+			// it doesn't read, so after a reconnect its waiting message would
+			// wait for a trip back: settle it for the screen, which keeps its
+			// registration.
+			if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
+			return;
+		}
+		this.owned.set(key, runtime.registerTarget(hubId, ref, client));
+		const settled = await runtime.settleTarget(hubId, ref, client);
+		if (generation !== this.generation) return;
+		if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key);
+		else this.release(key);
+	}
+
 	/** A target the flush holds may be done; a record for one nobody holds is
-	 * work no screen will send. */
+	 * work no screen will send. A target a session screen holds stays that
+	 * screen's here: its records come from the screen, or bring their own
+	 * settle (a message sent from a screen above it), and settling it on every
+	 * change would re-read after each unknown outcome and could resend in a
+	 * loop. */
 	private changed(runtime: FlushRuntime, keys: readonly string[]): void {
 		let unclaimed = false;
 		for (const key of keys) {
