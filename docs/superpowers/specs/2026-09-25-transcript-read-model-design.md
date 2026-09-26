@@ -107,7 +107,9 @@ later file projection"). Restarting a daemon already changes what clients see.
    contributed to it. The
    higher version wins.
    - Applying a fact twice changes nothing.
-   - A file read that is ahead of the live stream changes nothing.
+   - A live update whose version is not higher than one already applied from
+     a file read changes nothing, so reading the file ahead of the live stream
+     is safe.
    - A merge never removes a history item. Only a replacement does. A higher
      boot generation, a new incarnation on a latest-window read, a newer
      resync epoch, and an authoritative daemonless read (for the position
@@ -709,8 +711,19 @@ File consumers learn to skip them:
 
 ### Writer failure
 
-The writer API returns a record: either `recorded (ordinal, Seq)`, or `not
-recorded` together with the door's error. When a record is not recorded, the
+The writer API (`Writer.Record`, `agent/transcript/record.go`) has three
+outcomes:
+- **Recorded and durable.** `recorded (ordinal, Seq)` with no error.
+- **Recorded but not durable.** Only the synced door can return this: the line
+  is in the file but its fsync failed. The result is `recorded (ordinal, Seq)`
+  together with a `*RetainedUnsyncedError`. The caller adopts the record. It is
+  in history, it is announced, and it is never re-appended. Its durability is
+  established only by a later successful fsync. This outcome does not fail the
+  session closed, even for COMMUNICATE or a completion, because the entry is
+  recorded.
+- **Not recorded,** together with the door's error.
+
+When a record is not recorded, the
 writer's `Poisoned()` and `Closed()` state tells the caller why: missing,
 closed, poisoned, or a clean durable rollback that leaves the writer usable.
 The fail-closed rule below branches on that state. Today `Append`
