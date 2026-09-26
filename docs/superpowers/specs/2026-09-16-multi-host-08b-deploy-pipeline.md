@@ -23,7 +23,7 @@ Every later section uses these terms with exactly these meanings.
 - **Mutation lock.** The process-wide lock serializing `hub.toml` read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (§5).
 - **Store mutex.** The lock serializing operation-store read-modify-write. No path holding the store mutex ever acquires the mutation lock.
 - **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
-- **Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the `hub.toml` host-set fingerprint (§3), facts, and running state it was minted from.
+- **Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the host's own `hub.toml` entry fingerprint (§3), facts, and running state it was minted from.
 - **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 - **Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9), plus the `boundary-unavailable` custody sentinel a corrupt-store custody import carries when corruption destroyed the boundary (crash-fencing spec §9).
 - **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
@@ -100,17 +100,19 @@ only, never the live owner knob. Lowering the bound affects only tokens
 minted after the change.
 
 The token binds the host name, the registry generation at mint, a hash of the resolved
-host entry, the `hub.toml` host-set fingerprint as on disk at plan time, the
+host entry, the host's `hub.toml` entry fingerprint as on disk at plan time, the
 `factsRevision` digest (§1) of the refreshed preflight facts the plan was built from, `factsCapturedAt`, the resolved target path,
 the controller revision, the probed running revision, the probed running-health flag, the
 probed `processStartTime` when the probe carried it, the effective freshness bound in
-force at mint, and a nonce. The host-set fingerprint is a canonical hash over the
-file's validated effective host entries (registry spec §6) — machine-managed
-records (receipts, tombstones, generations, remnants, markers) and the
-operator's non-host keys are excluded, so an unrelated host mutation or
+force at mint, and a nonce. The bound file fingerprint is the host's own entry
+fingerprint: a canonical hash over the file's validated effective entry for the
+token's host (registry spec §6), excluding other hosts, machine-managed records
+(receipts, tombstones, generations, remnants, markers), and the operator's
+non-host keys — so an unrelated host's mutation, a receipt write, or a
 tombstone compaction neither invalidates an outstanding token nor reads as
-external configuration drift; the whole-document content hash is the store's
-own write-path value, never the token binding. Deploy step (3) compares the token-bound facts age against
+external configuration drift, while a hand edit to the bound host's own entry
+still refuses as drift. The whole-document content hash is the store's own
+write-path value, never the token binding. Deploy step (3) compares the token-bound facts age against
 the token-bound bound value, never a re-read owner knob. A mid-flight knob change can
 neither extend nor shorten an outstanding token's freshness term past its minted
 `expiresAt`.
@@ -478,7 +480,7 @@ step-(1) dedup check. Remnant semantics are defined in the registry spec §6.
 over the attached channel holding the try-acquired host gate for the probe window (same explicit probe timeout as `plan`'s
 probe, presenting the persisted probe epoch — never a default, never absent; a held gate fails fast with the typed busy error before any probe write). Still holding
 that gate, the worker
-re-resolves the target, re-reads the host entry, re-hashes the `hub.toml` host-set fingerprint (§3) at
+re-resolves the target, re-reads the host entry, re-hashes the token's host entry fingerprint (§3) at
 execution time, and re-validates the probe result taken under the same gate. Reject on any drift
 from the token's bindings. The probe result is not
 re-probed a second time. Instead the worker closes the probe window with a
@@ -509,10 +511,10 @@ still matches. A changed nonce is a `token-superseded` refusal with no consumpti
 no record. On a match the same write deletes the token row and promotes the probe-epoch record to the pending
 operation record carrying the worker's fencing epoch. Consume is delete in that same write, never a mark. Return its id.
 The operation holds its host's gate from record creation to terminal state. The worker
-re-hashes the on-disk host-set fingerprint (§3) immediately before each irreversible step
+re-hashes the on-disk host entry fingerprint (§3) immediately before each irreversible step
 (before the push, and again before the planned restart when the token-bound plan says
 one follows) and aborts with typed `stale-entry` on any drift from the token-bound
-host-set fingerprint. The gate alone does not pin the file against external hand edits: the
+entry fingerprint. The gate alone does not pin the file against external hand edits: the
 final fingerprint read is a check, not an atomic compare-and-swap with external
 writers. An edit landing after the check but before the push/restart still drives
 the action; the post-operation refresh (§6) detects the drift and the next
@@ -540,7 +542,7 @@ operation-owned detach/restart/reattach sequence under the same gate.
 dedup first (generation-scoped like `deploy`), then the remnant fence (`remnant-open`
 naming the `remnantId`, past dedup and before any probe or acquisition), then busy-fail
 gate acquisition, then atomic record creation. The request carries the intended (generation, incarnation id) pair (§10); a lost-response retry repeats the old pair and replays, while a reuse of the same operation ID for a new incarnation names the new pair and opens fresh. No token: restart has no install step, no
-target, and no plan to re-verify. Instead restart binds the current host-set
+target, and no plan to re-verify. Instead restart binds the current host entry
 fingerprint (§3) at resolution and re-checks it under the gate alongside the
 post-acquisition entry re-read. A manual file edit between resolution and acquisition is
 a typed `stale-entry` refusal with a retry instruction. A mutation landing between
@@ -548,7 +550,7 @@ resolution and gate acquisition is likewise a typed refusal. Under the gate `res
 runs the same terminal-operation scan as deploy step (3). It wraps the 04b restart path
 (user versus system unit decision, `waitHealthy` proven replacement). Immediately before
 the irreversible restart — after the scan, still holding the gate, before signaling
-or restarting — the worker re-reads the on-disk host-set fingerprint and compares
+or restarting — the worker re-reads the on-disk host entry fingerprint and compares
 it against the bound fingerprint; any drift aborts with typed `stale-entry` and no
 restart. The read is a check, not an atomic compare-and-swap with external writers:
 an edit landing after it still drives the restart, and the post-operation refresh
@@ -967,7 +969,7 @@ This spec's paths emit:
   cross-kind, or current-generation `host-removed` collision is this refusal.
 - `stale-entry` (conflict class) with the values this spec's paths emit: `entry` (the
   resolved host entry drifted), `target` (the resolved deploy target drifted),
-  `generation` (the registry generation advanced), `hub.toml`-fingerprint (the host-set
+  `generation` (the registry generation advanced), `hub.toml`-fingerprint (the host entry
   fingerprint drifted — a hand edit landed between validation points), `running-version` (deploy's re-probed running
   build differs from the token-bound revision — §6 step 3), `running-health` (the
   re-probed health flag differs the same way), `facts-age` (the token-bound preflight
@@ -1094,7 +1096,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   gate held), then acquires the gate, re-checks, and mints. An unattached host gets
   the no-token refusal naming Connect. The deploy/restart worker's post-operation
   preflight is channel-free under the same pin.
-- Execution-time re-resolution mismatch including the host-set fingerprint drift: a
+- Execution-time re-resolution mismatch including the host entry fingerprint drift: a
   manual edit between plan and deploy refuses; a manual edit between restart's
   resolution and its gate acquisition refuses; a manual edit after the under-gate
   check refuses at the final pre-restart fingerprint re-read with no restart.

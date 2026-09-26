@@ -72,7 +72,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
 
-**Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the `hub.toml` host-set fingerprint (§6), facts, and running state it was minted from.
+**Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, the host's own `hub.toml` entry fingerprint (§6), facts, and running state it was minted from.
 
 **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 
@@ -693,9 +693,12 @@ carries a machine-managed banner comment at its top:
 ```
 
 The rewrite is a read-modify-write of the whole document, not a hosts-only
-marshal: it replaces the `[[hosts]]` array and nothing else, so every other key
-the file holds — the hub's own settings, provider overlays, plugin settings,
-and the machine-managed records below — round-trips unchanged. A host entry the
+marshal: it replaces the `[[hosts]]` array and updates the machine-managed
+records the mutation itself owns (a removal's tombstone and receipt, a
+generation mint, a remnant or cleared-marker write, retention pruning —
+§5/§15), while every key the mutation does not own — the hub's own settings,
+provider overlays, plugin settings, and reserved records it does not touch —
+round-trips unchanged. A host entry the
 file holds but the running hub never loaded — a hand edit made while the hub
 runs — is carried through the rewrite rather than dropped, and it becomes live
 without a restart through §4's fingerprint-bound adopt/reconcile discipline:
@@ -725,8 +728,16 @@ stale: boot never reads its entries again (it logs the stale file and, when the
 aside name is free, retries the set-aside rename), so a name the UI removed
 after the completed migration can never come back, even on a filesystem whose
 directory syncs are ignored. With the marker absent — a crash before it landed —
-the migration re-runs and converges: every already-merged name collides and is
-skipped, and the set-aside rename either already landed or is retried. Field
+the migration re-runs from scratch: nothing of the migration landed (the merged
+set and the marker are one atomic write), so boot reads the sidecar from the
+original path when it is there or, when the set-aside rename landed while the
+merged write was lost to the directory-sync tolerance, from the `.migrated`
+aside (the rename never mutates bytes) — a lost rename can never strand the
+sidecar's entries outside the read. A name that collides with `hub.toml` —
+possible through the operator's own hand edit — resolves through the collision
+arms below (byte-identical dropped, differing refused loudly); there is no
+"already merged" state to skip and no path that silently drops a differing
+entry. The set-aside rename either already landed or is retried. Field
 conversion is a carry, not a translation: the retired sidecar's JSON used the
 same snake_case names as the file's TOML tables for every stored field (`name`,
 `ssh`, `user`, `evener_path`, `config_path`, `addr`, `roots`, `key_path`), so
@@ -740,13 +751,20 @@ the duplicate, because the retired merge's silent drop would discard the
 sidecar's settings (a key path, say). While an unmigrated sidecar remains,
 mutations are refused: no `hub.toml` rewrite (and no UI mutation) can land
 before the sidecar's entries are folded in or the operator fixes the file. A
-crash before the marker lands cannot have acted on the merged state yet. The retired sidecar's durable content is exactly
-its host entries: the JSON shape carries no tombstones, receipts, remnants,
-generations, high-water marks, presence epochs, or fencing records — those are
-the §15/§6 records, and they live in `hub.toml`. The merge therefore drops at
-most a colliding duplicate *host entry* (the file's wins) and never any other
-record, and because the merged rewrite is a read-modify-write, every
-machine-managed record the file already holds survives it unchanged. A sidecar that fails to parse or validate is not
+crash before the marker lands cannot have acted on the merged state yet. The
+legacy sidecar format the migration reads is the one that shipped: a JSON
+object whose only record is the `hosts` entry array (`loadLegacyHostSidecar`
+in `cmd/evener-hub/app_host_manage.go`). The pre-decision revision of this spec
+also sketched a records-bearing sidecar (tombstones, generations, presence
+epochs, receipts, remnants, markers); that shape never shipped, and the
+migration refuses it rather than translating it or silently stripping it: a
+sidecar carrying any key beyond the shipped shape fails validation with the
+unrecognized keys named, both files stay byte-identical, and mutations stay
+refused until the operator archives or repairs the file — the explicit
+recovery path. Migration is therefore lossless for every sidecar that shipped:
+the merge drops at most a colliding duplicate *host entry* (the file's wins),
+and because the merged rewrite is a read-modify-write, every machine-managed
+record `hub.toml` already holds survives it unchanged. A sidecar that fails to parse or validate is not
 migrated at all: boot logs the refusal loudly and leaves both files untouched
 (the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set plus `key_path` (the
 SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
@@ -760,47 +778,58 @@ completed migration records.
 Machine-managed record layout: every machine-managed record lives under a
 reserved top-level key beside `[[hosts]]` — never inside a host entry, and
 never in a key the operator owns. The reserved keys are
-`legacy_sidecar_migrated` (a top-level boolean; the one machine record the
-shipped in-place store writes today, `cmd/evener-hub/app_host_manage.go`),
-`[reconcile]` (the post-rename reconcile marker: `reconcile_applied` plus the
-fingerprint it staged against), `[generations."<name>"]` (the per-name
-generation high-water mark), `[tombstones."<name>"]` (the §15 tombstone
-records), `[mutation_receipts."<scoped-key>"]` (the §5/§6 receipts, keyed by
-the five-part scoped receipt key in mutation-id / name / kind / generation /
-incarnation-id order), `[teardown_remnants."<remnant-id>"]` (the §9 teardown
-remnants), and `[host_records."<name>"]` (the per-host records the sibling
-specs define there: the crash-fencing spec's bootstrap-attempt fence and
-`helper_installed` flag, and the presence epoch). Field spellings are the
-stored fields' snake_case spelling; the prose's camelCase record names are the
-same records (`mutationReceipts` → `mutation_receipts`, `helperInstalled` →
-`helper_installed`, `reconcile-applied` → `reconcile_applied`), and where a
-sibling spec defines a record's fields, that
-spec's field set holds — this layout fixes where each record lives, not what it
-holds. A rewrite re-emits every reserved key's current value unchanged (the
-read-modify-write replaces only `hosts`), so a record this build does not
-recognize round-trips rather than being dropped, and a reserved key never
-carries operator data.
+`legacy_sidecar_migrated` (a top-level boolean; the in-place store this series
+introduces writes it — the registry PR; nothing on `main` writes `hub.toml`
+yet), `[reconcile]` (the post-rename reconcile marker: `reconcile_applied`
+plus the fingerprint it staged against), `[pending_mutation."<name>"]` and
+`[finalizing_mutation."<name>"]` (the §5 staged-receipt marker and finalizing
+claim: `staged_at`, `swap_started`, `teardown_started`, runtime phase, and the
+attempt token), `[generations."<name>"]` (the per-name generation high-water
+mark), `[tombstones."<name>"]` (the §15 tombstone records),
+`[mutation_receipts."<scoped-key>"]` (the §5/§6 receipts, keyed by the
+five-part scoped receipt key in mutation-id / name / kind / generation /
+incarnation-id order), `[pruned_receipts."<scoped-key>"]` (the §6 pruned
+marker: `pruned_at`), `[teardown_remnants."<remnant-id>"]` (the §9 teardown
+remnants), `[pending_store_sync]` (the deploy-pipeline spec §9 cross-file
+revocation intent), and `[host_records."<name>"]` (the per-host records the
+sibling specs define there — the crash-fencing spec's bootstrap-attempt fence
+and `helper_installed` flag, and the presence epoch — records that must survive
+a host edit, which is why they are not fields of the `[[hosts]]` entry). Field
+spellings are the stored fields' snake_case spelling; the prose's camelCase or
+hyphenated record names are the same records (`mutationReceipts` →
+`mutation_receipts`, `helperInstalled` → `helper_installed`,
+`reconcile-applied` → `reconcile_applied`), and where a sibling spec defines a
+record's fields, that spec's field set holds — this layout fixes where each
+record lives, not what it holds. A rewrite re-emits every reserved key the
+mutation does not own unchanged (it writes only `hosts` and the records the
+mutation itself updates in that same atomic write — the update rule above), so
+a record this build does not recognize round-trips rather than being dropped,
+and a reserved key never carries operator data.
 
-Fingerprint semantics: the `hub.toml` fingerprint the read path and the
-plan/deploy path use is the **host-set fingerprint** — a canonical hash over
+Fingerprint semantics: the **host-set fingerprint** is a canonical hash over
 the file's validated effective host entries, the same entries the registry
-serves. Machine-managed records (the layout above) and the operator's non-host
-keys are excluded by construction, so an unrelated host mutation, a receipt
-write, or a tombstone compaction cannot read as external configuration drift:
-tokens for unchanged hosts stay valid, and the read path does not schedule a
-reconcile for a file change that cannot alter a host entry. The whole-document
-content hash is a distinct value the write path uses for its own staging,
-final, and post-rename checks, where any byte change — host set or not — must
-retry the read-modify-write before it lands. (Write-path prose that names a
-`hub.toml` fingerprint a commit staged against, observed, or won by means this
-whole-document content hash; every other use — reads, token bindings,
-restarts — means the host-set fingerprint.) Config-path retention: the hub
+serves; the read path and the mutation path's adopt comparison use it, with
+machine-managed records (the layout above) and the operator's non-host keys
+excluded by construction, so a receipt write or a tombstone compaction cannot
+read as external configuration drift and the read path does not schedule a
+reconcile for a file change that cannot alter a host entry. The plan/deploy
+path binds each token to its host's own **entry fingerprint** — a canonical
+hash over the file's validated effective entry for that name — so an unrelated
+host's mutation cannot invalidate an outstanding token either, while a hand
+edit to the bound host's own entry still refuses the token as drift
+(deploy-pipeline spec §3). The whole-document content hash is a distinct value
+the write path uses for its own staging, final, and post-rename checks, where
+any byte change — host set or not — must retry the read-modify-write before it
+lands. (Write-path prose that names a `hub.toml` fingerprint a commit staged
+against, observed, or won by means this whole-document content hash; reads use
+the host-set fingerprint; token and restart bindings use the host's entry
+fingerprint.) Config-path retention: the hub
 supports `--config` paths (`cmd/evener-hub/main.go:203` —
 `deps.loadConfig(opts.configPath, opts.configExplicit)`), but neither the runtime `Config` nor
 `WebConfig` retains the selected path, so the registry carries the canonical config
 path (absolute, resolved at startup) through startup into the web
 configuration; both the rewrite target (the selected `hub.toml` itself) and
-the fingerprints derived from it (read from that same path: the host-set
+the fingerprints derived from it (read from that same path: the host's entry
 fingerprint at plan/mint and deploy/validate, the whole-document content hash
 at mutation stage/final-check time) derive from it — UI
 mutations against a `--config` hub land in the selected file and
@@ -837,10 +866,9 @@ other component-03 refusal. Every live host is UI-editable: `add`/`update`/
 them. External hand edits are read as input, never written by the store: every
 `hub.toml` mutation re-reads the current `hub.toml` bytes under the mutation lock and
 validates the staged change against them — reusing the host-set fingerprint
-the plan/deploy path binds into confirmation tokens (deploy-pipeline spec §3;
-a canonical hash over the file's validated effective host entries, machine-managed
-records excluded — fingerprint semantics above), or an equivalent host-set
-comparison: if the file changed since
+the read path uses (a canonical hash over the file's validated effective host
+entries, machine-managed records excluded — fingerprint semantics above), or
+an equivalent host-set comparison: if the file changed since
 startup (or since the last mutation), a change already on disk is adopted (the
 live entry takes the re-read file's effective values) rather than committed
 against the stale snapshot. Final check: between staging the new `hub.toml` bytes and the atomic
