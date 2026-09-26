@@ -77,16 +77,9 @@ func TestExecsupportPackagesStayInLibraryScope(t *testing.T) {
 	inventories := listSupportedExecsupportInventories(t)
 	inventory, ok := inventories[runtime.GOOS]
 	if !ok {
-		t.Fatalf("unsupported test host GOOS %q", runtime.GOOS)
+		t.Fatalf("missing execsupport inventory for GOOS=%s", runtime.GOOS)
 	}
-	got := inventory.paths
-	wantPackages, ok := execsupportPackagesByGOOS[runtime.GOOS]
-	if !ok {
-		t.Fatalf("unsupported test host GOOS %q", runtime.GOOS)
-	}
-	if !reflect.DeepEqual(got, wantPackages) {
-		t.Fatalf("go list ./execsupport/... = %v, want %v", got, wantPackages)
-	}
+	assertExecsupportPackagesStayInLibraryScope(t, runtime.GOOS, inventory.packages)
 
 	wantLibraries := append([]string{
 		"primeradiant.com/evener/agent",
@@ -107,6 +100,24 @@ func TestExecsupportPackagesStayInLibraryScope(t *testing.T) {
 	sort.Strings(actualLibraries)
 	if !reflect.DeepEqual(actualLibraries, wantLibraries) {
 		t.Fatalf("libraryPackages = %v, want %v", actualLibraries, wantLibraries)
+	}
+}
+
+func TestExecsupportPackagesStayInLibraryScopeForUnlistedGOOS(t *testing.T) {
+	root := repositoryRoot(t)
+	packages, err := loadExecsupportPackagesForGOOS(root, "freebsd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertExecsupportPackagesStayInLibraryScope(t, "freebsd", packages)
+}
+
+func assertExecsupportPackagesStayInLibraryScope(t *testing.T, goos string, packages []goListPackage) {
+	t.Helper()
+	for _, pkg := range packages {
+		if !slices.Contains(libraryPackages, pkg.ImportPath) {
+			t.Errorf("GOOS=%s package %q is not in libraryPackages", goos, pkg.ImportPath)
+		}
 	}
 }
 
@@ -132,26 +143,29 @@ func TestReviveExportedRuleCoversPublishedLibraryFiles(t *testing.T) {
 	root := repositoryRoot(t)
 	pathExcept, re := reviveExportedPathExcept(t, root)
 	inventories := listSupportedExecsupportInventories(t)
-	for _, goos := range supportedGOOS {
-		for _, pkg := range inventories[goos].packages {
-			for _, file := range packageGoFiles(pkg) {
-				path, err := filepath.Rel(root, filepath.Join(pkg.Dir, file))
-				if err != nil {
-					t.Fatalf("relativize %s/%s: %v", pkg.Dir, file, err)
-				}
-				path = filepath.ToSlash(path)
-				if !re.MatchString(path) {
-					t.Errorf("revive exported path-except %q does not cover %s (GOOS=%s)", pathExcept, path, goos)
-				}
-			}
-		}
+	for _, goos := range sortedInventoryGOOSes(inventories) {
+		assertReviveExportedRuleCoversPackages(t, root, pathExcept, re, goos, inventories[goos].packages)
 	}
 
 	registryPackages, err := loadGoListPackages(root, "linux", "primeradiant.com/evener/llm/registry")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, pkg := range registryPackages {
+	assertReviveExportedRuleCoversPackages(t, root, pathExcept, re, "linux registry", registryPackages)
+}
+
+func sortedInventoryGOOSes(inventories map[string]execsupportInventory) []string {
+	gooses := make([]string, 0, len(inventories))
+	for goos := range inventories {
+		gooses = append(gooses, goos)
+	}
+	sort.Strings(gooses)
+	return gooses
+}
+
+func assertReviveExportedRuleCoversPackages(t *testing.T, root, pathExcept string, re *regexp.Regexp, goos string, packages []goListPackage) {
+	t.Helper()
+	for _, pkg := range packages {
 		for _, file := range packageGoFiles(pkg) {
 			path, err := filepath.Rel(root, filepath.Join(pkg.Dir, file))
 			if err != nil {
@@ -159,7 +173,7 @@ func TestReviveExportedRuleCoversPublishedLibraryFiles(t *testing.T) {
 			}
 			path = filepath.ToSlash(path)
 			if !re.MatchString(path) {
-				t.Errorf("revive exported path-except %q does not cover %s (GOOS=linux registry)", pathExcept, path)
+				t.Errorf("revive exported path-except %q does not cover %s (GOOS=%s)", pathExcept, path, goos)
 			}
 		}
 	}
