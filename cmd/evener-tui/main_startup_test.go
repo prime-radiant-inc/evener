@@ -3,7 +3,6 @@ package tui
 import (
 	"errors"
 	"flag"
-	"io"
 	"os"
 	"strings"
 	"testing"
@@ -82,12 +81,17 @@ func TestParseTUIStartupOptionsHelpReturnsErrHelp(t *testing.T) {
 
 func TestParseTUIStartupOptionsHelpUsesEnvironmentHubAddr(t *testing.T) {
 	origStderr := os.Stderr
-	r, w, err := os.Pipe()
+	// A file, not a pipe: a pipe's writer blocks when its buffer fills, and on
+	// a busy Mac that buffer is 512 bytes, smaller than the usage (#2495).
+	stderr, err := os.CreateTemp(t.TempDir(), "help-stderr-")
 	if err != nil {
-		t.Fatalf("Pipe: %v", err)
+		t.Fatalf("CreateTemp: %v", err)
 	}
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
+	os.Stderr = stderr
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+		_ = stderr.Close()
+	})
 
 	_, parseErr := hubstart.ParseTUIStartupOptions([]string{"--help"}, func(key string) string {
 		if key == "EVENER_HUB_ADDR" {
@@ -95,10 +99,9 @@ func TestParseTUIStartupOptionsHelpUsesEnvironmentHubAddr(t *testing.T) {
 		}
 		return ""
 	})
-	_ = w.Close()
-	out, readErr := io.ReadAll(r)
+	out, readErr := os.ReadFile(stderr.Name())
 	if readErr != nil {
-		t.Fatalf("ReadAll: %v", readErr)
+		t.Fatalf("ReadFile: %v", readErr)
 	}
 	if !errors.Is(parseErr, flag.ErrHelp) {
 		t.Fatalf("hubstart.ParseTUIStartupOptions(--help) err = %v, want flag.ErrHelp", parseErr)
