@@ -858,13 +858,10 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearby excerpt contains only its verdict. It intentionally runs only for
 // that empty-proximity shape: ordinary blocks retain their established
 // context (including nested failure markers). Source diagnostics are associated
-// with the most recent go test RUN/CONT frame; a completed child or sibling
+// with the most recent go test RUN/CONT/NAME frame; a completed child or sibling
 // returns ownership to the parent. Parent-owned diagnostics are preferred over
-// nested or sibling diagnostics. Since a parent can flush buffered output
-// after a sibling's CONT frame, its first diagnostic after the parent's CONT
-// is also retained as a parent fallback; the latest remaining diagnostics then
-// fill the budget. The result is still no larger than one block's existing
-// before bound plus its marker.
+// nested or sibling diagnostics. The result is still no larger than one
+// block's existing before bound plus its marker.
 func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
@@ -888,17 +885,9 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		parentLevel bool
 	}
 	owner := name
-	parentFallback := false
 	candidates := make([]candidate, 0, marker-run)
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
-			trimmed := strings.TrimSpace(line)
-			if frameOwner == name && strings.HasPrefix(trimmed, "=== CONT ") {
-				parentFallback = true
-			}
-			if strings.HasPrefix(frameOwner, name+"/") {
-				parentFallback = false
-			}
 			owner = frameOwner
 		}
 		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
@@ -912,11 +901,8 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 			index:       index,
 			line:        line,
 			diagnostic:  diagnostic,
-			parentLevel: owner == name || (diagnostic && parentFallback),
+			parentLevel: owner == name,
 		})
-		if diagnostic && parentFallback {
-			parentFallback = false
-		}
 	}
 	if len(candidates) == 0 {
 		return nil, false
@@ -964,22 +950,24 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	return result, true
 }
 
-// surveyPhaseOwner extracts the test name from the testing package's RUN or
-// CONT frame. Fields are joined rather than taking fields[2] so subtest names
-// containing spaces remain associated with the right owner.
+// surveyPhaseOwner extracts the test name from the testing package's RUN,
+// CONT, or NAME frame. Fields are joined rather than taking fields[2] so
+// subtest names containing spaces remain associated with the right owner.
 func surveyPhaseOwner(line string) string {
 	fields := strings.Fields(line)
-	if len(fields) < 3 || fields[0] != "===" || (fields[1] != "RUN" && fields[1] != "CONT") {
+	if len(fields) < 3 || fields[0] != "===" ||
+		(fields[1] != "RUN" && fields[1] != "CONT" && fields[1] != "NAME") {
 		return ""
 	}
 	return strings.Join(fields[2:], " ")
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
-// a test starts, and `PAUSE` and `CONT` around a parallel test's wait. The
-// space after the directive closes it off from the test name, so a test's own
-// line that merely begins with one of the words (`=== PAUSED ...`) is output.
-var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT) `)
+// a test starts, `PAUSE` and `CONT` around a parallel test's wait, and `NAME`
+// when testing switches output ownership. The space after the directive
+// closes it off from the test name, so a test's own line that merely begins
+// with one of the words (`=== PAUSED ...`) is output.
+var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT|NAME) `)
 
 // surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
 // closed by the colon `go test -v` always writes. Without the colon a line is
@@ -1006,7 +994,7 @@ var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok 
 //
 // Each form is matched through the delimiter the toolchain always writes, not
 // a prefix it merely starts with. A phase line is `=== ` plus `RUN`, `PAUSE`,
-// or `CONT` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
+// `CONT`, or `NAME` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
 // `PASS:`, `FAIL:`, or `SKIP:` (`surveyTestVerdictLine`); and the bare binary
 // verdict plus `go test`'s package verdict and summary come from
 // `surveyVerdictLine`. The variable tail of each — the test name and time, the

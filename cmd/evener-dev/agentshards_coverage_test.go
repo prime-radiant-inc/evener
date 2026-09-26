@@ -346,10 +346,9 @@ func TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics(t *tes
 }
 
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
-// top-level parallel shape from go test -v: a sibling resumes before the
-// parent's buffered assertion, emits source-located diagnostics, passes, and
-// the parent then fails. The sibling's newer lines must not claim the parent
-// slot.
+// top-level parallel shape from go test -v: a sibling resumes after the
+// parent's assertion, emits source-located diagnostics, passes, and the
+// parent then fails. The sibling's newer lines must not claim the parent slot.
 func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T) {
 	const assertion = "    parent_test.go:99: parent assertion before sibling output"
 	var log strings.Builder
@@ -358,8 +357,8 @@ func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T
 	log.WriteString("=== RUN   TestSibling\n")
 	log.WriteString("=== PAUSE TestSibling\n")
 	log.WriteString("=== CONT  TestParent\n")
-	log.WriteString("=== CONT  TestSibling\n")
 	log.WriteString(assertion + "\n")
+	log.WriteString("=== CONT  TestSibling\n")
 	for i := range surveyContextBefore {
 		fmt.Fprintf(&log, "    sibling_test.go:%d: sibling diagnostic\n", i+1)
 	}
@@ -369,6 +368,42 @@ func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
 	if !strings.Contains(got, assertion) {
 		t.Fatalf("parent assertion was crowded out by sibling diagnostics: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership covers Go 1.27's
+// real parallel shape: a sibling emits a diagnostic, testing switches output
+// ownership with NAME, and the parent emits its assertion before more sibling
+// diagnostics. The parent assertion must survive, while the first sibling
+// diagnostic must not be promoted into the parent's diagnostic budget.
+func TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership(t *testing.T) {
+	const (
+		firstSibling = "    sibling_test.go:1: first sibling diagnostic"
+		assertion    = "    parent_test.go:99: parent assertion after NAME"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== PAUSE TestParent\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("=== PAUSE TestSibling\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString("=== CONT  TestSibling\n")
+	log.WriteString(firstSibling + "\n")
+	log.WriteString("=== NAME  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    sibling_test.go:%d: later sibling diagnostic\n", i+2)
+	}
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted after NAME frame: %q", got)
+	}
+	if strings.Contains(got, firstSibling) {
+		t.Fatalf("first sibling diagnostic was favored as parent output: %q", got)
 	}
 }
 
