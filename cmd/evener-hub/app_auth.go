@@ -1017,8 +1017,19 @@ func openAIStateDirFromEnv(env map[string]string) string {
 	return openAIStateDirFromEnvMap(env)
 }
 
+// openAIStatusFromRecord reports needsLogin only when the user must actually
+// sign in again: the access token is expired AND there is no refresh token to
+// recover it with. An expired access token backed by a refresh token is
+// routine and expected - ResolveRuntimeCredentials refreshes it on the next
+// use - so that case reports signedIn/needsRefresh instead of needsLogin
+// (issue #2468). A refresh that was attempted and permanently rejected would
+// also justify needsLogin, but nothing persists that outcome to the stored
+// record today (ResolveRuntimeCredentials's permanent-failure branch returns
+// an error without rewriting record.RefreshToken), so that case is not
+// distinguishable here yet and falls through to whatever RefreshToken holds.
 func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {
-	needsLogin := !record.Expiry.IsZero() && !record.Expiry.After(now)
+	expired := !record.Expiry.IsZero() && !record.Expiry.After(now)
+	needsLogin := expired && strings.TrimSpace(record.RefreshToken) == ""
 	return authopenai.AuthStatus{
 		SignedIn:     !needsLogin,
 		Source:       record.Source,

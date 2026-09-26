@@ -177,9 +177,19 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			wantRefresh:  true,
 		},
 		{
-			name:      "expired",
-			expiry:    now.Add(-time.Minute),
-			wantLogin: true,
+			// Expired, but the stored record still carries its refresh token:
+			// routine and expected, ResolveRuntimeCredentials refreshes it on
+			// the next use, so this reports the same refreshable state as the
+			// not-yet-expired case above rather than needsLogin (issue #2468).
+			// A record with no refresh token cannot reach this RPC path at
+			// all - authopenai.AuthRecord.Validate rejects one as corrupt
+			// before Status ever sees it - so that branch of
+			// openAIStatusFromRecord is pinned directly in
+			// FuzzAuthInstancesFactories instead.
+			name:         "expired with refresh token still on file",
+			expiry:       now.Add(-time.Minute),
+			wantSignedIn: true,
+			wantRefresh:  true,
 		},
 	}
 
@@ -823,10 +833,12 @@ func TestAuth_Codex_Status_ExpiredOAuthStaysTheSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	// Expired OAuth stays the source the registry resolves (the record exists),
-	// with NeedsLogin carrying the "sign in again" signal.
-	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.NeedsLogin {
-		t.Fatalf("status=%+v, want oauth active + NeedsLogin (expired record must not fall back to file)", got)
+	// Expired OAuth stays the source the registry resolves (the record
+	// exists, so it does not fall back to the shadowed file key). The stored
+	// record still carries its refresh token, so this is the routine
+	// refreshable state, not a login prompt (issue #2468).
+	if got.ActiveSource != authopenai.AuthSourceOAuth || got.NeedsLogin || !got.NeedsRefresh {
+		t.Fatalf("status=%+v, want oauth active + refreshable, not needsLogin (expired record must not fall back to file)", got)
 	}
 	if !got.HasStoredFile {
 		t.Errorf("status=%+v, want HasStoredFile true (file shadowed beneath expired oauth)", got)
