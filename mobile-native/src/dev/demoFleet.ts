@@ -8,9 +8,10 @@
 // is a browser script (it assigns to `window.EV_DATA`), so its content is
 // transcribed here rather than imported; the mapping choices are recorded
 // inline as each raw session is turned into a NavigationSessionSummary row.
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
 	AuthListResponse,
+	NavigationCapability,
 	NavigationJobSummary,
 	NavigationProjectSummary,
 	NavigationReadParams,
@@ -26,14 +27,16 @@ import type {
 // and NAVIGATION_CATALOG_LIMIT (in turn cmd/evener-hub/navigation_projection.
 // go's maxNavigationSectionRows/maxNavigationCatalogRows) rather than
 // importing them: that module's index.ts re-exports everything with
-// `export * from "./x"`, which tsx's CommonJS-mode compile turns into a
-// dynamic spread Node's real ESM loader can't statically find named exports
-// in -- an .mts file is always real ESM to Node, so `import { X } from
-// "@evener/appwire-client/state/navigation"` fails to load here even though
-// the identical specifier shape works from testing/navigation (a plain file
-// with direct declarations, not a re-export barrel). Vitest's own resolver
-// doesn't hit this, which is why the test file next to this one can import
-// the real constants directly.
+// `export * from "./x"`, and demo-hub.mts (which reaches this file through
+// its own import graph) is .mts, always real ESM to Node -- the CommonJS
+// compile a re-export barrel gets there turns `export *` into a dynamic
+// spread Node's real ESM loader can't statically find named exports in, so
+// `import { X } from "@evener/appwire-client/state/navigation"` fails to
+// load from anywhere that graph reaches, even though the identical
+// specifier shape works from testing/navigation (a plain file with direct
+// declarations, not a re-export barrel). Vitest's own resolver doesn't hit
+// this, which is why the test file next to this one can import the real
+// constants directly.
 const SECTION_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 
@@ -48,6 +51,16 @@ const DEMO_ETAG = '"demo-fleet-1"';
 const DEMO_REVISION = 1;
 const respond = (params: NavigationReadParams, data: unknown): NavigationReadResponse =>
 	wireV2(params, data, DEMO_ETAG, DEMO_REVISION, DEMO_FLEET_GENERATION);
+
+// demo-hub.mts's handshake capability, built here so it is the one file in
+// mobile-native that touches @evener/appwire-client/testing/ at all: that
+// subpath is in-repo test support (AGENTS.md "Importing the AppWire
+// TypeScript package"), and only a test or dev-support file may import it --
+// this one qualifies by living under src/dev/, the way the web's own
+// analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
+export function navigationCapability(): NavigationCapability {
+	return capability(DEMO_FLEET_GENERATION);
+}
 
 // A local copy of that same module's relativeAge (now/m/h/d), for the same
 // reason: SearchResult.age needs it and importing it hits the barrel above.
@@ -72,6 +85,15 @@ const D = 86400;
 // Mirrored here so a swarm as busy as s-pr2138 (54) or s-fuzz (467) behaves
 // like the real hub instead of shipping an unbounded payload.
 const MAX_CHILDREN = 50;
+
+// The hub's projectNode applies that same cap recursively, at every depth of
+// a session's descendant tree, not only its immediate children -- so this is
+// shared by both toRow (a session's own children) and toChildRow (a child's
+// own children), rather than the top level capping and a nested level not.
+export function capChildren<T>(children: T[]): { capped: T[]; omitted: number } {
+	const capped = children.slice(0, MAX_CHILDREN);
+	return { capped, omitted: children.length - capped.length };
+}
 
 const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED · 271")
 // How many archived rows a "project" overview embeds as a preview, versus a
@@ -288,7 +310,11 @@ const SESSIONS: RawSession[] = [
 		state: "working",
 		ago: 11,
 		subs: { run: 2, fail: 0, done: 4 },
-		activity: "Running npm test in appwire-client/typescript",
+		// Spelled out in prose, not as a path: scripts/sdk/
+		// package-import-paths-check.sh greps every quoted string in this tree
+		// for the AppWire package spelled by path, and cannot tell this fixture
+		// string from a real import (its own header comment says so).
+		activity: "Running npm test in the AppWire TypeScript package",
 	},
 
 	// Idle, seen (3)
@@ -421,6 +447,7 @@ function toChildRow(
 	offline: boolean,
 ): NavigationSessionSummary {
 	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
+	const { capped, omitted } = capChildren(sub.children ?? []);
 	return {
 		ref: `${ownerHostId}:${sub.id}`,
 		host_id: ownerHostId,
@@ -432,7 +459,8 @@ function toChildRow(
 		live,
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - sub.ago * 1000).toISOString(),
-		children: (sub.children ?? []).map((child) => toChildRow(child, ownerHostId, project, startupMs, offline)),
+		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
+		children: capped.map((child) => toChildRow(child, ownerHostId, project, startupMs, offline)),
 	};
 }
 
@@ -465,9 +493,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 	const { state, askPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
-	const all = rawChildren(raw);
-	const capped = all.slice(0, MAX_CHILDREN);
-	const omitted = all.length - capped.length;
+	const { capped, omitted } = capChildren(rawChildren(raw));
 	const jobs = runningJobs(raw);
 	return {
 		ref: `${owner}:${raw.id}`,
@@ -511,6 +537,11 @@ export interface DemoFleetOptions {
 	// Mirrors EVENER_DEMO_FLEET_OFFLINE_HOST: marks paradise-park's source
 	// offline and every one of its rows offline, for the offline frames.
 	offlineHost?: boolean;
+	// The clock evener/search's `age` reads, sampled fresh on every call --
+	// unlike `now` above, which freezes each row's updated_at once at
+	// startup. Defaults to Date.now; a test injects a fixed function so the
+	// computed age doesn't depend on when the test happens to run.
+	clock?: () => number;
 }
 
 export interface DemoFleet {
@@ -523,6 +554,7 @@ export interface DemoFleet {
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
 	const offlineHost = options.offlineHost ?? false;
+	const clock = options.clock ?? Date.now;
 	const rowById = new Map(SESSIONS.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
@@ -654,7 +686,11 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			}
 			case "project_page": {
 				const projectKey = knownProjectKey(params);
-				const tier = params.tier as "current" | "recent" | "archived";
+				// Same as section/catalog: an unrecognized tier is a hard error --
+				// it must never fall through to being served as "recent".
+				if (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived")
+					throw new Error(`Unknown demonstration tier: ${params.tier}`);
+				const tier = params.tier;
 				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, SECTION_LIMIT);
 				return respond(params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
 			}
@@ -666,9 +702,12 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	function answerSearch(params: SearchParams): SearchResponse {
 		const query = params.query?.trim().toLowerCase();
 		const matches = query ? SESSIONS.filter((raw) => raw.title.toLowerCase().includes(query)) : SESSIONS;
+		// Sampled per call, not the startup instant: a hit's age should grow as
+		// the demo hub keeps running, the same as a real search would.
+		const now = clock();
 		const toHit = (raw: RawSession) => {
 			const row = rowOf(raw);
-			const age = relativeAge(row.updated_at, startupMs);
+			const age = relativeAge(row.updated_at, now);
 			return { id: row.session_id, title: row.title, project: row.project, state: row.state, age, ref: row.ref };
 		};
 		return {

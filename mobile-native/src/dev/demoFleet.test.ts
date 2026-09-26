@@ -1,5 +1,5 @@
 // The redesign's demo fleet, decoded through the real package codec so the
-// fixture can never drift from the wire (see demoFleet.mts's header comment
+// fixture can never drift from the wire (see demoFleet.ts's header comment
 // for what this fixture represents and where it comes from).
 import { describe, expect, it } from "vitest";
 import type { NavigationReadParams, NavigationSessionSummary } from "@evener/appwire-client";
@@ -8,7 +8,7 @@ import {
 	materializeSnapshot,
 	navigationParamsToResourceKey,
 } from "@evener/appwire-client/state/navigation";
-import { createDemoFleet, DEMO_FLEET_GENERATION } from "./demoFleet.mjs";
+import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION } from "./demoFleet.js";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
 
@@ -125,6 +125,25 @@ describe("demo fleet live and needs-you sections", () => {
 		expect(findRow(rows, "s-audit").offline).toBeUndefined(); // local
 		const defaultRows = liveRows(fleet);
 		expect(findRow(defaultRows, "s-retry").offline).toBeUndefined();
+	});
+});
+
+describe("demo fleet children capping", () => {
+	// cmd/evener-hub/navigation_projection.go's projectNode applies
+	// maxNavigationChildren at every depth of a session's descendant tree, not
+	// only its immediate children. toRow and toChildRow share this one
+	// function so a nested level can't fall out of step with the top one.
+	it("caps at the hub's own limit and reports the excess, regardless of depth", () => {
+		const many = Array.from({ length: 55 }, (_, i) => ({ id: `x-${i}` }));
+		const { capped, omitted } = capChildren(many);
+		expect(capped).toHaveLength(50);
+		expect(omitted).toBe(5);
+	});
+
+	it("reports no omission when under the limit", () => {
+		const { capped, omitted } = capChildren([{ id: "only-one" }]);
+		expect(capped).toHaveLength(1);
+		expect(omitted).toBe(0);
 	});
 });
 
@@ -245,6 +264,15 @@ describe("demo fleet catalogs and projects", () => {
 	it("rejects an unknown project", () => {
 		expect(() => fleet.answerNavigationRead(params({ resource: "project", projectKey: "nope" }))).toThrow();
 	});
+
+	// cmd/evener-hub/app_navigation.go rejects an unrecognized tier the same
+	// way it rejects an unrecognized section or catalog; this fleet used to
+	// silently serve anything but "current"/"archived" as "recent".
+	it("rejects an unknown tier instead of silently serving it as recent", () => {
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "project_page", projectKey: "evener", tier: "nope" })),
+		).toThrow(/tier/i);
+	});
 });
 
 describe("demo fleet search, auth and plugins", () => {
@@ -254,6 +282,14 @@ describe("demo fleet search, auth and plugins", () => {
 		expect(response.live.map((hit) => hit.id)).toEqual(["s-wasm"]);
 		expect(response.past.map((hit) => hit.id)).toEqual(["s-wasm2"]);
 		expect(response.live[0]).toMatchObject({ project: "c-to-wasm", ref: "paradise-park:s-wasm" });
+	});
+
+	it("computes a hit's age against the current clock, not frozen at fleet creation", () => {
+		const fiveMinutes = 5 * 60 * 1000;
+		const fleet = createDemoFleet({ now: STARTUP, clock: () => STARTUP + fiveMinutes });
+		// s-wasm: ago 12 minutes: updated_at is STARTUP - 12m. Five minutes after
+		// creation that's 17m old; frozen at creation it would still read 12m.
+		expect(fleet.answerSearch({ query: "wasm" }).live[0]?.age).toBe("17m");
 	});
 
 	it("reports one provider needing sign-in, in a combination the hub actually produces", () => {

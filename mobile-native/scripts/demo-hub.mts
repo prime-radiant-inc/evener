@@ -11,8 +11,7 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
-import { capability } from "@evener/appwire-client/testing/navigation";
-import { createDemoFleet, DEMO_FLEET_GENERATION, type DemoFleetOptions } from "./demoFleet.mjs";
+import { createDemoFleet, navigationCapability, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -98,7 +97,7 @@ export async function createDemoHub(
 			directoryComplete: false,
 			auth: demoFleet !== null,
 		},
-		...(demoFleet ? { navigation: capability(DEMO_FLEET_GENERATION) } : {}),
+		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
 	function resync(thread: Thread) {
