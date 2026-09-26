@@ -166,28 +166,37 @@ function openFakeModal(): { modal: HTMLElement; inside: HTMLButtonElement; close
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
-  // Await the lazy pane/dock modules once up front, then pay react-dom's
-  // per-boundary fallback throttle in one warm render per route shape - see
-  // AppShell.test.tsx's warmRoute for the full reasoning (the cost is real
-  // and awaitable here; inside a test it would eat the assertion window).
+  // Await the lazy pane/dock modules once up front, then initialize each
+  // lazy payload in one warm render per route shape: a warm module cache
+  // still leaves React.lazy's first render suspending. Each render runs
+  // inside an awaited act so its reveal commits as soon as the chunk
+  // resolves; outside act, react-dom holds every reveal for its 300ms
+  // FALLBACK_THROTTLE_MS on a real timer, inside the assertion window of
+  // whichever test rendered first.
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
   await import("./DockHost");
   window.history.pushState({}, "", "/");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByText("No session open", undefined, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/settings");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByRole("navigation", { name: "Settings sections" }, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();
   resetSettingsOverviewStoreForTests();
   window.history.pushState({}, "", "/s/local:warm");
   installLocationForRoute("local:warm");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByText(/loading transcript/i, undefined, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();
