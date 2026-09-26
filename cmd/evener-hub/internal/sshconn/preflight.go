@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // requiredLaunchFlag is the serve flag every host binary must advertise before
@@ -57,6 +58,13 @@ type Preflight struct {
 	// the controller's appwire protocol outright, in which case Protocol,
 	// Version, and LaunchFlags carry no information and must be read as unknown.
 	LaunchCheckKnown bool
+	// ExecutableMissing records the verified result of the dedicated executable
+	// probe (`test -x <run_path>`, or `command -v <run_path>` for a bare name):
+	// there is no evener executable at the host's resolved run target. It is
+	// surfaced as the ErrExecutableMissing sentinel where an error is needed;
+	// when a deploy path is configured, `Ensure` routes it into the
+	// deploy/install ladder, which creates the missing run target.
+	ExecutableMissing bool
 }
 
 // osArchTargetsSupported reports whether a build ships for this target. Only
@@ -244,7 +252,8 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	}
 	lc, err := m.probeLaunchCheck(ctx, probeHost)
 	if err != nil {
-		if errors.Is(err, errExecutableMissing) {
+		missing := errors.Is(err, errExecutableMissing)
+		if missing {
 			// The executable is absent from the non-interactive PATH, but the
 			// binary may still exist at the installer's default location
 			// deployTarget falls back to. Probe it before recording the contract
@@ -267,8 +276,12 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 					return pf, nil
 				}
 			}
+			// The dedicated probe verified that the resolved run target is not
+			// executable there, and the installer default did not hold a binary
+			// either: record the verified fact.
+			pf.ExecutableMissing = true
 		}
-		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || errors.Is(err, errExecutableMissing)) {
+		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || missing) {
 			// The on-disk binary either refused the controller's appwire protocol
 			// outright, returned a contract that cannot be read, or is not there at
 			// all. Each is a fact about the binary, not a fatal preflight: ensureOnce
@@ -283,7 +296,7 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 			// being deferred to a deploy that can never run.
 			return pf, nil
 		}
-		if errors.Is(err, errExecutableMissing) {
+		if missing {
 			// The host has no evener at the resolved path and no deploy path is
 			// configured (the branch above defers the same error when one is), so
 			// nothing can install the binary. Call it terminally with the remedy this
@@ -315,7 +328,7 @@ func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (laun
 		if isProtocolMismatchOutput(out) {
 			return launchCheck{}, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(out))
 		}
-		if executableMissing(err, out) {
+		if m.verifiedExecutableMissing(ctx, host) {
 			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", errExecutableMissing, host.Name, tail(out))
 		}
 		return launchCheck{}, sshRunFailure(host.Name, "launch-check", err, tail(out))
@@ -323,9 +336,10 @@ func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (laun
 	return parseLaunchCheck(out)
 }
 
-// errExecutableMissing marks a failed evener invocation that failed because there
-// is no evener executable at the resolved path: the host's non-interactive PATH
-// does not carry it. It is a fact about the command's absence, not a transport or
+// errExecutableMissing marks the verified absence of the evener executable at the
+// host's resolved run target: the dedicated executable probe proved it (its own
+// exit 1), rather than the failed launch-check's status or its not-found text
+// being parsed. It is a fact about the executable's absence, not a transport or
 // permission refusal, so a controller with a deploy configured records the launch
 // contract as unknown and lets the installer fallback install a binary at a known
 // location, instead of refusing the host outright.
@@ -340,18 +354,43 @@ var errExecutableMissing = errors.New("sshconn: evener executable not found on t
 // (appwire.HubLaunchError) rather than a generic internal error.
 var ErrExecutableMissing = errExecutableMissing
 
-// executableMissing reports whether a failed evener invocation failed because the
-// executable could not be found. POSIX shells exit 127 for a command that cannot
-// be found and print a "not found" diagnostic; 126 (found but not executable) is
-// a real permission problem and is deliberately excluded, as is any failure whose
-// exit status or diagnostics do not name a missing command.
-func executableMissing(err error, out []byte) bool {
+// verifiedExecutableMissing reports whether the dedicated executable probe
+// proves there is no evener executable at the command launch-check just tried.
+//
+// It reads the probe's exit status alone and never its output: ssh writes its
+// own diagnostics and the remote command's stderr to one merged stream, so the
+// text is not separable evidence, and a failed evener invocation's 127 is not
+// either (the remote shell's not-found status is exactly what must not be
+// parsed). The probe normalizes its answer to 0 (present) or 1 (absent); only
+// its own 1 is the verified absent result. Every other failure — ssh's 255, a
+// spawn failure, any other status — is not a verification, so the caller keeps
+// the failed launch-check's own retryable classification rather than reading a
+// transport failure as a missing executable (spec 04, §"Preflight", "Missing
+// executable"; §"Error handling", "Arbitrary SSH failures must not trigger
+// installation").
+func (m *Manager) verifiedExecutableMissing(ctx context.Context, host hostreg.Host) bool {
+	_, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, executableProbeRemote(evenerCommand(host.EvenerPath))), nil)
 	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 127 {
-		return false
+	return errors.As(err, &exit) && exit.ExitCode() == 1
+}
+
+// executableProbeRemote builds the dedicated executable-presence probe for the
+// command launch-check would run: exit 0 when target exists and is executable
+// there, exit 1 when it is not. A path target is probed with `test -x`, the
+// spec's form; a bare name is probed with `command -v`, the PATH equivalent,
+// because `test -x evener` would test the login shell's cwd rather than the
+// PATH the bare word resolves through. The if/exit wrapper normalizes both forms
+// to the spec's 0/1 sentinel: `command -v` answers 127 — not 1 — for a name it
+// cannot find (dash and other shells), so without the wrapper the absent answer
+// would depend on the shell generation, and a status that double-duties as the
+// shell's own not-found code could not be told from the probe's.
+func executableProbeRemote(target string) string {
+	word := shellquote.RemoteWord(target)
+	cond := "test -x " + word
+	if !strings.Contains(target, "/") {
+		cond = "command -v " + word + " >/dev/null 2>&1"
 	}
-	text := strings.ToLower(string(out))
-	return strings.Contains(text, "not found") || strings.Contains(text, "no such file")
+	return "if " + cond + "; then exit 0; else exit 1; fi"
 }
 
 // runRemote runs a non-evener remote command, classifying a failure as an auth
