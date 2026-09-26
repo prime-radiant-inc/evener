@@ -44,6 +44,7 @@ import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 
@@ -136,6 +137,7 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
       <Composer ref={REF} focused={false} />
     </ClientProvider>,
   );
+  await settleActivityDiscovery(REF);
   return fake;
 }
 
@@ -178,7 +180,7 @@ function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCa
         threadId: `thr_${REF}`,
         ref: REF,
         turnId,
-        item: { type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
+        item: { type: "userMessage", id: "item_user_1", turnId, text: "hi", status: "completed" },
       },
     });
     fake.emitNotification(statusActiveFrame(capabilities));
@@ -230,7 +232,7 @@ test("a resumed cold session's controls follow the turn it is running", async ()
   const fake = await mountComposer("notLoaded", COLD_CAPABILITIES);
 
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
-  await type("another thought");
+  await type("hi");
 
   const model = threadsStore.getState().threads.get(REF);
   expect({ status: model?.status.type, activeTurnId: model?.activeTurnId }).toEqual({
@@ -252,7 +254,7 @@ test("a live idle session's controls follow the turn its own send starts", async
   // harness reads true (#1375) and the composer is still a plain send: the
   // status, not the bit, decides which control that is.
   expect(threadsStore.getState().threads.get(REF)?.capabilities.queue).toBe(true);
-  await type("another thought");
+  await type("hi");
   expect(submitButton().disabled).toBe(false);
 
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
@@ -362,6 +364,7 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
           capabilitySource: "statusFrame",
           capabilities: { interrupt: false, steer: true },
         });
+        return settleActivityDiscovery(REF);
       });
   } finally {
     warn.mockRestore();
@@ -396,7 +399,7 @@ test("the turn ending puts the controls back to a plain send", async () => {
       },
     });
   });
-  await type("another thought");
+  await type("hi");
 
   expect(threadsStore.getState().threads.get(REF)?.capabilities).toEqual(daemonCapabilities(false));
   expect(screen.queryByTestId("composer-steer")).toBeNull();
@@ -411,7 +414,7 @@ test("a status change with no capabilities leaves the advertised set alone", asy
   const fake = await mountComposer("idle", daemonCapabilities(true));
 
   emitTurnStart(fake, "turn_5", undefined);
-  await type("another thought");
+  await type("hi");
 
   expect(threadsStore.getState().threads.get(REF)?.capabilities).toEqual(daemonCapabilities(true));
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
@@ -538,7 +541,7 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
 test("a failed turn takes Stop and Steer off and gives Send back", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
-  await type("another thought");
+  await type("hi");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
@@ -572,7 +575,7 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
 test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
-  await type("another thought");
+  await type("hi");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
 
   emitInlineTurnBoundary(fake, "turn_5", "turn_6");
