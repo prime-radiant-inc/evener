@@ -79,26 +79,26 @@ func TestReflectedUintNonIntKind(t *testing.T) {
 	}
 }
 
-// TestFileIdentityNilInfo covers the nil-info path in fileIdentity.
+// TestFileIdentityNilInfo covers the nil-info path in FileIdentity.
 func TestFileIdentityNilInfo(t *testing.T) {
-	if got := fileIdentity(nil); got != "" {
-		t.Fatalf("fileIdentity(nil) should return empty, got %q", got)
+	if got := FileIdentity(nil); got != "" {
+		t.Fatalf("FileIdentity(nil) should return empty, got %q", got)
 	}
 }
 
-// TestFileIdentityNoSys covers the nil-Sys path in fileIdentity.
+// TestFileIdentityNoSys covers the nil-Sys path in FileIdentity.
 func TestFileIdentityNoSys(t *testing.T) {
 	info := mockFileInfo{sys: nil}
-	if got := fileIdentity(info); got != "" {
-		t.Fatalf("fileIdentity with nil Sys should return empty, got %q", got)
+	if got := FileIdentity(info); got != "" {
+		t.Fatalf("FileIdentity with nil Sys should return empty, got %q", got)
 	}
 }
 
-// TestFileIdentityNonStructSys covers the non-struct Sys path in fileIdentity.
+// TestFileIdentityNonStructSys covers the non-struct Sys path in FileIdentity.
 func TestFileIdentityNonStructSys(t *testing.T) {
 	info := mockFileInfo{sys: "not a struct"}
-	if got := fileIdentity(info); got != "" {
-		t.Fatalf("fileIdentity with non-struct Sys should return empty, got %q", got)
+	if got := FileIdentity(info); got != "" {
+		t.Fatalf("FileIdentity with non-struct Sys should return empty, got %q", got)
 	}
 }
 
@@ -360,7 +360,7 @@ func TestCloneToolNamesObservedWithStats(t *testing.T) {
 	}
 }
 
-// mockFileInfo implements os.FileInfo for testing fileIdentity and fileChangeIdentity.
+// mockFileInfo implements os.FileInfo for testing FileIdentity and fileChangeIdentity.
 type mockFileInfo struct {
 	sys any
 }
