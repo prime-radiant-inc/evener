@@ -478,6 +478,8 @@ async function runChecks(page, scheme) {
     await ev(page, `EV.S.toast.undo()`); await sleep(300);
     const after = await ev(page, `({ gocache: EV.sess('s-gocache').archived, retry: EV.sess('s-retry').archived })`);
     if (!after.gocache || after.retry) throw new Error("undoing a bulk archive should restore each session's prior archived state; got " + JSON.stringify(after));
+    // The undo lands in the action log, as a single row's undo does.
+    await logHas(page, 'bulk_unarchive', (e) => e.undo && e.ids.length === 1 && e.ids[0] === 's-retry');
   });
 }
 
