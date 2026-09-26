@@ -33,28 +33,17 @@ func TestAuth_LogoutWaitsForAnotherCredentialWrite(t *testing.T) {
 		}
 		return key, err
 	}
-	t.Cleanup(func() { resolveEndpointFingerprintKey = originalResolve })
 	originalSet := ctrl.setCredential
 	setEntered := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	ctrl.setCredential = func(name, value string) error {
 		close(setEntered)
 		<-release
 		return originalSet(name, value)
 	}
 	setResult := make(chan error, 1)
-	go func() {
-		_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "sk-work"})
-		setResult <- err
-	}()
-	select {
-	case <-setEntered:
-	case <-ctx.Done():
-		t.Fatal("ApiKeySet did not enter its credential write")
-	}
-
+	setDone := make(chan struct{})
 	cleared := make(chan struct{})
 	originalClear := ctrl.clearCredential
 	ctrl.clearCredential = func(name string) error {
@@ -71,7 +60,43 @@ func TestAuth_LogoutWaitsForAnotherCredentialWrite(t *testing.T) {
 		err      error
 	}
 	logout := make(chan logoutResult, 1)
+	logoutDone := make(chan struct{})
+	setLaunched := false
+	logoutLaunched := false
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		waitForCompletion := func(done <-chan struct{}, operation string) {
+			timer := time.NewTimer(time.Second)
+			defer timer.Stop()
+			select {
+			case <-done:
+			case <-timer.C:
+				t.Errorf("%s did not complete during test cleanup", operation)
+				<-done
+			}
+		}
+		if setLaunched {
+			waitForCompletion(setDone, "ApiKeySet")
+		}
+		if logoutLaunched {
+			waitForCompletion(logoutDone, "Logout")
+		}
+		resolveEndpointFingerprintKey = originalResolve
+	})
+	setLaunched = true
 	go func() {
+		defer close(setDone)
+		_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "sk-work"})
+		setResult <- err
+	}()
+	select {
+	case <-setEntered:
+	case <-ctx.Done():
+		t.Fatal("ApiKeySet did not enter its credential write")
+	}
+	logoutLaunched = true
+	go func() {
+		defer close(logoutDone)
 		response, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work-ant"})
 		logout <- logoutResult{response: response, err: err}
 	}()
