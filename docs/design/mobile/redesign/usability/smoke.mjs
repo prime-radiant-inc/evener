@@ -468,6 +468,17 @@ async function runChecks(page, scheme) {
       if (after.cats.some((c) => c && !after.valid.includes(c))) throw new Error('a bulk action pinned sessions to a deleted category: ' + JSON.stringify(after));
     }
   });
+  // Bulk Archive's undo must put each session back where it was, not
+  // unarchive rows that were already archived before the bulk action.
+  await check(S('flow-bulk-archive-undo-restores-each'), page, async () => {
+    await reset(page);
+    await ev(page, `EV.S.board.selecting = true; EV.S.board.selected = { 's-gocache': true, 's-retry': true }; EV.update()`); await sleep(300);
+    await ev(page, `EV.bulkMenu()`); await sleep(300);
+    await tapRole('menuitem', 'Archive'); await sleep(300);
+    await ev(page, `EV.S.toast.undo()`); await sleep(300);
+    const after = await ev(page, `({ gocache: EV.sess('s-gocache').archived, retry: EV.sess('s-retry').archived })`);
+    if (!after.gocache || after.retry) throw new Error("undoing a bulk archive should restore each session's prior archived state; got " + JSON.stringify(after));
+  });
 }
 
 try {

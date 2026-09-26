@@ -527,7 +527,7 @@
     // section renders while the toast and log still claimed Release.
     const release = S.categories.find((c) => c.id === "release");
     EV.openMenu({ kind: "list", top: 420, title: "Selected sessions", preview: html`<div class="preview"><div class="pt">${ids.length} selected</div></div>`, items: [
-      { label: "Archive", icon: I.archive({ s: 18 }), run: () => { ids.forEach((id) => { EV.sess(id).archived = true; }); EV.log("bulk_archive", { ids }); EV.toast("Archived " + ids.length, () => { ids.forEach((id) => { EV.sess(id).archived = false; }); EV.update(); }); done(); } },
+      { label: "Archive", icon: I.archive({ s: 18 }), run: () => { const prev = ids.map((id) => EV.sess(id).archived); ids.forEach((id) => { EV.sess(id).archived = true; }); EV.log("bulk_archive", { ids }); EV.toast("Archived " + ids.length, () => { ids.forEach((id, i) => { EV.sess(id).archived = prev[i]; }); EV.update(); }); done(); } },
       { label: "Mark as read", icon: I.check({ s: 18 }), run: () => { ids.forEach((id) => { const s = EV.sess(id); if (s.state === "yourmove") s.unseen = false; }); EV.log("bulk_read", { ids }); done(); } },
       release ? { label: "Pin to " + release.name, icon: I.pin({ s: 18 }), run: () => { ids.forEach((id) => { EV.sess(id).category = release.id; }); EV.log("bulk_pin", { ids, category: release.name }); EV.toast("Pinned " + ids.length + " to " + release.name); done(); } } : null,
     ] });
