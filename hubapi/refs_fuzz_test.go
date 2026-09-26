@@ -70,6 +70,8 @@ func coverClient(t *testing.T) {
 		_ = NeedsYouBand(state, false, false)
 		_ = NeedsYouBand(state, true, false)
 		_ = NeedsYouBand(state, false, true)
+		_ = AttentionState(state, false)
+		_ = AttentionState(state, true)
 	}
 
 	if _, err := NewClient("http://%", nil); err == nil {

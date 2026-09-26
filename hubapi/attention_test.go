@@ -75,6 +75,30 @@ func TestStateWord(t *testing.T) {
 	}
 }
 
+func TestAttentionState(t *testing.T) {
+	cases := []struct {
+		state           string
+		approvalPending bool
+		want            string
+	}{
+		// The escalation blocks mid-turn, so the session still reports
+		// "active"; its attention is a person's answer, like a question's.
+		{"active", true, "awaiting"},
+		{"idle", true, "awaiting"},
+		{"warning", true, "awaiting"},
+		{"restartRequired", true, "awaiting"},
+		{"errored", true, "errored"}, // a failure still outranks an approval
+		{"active", false, "active"},
+		{"warning", false, "warning"},
+		{"errored", false, "errored"},
+	}
+	for _, c := range cases {
+		if got := AttentionState(c.state, c.approvalPending); got != c.want {
+			t.Errorf("AttentionState(%q, %v) = %q, want %q", c.state, c.approvalPending, got, c.want)
+		}
+	}
+}
+
 func TestNeedsYouBand(t *testing.T) {
 	cases := []struct {
 		state           string

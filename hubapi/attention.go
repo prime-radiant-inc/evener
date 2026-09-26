@@ -8,6 +8,20 @@
 // lives now.
 package hubapi
 
+// AttentionState is the state a session's attention is judged by: its
+// normalized state, except that a pending approval (a sandbox escalation, M7)
+// reads as "awaiting". The escalation blocks mid-turn, so the session keeps
+// reporting "active" while it waits on a person the way a question does. A
+// failure still outranks it: "errored" stays "errored". Rank and level a
+// session through this, never through its reported state alone, which stays
+// unchanged on every row.
+func AttentionState(state string, approvalPending bool) string {
+	if approvalPending && state != "errored" {
+		return "awaiting"
+	}
+	return state
+}
+
 // AttentionRank maps a normalized state to a sort key for live-session
 // ordering. Higher rank sorts first (most attention-needing first).
 func AttentionRank(state string) int {

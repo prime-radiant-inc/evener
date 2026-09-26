@@ -1290,19 +1290,21 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// Rollup: highest-attention state (for the dot fallback) plus the
 		// magnitude counts the header renders. Each top-level session and its
 		// children form one task tree: child activity keeps the project working,
-		// but cannot inflate the count beyond one for that task tree.
+		// but cannot inflate the count beyond one for that task tree. A node
+		// blocked on an approval weighs in as its hubapi.AttentionState, so the
+		// task needs you rather than reading as working.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			taskState := s.State
+			taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
 				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
 					taskState = "active"
 				}
 				for _, child := range node.Children {
-					if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
-						taskState = child.State
+					if childState := hubapi.AttentionState(child.State, child.ApprovalPending); hubapi.RollupRank(childState) > hubapi.RollupRank(taskState) {
+						taskState = childState
 					}
 					includeDescendants(child)
 				}
@@ -1483,11 +1485,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {
-		ri, rj := hubapi.AttentionRank(liveNodes[i].State), hubapi.AttentionRank(liveNodes[j].State)
+		a, b := &liveNodes[i], &liveNodes[j]
+		ri, rj := hubapi.AttentionRank(hubapi.AttentionState(a.State, a.ApprovalPending)), hubapi.AttentionRank(hubapi.AttentionState(b.State, b.ApprovalPending))
 		if ri != rj {
 			return ri > rj
 		}
-		return treeNodeLess(liveNodes[i], liveNodes[j], metaMap, liveMap)
+		return treeNodeLess(*a, *b, metaMap, liveMap)
 	})
 
 	// Drop archived sessions from the Live tier: an explicit session
