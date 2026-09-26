@@ -106,6 +106,24 @@ test("codec accepts the offline source marker on a session row", () => {
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, malformed))).toThrow();
 });
 
+// A session blocked on a sandbox approval keeps its real state ("active") and
+// carries the hub's approval flag beside it (S2). The flag reaches the rendered
+// row, and a non-boolean one is a schema error like any other known key.
+test("codec keeps the approval flag on a session row and refuses a non-boolean one", () => {
+  const withApproval = (approval: unknown) => {
+    const snapshot = liveSnapshot();
+    const first = snapshot.entities[0];
+    if (!first) throw new Error("missing entity");
+    first.value = { ...(first.value as object), state: "active", approval_pending: approval };
+    return snapshot;
+  };
+  const rows = materializeSnapshot(key, decodedSnapshot(key, withApproval(true))).sessions as Array<
+    Record<string, unknown>
+  >;
+  expect(rows[0]?.approval_pending).toBe(true);
+  expectContentFreeRejection(key, withApproval("private-body-value"));
+});
+
 test("codec accepts stateless records and rejects obsolete entity and container revisions", () => {
   const stateless = structuredClone(liveSnapshot()) as unknown as {
     entities: Array<Record<string, unknown>>;

@@ -1768,6 +1768,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Rename:              p.projection.renameable(node.ID, ref.String()),
 		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
 		AskPending:          node.AskPending,
+		ApprovalPending:     node.ApprovalPending,
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           updatedAt,
