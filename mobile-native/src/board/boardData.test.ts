@@ -346,7 +346,10 @@ it("a revision-less invalidation during a read earns a follow-up read", async ()
 	answer(hub, "manifest", manifest({ sources }), 2);
 	await tick();
 	expect(requestsFor(hub, "manifest")).toHaveLength(3);
-	answer(hub, "manifest", manifest({ sources }), 2);
+	// A numbered invalidation during the follow-up read is covered once that
+	// read returns its revision: the revision-less one pinned nothing.
+	invalidate(hub, 3, [{ kind: "manifest", revision: 3 }]);
+	answer(hub, "manifest", manifest({ sources }), 3);
 	await tick();
 	expect(requestsFor(hub, "manifest")).toHaveLength(3);
 });
