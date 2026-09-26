@@ -481,33 +481,26 @@ it.each(["advertised", "turn"])(
 				});
 			const refresh = store.getState().rehydrate(service, activity);
 			await reading;
+			// turn/started's read-model replacement: thread/status/changed carries
+			// the new turn's id as activeTurnId, which the package reducer folds
+			// into ThreadModel.runningTurnId (see model.ts's doc comment) — NOT
+			// into the hydrate-only activeTurnId field mobile still reads
+			// elsewhere in this test. history/updated never removes or settles a
+			// turn's ACTIVE status by itself (turn/completed's old bare-stamp
+			// clearing of activeTurnId has no read-model replacement — mirrors
+			// the shared reducer's own port of this in applyNotification), so a
+			// non-active turn settling (the old turn/completed(first) frame here)
+			// is inert either way and is dropped rather than faked.
 			store.getState().applyNotification({
-				method: "turn/started",
+				method: "thread/status/changed",
 				params: {
 					ref: "local:test",
 					threadId: "thread",
-					turn: {
-						id: "second",
-						status: "inProgress",
-						itemsView: "full",
-						items: [],
-					},
+					status: { type: "active" },
+					activeTurnId: "second",
 				},
 			});
-			store.getState().applyNotification({
-				method: "turn/completed",
-				params: {
-					ref: "local:test",
-					threadId: "thread",
-					turn: {
-						id: "first",
-						status: "completed",
-						itemsView: "full",
-						items: [],
-					},
-				},
-			});
-			expect(store.getState().conversation?.activeTurnId).toBe("second");
+			expect(store.getState().conversation?.runningTurnId).toBe("second");
 			// Both turn frames preceded the read's response, so the hub cut the
 			// snapshot after them: it names `second` as the active turn (by the
 			// advertised id, or by the one turn still in progress).
@@ -520,20 +513,19 @@ it.each(["advertised", "turn"])(
 			finish();
 			await refresh;
 			expect(store.getState().conversation?.activeTurnId).toBe("second");
+			// The rehydrate's fresh snapshot carries no runningTurnId (only a
+			// live thread/status/changed sets it), so the live signal from
+			// before the read starts stale until the next status frame refreshes
+			// or clears it — here, idle with no activeTurnId clears it.
 			store.getState().applyNotification({
-				method: "turn/completed",
+				method: "thread/status/changed",
 				params: {
 					ref: "local:test",
 					threadId: "thread",
-					turn: {
-						id: "second",
-						status: "completed",
-						itemsView: "full",
-						items: [],
-					},
+					status: { type: "idle" },
 				},
 			});
-			expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+			expect(store.getState().conversation?.runningTurnId).toBeUndefined();
 		} finally {
 			store.getState().close();
 			service.close();
@@ -633,10 +625,13 @@ it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer"])(
 	},
 );
 
-// A turn that starts and completes while a read is in flight, with neither
-// frame's effect ever observed as an active turn here: the completion
-// precedes the read's response, so the hub's snapshot no longer names the
-// turn active, and the commit carries no active turn.
+// A turn that settles while a read is in flight, its effect never observed as
+// an active turn here: the settle precedes the read's response, so the hub's
+// snapshot no longer names the turn active, and the commit carries no active
+// turn. turn/completed's read-model replacement, history/updated, never
+// touches activeTurnId/runningTurnId at all (see model.ts's doc comments) —
+// this frame is inert for both fields either way, and stands in only to prove
+// the rehydrate's snapshot wins over any notification traffic racing it.
 it("does not resurrect a turn that completes during a read before its start was observed", async () => {
 	const { thread, io, service } = boundary();
 	const store = createConversationStore();
@@ -645,16 +640,16 @@ it("does not resurrect a turn that completes during a read before its start was 
 		await store.getState().openProjected(service, activity, "local:test");
 		io.read = async () => {
 			store.getState().applyNotification({
-				method: "turn/completed",
+				method: "history/updated",
 				params: {
 					ref: "local:test",
 					threadId: "thread",
-					turn: {
-						id: "missed-start",
-						status: "completed",
-						itemsView: "full",
-						items: [],
-					},
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 1 },
+					turns: [
+						{ id: "missed-start", status: "completed", itemsView: "full", items: [] },
+					],
 				},
 			});
 			const settled = structuredClone(thread);
