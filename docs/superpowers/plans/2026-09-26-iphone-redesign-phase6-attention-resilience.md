@@ -47,7 +47,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 4. **Which alerts have switches.** Failures (on), questions and approvals (on) and finished results (off) have switches (spec 12). Warnings, restart-needed and notices always alert, as in the prototype's `EV.alert`.
 5. **Notice alerts.** A provider sign-in that expired and a host that went offline alert when they appear while the Board isn't on screen. A broken plugin never alerts: the Board checks plugins only while it is on screen (phase 2 ruling 8), where its notice row already shows.
 6. **A coalesced banner counts each session once,** and a session that alerts again updates its own entry. (The prototype counted it twice.)
-7. **Holds.** Banners wait while the Reader is open (and the artifact viewer, once it exists), while you type (the composer focused with text in it, so sending lets them go, as the prototype's Hub row says: "They show when you leave the document or send"), and while a sheet is up: phase 5's sheet routes and every React Native `Modal` (Question 2). They show 200ms after the last hold ends, the prototype's delay after the composer blurs, so the screen you land on counts first: landing on the session that alerted answers it. A hold keeps new banners back. One already showing when a hold starts stays, since it sits below the nav bar, never over the composer, and a sheet presents above it; what the hold kept back joins it when the hold ends, as a burst does, so nothing on it drops out.
+7. **Holds.** Banners wait while the Reader is open (and the artifact viewer, once it exists), while you type (the composer focused with text in it, so sending lets them go, as the prototype's Hub row says: "They show when you leave the document or send"), and while a sheet is up (Question 2): the `formSheet` routes behind phase 3's `sheetOptions()` and `<Sheet>` (Jesse's answer 11, 2026-09-26), phase 5's `"Hub"` and `"NewSession"` modal routes, and the React Native `Modal`s left (full-screen viewers and the Hub's inner detail sheets). A banner can't show above any of them: each presents over the app's root view, where the banner lives. They show 200ms after the last hold ends, the prototype's delay after the composer blurs, so the screen you land on counts first: landing on the session that alerted answers it. A hold keeps new banners back. One already showing when a hold starts stays, since it sits below the nav bar, never over the composer, and a sheet presents above it; what the hold kept back joins it when the hold ends, as a burst does, so nothing on it drops out.
 8. **Haptics.** A banner buzzes once, when it drops in; alerts that join it don't. Every haptic in spec 16.6 answers to the one Haptics switch (phase 3 ruling 5).
 9. **Alerts read the fleet with their own board controller, never paused.** The Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. That costs a second set of navigation reads while the Board or a Session is in front; sharing one controller is a later consolidation.
 10. **The connection clock counts only time in front.** The app closes its connection in the background (`ConnectionProvider`), so returning never flashes "Offline". "Updated 3m ago" still counts from when the data was last live, background included.
@@ -503,14 +503,14 @@ function productionFiles(dir: string): string[] {
 	});
 }
 
-// The visitor asks this of every node on the way down and stops at the first
-// yes, so the nearest call is enough: an argument of console.warn(...) is
-// skipped with everything inside it, nested calls included.
+// Whether the node sits anywhere inside a console.* call, nested calls
+// included: text handed to console is for developers.
 function inConsoleCall(node: ts.Node): boolean {
 	for (let parent = node.parent; parent; parent = parent.parent) {
 		if (!ts.isCallExpression(parent)) continue;
 		const callee = parent.expression;
-		return ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === "console";
+		if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === "console")
+			return true;
 	}
 	return false;
 }
@@ -1523,6 +1523,8 @@ export class OutboxFlush {
 		for (const key of await runtime.storage.listTargetRefs()) {
 			if (generation !== this.generation) return;
 			const target = parseTargetKey(key);
+			// settle() claims a target before its first await, so a second flush
+			// running beside this one finds it owned and skips it.
 			if (target === null || target.hubId !== hubId || this.owned.has(key)) continue;
 			try {
 				await this.settle(runtime, key, hubId, target.ref, client, generation);
