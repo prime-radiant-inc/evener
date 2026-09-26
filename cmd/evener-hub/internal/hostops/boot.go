@@ -49,7 +49,14 @@ func (s *Store) RecoverInterrupted() (int, error) {
 	if moved == 0 {
 		return 0, nil
 	}
-	if err := s.commitLocked(next); err != nil {
+	landed, err := s.commitLocked(next)
+	if err != nil {
+		if landed {
+			// The rename landed: the records are durably interrupted and memory
+			// adopted that state, so the count is the truth a boot log reports
+			// (see RenameLanded). A failure before the rename moved nothing.
+			return moved, err
+		}
 		return 0, err
 	}
 	return moved, nil

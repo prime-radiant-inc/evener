@@ -3,8 +3,11 @@ package hostops
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/spf13/afero"
 )
 
 // interrupts records by id for the boot-pass assertions.
@@ -178,4 +181,83 @@ func TestBootPassLeavesOrphanUnverifiedAlone(t *testing.T) {
 		t.Fatalf("sequence = %d, want 0", got)
 	}
 	reopenFresh(t, path)
+}
+
+// TestBootPassReportsTheCountItMovedWhenAFailureLanded pins the boot pass's
+// landed-versus-refused distinction: a post-rename failure means the records are
+// durably interrupted, so a boot log must not report "moved 0" for a pass that
+// reaped them; a failure before the rename moved nothing and reports nothing.
+func TestBootPassReportsTheCountItMovedWhenAFailureLanded(t *testing.T) {
+	newStore := func(t *testing.T, path string, syncErr *error, renameErr *error) *Store {
+		t.Helper()
+		store, err := openFS(afero.NewOsFs(), path, storeFaults{
+			syncDir:      func(afero.Fs, string) error { return *syncErr },
+			beforeRename: func() error { return *renameErr },
+		})
+		if err != nil {
+			t.Fatalf("openFS: %v", err)
+		}
+		return store
+	}
+
+	t.Run("the rename landed", func(t *testing.T) {
+		path := StorePath(t.TempDir())
+		var syncErr, renameErr error
+		store := newStore(t, path, &syncErr, &renameErr)
+		createTestRecord(t, store, "h1")
+		createTestRecord(t, store, "h2")
+		syncErr = errors.New("directory sync fault")
+
+		moved, err := store.RecoverInterrupted()
+		if err == nil {
+			t.Fatalf("a boot pass whose directory sync failed reported success")
+		}
+		if !RenameLanded(err) {
+			t.Fatalf("the boot pass's post-rename failure is not distinguishable: %v", err)
+		}
+		if moved != 2 {
+			t.Fatalf("boot pass reported %d moved records, want the 2 it reaped", moved)
+		}
+		onDisk := readStoreSnapshot(t, path)
+		if onDisk.Sequence != 2 {
+			t.Fatalf("on-disk sequence = %d, want the committed 2", onDisk.Sequence)
+		}
+		for _, record := range store.Records() {
+			if record.State != StateInterrupted {
+				t.Fatalf("record %+v is not interrupted in memory", record)
+			}
+		}
+		if got := len(store.Records()); got != 2 {
+			t.Fatalf("store holds %d records, want 2", got)
+		}
+	})
+
+	t.Run("the rename never landed", func(t *testing.T) {
+		path := StorePath(t.TempDir())
+		var syncErr, renameErr error
+		store := newStore(t, path, &syncErr, &renameErr)
+		createTestRecord(t, store, "h1")
+		renameErr = errors.New("before-rename fault")
+
+		moved, err := store.RecoverInterrupted()
+		if err == nil {
+			t.Fatalf("a boot pass whose rename failed reported success")
+		}
+		if RenameLanded(err) {
+			t.Fatalf("a pre-rename boot failure was reported as landed: %v", err)
+		}
+		if moved != 0 {
+			t.Fatalf("boot pass reported %d moved records for a pass that wrote nothing", moved)
+		}
+		if got := store.Sequence(); got != 0 {
+			t.Fatalf("in-memory sequence = %d, want 0: memory ran ahead of the file", got)
+		}
+		stored, ok := store.Record("00000000000000000001")
+		if !ok {
+			t.Fatalf("record disappeared")
+		}
+		if stored.State != StatePending {
+			t.Fatalf("a boot pass that wrote nothing left the record %q", stored.State)
+		}
+	})
 }

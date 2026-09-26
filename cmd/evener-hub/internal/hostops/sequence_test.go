@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestTerminalTransitionsAdvanceAndStampTheDurableSequence pins spec §4's
@@ -224,5 +225,111 @@ func TestTransitionResolvesOrphanUnverifiedToInterrupted(t *testing.T) {
 	}
 	if resolved.State != StateInterrupted {
 		t.Fatalf("resolved state = %q, want %q", resolved.State, StateInterrupted)
+	}
+}
+
+// TestTransitionResolvesAnOrphanOnlyToInterrupted pins spec §4's transition
+// graph where it is pinned: "the `orphan-unverified`→`interrupted` resolution"
+// is the one exit §4 and §7 name from the fencing state, so an orphan can never
+// become a success. Every other edge (pending→running, in-flight→terminal) is
+// the deploy slice's to drive; this substrate refuses only what the spec forbids.
+func TestTransitionResolvesAnOrphanOnlyToInterrupted(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	orphan, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
+		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","kind":"local-linux"}]`)
+	})
+	if err != nil {
+		t.Fatalf("Transition(orphan-unverified): %v", err)
+	}
+	before := mustReadFile(t, path)
+
+	for _, to := range []State{StateComplete, StateFailed, StateRunning, StatePending} {
+		// The change clears the boundary the way a real resolution would, so the
+		// only thing that can refuse this transition is the edge rule itself.
+		if _, err := store.Transition(record.ID, to, func(r *Record) { r.OrphanBoundary = nil }); !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("Transition(%q) from orphan-unverified: err = %v, want ErrInvalidTransition", to, err)
+		}
+	}
+	stored, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q disappeared", record.ID)
+	}
+	if stored.State != StateOrphanUnverified || stored.Sequence != orphan.Sequence {
+		t.Fatalf("a refused resolution rewrote the orphan: %+v", stored)
+	}
+	if got := store.Sequence(); got != 0 {
+		t.Fatalf("sequence = %d after refused resolutions, want 0", got)
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a refused resolution rewrote the store file")
+	}
+}
+
+// TestTransitionRefusesAChangeThatRewritesTheRecordsIdentity pins the record's
+// durable identity against the transition callback. A change may carry progress,
+// the terminal result, the fencing epoch, the orphan boundary and the
+// host-removed mark; the id, the client operation ID, the host, the kind, the
+// pinned (generation, incarnation id) pair, createdAt and the store's sequence
+// stamp are not a caller's to rewrite — §4 keys dedup on that identity and race
+// scans compare the stamp.
+func TestTransitionRefusesAChangeThatRewritesTheRecordsIdentity(t *testing.T) {
+	cases := map[string]func(*Record){
+		"id":                  func(r *Record) { r.ID = formatAllocatorID(99) },
+		"client operation id": func(r *Record) { r.ClientOperationID = "another" },
+		"host":                func(r *Record) { r.Host = "h2" },
+		"kind":                func(r *Record) { r.Kind = KindRestart },
+		"generation":          func(r *Record) { r.Generation = 8 },
+		"incarnation id":      func(r *Record) { r.IncarnationID = "inc-2" },
+		"created at":          func(r *Record) { r.CreatedAt = r.CreatedAt.Add(time.Hour) },
+		"sequence stamp":      func(r *Record) { r.Sequence = 42 },
+	}
+	for name, rewrite := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, path := openTestStore(t)
+			record := createTestRecord(t, store, "h1")
+			before := mustReadFile(t, path)
+
+			if _, err := store.Transition(record.ID, StateRunning, rewrite); !errors.Is(err, ErrInvalidRecord) {
+				t.Fatalf("Transition rewriting the %s: err = %v, want ErrInvalidRecord", name, err)
+			}
+			stored, ok := store.Record(record.ID)
+			if !ok {
+				t.Fatalf("record %q disappeared", record.ID)
+			}
+			if stored.State != StatePending || stored.Sequence != 0 {
+				t.Fatalf("a refused transition mutated the record: %+v", stored)
+			}
+			if got := string(mustReadFile(t, path)); got != string(before) {
+				t.Fatalf("a refused transition rewrote the store file")
+			}
+		})
+	}
+}
+
+// TestTransitionCarriesWhatAChangeMayWrite is the positive control for the
+// identity guard: everything the transition callback exists for still lands.
+func TestTransitionCarriesWhatAChangeMayWrite(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	done, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+		r.Progress = append(r.Progress, ProgressEntry{TS: time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), Message: "pushed"})
+		r.Result = &Result{OK: true, Message: "deployed"}
+		r.FencingEpoch = json.RawMessage(`{"bootId":"boot-1","opSeq":3}`)
+		r.HostRemoved = true
+	})
+	if err != nil {
+		t.Fatalf("Transition with a legitimate change: %v", err)
+	}
+	if done.State != StateComplete || done.Sequence != 1 || done.Result == nil || !done.Result.OK {
+		t.Fatalf("transitioned record = %+v, want a complete stamped record with its result", done)
+	}
+	reloaded := reopenFresh(t, path)
+	again, ok := reloaded.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q did not survive the reload", record.ID)
+	}
+	if len(again.Progress) != 1 || again.Result == nil || !again.HostRemoved || len(again.FencingEpoch) == 0 {
+		t.Fatalf("the change did not survive the reload: %+v", again)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -522,10 +523,15 @@ func TestAPostRenameFailureKeepsMemoryInStepWithTheFile(t *testing.T) {
 
 	// Only this write fails behind its rename.
 	syncErr = errors.New("directory sync fault")
-	if _, err := store.Transition(running.ID, StateComplete, nil); err == nil {
+	landed, err := store.Transition(running.ID, StateComplete, nil)
+	if err == nil {
 		t.Fatalf("a write whose directory sync failed reported success")
-	} else if _, ok := errors.AsType[*postRenameError](err); !ok {
-		t.Fatalf("the post-rename failure is not classified: %v", err)
+	}
+	if !RenameLanded(err) {
+		t.Fatalf("the post-rename failure is not distinguishable: %v", err)
+	}
+	if landed.State != StateComplete || landed.Sequence != 1 {
+		t.Fatalf("the landed transition returned %+v, want the committed complete record", landed)
 	}
 
 	// (a) The transition the rename committed is the durable one.
@@ -660,5 +666,167 @@ func TestANilStoreAnswersSafely(t *testing.T) {
 	}
 	if _, err := store.RecoverInterrupted(); err == nil {
 		t.Fatalf("RecoverInterrupted on a nil store succeeded")
+	}
+}
+
+// terminalRecordJSON renders one terminal record in the store file's shape,
+// stamped with the given sequence value.
+func terminalRecordJSON(id string, stamp uint64) string {
+	return `{"id":"` + id + `","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete",` +
+		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z",` +
+		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":` + strconv.FormatUint(stamp, 10) + `}`
+}
+
+// TestOpenRefusesDuplicateStampsButAcceptsGaps pins the sequence stamp's
+// uniqueness: every terminal transition advances the durable sequence once and
+// stamps the record it moved, so one stamp belongs to exactly one record — while
+// the gaps retention and compaction will leave are legitimate.
+func TestOpenRefusesDuplicateStampsButAcceptsGaps(t *testing.T) {
+	duplicate := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
+		terminalRecordJSON("00000000000000000001", 1) + `,` + terminalRecordJSON("00000000000000000002", 1) + `]}`
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, duplicate)
+	if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("Open on a store with two records sharing a stamp: err = %v, want ErrStoreCorrupt", err)
+	}
+
+	gappy := `{"version":1,"sequence":9,"allocatorHighWaterMark":2,"records":[` +
+		terminalRecordJSON("00000000000000000001", 4) + `,` + terminalRecordJSON("00000000000000000002", 9) + `]}`
+	gapPath := StorePath(t.TempDir())
+	writeRawStore(t, gapPath, 0o600, gappy)
+	store, err := Open(gapPath)
+	if err != nil {
+		t.Fatalf("a store with sequence gaps was refused: %v", err)
+	}
+	if got := store.Sequence(); got != 9 {
+		t.Fatalf("sequence = %d, want the persisted 9", got)
+	}
+}
+
+// TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes pins the fail-closed
+// presence rules for the two raw fields. An absent field is absent; a present
+// one must carry the shape the spec gives it — a member array for an
+// orphan-unverified record's boundary, an object for a fencing epoch — because a
+// boundary that reads as null, empty or a scalar is what the fencing path would
+// unmarshal into an empty list, and "demonstrably empty" is the reading that
+// clears a fence.
+func TestOpenRefusesBoundariesAndEpochsOutsideTheirJSONShapes(t *testing.T) {
+	orphan := func(boundary string) string {
+		return `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":` + boundary + `}]}`
+	}
+	pending := func(epoch string) string {
+		return `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"fencingEpoch":` + epoch + `}]}`
+	}
+	refused := map[string]string{
+		"null boundary":     orphan("null"),
+		"empty array":       orphan("[]"),
+		"object boundary":   orphan("{}"),
+		"scalar boundary":   orphan("123"),
+		"string boundary":   orphan(`"x"`),
+		"unparseable array": orphan("["),
+		"null epoch":        pending("null"),
+		"array epoch":       pending("[]"),
+		"scalar epoch":      pending("7"),
+	}
+	for name, body := range refused {
+		t.Run("refused/"+name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("Open on a %s: err = %v, want ErrStoreCorrupt", name, err)
+			}
+		})
+	}
+	accepted := map[string]string{
+		"member array": orphan(`[{"host":"h1","kind":"local-linux"}]`),
+		"object epoch": pending(`{"bootId":"boot-1","opSeq":3}`),
+		"absent epoch": pendingPayloadWithoutEpoch(),
+	}
+	for name, body := range accepted {
+		t.Run("accepted/"+name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			if _, err := Open(path); err != nil {
+				t.Fatalf("Open on a %s was refused: %v", name, err)
+			}
+		})
+	}
+}
+
+// pendingPayloadWithoutEpoch is a pending record carrying no fencing epoch at
+// all, which is what the create write lands: the epoch arrives before the first
+// running probe.
+func pendingPayloadWithoutEpoch() string {
+	return `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
+}
+
+// TestALandedWriteIsReconcilable pins the caller-visible half of a post-rename
+// failure: the write landed, so the caller must be able to reconcile rather than
+// treat the operation as absent and open a duplicate. Create returns the record
+// it persisted, RenameLanded answers the classification, and the record is
+// readable from the store and from a fresh load. A failure before the rename is
+// the other case: no record, and RenameLanded says so.
+func TestALandedWriteIsReconcilable(t *testing.T) {
+	path := StorePath(t.TempDir())
+	var syncErr error
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(afero.Fs, string) error {
+		return syncErr
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+
+	syncErr = errors.New("directory sync fault")
+	record, err := store.Create(NewRecord{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	})
+	if err == nil {
+		t.Fatalf("Create whose directory sync failed reported success")
+	}
+	if !RenameLanded(err) {
+		t.Fatalf("Create's post-rename failure is not distinguishable: %v", err)
+	}
+	if record.ID == "" {
+		t.Fatalf("a landed Create returned no record id to reconcile with")
+	}
+	stored, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatalf("the reconciled id %q is not in the store", record.ID)
+	}
+	if stored.ClientOperationID != "client-h1" || stored.State != StatePending {
+		t.Fatalf("reconciled record = %+v, want the pending record the write committed", stored)
+	}
+
+	syncErr = nil
+	reloaded := reopenFresh(t, path)
+	if _, ok := reloaded.Record(record.ID); !ok {
+		t.Fatalf("the landed record %q is not in the file", record.ID)
+	}
+
+	// The pre-rename failure is not a landed write.
+	blocked := StorePath(t.TempDir())
+	refusing, err := openFS(afero.NewOsFs(), blocked, storeFaults{beforeRename: func() error {
+		return errors.New("before-rename fault")
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+	none, err := refusing.Create(NewRecord{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	})
+	if err == nil {
+		t.Fatalf("Create with a failing rename reported success")
+	}
+	if RenameLanded(err) {
+		t.Fatalf("a pre-rename refusal was reported as landed: %v", err)
+	}
+	if none.ID != "" {
+		t.Fatalf("a refusal returned record %q, want none", none.ID)
+	}
+	if len(refusing.Records()) != 0 {
+		t.Fatalf("a refused Create left records behind")
 	}
 }

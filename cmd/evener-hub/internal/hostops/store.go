@@ -59,6 +59,23 @@ type postRenameError struct{ err error }
 func (e *postRenameError) Error() string { return e.err.Error() }
 func (e *postRenameError) Unwrap() error { return e.err }
 
+// RenameLanded reports whether err is a write failure whose rename had already
+// replaced the store file. A caller that sees it must reconcile with the durable
+// state instead of treating the operation as absent: Create and Transition
+// return the record such a write committed, and RecoverInterrupted returns the
+// count it moved. Retrying as though nothing was written can open a duplicate
+// operation.
+//
+// What the caller can conclude: the store file holds exactly the state the call
+// attempted, and the store's in-memory state agrees with it. What it cannot: that
+// the rename is crash-durable — the failure was the directory sync that would
+// have made it so, so a crash could still roll the file back to its previous
+// contents, which the next boot's load then reads.
+func RenameLanded(err error) bool {
+	var post *postRenameError
+	return errors.As(err, &post)
+}
+
 // snapshot is the store file: the version, the durable state-transition
 // sequence (§4), the controller-assigned row id allocator's high-water mark,
 // and every live record. Retention and compaction (§4) are a later slice, so
@@ -242,10 +259,15 @@ func (s *Store) Create(newRecord NewRecord) (Record, error) {
 		return Record{}, err
 	}
 	next.Records = append(next.Records, record)
-	if err := s.commitLocked(next); err != nil {
+	adopted, err := s.commitLocked(next)
+	if err != nil && !adopted {
+		// Nothing was written: the refusal reports no record.
 		return Record{}, err
 	}
-	return cloneRecord(record), nil
+	// A write whose rename landed is the operation's durable record even when
+	// the directory sync behind it failed, so the caller gets the id it must
+	// reconcile with (see RenameLanded).
+	return cloneRecord(record), err
 }
 
 // Transition moves one stored record to state to and commits it atomically.
@@ -263,8 +285,10 @@ func (s *Store) Create(newRecord NewRecord) (Record, error) {
 // stamps the record with the value it advanced to (spec §4). A transition to
 // any other state stamps nothing.
 //
-// A refusal — an unknown record, an unknown state, a finished record, or a
-// change that takes the record outside the schema — leaves the store untouched.
+// A refusal — an unknown record, an unknown state, a finished record, an
+// `orphan-unverified` record resolving anywhere but `interrupted`, a change that
+// rewrites the record's immutable identity, or a change that takes the record
+// outside the schema — leaves the store untouched.
 func (s *Store) Transition(id string, to State, change func(*Record)) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("hostops: store is not configured")
@@ -284,8 +308,26 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if record.State.Terminal() {
 		return Record{}, fmt.Errorf("%w: record %q is already %q", ErrRecordTerminal, id, record.State)
 	}
+	// Spec §4 and §7 name exactly one exit from the fencing state: "the
+	// `orphan-unverified`→`interrupted` resolution" — a record whose boundary has
+	// not been verified must never become a success. The rest of the graph
+	// (pending→running, in-flight→terminal) is the deploy slice's to drive; this
+	// substrate refuses only the edges the spec forbids outright.
+	if record.State == StateOrphanUnverified && to != StateInterrupted {
+		return Record{}, fmt.Errorf("%w: orphan-unverified record %q resolves only to %q",
+			ErrInvalidTransition, id, StateInterrupted)
+	}
+	identity := identityOf(*record)
 	if change != nil {
 		change(record)
+	}
+	if changed := identityOf(*record); changed != identity {
+		// A change may carry progress, the terminal result, the fencing epoch,
+		// the orphan boundary and the host-removed mark. The record's durable
+		// identity and the store's stamp are not a caller's to rewrite: a record
+		// that changes host, kind, pinned pair or id would corrupt the dedup
+		// scope §4 keys on, and the sequence stamp is what race scans compare.
+		return Record{}, fmt.Errorf("%w: the change rewrote record %q's immutable fields", ErrInvalidRecord, id)
 	}
 	record.State = to
 	record.UpdatedAt = nowUTC()
@@ -295,23 +337,59 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if err := validateRecord(*record); err != nil {
 		return Record{}, err
 	}
-	if err := s.commitLocked(next); err != nil {
+	adopted, err := s.commitLocked(next)
+	if err != nil && !adopted {
 		return Record{}, err
 	}
-	return cloneRecord(*record), nil
+	// See Create: a landed rename is a durable transition even when the
+	// directory sync behind it failed.
+	return cloneRecord(*record), err
 }
 
-// commitLocked persists next and adopts it in memory in step with the file.
-// Adoption follows the rename, not the whole call: a failure before the rename
-// wrote nothing and leaves memory exactly as it was, while a postRenameError
-// means the rename already replaced the file, so memory adopts next and follows
-// the file even though the write reports the failure. Callers must hold mu.
-func (s *Store) commitLocked(next snapshot) error {
-	renamed, err := saveFS(s.fs, s.path, next, s.faults)
-	if renamed {
+// recordIdentity is the part of a record a transition may never change: its
+// durable identity (the fields §4's dedup scope and the §10 wire treat as fixed
+// for the operation's life) and the store-owned stamp. Comparing one of these
+// across a transition's change callback keeps the callback free to mutate
+// everything legitimately mutable without a second list to maintain.
+type recordIdentity struct {
+	id                string
+	clientOperationID string
+	host              string
+	kind              Kind
+	generation        uint64
+	incarnationID     string
+	createdAt         time.Time
+	sequence          uint64
+}
+
+// identityOf reads the immutable fields off a record.
+func identityOf(record Record) recordIdentity {
+	return recordIdentity{
+		id:                record.ID,
+		clientOperationID: record.ClientOperationID,
+		host:              record.Host,
+		kind:              record.Kind,
+		generation:        record.Generation,
+		incarnationID:     record.IncarnationID,
+		createdAt:         record.CreatedAt,
+		sequence:          record.Sequence,
+	}
+}
+
+// commitLocked persists next and adopts it in memory in step with the file. The
+// returned bool says whether the write's rename landed, which is exactly when
+// memory adopted next: a failure before the rename wrote nothing and leaves
+// memory as it was, while a postRenameError means the rename already replaced
+// the file, so memory follows the file even though the write reports the
+// failure. Callers must hold mu, and a caller that sees err with landed true must
+// reconcile with the state it passed in rather than report the operation absent
+// (see RenameLanded).
+func (s *Store) commitLocked(next snapshot) (landed bool, err error) {
+	landed, err = saveFS(s.fs, s.path, next, s.faults)
+	if landed {
 		s.cell.state = next
 	}
-	return err
+	return landed, err
 }
 
 // advanceSequence moves the durable state-transition sequence forward by one and
@@ -516,6 +594,7 @@ func validateSnapshot(state snapshot) error {
 		return fmt.Errorf("%w: unsupported store version %d", ErrInvalidRecord, state.Version)
 	}
 	seen := make(map[string]struct{}, len(state.Records))
+	stamps := make(map[uint64]struct{}, len(state.Records))
 	previous := ""
 	for _, record := range state.Records {
 		if err := validateRecord(record); err != nil {
@@ -533,6 +612,18 @@ func validateSnapshot(state snapshot) error {
 		if record.Sequence > state.Sequence {
 			return fmt.Errorf("%w: record %q carries sequence %d above the store's %d",
 				ErrInvalidRecord, record.ID, record.Sequence, state.Sequence)
+		}
+		if record.Sequence > 0 {
+			// Every terminal transition advances the sequence once and stamps
+			// the record it moved, so one stamp belongs to exactly one record.
+			// Gaps are legitimate — retention and compaction will leave them —
+			// but a shared stamp would make the race scans that compare sequence
+			// values only read two different transitions as one.
+			if _, duplicate := stamps[record.Sequence]; duplicate {
+				return fmt.Errorf("%w: sequence stamp %d is carried by more than one record",
+					ErrInvalidRecord, record.Sequence)
+			}
+			stamps[record.Sequence] = struct{}{}
 		}
 		allocated, err := parseAllocatorID(record.ID)
 		if err != nil {

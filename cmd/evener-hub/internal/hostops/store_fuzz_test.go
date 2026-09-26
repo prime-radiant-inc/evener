@@ -61,6 +61,14 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"1","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
+		// An orphan-unverified record whose boundary reads as null, and a store
+		// whose two terminal records share one sequence stamp: the fail-closed
+		// shapes the fencing and race-scan paths depend on.
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":null}]}`,
+		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1},` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1}]}`,
 	}
 	for _, seed := range seeds {
 		f.Add(seed)

@@ -23,6 +23,7 @@
 package hostops
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -178,6 +179,10 @@ var ErrRecordTerminal = errors.New("hostops: record is already terminal")
 // ErrInvalidState reports a transition to a state outside the closed set.
 var ErrInvalidState = errors.New("hostops: invalid state")
 
+// ErrInvalidTransition reports a transition the spec's state graph forbids:
+// today, resolving an `orphan-unverified` record to anything but `interrupted`.
+var ErrInvalidTransition = errors.New("hostops: invalid state transition")
+
 // InterruptedNote is the terminal note boot writes into every record it moves
 // to StateInterrupted: spec §7's "note naming the crash".
 const InterruptedNote = "interrupted: the hub crashed or restarted while this operation was in flight"
@@ -217,15 +222,20 @@ func validateRecord(record Record) error {
 	if record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() {
 		return fmt.Errorf("%w: record %q carries no timestamps", ErrInvalidRecord, record.ID)
 	}
-	if len(record.FencingEpoch) > 0 && !json.Valid(record.FencingEpoch) {
-		return fmt.Errorf("%w: record %q carries an unparseable fencing epoch", ErrInvalidRecord, record.ID)
+	if len(record.FencingEpoch) > 0 && !jsonFieldIsObject(record.FencingEpoch) {
+		return fmt.Errorf("%w: record %q carries a fencing epoch that is not an object", ErrInvalidRecord, record.ID)
 	}
-	if len(record.OrphanBoundary) > 0 && !json.Valid(record.OrphanBoundary) {
-		return fmt.Errorf("%w: record %q carries an unparseable orphan boundary", ErrInvalidRecord, record.ID)
+	if len(record.OrphanBoundary) > 0 && !jsonFieldIsMemberArray(record.OrphanBoundary) {
+		return fmt.Errorf("%w: record %q carries an orphan boundary that is not a member array", ErrInvalidRecord, record.ID)
 	}
+	// Spec §4: "The `orphan-unverified` variant carries the per-member
+	// `BoundaryEntry[]` array". The check is fail-closed on purpose: an absent,
+	// null, empty or non-array boundary is not a verified boundary, and a record
+	// whose boundary reads as demonstrably-empty could otherwise un-fence a
+	// possibly-live orphan.
 	switch {
-	case record.State == StateOrphanUnverified && len(record.OrphanBoundary) == 0:
-		return fmt.Errorf("%w: orphan-unverified record %q carries no boundary", ErrInvalidRecord, record.ID)
+	case record.State == StateOrphanUnverified && !jsonFieldIsMemberArray(record.OrphanBoundary):
+		return fmt.Errorf("%w: orphan-unverified record %q carries no boundary array", ErrInvalidRecord, record.ID)
 	case record.State != StateOrphanUnverified && len(record.OrphanBoundary) > 0:
 		return fmt.Errorf("%w: record %q carries an orphan boundary in state %q", ErrInvalidRecord, record.ID, record.State)
 	}
@@ -245,6 +255,31 @@ func validateRecord(record Record) error {
 		return fmt.Errorf("%w: terminal record %q carries no sequence stamp", ErrInvalidRecord, record.ID)
 	}
 	return nil
+}
+
+// jsonFieldIsObject reports whether a raw field carries a JSON object: present,
+// not the literal null, and an object. The fencing epoch's shape belongs to the
+// crash-fencing spec, so this checks the outer form only.
+func jsonFieldIsObject(raw json.RawMessage) bool {
+	return !jsonFieldIsNull(raw) && json.Unmarshal(raw, &map[string]json.RawMessage{}) == nil
+}
+
+// jsonFieldIsMemberArray reports whether a raw field carries a non-empty JSON
+// array: the outer form of §4's per-member `BoundaryEntry[]`. An absent, null,
+// empty or non-array boundary is not one.
+func jsonFieldIsMemberArray(raw json.RawMessage) bool {
+	if jsonFieldIsNull(raw) {
+		return false
+	}
+	var members []json.RawMessage
+	return json.Unmarshal(raw, &members) == nil && len(members) > 0
+}
+
+// jsonFieldIsNull reports whether a raw field is the JSON literal null. An
+// omitted field is empty raw bytes, which is a different thing: absent means
+// absent, and present-null is a value no writer of this store emits.
+func jsonFieldIsNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // cloneRecord copies a record deeply enough that a caller holding the returned
