@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 1: Foundations — Implementation Plan
 
-> **Status:** implemented in #2436 (palette) and the Source Serif 4 PR that follows it. The SDD ledger recorded the rulings made along the way, among them OKLab tints, `fonts` and `typeRoles` moving to Task 3, the bubble fill moving to PR 1, tables in the system face, a fourth (SemiBold Italic) face and list numerals at regular weight. Where this plan and the shipped code differ, the code is authoritative.
+> **Status:** implemented in #2436 (palette) and #2448 (Source Serif 4). The SDD ledger recorded the rulings made along the way, among them OKLab tints, `fonts` and `typeRoles` moving to Task 3, the bubble fill moving to PR 1, tables in the system face, a fourth (SemiBold Italic) face and list numerals at regular weight. Where this plan and the shipped code differ, the code is authoritative.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -679,7 +679,7 @@ Expected: FAIL: no `fontFamily` on paragraphs, headings at 25/22/19, the bubble 
 
 - [ ] **Step 3: Implement**
 
-In `MarkdownResponse.tsx` build `body` from `typeRoles.agentProse` (keep the existing iOS-only size logic out: the spec's sizes are iOS sizes, and the component already relies on `allowFontScaling`), set `color: colors.palette.prose`, spread `fontFamily: fonts.serif` into `list` and `blockquote`, set headings to `{ fontWeight: "600", color: colors.text }` with `h1` 20/26, `h2` 17/24, `h3` 15/21 and `h4`-`h6` 15/21, and add `fontFamily: fonts.mono` to `code` and `codeBlock`. Add `colors.palette.prose` to the memo's dependencies.
+In `MarkdownResponse.tsx` build `body` from `typeRoles.agentProse` (keep the existing iOS-only size logic out: the spec's sizes are iOS sizes, and the component already relies on `allowFontScaling`), set `color: colors.palette.prose`, spread `fontFamily: fonts.serif` into `list` and `blockquote`, set headings to `{ fontWeight: "600", color: colors.text }` with `h1` 20/26, `h2` 17/24, `h3` 15/21 and `h4`-`h6` 15/21, and add `fontFamily: fonts.mono` to `code` and `codeBlock`. `table` spreads `body` today; keep tables in the system face and ink-hi, as the web does (`widgets/markdown/markdown.module.css`), by giving `table` only `body`'s margins and line height and `color: colors.text` instead of the whole `body`. Add `colors.palette.prose` to the memo's dependencies.
 
 In `ui.tsx`, give `Copy` a `variant` prop: `"ui"` (default, today's behavior) or `"yourMessage"`, which uses `typeRoles.yourMessage.fontFamily`, `fontSize: 17 * textScale`, `lineHeight: 25 * textScale` and `color: colors.palette.prose`. Muted text is unaffected.
 
