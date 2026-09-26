@@ -47,7 +47,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 4. **Which alerts have switches.** Failures (on), questions and approvals (on) and finished results (off) have switches (spec 12). Warnings, restart-needed and notices always alert, as in the prototype's `EV.alert`.
 5. **Notice alerts.** A provider sign-in that expired and a host that went offline alert when they appear while the Board isn't on screen. A broken plugin never alerts: the Board checks plugins only while it is on screen (phase 2 ruling 8), where its notice row already shows.
 6. **A coalesced banner counts each session once,** and a session that alerts again updates its own entry. (The prototype counted it twice.)
-7. **Holds.** Banners wait while the Reader is open (and the artifact viewer, once it exists), while you type (the composer focused with text in it, so sending lets them go, as the prototype's Hub row says: "They show when you leave the document or send"), and while a sheet is up: phase 5's sheet routes and every React Native `Modal` (Question 2). They show 200ms after the last hold ends, the prototype's delay after the composer blurs, so the screen you land on counts first: landing on the session that alerted answers it. A hold keeps new banners back; one already showing when a hold starts finishes its 8 seconds, as in the prototype, since it sits below the nav bar, never over the composer, and a sheet presents above it.
+7. **Holds.** Banners wait while the Reader is open (and the artifact viewer, once it exists), while you type (the composer focused with text in it, so sending lets them go, as the prototype's Hub row says: "They show when you leave the document or send"), and while a sheet is up: phase 5's sheet routes and every React Native `Modal` (Question 2). They show 200ms after the last hold ends, the prototype's delay after the composer blurs, so the screen you land on counts first: landing on the session that alerted answers it. A hold keeps new banners back. One already showing when a hold starts stays, since it sits below the nav bar, never over the composer, and a sheet presents above it; what the hold kept back joins it when the hold ends, as a burst does, so nothing on it drops out.
 8. **Haptics.** A banner buzzes once, when it drops in; alerts that join it don't. Every haptic in spec 16.6 answers to the one Haptics switch (phase 3 ruling 5).
 9. **Alerts read the fleet with their own board controller, never paused.** The Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. That costs a second set of navigation reads while the Board or a Session is in front; sharing one controller is a later consolidation.
 10. **The connection clock counts only time in front.** The app closes its connection in the background (`ConnectionProvider`), so returning never flashes "Offline". "Updated 3m ago" still counts from when the data was last live, background included.
@@ -503,6 +503,9 @@ function productionFiles(dir: string): string[] {
 	});
 }
 
+// The visitor asks this of every node on the way down and stops at the first
+// yes, so the nearest call is enough: an argument of console.warn(...) is
+// skipped with everything inside it, nested calls included.
 function inConsoleCall(node: ts.Node): boolean {
 	for (let parent = node.parent; parent; parent = parent.parent) {
 		if (!ts.isCallExpression(parent)) continue;
@@ -542,6 +545,7 @@ it("reads the text a person sees, and nothing else", () => {
 	expect(asks("d.ts", `const d = "Reconnecting…";`)).toEqual([]);
 	expect(asks("e.ts", `// Reconnect later\nconst e = reconcileAfterReconnect(refresh);`)).toEqual([]);
 	expect(asks("f.ts", `import { refresh } from "./refresh";\nconsole.warn("refresh failed");`)).toEqual([]);
+	expect(asks("g.ts", `console.warn(format("refresh failed: %s", error));`)).toEqual([]);
 });
 
 it("no text a person can read asks them to reconnect or refresh", () => {
@@ -817,7 +821,33 @@ describe("held while you read or type (spec 13.3)", () => {
 		vi.advanceTimersByTime(1);
 		expect(shown(alerts)).toEqual(["a", "b"]);
 		expect(alerts.getSnapshot().held).toBe(0);
+		// One of them failed, so the combined banner buzzes a warning.
+		expect(haptics).toEqual(["warning"]);
+	});
+
+	it("joins what it held to a banner still up, so nothing on it drops out", () => {
+		const { alerts, haptics } = center();
+		alerts.offer(session("a"));
+		const first = alerts.getSnapshot().banner?.id;
+		const release = alerts.hold();
+		vi.advanceTimersByTime(COALESCE_MS);
+		alerts.offer(session("b"));
+		alerts.offer(session("c"));
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a", "b", "c"]);
+		expect(alerts.getSnapshot().banner?.id).toBe(first);
 		expect(haptics).toEqual(["light"]);
+	});
+
+	it("keeps a held notice back while a banner about a session is still up", () => {
+		const { alerts } = center();
+		alerts.offer(session("a"));
+		const release = alerts.hold();
+		alerts.offer(hostOffline);
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a"]);
 	});
 
 	it("shows one held session as its own banner, and a held notice only when no session waits", () => {
@@ -1220,23 +1250,39 @@ export class AlertCenter {
 		this.releasing = null;
 		const waiting = this.held.filter((alert) => this.wanted(alert));
 		this.held = [];
+		const current = this.banner;
+		const showing = current?.alerts.every(needsYou) ? current.alerts : [];
 		const sessions = waiting.filter(needsYou);
-		if (sessions.length > 1) {
-			// Held banners show when you leave, combined (spec 13.3).
-			this.stopBanner();
-			this.banner = { id: this.nextId++, alerts: sessions };
-			this.shownAt = this.timer.now();
-			this.buzz("light");
-			this.armExpiry();
-			this.publish();
+		if (sessions.length === 0) {
+			// A held notice shows only when no session waits, a banner still up
+			// included, and then only the latest; the Board lists every notice
+			// either way (the prototype's releaseHeld).
+			const notice = [...waiting].reverse().find((alert) => alert.kind === "notice");
+			if (notice === undefined || showing.length > 0) this.publish();
+			else this.show(notice);
 			return;
 		}
-		// A held notice shows only when no session waits, and then only the
-		// latest; the Board lists every notice either way (the prototype's
-		// releaseHeld).
-		const next = sessions[0] ?? [...waiting].reverse().find((alert) => alert.kind === "notice");
-		if (next === undefined) this.publish();
-		else this.show(next);
+		// Held banners show when you leave, combined (spec 13.3). A banner about
+		// sessions that need you that is still up takes them in, as a burst
+		// does, so nothing on it drops out.
+		const alerts = [
+			...showing.filter((alert) => !sessions.some((held) => subject(held) === subject(alert))),
+			...sessions,
+		];
+		const [only] = alerts;
+		if (current !== null && showing.length > 0) {
+			this.banner = { id: current.id, alerts };
+		} else if (alerts.length === 1 && only !== undefined) {
+			this.show(only);
+			return;
+		} else {
+			this.stopBanner();
+			this.banner = { id: this.nextId++, alerts };
+			this.buzz(alerts.some((alert) => alert.kind === "failed") ? "warning" : "light");
+		}
+		this.shownAt = this.timer.now();
+		this.armExpiry();
+		this.publish();
 	}
 
 	private scheduleRelease(): void {
@@ -2158,7 +2204,7 @@ Spec 13.3: "in the Reader, the Artifact viewer, or while typing in the composer,
 1. **The Reader** calls `useHoldAlerts(useIsFocused())`. Phase 4 left its Back as the system back (its Task 14); it becomes a `headerLeft` of `` <BackButton count={held} label={held > 0 ? `Back, ${held} new while you read` : "Back"} onPress={navigation.goBack} /> ``, with `held = useHeldAlertCount()`: the amber count phase 3's Session Back uses, hidden at 0. The words are the prototype's (`panels.js`: "Back. 2 new while you read"), with phase 3's comma. Round 4 problem 6 is why it's a count and not a dot. The swipe-back gesture must still work: check it in the simulator.
 2. **The composer** holds while its field is focused and its text isn't blank: `useHoldAlerts(focused && value.trim() !== "")`. Sending empties the field, so it lets banners go, as the Hub row promises.
 3. **Sheets.** `HoldingModal` renders React Native's `Modal` with the same props and calls `useHoldAlerts(props.visible ?? true)`. Every production `Modal` becomes a `HoldingModal`.
-4. **The guard.** `holdingModal.test.ts` fails when a production file other than `HoldingModal.tsx` imports `Modal` from `react-native`, so a sheet added later can't let a banner over it.
+4. **The guard.** `holdingModal.test.ts` fails when a production file other than `HoldingModal.tsx` imports `Modal` from `react-native`, or reaches it through a namespace import as `RN.Modal`, so a sheet added later can't let a banner over it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2183,25 +2229,50 @@ function productionFiles(dir: string): string[] {
 	});
 }
 
-function importsReactNativeModal(file: string): boolean {
-	const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
-	return source.statements.some(
-		(statement) =>
-			ts.isImportDeclaration(statement) &&
-			ts.isStringLiteral(statement.moduleSpecifier) &&
-			statement.moduleSpecifier.text === "react-native" &&
-			statement.importClause?.namedBindings !== undefined &&
-			ts.isNamedImports(statement.importClause.namedBindings) &&
-			statement.importClause.namedBindings.elements.some(
-				(element) => (element.propertyName ?? element.name).text === "Modal",
-			),
-	);
+/** Whether the module renders React Native's own Modal: a named import
+ * (`import { Modal }`, renamed or not), or `X.Modal` through a namespace or
+ * default import of react-native. */
+function importsReactNativeModal(fileName: string, code: string): boolean {
+	const source = ts.createSourceFile(fileName, code, ts.ScriptTarget.Latest, true);
+	const namespaces = new Set<string>();
+	for (const statement of source.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+		if (statement.moduleSpecifier.text !== "react-native") continue;
+		const clause = statement.importClause;
+		if (clause?.name) namespaces.add(clause.name.text);
+		const bindings = clause?.namedBindings;
+		if (bindings && ts.isNamespaceImport(bindings)) namespaces.add(bindings.name.text);
+		if (bindings && ts.isNamedImports(bindings)) {
+			if (bindings.elements.some((element) => (element.propertyName ?? element.name).text === "Modal")) return true;
+		}
+	}
+	let found = false;
+	const visit = (node: ts.Node) => {
+		if (
+			ts.isPropertyAccessExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			namespaces.has(node.expression.text) &&
+			node.name.text === "Modal"
+		)
+			found = true;
+		else ts.forEachChild(node, visit);
+	};
+	if (namespaces.size > 0) visit(source);
+	return found;
 }
+
+it("finds React Native's Modal however it is imported, and nothing else", () => {
+	expect(importsReactNativeModal("a.tsx", `import { Modal, View } from "react-native";`)).toBe(true);
+	expect(importsReactNativeModal("b.tsx", `import { Modal as Sheet } from "react-native";`)).toBe(true);
+	expect(importsReactNativeModal("c.tsx", `import * as RN from "react-native";\nconst c = <RN.Modal visible />;`)).toBe(true);
+	expect(importsReactNativeModal("d.tsx", `import * as RN from "react-native";\nconst d = <RN.View />;`)).toBe(false);
+	expect(importsReactNativeModal("e.tsx", `import { HoldingModal as Modal } from "./alerts/HoldingModal";`)).toBe(false);
+});
 
 it("every sheet holds alerts while it is up", () => {
 	const offenders = productionFiles(SRC)
 		.filter((file) => path.relative(SRC, file) !== path.join("alerts", "HoldingModal.tsx"))
-		.filter(importsReactNativeModal)
+		.filter((file) => importsReactNativeModal(file, readFileSync(file, "utf8")))
 		.map((file) => path.relative(SRC, file));
 	expect(offenders).toEqual([]);
 });
@@ -2212,7 +2283,7 @@ Phase 4's Reader test: focused, it holds, and with one held alert Back's label r
 - [ ] **Step 2: Run them and watch them fail**
 
 Run: `cd mobile-native && npx vitest run src/alerts/holdingModal.test.ts <the Reader and Composer tests>`
-Expected: FAIL. The guard lists every file that imports `Modal` from `react-native` (on main at `d0c0211be`, 22 files; phases 3 to 5 change the list), and nothing holds yet.
+Expected: FAIL. The self-check passes, and the guard lists every file that imports `Modal` from `react-native` (on main at `d0c0211be`, 22 files; phases 3 to 5 change the list), and nothing holds yet.
 
 - [ ] **Step 3: Implement**
 
@@ -3266,7 +3337,9 @@ export class OutboxFlush {
 			// A session screen holds this target. Under the Reader or a subagent
 			// it doesn't read, so after a reconnect its waiting message would
 			// wait for a trip back: settle it for the screen, which keeps its
-			// registration.
+			// registration. settleTarget reads only for the client the target
+			// is registered to, so a screen bound to another client is left
+			// alone.
 			if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
 			return;
 		}
