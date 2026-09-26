@@ -2075,7 +2075,7 @@ In `agent/prompt_data.go`, delete the fields `Provider`, `Agent`, `RolePromptOve
   	if got := data.Surface; got != registry.SurfaceOpenAI {
   ```
 
-  (and `registry.SurfaceGeneric` in the second test).
+  (and `registry.SurfaceGeneric` in the second test). Then delete each test's `rendersOpenAIToolsSection` check, the `rendersOpenAIToolsSection` helper, and the `openAIToolsSectionSource` constant: the section file they name is gone, and `data.Surface` is now the input the template branches on. Remove the `slices` import if unused.
 
 - `agent/session_capabilities_test.go` `TestCapabilityPreambleRendersInEnvironmentSection`: delete the `resolver := &sectionResolver{...}` literal and replace `out, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)` with `out, err := executeSystemPromptTemplate(data)`. Remove the `bundled` import if unused.
 
