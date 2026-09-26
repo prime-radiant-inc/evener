@@ -2,7 +2,8 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent failures), S4 (seen marker), S5 (activity), S13 (tasks).
+// flag), S3 (subagent failures), S5 (activity), S13 (tasks). S4 replaces the
+// seen marker, which lives in boardMemory.ts.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -64,6 +65,9 @@ export function boardState(
 	approval: boolean,
 	seen: boolean,
 ): BoardState {
+	// A row from an offline source can't be reached, whatever state it last
+	// reported: it is never Working, Finished or Needs you.
+	if (row.offline) return "shutDown";
 	switch (row.state) {
 		case "errored":
 			return "failed";
@@ -90,9 +94,17 @@ export function bandOf(state: BoardState): Band | null {
 	return null;
 }
 
+/** A hub timestamp in milliseconds, or null when the hub sent none or one
+ * that doesn't parse. */
+export function hubTime(value?: string | null): number | null {
+	if (!value) return null;
+	const time = Date.parse(value);
+	return Number.isFinite(time) ? time : null;
+}
+
+// A row without a readable updated_at sorts as the oldest.
 function time(row: NavigationSessionSummary): number {
-	const value = row.updated_at ? Date.parse(row.updated_at) : Number.NaN;
-	return Number.isFinite(value) ? value : 0;
+	return hubTime(row.updated_at) ?? 0;
 }
 function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
 	return a.row.ref < b.row.ref ? -1 : a.row.ref > b.row.ref ? 1 : 0;
@@ -185,7 +197,13 @@ export function whyLine(item: ClassifiedRow): WhyLine | null {
  * current step and quiet spells). */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const subagents = row.children.filter((child) => child.state === "active").length;
-	if (subagents > 0) return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}`;
+	// The hub caps a row's children; until S3 tallies the whole tree, the
+	// waiting line says how many more there are rather than undercounting
+	// (spec 18, S3's fallback). With no loaded child active, nothing says the
+	// session is waiting on subagents, so it falls through.
+	const more = row.more_subagents ?? 0;
+	if (subagents > 0)
+		return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}${more > 0 ? ` (+${more} more)` : ""}`;
 	const command = row.running_jobs?.find((job) => job.command)?.command;
 	if (command) return `Running ${command}`;
 	return "Working";

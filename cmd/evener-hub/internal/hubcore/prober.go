@@ -161,6 +161,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		LifecycleFresh:        lifecycleFresh,
 		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
 		ChildWatches:          childWatches,
+		Tasks:                 root.Evener.Tasks,
 		OK:                    true,
 	}
 }

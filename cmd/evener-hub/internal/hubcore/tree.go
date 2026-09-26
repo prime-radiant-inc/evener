@@ -124,6 +124,7 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 		out[index].RunningJobs = appwire.CloneEvenerJobs(node.RunningJobs)
 		out[index].CompletedJobs = appwire.CloneEvenerJobs(node.CompletedJobs)
 		out[index].Watches = appwire.CloneEvenerWatches(node.Watches)
+		out[index].Tasks = appwire.CloneTaskAggregate(node.Tasks)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -455,7 +456,11 @@ type TreeNode struct {
 	// Watches are this session's own live watches, carried from its daemon's
 	// diagnostics. Rows are never aggregated across sessions, so a receiver
 	// watch that two sessions can see is counted once per owning summary.
-	Watches   []appwire.EvenerWatchInfo
+	Watches []appwire.EvenerWatchInfo
+	// Tasks is this session's own task-list progress, carried from its live
+	// entry; nil for a session with no live entry, which includes every
+	// in-process child.
+	Tasks     *appwire.TaskAggregate
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Age       string // pre-formatted "now", "2m", "3h", "5d"
@@ -1012,6 +1017,14 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return liveMap[id].PendingAsk
 	}
 
+	// tasksFor resolves a session's task-list progress from its own live
+	// entry, the same live map stateFor reads, so every builder below puts the
+	// same progress on every row of one session and a child row never borrows
+	// its parent's. Each row gets its own copy.
+	tasksFor := func(id string) *appwire.TaskAggregate {
+		return appwire.CloneTaskAggregate(liveMap[id].Tasks)
+	}
+
 	// dormantFor resolves "this session has never run" for a session ID, from
 	// the same metaMap every builder below already consults — one closure, for
 	// the same reason stateFor and askPendingFor are: a session listed in both
@@ -1200,6 +1213,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			RunningJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
 			CompletedJobs: appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
 			Watches:       watchesFor(m.ID),
+			Tasks:         tasksFor(m.ID),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1441,6 +1455,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
 				CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
 				Watches:       appwire.CloneEvenerWatches(le.Watches),
+				Tasks:         tasksFor(le.SessionID),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1539,6 +1554,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
 			CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
 			Watches:       appwire.CloneEvenerWatches(le.Watches),
+			Tasks:         tasksFor(le.SessionID),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))

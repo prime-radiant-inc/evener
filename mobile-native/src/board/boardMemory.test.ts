@@ -12,7 +12,7 @@ function memoryStorage(values = new Map<string, string>()): BoardStorage & { val
 const at = (minutes: number) => new Date(Date.UTC(2026, 8, 26, 12, minutes)).toISOString();
 
 describe("seen markers", () => {
-	it("treats everything as seen until the first load sets the epoch", () => {
+	it("treats everything as seen until the first load is adopted", () => {
 		const seen = new SeenMarkers(memoryStorage(), "hub-a");
 		expect(seen.isSeen({ ref: "a", updated_at: at(5) })).toBe(true);
 	});
@@ -29,6 +29,25 @@ describe("seen markers", () => {
 		seen.adoptEpoch([{ updated_at: at(9) }]);
 		seen.adoptEpoch([{ updated_at: at(30) }]);
 		expect(seen.isSeen({ ref: "x", updated_at: at(20) })).toBe(false);
+	});
+
+	it.each([
+		["an empty fleet", []],
+		["a fleet whose rows carry no readable timestamp", [{}, { updated_at: "not a time" }]],
+	])("completes first run on %s, so a later turn arrives unseen", (_, rows: { updated_at?: string }[]) => {
+		const storage = memoryStorage();
+		new SeenMarkers(storage, "hub-a").adoptEpoch(rows);
+		const relaunched = new SeenMarkers(storage, "hub-a");
+		expect(relaunched.isSeen({ ref: "later", updated_at: at(5) })).toBe(false);
+		relaunched.adoptEpoch([{ updated_at: at(9) }]);
+		expect(relaunched.isSeen({ ref: "later", updated_at: at(5) })).toBe(false);
+	});
+
+	it("treats a row with a missing or unreadable updated_at as seen", () => {
+		const seen = new SeenMarkers(memoryStorage(), "hub-a");
+		seen.adoptEpoch([{ updated_at: at(0) }]);
+		expect(seen.isSeen({ ref: "missing" })).toBe(true);
+		expect(seen.isSeen({ ref: "garbled", updated_at: "not a time" })).toBe(true);
 	});
 
 	it("compares hub timestamps only, so a later turn is unseen again", () => {
@@ -60,6 +79,24 @@ describe("seen markers", () => {
 		expect(other.isSeen({ ref: "a", updated_at: at(10) })).toBe(false);
 	});
 
+	it("drops an epoch or a seen mark whose timestamp doesn't parse", () => {
+		const storage = memoryStorage(
+			new Map([
+				[
+					"evener.native.seen.hub-a",
+					JSON.stringify({ adopted: true, epoch: "not a time", sessions: { a: { through: "nope" } } }),
+				],
+			]),
+		);
+		const seen = new SeenMarkers(storage, "hub-a");
+		expect(seen.isSeen({ ref: "a", updated_at: at(1) })).toBe(true);
+		seen.adoptEpoch([{ updated_at: at(5) }]);
+		expect(seen.isSeen({ ref: "a", updated_at: at(5) })).toBe(true);
+		expect(seen.isSeen({ ref: "a", updated_at: at(6) })).toBe(false);
+		const stored = JSON.parse(storage.values.get("evener.native.seen.hub-a") as string);
+		expect(stored).toEqual({ adopted: true, epoch: at(5), sessions: {} });
+	});
+
 	it("reads corrupt storage as empty", () => {
 		const storage = memoryStorage(new Map([["evener.native.seen.hub-a", "{not json"]]));
 		const seen = new SeenMarkers(storage, "hub-a");
@@ -82,7 +119,7 @@ describe("seen markers", () => {
 		expect(seen.isSeen({ ref: "a", updated_at: at(3) })).toBe(true);
 	});
 
-	it("keeps unread marks and the newest 500 seen marks", () => {
+	it("keeps 500 marks in all, unread kept first", () => {
 		const storage = memoryStorage();
 		const seen = new SeenMarkers(storage, "hub-a");
 		seen.adoptEpoch([{ updated_at: at(0) }]);
@@ -92,8 +129,10 @@ describe("seen markers", () => {
 		const stored = JSON.parse(storage.values.get("evener.native.seen.hub-a") as string);
 		expect(Object.keys(stored.sessions)).toHaveLength(500);
 		expect(stored.sessions["keep-unread"]).toEqual({ unread: true });
+		// The unread mark takes one of the 500, so the newest 499 seen marks stay.
 		expect(stored.sessions.s505).toBeDefined();
-		expect(stored.sessions.s1).toBeUndefined();
+		expect(stored.sessions.s7).toBeDefined();
+		expect(stored.sessions.s6).toBeUndefined();
 	});
 
 	it("tells subscribers when something changes", () => {

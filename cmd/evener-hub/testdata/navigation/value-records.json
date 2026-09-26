@@ -70,6 +70,7 @@
         "end_reason": "finished"
       }
     ],
+    "tasks": { "total": 7, "done": 2, "cancelled": 1, "current_id": 4, "current": "Fix the settle/drain race" },
     "children": []
   },
   "project": {
