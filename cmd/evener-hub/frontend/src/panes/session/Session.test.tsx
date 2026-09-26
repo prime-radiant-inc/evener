@@ -3673,8 +3673,10 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
       await flushPendingTurnsProjectionForTests();
+      // The blocked write's store publications re-render the session; they
+      // land inside this act() rather than after it.
+      await blockedWritten;
     });
-    await blockedWritten;
     expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();

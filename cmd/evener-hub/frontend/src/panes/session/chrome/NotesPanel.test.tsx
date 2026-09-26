@@ -147,11 +147,17 @@ async function advance(ms: number) {
 // through enqueue and dispatch, §4's click-time stop-epoch capture included).
 // Each probe read is a real round trip that lets pending work complete; the
 // turn bound is a tripwire that fails loudly, never the mechanism awaited —
-// threads.test.ts's flushIndexedDBUntil rule.
+// threads.test.ts's flushIndexedDBUntil rule. Each turn runs in its own act()
+// so the panel re-renders the completed work settles into land inside it, and
+// the render is committed before `done` looks at the DOM.
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 60): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
   try {
-    for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
+    for (let turn = 0; turn < maxTurns && !done(); turn += 1) {
+      await act(async () => {
+        await probe.listTargetRefs();
+      });
+    }
   } finally {
     probe.close();
   }
