@@ -1639,7 +1639,10 @@ func optionalIntArg(args map[string]any, key string) *int {
 // empty slice is an authoritative empty store; a non-nil error means the
 // aggregate is unavailable.
 func (s *Session) TasksWithError() ([]task.Task, error) {
-	return s.getOrCreateTaskStore().View(), s.taskStoreLoadErr
+	store := s.getOrCreateTaskStore()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return store.View(), s.taskStoreLoadErr
 }
 
 // Tasks returns a snapshot of the session's task list.

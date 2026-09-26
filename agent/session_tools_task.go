@@ -344,6 +344,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				if reloadErr := store.Load(); reloadErr != nil {
 					return nil, store.LoadError()
 				}
+				deps.taskGuard.ClearLoadError()
 			}
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil

@@ -191,10 +191,17 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 // s.mu as the rest of the session — it does NOT introduce a second mutex.
 type taskGuard struct {
 	getOrCreateTaskStore func() *taskpkg.TaskStore
+	clearLoadError       func()
 	markUsed             func()
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
+
+func (g taskGuard) ClearLoadError() {
+	if g.clearLoadError != nil {
+		g.clearLoadError()
+	}
+}
 
 // MarkUsed records that the task_list tool was invoked this round (updates the
 // reminder counters under s.mu).
@@ -277,6 +284,11 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: s.getOrCreateTaskStore,
+			clearLoadError: func() {
+				s.mu.Lock()
+				s.taskStoreLoadErr = nil
+				s.mu.Unlock()
+			},
 			markUsed: func() {
 				s.mu.Lock()
 				s.taskToolEverUsed = true

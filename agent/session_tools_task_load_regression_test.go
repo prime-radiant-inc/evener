@@ -49,8 +49,10 @@ func TestSession_TaskToolsRejectAfterFailedTaskLoad(t *testing.T) {
 	}
 }
 
-func TestSession_TasksWithErrorRetainsInitialLoadErrorAfterStoreRepair(t *testing.T) {
+func TestSession_TasksWithErrorClearsInitialLoadErrorAfterStoreRepair(t *testing.T) {
 	t.Parallel()
+	// TasksWithError's contract treats nil plus an empty slice as authoritative
+	// state; a non-nil error means the aggregate is unavailable to envelopes.
 	base := afero.NewMemMapFs()
 	store := taskpkg.NewTaskStore("/state", "repaired-session").SetFs(base)
 	if err := afero.WriteFile(base, "/state/tasks/repaired-session.json", []byte("{malformed"), 0o644); err != nil {
@@ -60,32 +62,45 @@ func TestSession_TasksWithErrorRetainsInitialLoadErrorAfterStoreRepair(t *testin
 	if initialErr == nil {
 		t.Fatal("initial malformed Load unexpectedly succeeded")
 	}
-	s := &Session{taskStore: store, taskStoreLoadErr: initialErr}
-	s.taskStoreOnce.Do(func() {})
 	if err := afero.WriteFile(base, "/state/tasks/repaired-session.json", []byte("[]"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Load(); err != nil {
-		t.Fatalf("repair Load: %v", err)
+	store.SetFs(base) // external repair: the file is readable again.
+	s := newTestSession(t)
+	s.taskStore = store
+	s.taskStoreLoadErr = initialErr
+	s.taskStoreOnce.Do(func() {})
+	reg := tool.NewRegistry()
+	registerTaskTools(reg, newToolDeps(s))
+	args, err := json.Marshal(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := store.LoadError(); err != nil {
-		t.Fatalf("store.LoadError after repair = %v, want nil", err)
+	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "repaired-empty-store", Name: "task_list", Arguments: args,
+	})
+	if result.IsError {
+		t.Fatalf("real task_list after external repair = %q; want recovery", result.Output)
 	}
 	tasks, err := s.TasksWithError()
-	if len(tasks) != 0 || err == nil {
-		t.Fatalf("TasksWithError after successful existing reload = tasks=%v err=%v; want empty snapshot plus initial aggregate error", tasks, err)
+	if len(tasks) != 0 || err != nil {
+		t.Fatalf("TasksWithError after successful existing reload = tasks=%v err=%v; want authoritative empty snapshot with nil error", tasks, err)
 	}
 }
 
 func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 	t.Parallel()
 	base := afero.NewMemMapFs()
-	store := taskpkg.NewTaskStore("/state", "transient-session").SetFs(base)
 	path := "/state/tasks/transient-session.json"
-	original := []byte("[]")
-	if err := afero.WriteFile(base, path, original, 0o644); err != nil {
+	seed := taskpkg.NewTaskStore("/state", "transient-session").SetFs(base)
+	if _, err := seed.Append([]taskpkg.TaskInput{{Description: "survives recovery", Prompt: "keep me"}}); err != nil {
 		t.Fatal(err)
 	}
+	original, err := afero.ReadFile(base, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := taskpkg.NewTaskStore("/state", "transient-session").SetFs(base)
 
 	// Model getOrCreateTaskStore's one initial Load failing transiently. Consume
 	// the session's once so the later call below is the real task_list executor,
@@ -101,6 +116,7 @@ func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 
 	s := newTestSession(t)
 	s.taskStore = store
+	s.taskStoreLoadErr = store.LoadError()
 	s.taskStoreOnce.Do(func() {})
 	reg := tool.NewRegistry()
 	registerTaskTools(reg, newToolDeps(s))
@@ -116,6 +132,10 @@ func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 	}
 	if err := store.LoadError(); err != nil {
 		t.Fatalf("store.LoadError after recovered task_list = %v, want nil", err)
+	}
+	tasks, err := s.TasksWithError()
+	if err != nil || len(tasks) != 1 || tasks[0].Description != "survives recovery" {
+		t.Fatalf("TasksWithError after recovered task_list = tasks=%v err=%v; want recovered authoritative task snapshot", tasks, err)
 	}
 	if got, err := afero.ReadFile(base, path); err != nil || !bytes.Equal(got, original) {
 		t.Fatalf("recovered task_list changed original bytes: got %q, err=%v", got, err)
