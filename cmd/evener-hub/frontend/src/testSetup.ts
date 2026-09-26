@@ -37,7 +37,7 @@ afterAll(() => {
 // creates - an Error() plus a console.createTask - up to 10,000 a second. That
 // was 7% of the suite's CPU, and it buys only richer component stacks in React
 // warnings, which no test reads. React has no switch for it, so the counter
-// that caps it is pinned at the cap: every element takes the shared "unknown
+// that caps it is pinned past the cap: every element takes the shared "unknown
 // owner" stack instead. If a React upgrade drops the counter, this throws
 // rather than silently losing the saving; update or delete this block then.
 const reactInternals = (React as unknown as Record<string, Record<string, unknown> | undefined>)
@@ -48,7 +48,7 @@ if (reactInternals === undefined || !("recentlyCreatedOwnerStacks" in reactInter
   );
 }
 Object.defineProperty(reactInternals, "recentlyCreatedOwnerStacks", {
-  get: () => 10_000,
+  get: () => Number.POSITIVE_INFINITY,
   set: () => {},
   configurable: true,
 });
