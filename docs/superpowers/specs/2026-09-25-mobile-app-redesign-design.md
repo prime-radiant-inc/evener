@@ -441,7 +441,7 @@ Opened from the Subagents chip or a subagent row in the transcript.
 [All 55] [■ Failed 2] [■ Running 32] [■ Done 21]
 
 FAILED · 2
-✕  Fix race in tree settle                   6m ago
+✕  Fix race in tree settle                       6m
    Failed: go test exited 1 (3 times)
    ⑂ fix-settle-race · 1.2M tokens
 RUNNING · 32
@@ -702,7 +702,7 @@ SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle
 | Element | Source |
 |---|---|
 | Board sections, rows, children | `evener/navigation/read` (Live, needs-you, projects, pin sections, archived), `NavigationSessionSummary` (title, state, ask_pending, live, updated_at, host_id, project, branch, children, running_jobs, more_subagents, omitted_descendants), invalidated by `evener/navigation/invalidated`; task progress on rows needs S13 |
-| Needs you count | `evener/attention/changed` (`AttentionSummary{NeedsYou, Error, Working}`) |
+| Needs you count | Computed on the phone from Live and `needs_you` rows (section 13.2). The hub's `AttentionSummary.needsYou` (`evener/attention/changed`, the manifest) counts every awaiting session, Finished included, and counts failures separately, so it is not this number |
 | Search | `evener/search` |
 | Session content | `thread/read` with subscribe; `item/*` streaming notifications; `thread/status/changed`, `thread/queueChanged`, `evener/goal/updated`, `evener/task/updated`, `evener/notes/updated`, `evener/urls/updated`, `evener/delegate/updated`, `evener/jobs/treeUpdated` |
 | Capabilities | `ThreadCapabilities` gates every control (send, steer, interrupt, compact, clear, forkFromTurn, shutdown, changeModel, queue, goal, sharedNotes, rename, skillInput) |
@@ -737,6 +737,11 @@ Each has a fallback so the phone works before it lands.
 | S12 | Scoped approvals: "allow writes under this folder for the rest of this session" as an escalation resolution | A batch job (a 214-page mirror) doesn't ask 214 times | Allow once, repeatedly |
 | S11 | Hub notices feed: provider sign-in expired or expiring, host offline, broken plugin, each with affected session counts | Notices row on the Board | Derive from host and instance status reads |
 | S13 | Task progress on navigation summaries: tasks done, total, and the current task's title | The row's task line ("Task 4 of 7 · Fix the settle/drain race") | No task line until it lands; the session's Tasks chip still reads `evener/task/updated` |
+| S14 | Message-text search: `evener/search` hits inside sessions' messages, with a snippet and the hit's position, and an archived flag on every result | Search's "In sessions" group and its Archived scope (section 7.4) | Sessions and Projects groups only, with the All and Live scopes |
+| S15 | A session's sandbox mode and network setting on the thread read | The Session sheet's Access section (section 8.6) | No Access section |
+| S16 | Transcript records for a queued message's delivery and for an approval's decision | "Queued" on a delivered message, and approval history (section 8.2) | Neither shows; the resolved call's own step shows its outcome |
+| S17 | The model's display name on navigation summaries | "Show model on Board rows" in the Hub's Display (section 12), and the model on a row's last line (section 7.2) | No model on rows; Display leaves the toggle out |
+| S18 | Starting a session in a new worktree branch, named at launch | New session's Branch row: "a new worktree branch (name field)" (section 11) | Branch shows the project's current branch, as information only |
 
 ## 19. Out of scope and future
 

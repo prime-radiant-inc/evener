@@ -19,23 +19,21 @@ test("renders without throwing, with the intro note", () => {
   expect(screen.getByText(/surface gallery/i)).toBeTruthy();
 });
 
+// Sections that must stay registered, with the heading each one renders.
+const REQUIRED_SECTION_HEADINGS: Record<string, string> = {
+  "./surface-sections/transcript.tsx": "Transcript",
+  "./surface-sections/chrome.tsx": "Session chrome",
+};
+
 test.each(SURFACE_GALLERY_SECTIONS)("mounts discovered section $path without throwing", async (section) => {
   await act(async () => {
     render(<SurfaceGallery sections={[section]} />);
   });
   expect(screen.getAllByRole("heading", { level: 2 }).length).toBeGreaterThan(0);
+  const requiredHeading = REQUIRED_SECTION_HEADINGS[section.path];
+  if (requiredHeading) expect(screen.getByRole("heading", { level: 2, name: requiredHeading })).toBeTruthy();
 });
 
-test("the transcript section is registered", () => {
-  const transcript = SURFACE_GALLERY_SECTIONS.find(({ path }) => path.endsWith("/transcript.tsx"));
-  if (!transcript) throw new Error("transcript section is not registered");
-  render(<SurfaceGallery sections={[transcript]} />);
-  expect(screen.getByRole("heading", { level: 2, name: "Transcript" })).toBeTruthy();
-});
-
-test("the session chrome section is registered", () => {
-  const chrome = SURFACE_GALLERY_SECTIONS.find(({ path }) => path.endsWith("/chrome.tsx"));
-  if (!chrome) throw new Error("session chrome section is not registered");
-  render(<SurfaceGallery sections={[chrome]} />);
-  expect(screen.getByRole("heading", { level: 2, name: "Session chrome" })).toBeTruthy();
+test.each(Object.keys(REQUIRED_SECTION_HEADINGS))("the section %s is registered", (path) => {
+  expect(SURFACE_GALLERY_SECTIONS.map((section) => section.path)).toContain(path);
 });

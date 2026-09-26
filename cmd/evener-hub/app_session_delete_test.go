@@ -446,7 +446,7 @@ func TestSessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) {
 		t.Fatal(err)
 	}
 	pinStore := hubcore.NewPinSectionStore(dbPath)
-	section, _, err := pinStore.CreateOrReuseAndAssign("Research", targetID, time.Unix(1, 0))
+	section, _, err := pinStore.CreateOrReuseAndAssign("Research", "", targetID, time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestSessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	pinStore := hubcore.NewPinSectionStore(dbPath)
-	if _, _, err := pinStore.CreateOrReuseAndAssign("Research", targetID, time.Unix(1, 0)); err != nil {
+	if _, _, err := pinStore.CreateOrReuseAndAssign("Research", "", targetID, time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	dbSnapshot, err := os.ReadFile(dbPath)
@@ -536,7 +536,7 @@ func TestSessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := pins[targetID]; ok {
+	if _, ok := pins[hubcore.SessionPinKey("", targetID)]; ok {
 		t.Fatalf("retry left the durable pin behind: %+v", pins)
 	}
 }

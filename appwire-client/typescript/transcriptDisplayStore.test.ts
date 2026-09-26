@@ -1,8 +1,9 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { WireError } from "./errors";
 import { deferred } from "./testing/deferred";
 import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient } from "./testing/fakeClient";
+import { nextMacrotask } from "./testing/macrotask";
 import {
   type HubTranscriptDisplayDefault,
   makeTranscriptDisplayConfig,
@@ -128,7 +129,8 @@ describe("support", () => {
     await store.getState().refreshHubDefaults();
     expect(client.calls).toHaveLength(0);
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().loaded).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().loaded).toBe(true);
     expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(1);
   });
 
@@ -220,7 +222,8 @@ describe("hub defaults", () => {
       method: changedMethod,
       params: { layout: "mobile", revision: "six" },
     } as unknown as AnyNotification);
-    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(6, proposed)));
+    await nextMacrotask();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(6, proposed));
     expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2);
   });
 
@@ -238,7 +241,8 @@ describe("hub defaults", () => {
     store.setSupport("supported");
     store.beginReadyGeneration();
     const refresh = store.getState().refreshHubDefaults();
-    await vi.waitFor(() => expect(reads).toBe(1));
+    await nextMacrotask();
+    expect(reads).toBe(1);
     client.emitNotification({
       method: changedMethod,
       params: { layout: "mobile", revision: 9, config: toWireConfig(proposed) },
@@ -249,7 +253,7 @@ describe("hub defaults", () => {
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     });
     await refresh;
-    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed)));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed));
     expect(reads).toBe(2);
   });
 
@@ -298,7 +302,7 @@ describe("hub defaults", () => {
       mobile: toWireDefault(hubDefault(8, mobileConfig)),
     });
     await refresh;
-    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed)));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed));
     expect(reads).toBe(3);
   });
 
@@ -309,7 +313,8 @@ describe("hub defaults", () => {
     client.on(getMethod, () => late.promise);
 
     const refresh = store.getState().refreshHubDefaults();
-    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2));
+    await nextMacrotask();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2);
     store.beginReadyGeneration();
 
     expect(store.getState()).toMatchObject({ loaded: false, hubLoading: false });
@@ -375,14 +380,15 @@ describe("hub defaults", () => {
     store.setSupport("supported");
     store.beginReadyGeneration();
     const refresh = store.getState().refreshHubDefaults();
-    await vi.waitFor(() => expect(reads).toBe(1));
+    await nextMacrotask();
+    expect(reads).toBe(1);
     store.getState().applyHubChange({ layout: "mobile", revision: 9, config: proposed });
     first.resolve({
       desktop: toWireDefault(hubDefault(3, desktopConfig)),
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     });
     await refresh;
-    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed)));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed));
     expect(reads).toBe(2);
   });
 
@@ -511,7 +517,8 @@ describe("lifecycle fencing", () => {
     const late = deferred<TranscriptDisplayDefaults>();
     client.on(getMethod, () => late.promise);
     const refresh = store.getState().refreshHubDefaults();
-    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2));
+    await nextMacrotask();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2);
     store.endReadyGeneration();
     late.resolve({
       desktop: toWireDefault(hubDefault(9, proposed)),
@@ -540,7 +547,8 @@ describe("lifecycle fencing", () => {
     const late = deferred<TranscriptDisplayDefaults>();
     client.on(getMethod, () => late.promise);
     const refresh = store.getState().refreshHubDefaults();
-    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2));
+    await nextMacrotask();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2);
     store.detachHub();
     late.resolve({
       desktop: toWireDefault(hubDefault(9, proposed)),
@@ -574,9 +582,11 @@ describe("the direct write", () => {
       return (patches === 1 ? desktopReply : mobileReply).promise;
     });
     const desktopWrite = store.getState().patchHubDefault("desktop", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toEqual(proposed);
     const mobileWrite = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
 
     store.endReadyGeneration();
     // The first read of the new generation contradicts only the desktop
@@ -615,7 +625,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("desktop", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toEqual(proposed);
 
     store.endReadyGeneration();
     client.on(getMethod, () => ({
@@ -660,7 +671,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(3, proposed));
     expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
@@ -678,7 +690,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
@@ -692,7 +705,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     reply.reject(conflictError("mobile", hubDefault(9, desktopConfig)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
@@ -705,7 +719,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.dispose();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
@@ -846,7 +861,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("desktop", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toEqual(proposed);
 
     store.setSupport("unknown");
     reply.reject(new Error("boom"));
@@ -860,7 +876,8 @@ describe("the direct write", () => {
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     }));
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toBeUndefined());
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toBeUndefined();
     expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
   });
 
@@ -876,7 +893,8 @@ describe("the direct write", () => {
     });
     const olderWrite = store.getState().patchHubDefault("desktop", desktopConfig);
     const newerWrite = store.getState().patchHubDefault("desktop", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toEqual(proposed);
 
     store.setSupport("unknown");
     olderReply.reject(new Error("older boom"));
@@ -891,7 +909,8 @@ describe("the direct write", () => {
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     }));
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().hubLoading).toBe(false));
+    await nextMacrotask();
+    expect(store.getState().hubLoading).toBe(false);
     expect(store.getState().drafts.desktop).toEqual(proposed);
 
     newerReply.resolve(patchAnswer("desktop", hubDefault(4, proposed)));
@@ -909,8 +928,10 @@ describe("the direct write", () => {
       throw internalError();
     });
     const write = store.getState().patchHubDefault("desktop", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toEqual(proposed));
-    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2));
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toEqual(proposed);
+    await nextMacrotask();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(2);
 
     store.setSupport("unknown");
     read.resolve({
@@ -928,7 +949,8 @@ describe("the direct write", () => {
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     }));
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toBeUndefined());
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toBeUndefined();
     expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
   });
 
@@ -956,7 +978,8 @@ describe("the direct write", () => {
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     }));
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().drafts.desktop).toBeUndefined());
+    await nextMacrotask();
+    expect(store.getState().drafts.desktop).toBeUndefined();
     expect(store.getState().hub.desktop).toEqual(hubDefault(3, desktopConfig));
   });
 
@@ -988,9 +1011,8 @@ describe("the direct write", () => {
     });
     const desktopWrite = store.getState().patchHubDefault("desktop", proposed);
     const mobileWrite = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() =>
-      expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(initialReads + 1),
-    );
+    await nextMacrotask();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(initialReads + 1);
     const canonical = {
       desktop: toWireDefault(hubDefault(4, proposed)),
       mobile: toWireDefault(hubDefault(3, proposed)),
@@ -1007,7 +1029,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     expect(store.getState().drafts.mobile).toEqual(proposed);
     store.detachHub();
@@ -1028,7 +1051,8 @@ describe("the direct write", () => {
     const store = await readyStore(client);
     client.on(patchMethod, () => new Promise<TranscriptDisplayPatchResponse>(() => {}));
     void store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.setSupport("unsupported");
     expect(store.getState().drafts.mobile).toBeUndefined();
   });
@@ -1039,7 +1063,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
 
     store.setSupport("unsupported");
     expect(store.getState().drafts.mobile).toBeUndefined();
@@ -1048,7 +1073,8 @@ describe("the direct write", () => {
       mobile: toWireDefault(hubDefault(1, mobileConfig)),
     }));
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig)));
+    await nextMacrotask();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig));
 
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(1, mobileConfig));
@@ -1061,7 +1087,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     client.emitNotification({
       method: changedMethod,
       params: { layout: "mobile", revision: 7, config: toWireConfig(mobileConfig) },
@@ -1078,7 +1105,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
@@ -1099,7 +1127,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(8, proposed)));
     expect(await write).toEqual(hubDefault(7, mobileConfig));
@@ -1119,7 +1148,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
@@ -1139,7 +1169,8 @@ describe("the direct write", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const write = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await write).toEqual(hubDefault(2, mobileConfig));
@@ -1220,7 +1251,8 @@ describe("the checkpointed draft editor", () => {
       return reply.promise;
     });
     const save = store.getState().saveDraft();
-    await vi.waitFor(() => expect(checkpointAtRequest).toMatchObject({ writeUncertain: true }));
+    await nextMacrotask();
+    expect(checkpointAtRequest).toMatchObject({ writeUncertain: true });
     expect(client.calls.at(-1)?.params).toEqual({
       layout: "mobile",
       expectedRevision: 2,
@@ -1257,7 +1289,8 @@ describe("the checkpointed draft editor", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const save = store.getState().saveDraft("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
     await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow(/unavailable/);
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     await save;
@@ -1368,12 +1401,14 @@ describe("the checkpointed draft editor", () => {
       return patchCount === 1 ? first.promise : second.promise;
     });
     const direct = store.getState().patchHubDefault("mobile", proposed);
-    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    await nextMacrotask();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
     // The checkpointed editor takes the layer over while the direct write's
     // reply is still outstanding.
     store.getState().editDraft("mobile", desktopConfig);
     const save = store.getState().saveDraft();
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
     first.reject(new Error("connection lost"));
     second.reject(new Error("connection lost"));
     // The direct write's discarded reply settles nothing of its own.
@@ -1403,7 +1438,8 @@ describe("the checkpointed draft editor", () => {
       return reply.promise;
     });
     const save = store.getState().saveDraft();
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     expect(await save).toEqual(hubDefault(3, proposed));
     // The replacement survives, the settlement clears the in-flight flags,
@@ -1422,7 +1458,8 @@ describe("the checkpointed draft editor", () => {
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
     const save = store.getState().saveDraft();
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
     // An external change beats this write's revision and another window
     // replaces the checkpoint, both while the PATCH is out.
     client.emitNotification({

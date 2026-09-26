@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "./model";
 import { applyNotification, mergeOlderItemPage } from "./reducer";

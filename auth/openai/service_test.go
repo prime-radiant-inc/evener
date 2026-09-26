@@ -286,6 +286,60 @@ func TestStatusReflectsStoredOAuthState(t *testing.T) {
 	}
 }
 
+// TestStatusExpiredAccessTokenWithRefreshTokenIsRefreshableNotLoginRequired
+// is the production-reachable case issue #2468 was filed for: evener openai
+// status (and login/logout, which share formatOpenAIStatus) must not tell
+// the user to sign in again just because the access token aged out while a
+// perfectly good refresh token sits on file - ResolveRuntimeCredentials
+// refreshes it on the next use.
+func TestStatusExpiredAccessTokenWithRefreshTokenIsRefreshableNotLoginRequired(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 7, 23, 40, 0, 0, time.UTC)
+	record := sampleAuthRecord()
+	record.Expiry = now.Add(-time.Minute)
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	svc := newTestService(now)
+	status, err := svc.Status(stateDir, "openai")
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if status.NeedsLogin {
+		t.Fatal("NeedsLogin = true, want false: a refresh token is on file and ResolveRuntimeCredentials refreshes it on next use")
+	}
+	if !status.NeedsRefresh {
+		t.Fatal("NeedsRefresh = false, want true")
+	}
+}
+
+// TestStatusExpiredAccessTokenWithBlankRefreshTokenNeedsLogin covers the
+// other half through the same real path: a record whose refresh token is
+// unusable (blank/whitespace - the same trick
+// TestResolveRuntimeCredentialsBlankRefreshTokenRequiresRelogin uses to pass
+// Validate while carrying nothing ResolveRuntimeCredentials can use) genuinely
+// needs a fresh login once its access token expires.
+func TestStatusExpiredAccessTokenWithBlankRefreshTokenNeedsLogin(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Date(2026, 5, 7, 23, 40, 0, 0, time.UTC)
+	record := sampleAuthRecord()
+	record.RefreshToken = "   "
+	record.Expiry = now.Add(-time.Minute)
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+
+	svc := newTestService(now)
+	status, err := svc.Status(stateDir, "openai")
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.NeedsLogin {
+		t.Fatal("NeedsLogin = false, want true: no usable refresh token to recover the session with")
+	}
+}
+
 func TestLogoutDeletesStoredAuth(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := SaveAuth(stateDir, "openai", sampleAuthRecord()); err != nil {
