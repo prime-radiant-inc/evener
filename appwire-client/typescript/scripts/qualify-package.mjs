@@ -125,6 +125,8 @@ assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSe
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
 assert.equal(client.isTurnActive("active"), true);
 assert.equal(client.isTurnActive("idle"), false);
+assert.equal(client.isSessionResting("systemError"), true);
+assert.equal(client.isSessionResting("active"), false);
 assert.equal(client.canSteer("active", { steer: true }), true);
 assert.equal(client.canSteer("idle", { steer: true }), false);
 assert.equal(client.canSteer("active", { steer: false }), false);
