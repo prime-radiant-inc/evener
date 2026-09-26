@@ -242,3 +242,33 @@ func TestApplyHistoryItemDropsCoveredStreamRow(t *testing.T) {
 		t.Fatalf("the recorded item should replace the overlay stream row: %+v", r.messages)
 	}
 }
+
+// A "steering" item (evener/steering/injected's read-model replacement: a
+// delivery entry from the daemon's poll loop, both human-typed Ctrl+S and
+// job/delegate result notifications alike) renders the same way the live
+// notification always did — as its own MsgSteering row — and, when its text
+// carries one or more <job-notification> blocks, ties each named job's
+// headline onto its rail run (issue #49's multi-job case).
+func TestApplyHistoryItemRendersSteeringAndTiesJobHeadlines(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.ApplyThreadItem(appwire.ThreadItem{
+		Type: "commandExecution", ID: "tool_1", CallID: "job_1", ToolName: "shell", Status: appwire.TurnStatusInProgress,
+	}, 1, false)
+	if len(r.messages) != 1 || r.messages[0].Tool == nil {
+		t.Fatalf("precondition: expected one running tool row, got %+v", r.messages)
+	}
+	r.messages[0].Tool.Subagent = &SubagentRunInfo{JobID: "job_1"}
+
+	block := `<job-notification job_id="job_1" job_type="delegate" status="completed" exit_code="0">` +
+		`excerpt: {"data":{"test_summary":"all green"}}</job-notification>`
+	r.ApplyHistoryItem(appwire.ThreadItem{
+		Type: "steering", ID: "item_steering_1", TurnID: "turn_1", Text: block, Version: 1,
+	}, 1)
+
+	if len(r.messages) != 2 || r.messages[1].Kind != MsgSteering || r.messages[1].Text != block {
+		t.Fatalf("messages = %+v, want a second MsgSteering row carrying the raw block", r.messages)
+	}
+	if got := r.messages[0].Tool.Subagent.Headline; got != "all green" {
+		t.Fatalf("job_1 headline = %q, want tied from the steering item's job-notification block", got)
+	}
+}

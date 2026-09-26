@@ -330,6 +330,23 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 		if !done {
 			r.rememberActiveTool(item, idx)
 		}
+	case "steering":
+		// The read model's replacement for the live evener/steering/injected
+		// notification: both a human's Ctrl+S message and a daemon-injected
+		// job/delegate result notification arrive this way (turn.SteeringSource
+		// distinguishes them for StartedAt stamping only, never for rendering —
+		// the live path rendered both uniformly as MsgSteering). A payload
+		// naming several jobs ties every one of them (issue #49), not just the
+		// first.
+		if strings.TrimSpace(item.Text) == "" {
+			return
+		}
+		r.messages = append(r.messages, ChatMessage{Kind: MsgSteering, Text: item.Text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
+		for _, tie := range ParseJobNotificationHeadlines(item.Text) {
+			if tie.JobID != "" {
+				r.ApplyTieHeadline(tie.JobID, tie.Headline, tie.IsError)
+			}
+		}
 	}
 }
 
