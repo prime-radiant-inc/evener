@@ -515,6 +515,31 @@ func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
 	}
 }
 
+func TestReplaySurveyFailuresKeepsOrdinaryChildDiffWhenReservingDiagnostics(t *testing.T) {
+	const parentDiagnostic = "    parent_test.go:3: parent assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(parentDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString("    child_test.go:10: mismatch (-want +got)\n")
+	for i := 1; i <= surveyContextBefore-1; i++ {
+		fmt.Fprintf(&log, "    diff line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, parentDiagnostic) {
+		t.Fatalf("parent diagnostic was omitted from replay: %q", got)
+	}
+	for i := 1; i <= surveyContextBefore-1; i++ {
+		line := fmt.Sprintf("diff line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("ordinary child diff line %q was omitted from replay: %q", line, got)
+		}
+	}
+}
+
 func TestReplaySurveyFailuresFindsFailedChildBeyondAfterWindow(t *testing.T) {
 	const childDiagnostic = "    child_test.go:5: child failure"
 	var log strings.Builder

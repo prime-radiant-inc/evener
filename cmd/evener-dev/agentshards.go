@@ -1004,6 +1004,8 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			appendNewest(&ordinaryContextCandidates, lineIndex)
 		}
 	}
+	parentDiagnosticOutsideWindow := len(parentDiagnosticCandidates) > 0 && parentDiagnosticCandidates[len(parentDiagnosticCandidates)-1] < ordinaryStart
+	failedChildDiagnosticOutsideWindow := len(failedChildDiagnosticCandidates) > 0 && failedChildDiagnosticCandidates[len(failedChildDiagnosticCandidates)-1] < ordinaryStart
 	hasFailureDiagnostic := len(parentDiagnosticCandidates) > 0 || len(failedChildDiagnosticCandidates) > 0
 	if len(ordinaryOwnedCandidates) > 0 && !hasFailureDiagnostic {
 		return nil, false
@@ -1020,10 +1022,10 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 	}
 	reservedDiagnostics := 0
-	if len(parentDiagnosticCandidates) > 0 {
+	if parentDiagnosticOutsideWindow {
 		reservedDiagnostics++
 	}
-	if len(failedChildDiagnosticCandidates) > 0 {
+	if failedChildDiagnosticOutsideWindow {
 		reservedDiagnostics++
 	}
 	ordinaryBudget := maxExpandedLines - reservedDiagnostics
@@ -1034,7 +1036,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	}
 	if len(parentDiagnosticCandidates) > 0 {
 		parentBudget := maxExpandedLines
-		if len(failedChildDiagnosticCandidates) > 0 {
+		if failedChildDiagnosticOutsideWindow {
 			parentBudget--
 		}
 		selectNewest(parentDiagnosticCandidates, parentBudget)
