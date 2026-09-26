@@ -1,7 +1,14 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
-import { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import {
+  hasErrorText,
+  hasFailureStatus,
+  hasItemFailure,
+  isInProgressStatus,
+  isNonZeroExit,
+  isTurnError,
+} from "./itemFailure";
 import type { ItemModel } from "./model";
 import type { ThreadItem } from "./types.gen";
 
@@ -46,6 +53,22 @@ describe("hasItemFailure", () => {
   test("a projected ItemModel answers the same question as the wire item", () => {
     const model: ItemModel = { id: "item-1", turnId: "turn-1", type: "commandExecution", text: "", exitCode: 2 };
     expect(hasItemFailure(model)).toBe(true);
+  });
+});
+
+describe("isTurnError", () => {
+  test("narrows by the one required field: an object with a string message", () => {
+    expect(isTurnError({ message: "the model call failed" })).toBe(true);
+    expect(isTurnError({ message: "boom", title: "Provider", hint: "retry" })).toBe(true);
+  });
+
+  test("rejects absent, null, scalar, and message-less shapes", () => {
+    expect(isTurnError(undefined)).toBe(false);
+    expect(isTurnError(null)).toBe(false);
+    expect(isTurnError("boom")).toBe(false);
+    expect(isTurnError(0)).toBe(false);
+    expect(isTurnError({})).toBe(false);
+    expect(isTurnError({ message: 7 })).toBe(false);
   });
 });
 

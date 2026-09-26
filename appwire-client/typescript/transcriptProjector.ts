@@ -1,13 +1,22 @@
-import { hasFailureStatus, hasItemFailure, isActiveItem, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import {
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+  isTurnError,
+} from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { hasWarningText } from "./reducer";
 import {
   type ContentVector,
   type HookExitDetail,
+  informationalNoticesVisible,
   normalizeConfig,
   presetContent,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { isInformationalWarning } from "./warnings";
 
 export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 
@@ -298,7 +307,15 @@ function decisionFor(
 
   // These live item types are always actionable/attention-worthy. Keeping the
   // check by type also makes warnings and steering independent of their prose.
-  if (item.type === "warning" || item.type === "steering") return "critical";
+  // One exception: an informational warning (a coded "no action needed"
+  // notice - budget arithmetic, not a failure) is quiet detail, so it shows
+  // only where informationalNoticesVisible says the level is high verbosity
+  // (the activity and full presets, and a custom vector that opted in).
+  if (item.type === "warning") {
+    if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
+    return "critical";
+  }
+  if (item.type === "steering") return "critical";
 
   // Future item types render through the raw renderer instead of disappearing.
   return "item";
@@ -339,6 +356,17 @@ function terminalFallbackEntry(
   if (!sourceItem) return undefined;
   const sourceIndex = sourceIndexByItem.get(sourceItem);
   if (sourceIndex === undefined) return undefined;
+  // The fallback exists so a terminal turn never renders empty - but it
+  // must not resurrect an informational warning decisionFor just hid (a
+  // failed turn whose only item is a context-budget notice). The trade
+  // holds only where a failure end cap will actually render, which both
+  // this gate and the renderer decide by isTurnError (the web's
+  // TurnFailureEndCap renders from asTurnError, the same narrowing). An
+  // errorless or malformed-error terminal turn renders no end cap, so its
+  // fallback keeps the never-empty guarantee.
+  if (isInformationalWarning(sourceItem) && !informationalNoticesVisible(vector) && isTurnError(turn.error)) {
+    return undefined;
+  }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
 }
 

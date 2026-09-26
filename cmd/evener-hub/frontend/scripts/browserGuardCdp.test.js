@@ -1472,13 +1472,25 @@ test("a CDP frame the boot listener cannot parse cannot break the navigation", a
     }
   };
 
-  await navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
-    bootExpression: "typeof window.settledShell !== 'undefined'",
-    bootLabel: "the shellguard entry global window.settledShell",
-    retryDelayMs: 0,
+  const retryNotes = [];
+  const noteError = vi.spyOn(console, "error").mockImplementation((...args) => {
+    retryNotes.push(args.join(" "));
   });
 
+  try {
+    await navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+      bootExpression: "typeof window.settledShell !== 'undefined'",
+      bootLabel: "the shellguard entry global window.settledShell",
+      retryDelayMs: 0,
+    });
+  } finally {
+    noteError.mockRestore();
+  }
+
   assert.equal(navigations, 2, "a garbage frame must not turn a recovering page into a failure");
+  assert.deepEqual(retryNotes, [
+    "navigateTo: the harness page at http://127.0.0.1:65535/shellguard.html never booted (attempt 1: the shellguard entry global window.settledShell is missing) - re-navigating",
+  ]);
   assert.equal(socket.listenerCount("message"), 0);
 });
 

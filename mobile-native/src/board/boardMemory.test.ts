@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { type BoardStorage, FoldedSections, forgetBoard, SeenMarkers } from "./boardMemory";
+import type { SyncStringStorage } from "../syncStringStorage";
+import { FoldedSections, forgetBoard, SeenMarkers } from "./boardMemory";
 
-function memoryStorage(values = new Map<string, string>()): BoardStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -113,7 +114,7 @@ describe("seen markers", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: BoardStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -184,7 +185,7 @@ describe("forgetBoard", () => {
 
 	it("still removes the folded key when the seen key's removal fails, then throws", () => {
 		const removed: string[] = [];
-		const storage: BoardStorage = {
+		const storage: SyncStringStorage = {
 			getItemSync: () => null,
 			setItemSync: () => {},
 			removeItemSync: (key) => {
