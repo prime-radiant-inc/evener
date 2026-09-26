@@ -336,6 +336,7 @@
     const list = EV.needsOrder().filter((x) => x.id !== fromId);
     EV.log("next", { from: fromId, to: list[0] ? list[0].id : null });
     if (!list.length) { EV.toast("Nothing else needs you"); return; }
+    EV.S.held = [];
     EV.openSession(list[0].id, { lateral: true, from: "next" });
   };
   EV.goAdjacent = function (fromId, dir) {
@@ -362,8 +363,11 @@
           <div class="tgt">${a.tool}  ${a.target}</div>
           <div class="md">${a.explain || a.mode}</div>
         </div>
-        <div class="dock-f"><span></span><span style="display:flex;gap:8px"><button class="btn" onClick=${() => EV.decideApproval(s, false)}>Deny</button><button class="btn primary" onClick=${() => EV.decideApproval(s, true)}>Allow once</button></span></div>
-        ${a.scope ? html`<button class="dock-scope" onClick=${() => EV.decideApproval(s, "scope")}>Allow all writes in <span class="mono">${a.scope}</span> for this session</button>` : null}
+        <div class="appr-choices">
+          ${a.scope ? html`<button class="choice" onClick=${() => EV.decideApproval(s, "scope")}><b>Allow all of <span class="mono">${a.scope}</span></b><small>For the rest of this session</small></button>` : null}
+          <button class="choice" onClick=${() => EV.decideApproval(s, true)}><b>${a.scope ? "Allow this file only" : "Allow once"}</b><small>${a.scope ? "It will ask again for the next one" : "Just this action"}</small></button>
+          <button class="choice deny" onClick=${() => EV.decideApproval(s, false)}><b>Deny</b></button>
+        </div>
       </div>`;
     }
     const ask = tr.find((x) => x.t === "ask");
@@ -428,14 +432,16 @@
   }
 
   // Other sessions that need you, and a way to go to the next one. Sits above
-  // the tray or ask dock so it can't be mistaken for part of this session.
-  function NextBar({ s }) {
-    const others = EV.needsCount(s.id);
+  // the tray or ask dock (and the Reader's review bar) so it can't be mistaken
+  // for part of this session. Alerts held while you read are counted as "new".
+  EV.NextBar = function NextBar({ exceptId }) {
+    const others = EV.needsCount(exceptId);
+    const held = EV.S.held.length;
     if (!others) return null;
-    return html`<button class="next-bar" onClick=${() => EV.goNext(s.id)} aria-label=${others + " other sessions need you. Go to the next one."}>
-      <span>${others} other session${others === 1 ? " needs" : "s need"} you</span><b>Next ${I.chevR({ s: 12 })}</b>
+    return html`<button class="next-bar" onClick=${() => EV.goNext(exceptId)} aria-label=${others + " other sessions need you. Go to the next one."}>
+      <span>${held ? html`<b>${held} new</b> · ` : null}${others} other session${others === 1 ? " needs" : "s need"} you</span><b>Next ${I.chevR({ s: 12 })}</b>
     </button>`;
-  }
+  };
 
   // ---------- composer ----------
   function Composer({ s }) {
@@ -578,13 +584,13 @@
         </div>
         ${S.conn !== "live" ? html`<div class="banner-thin"></div>` : null}
         <div class="ctx-chips">
+          <button class="cchip view" onClick=${() => EV.detailMenu(s)} aria-label=${"Detail level " + EV.level(s.id)}>${I.outline({ s: 15 })} Detail: ${EV.level(s.id)}</button>
           ${tot ? html`<button class="cchip" onClick=${() => EV.push("subagents", { sessionId: s.id })}>${I.people({ s: 15 })} Subagents ${h(EV.Strip, { t })}<span class="n">${tot}</span>${t.fail ? html`<span class="rd"></span>` : null}</button>` : null}
           ${files ? html`<button class="cchip" onClick=${() => EV.openSheet("files", { sessionId: s.id })}>${I.doc({ s: 15 })} Files <span class="n">${files}</span>${fileNew ? html`<span class="bd"></span>` : null}</button>` : null}
           ${s.tasks ? html`<button class="cchip" onClick=${() => EV.openSheet("tasks", { sessionId: s.id })}>${I.checklist({ s: 15 })} Tasks <span class="n">${s.tasks.done}/${s.tasks.total}</span></button>` : null}
           ${s.goal ? html`<button class=${"cchip" + (s.goal.status === "blocked" ? " amber" : "")} onClick=${() => EV.openSheet("goal", { sessionId: s.id })}>${I.target({ s: 15 })} Goal</button>` : null}
           ${s.notes ? html`<button class="cchip" onClick=${() => EV.openSheet("notes", { sessionId: s.id })}>${I.note({ s: 15 })} Notes</button>` : null}
           ${q.length ? html`<button class="cchip" onClick=${() => EV.openSheet("queue", { sessionId: s.id })}>Queue <span class="n">${q.length}</span></button>` : null}
-          <button class="cchip" onClick=${() => EV.detailMenu(s)} aria-label=${"Detail level " + EV.level(s.id)}>${I.outline({ s: 15 })} Detail: ${EV.level(s.id)}</button>
         </div>
       </div>
       <div class="scroll" ref=${scrollRef} onScroll=${onScroll}>
@@ -595,7 +601,7 @@
         ${newCount ? html`<button class="new-pill" style="position:sticky;bottom:10px" onClick=${() => { scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); setNewCount(0); }}>${I.down({ s: 14 })} ${newCount} new</button>` : null}
       </div>
       <div class="bottom">
-        ${h(NextBar, { s })}
+        ${h(EV.NextBar, { exceptId: s.id })}
         ${s.state === "question" || s.state === "approval" ? h(AskDock, { s }) : h(Tray, { s })}
         ${h(Composer, { s })}
       </div>
@@ -611,7 +617,7 @@
   };
   EV.detailMenu = function (s) {
     EV.openMenu({ kind: "list", top: 110, right: true, title: "Detail level",
-      preview: html`<div class="preview"><div class="pt">Detail level</div><div class="pw">How much of the agent's work this conversation shows</div></div>`,
+      preview: html`<div class="preview"><div class="pt">Detail level</div><div class="pw">How much of the agent's work this conversation shows, including what's already there</div></div>`,
       items: LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.update(); } })) });
   };
 

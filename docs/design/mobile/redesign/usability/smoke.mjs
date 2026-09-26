@@ -119,6 +119,9 @@ async function runChecks(page, scheme) {
   for (const lvl of ['Chat', 'Tools', 'Full']) {
     await check(S('detail-' + lvl), page, async () => { await reset(page); await ev(page, `EV.S.prefs.detail['s-pr2138']='${lvl}'; EV.openSession('s-pr2138')`); });
   }
+  await check(S('composer-typed-working'), page, async () => { await reset(page); await ev(page, `EV.S.drafts['s-tasklist']='Also cover the empty state'; EV.openSession('s-tasklist')`); });
+  await check(S('detail-menu'), page, async () => { await reset(page); await ev(page, `EV.openSession('s-pr2138'); EV.detailMenu(EV.sess('s-pr2138'))`); });
+  await check(S('host-offline'), page, async () => { await reset(page, 'host-offline'); await ev(page, `EV.openSheet('host',{hostId:'paradise-park'})`); });
   await check(S('subagents'), page, async () => { await reset(page); await ev(page, `EV.openSession('s-pr2138'); EV.push('subagents',{sessionId:'s-pr2138'})`); });
   await check(S('subagent-failed'), page, async () => { await reset(page); await ev(page, `EV.push('subagent',{sessionId:'s-pr2138',subId:'g-settle'})`); });
   await check(S('reader'), page, () => reset(page, 'reading'));
@@ -159,7 +162,7 @@ async function runChecks(page, scheme) {
   });
   await check(S('flow-approve'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-mirror')`); await sleep(400);
-    await tapRole('button', 'Allow once');
+    await tapRole('button', 'Allow this file only');
     await logHas(page, 'approval', (e) => e.decision === 'allow');
   });
   await check(S('flow-steer-and-queue'), page, async () => {
@@ -190,7 +193,7 @@ async function runChecks(page, scheme) {
   });
   await check(S('flow-scoped-approval'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-mirror')`); await sleep(400);
-    await tapRole('button', 'Allow all writes');
+    await tapRole('button', 'Allow all of');
     await logHas(page, 'approval', (e) => e.decision === 'allow_scope');
   });
   await check(S('flow-continue-reading'), page, async () => {
@@ -198,6 +201,21 @@ async function runChecks(page, scheme) {
     await ev(page, `EV.popToBoard()`); await sleep(500);
     await tapRole('button', 'Continue reading');
     await logHas(page, 'continue_reading');
+  });
+  await check(S('flow-comment-on-low-paragraph'), page, async () => {
+    await reset(page, 'reading'); await sleep(300);
+    const y = await ev(page, `(() => { const sc = document.querySelector('[data-screen="reader"] .scroll'); sc.scrollTop = sc.scrollHeight; const b = [...document.querySelectorAll('[data-screen="reader"] .rblock')].pop().getBoundingClientRect(); return Math.round((b.top + b.bottom) / 2); })()`);
+    await sleep(200);
+    // Hold like a finger, then lift: the lift must not close or trigger the menu.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y }] });
+    await sleep(700);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await sleep(100);
+    const open = await ev(page, '!!EV.S.menu');
+    if (!open) throw new Error('the long-press menu closed as soon as the finger lifted');
+    await tapRole('menuitem', 'Comment');
+    await logHas(page, 'sheet', (e) => e.kind === 'comment');
   });
   await check(S('flow-launch'), page, async () => {
     await reset(page); await page.locator('button[aria-label="New session"]').tap(); await sleep(400);

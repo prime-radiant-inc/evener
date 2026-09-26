@@ -14,13 +14,13 @@
     for (const p of S.providers) {
       if (p.status === "expired") {
         const n = S.sessions.filter((s) => s.live && !s.archived && EV.model(s.model).provider === p.id).length;
-        out.push({ id: "p:" + p.id, text: html`<b>${p.id}</b> sign-in expired${n ? " · " + n + (n === 1 ? " session" : " sessions") : ""}`, act: "Sign in", run: () => { EV.log("notice_action", { notice: "signin", provider: p.id }); EV.openSheet("signin", { provider: p.id }); } });
+        out.push({ id: "p:" + p.id, open: () => EV.openSheet("provider", { providerId: p.id }), text: html`<b>${p.id}</b> sign-in expired${n ? " · " + n + (n === 1 ? " session" : " sessions") : ""}`, act: "Sign in", run: () => { EV.log("notice_action", { notice: "signin", provider: p.id }); EV.openSheet("signin", { provider: p.id }); } });
       }
     }
     for (const x of S.hosts) {
       if (x.state === "offline") {
         const n = S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length;
-        out.push({ id: "h:" + x.id, text: html`<b>${x.id}</b> is offline${n ? " · " + n + " sessions can't be reached" : ""}`, act: "Reconnect", run: () => { EV.log("notice_action", { notice: "reconnect", host: x.id }); EV.reconnectHost(x.id); } });
+        out.push({ id: "h:" + x.id, open: () => EV.openSheet("host", { hostId: x.id }), text: html`<b>${x.id}</b> is offline${n ? " · " + n + " sessions can't be reached" : ""}`, act: "Reconnect", run: () => { EV.log("notice_action", { notice: "reconnect", host: x.id }); EV.reconnectHost(x.id); } });
       }
     }
     return out;
@@ -36,14 +36,26 @@
   };
 
   // ---------- row ----------
-  function whyFor(s) {
+  // Why a session is on the Board. Rows that need you lead with a word for
+  // the kind of need, so a question, an approval, a failure and a restart
+  // are told apart by words as well as by their marks.
+  EV.whyParts = function (s) {
     const st = EV.stateOf(s);
-    if (st === "failed") return { text: s.why, cls: "danger" };
-    if (["question", "approval", "warning", "restart"].includes(st)) return { text: s.why, cls: "attention", two: true };
-    if (st === "working" || st === "stuck") return EV.activityLine(s);
+    const rest = (s.why || "").replace(/^(Failed|Asks):\s*/, "");
+    if (st === "failed") return { label: "Failed", text: rest, cls: "danger" };
+    if (st === "question") return { label: "Question", text: rest, cls: "attention", two: true };
+    if (st === "approval") return { label: "Approval", text: rest.replace(/^Wants to /, "wants to "), cls: "attention", two: true };
+    if (st === "restart") return { label: "Restart needed", text: "to pick up the hub's update", cls: "attention" };
+    if (st === "warning") return { label: "Warning", text: rest, cls: "attention", two: true };
+    if (st === "stuck") return { label: "May be stuck", text: "no updates for " + EV.fmtAgo(Date.now() - s.updatedAt), cls: "attention" };
+    if (st === "working") return EV.activityLine(s);
     if (s.state === "yourmove" && s.unseen) return { text: "“" + s.why.replace(/…$/, "") + "…”", cls: "", two: true };
     return null;
-  }
+  };
+  const whyFor = EV.whyParts;
+  EV.WhyText = function ({ w }) {
+    return w.label ? html`<b style="font-weight:600">${w.label}</b> · ${w.text}` : w.text;
+  };
 
   function Meta({ s }) {
     const t = EV.tally(s);
@@ -93,7 +105,7 @@
       <div class="mark">${sel ? html`<span class=${"sel-box" + (S.board.selected[s.id] ? " on" : "")}>${S.board.selected[s.id] ? I.check({ s: 14 }) : null}</span>` : h(EV.Mark, { s })}</div>
       <div style="min-width:0">
         <div class="l1"><span class="title">${s.title}</span><span class="age">${draft ? html`<span class="draft">Draft</span>` : null}${age}</span></div>
-        ${why ? html`<div class=${"why" + (why.cls ? " " + why.cls : "") + (why.two ? " two" : "")}>${why.text}</div>` : null}
+        ${why ? html`<div class=${"why" + (why.cls ? " " + why.cls : "") + (why.two ? " two" : "")}>${h(EV.WhyText, { w: why })}</div>` : null}
         ${quiet ? null : h(Attachments, { s })}
         ${quiet ? null : h(Meta, { s })}
       </div>
@@ -168,7 +180,7 @@
     ];
     const preview = html`<div class="preview">
       <div style="display:flex;gap:8px;align-items:center">${h(EV.Mark, { s })}<div class="pt">${s.title}</div></div>
-      ${why ? html`<div class=${"pw" + (why.cls ? " why " + why.cls : "")}>${why.text}</div>` : null}
+      ${why ? html`<div class=${"pw" + (why.cls ? " why " + why.cls : "")}>${h(EV.WhyText, { w: why })}</div>` : null}
       <div class="pm">${t ? h(EV.Strip, { t }) : null}${t ? html`<span>${EV.tallyTotal(t)} subagents</span><span>·</span>` : null}<span>${s.project}</span><span>·</span><span>${s.host}</span><span>·</span><span style="font-family:var(--mono);font-size:12px">${s.model} · ${s.effort}</span></div>
       ${lastAgent ? html`<div class="px">${EV.plain(lastAgent.md, 240)}</div>` : null}
     </div>`;
@@ -445,10 +457,10 @@
         <div class="chips" role="navigation" aria-label="Sections">
           <button class="chip" onClick=${() => jump("live")}>Live <span class="n">${live}</span>${needs ? html`<span class="badge" aria-label=${needs + " need you"}>${needs}</span>` : null}</button>
           ${pinnedN || S.categories.length ? html`<button class="chip" onClick=${() => jump("pinned")}>Pinned <span class="n">${pinnedN}</span></button>` : null}
-          <button class="chip" onClick=${() => jump("projects")}>${S.board.organize === "host" ? "Hosts" : "Projects"} <span class="n">${S.board.organize === "host" ? S.hosts.length : projN}</span></button>
+          <button class="chip" onClick=${() => jump("projects")}>Projects <span class="n">${projN}</span></button>
           <button class="chip" onClick=${() => { S.board.collapsed.archived = false; jump("archived"); }}>Archived <span class="n">${archN}</span></button>
         </div>
-        ${ns.map((n) => html`<div class="notice" key=${n.id}><span class="ic">${I.warn({ s: 18 })}</span><span class="txt">${n.text}</span><button class="act" onClick=${n.run}>${n.act}</button></div>`)}
+        ${ns.map((n) => html`<div class="notice" key=${n.id} role="button" tabindex="0" style="cursor:pointer" onClick=${() => { EV.log("notice_open", { notice: n.id }); n.open(); }}><span class="ic">${I.warn({ s: 18 })}</span><span class="txt">${n.text}</span><button class="act" onClick=${(e) => { e.stopPropagation(); n.run(); }}>${n.act}</button></div>`)}
         ${S.lastRead && Date.now() - S.lastRead.at < 2 * 3600e3 ? html`<button class="continue" onClick=${() => {
           const r = S.lastRead;
           EV.log("continue_reading", { path: r.path });

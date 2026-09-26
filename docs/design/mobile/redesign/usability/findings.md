@@ -62,3 +62,34 @@ Earlier fixes from my own review before the round: document chips show the docum
 - Placeholders weren't matchable by text; now they are.
 - The test server's missing favicon produced one console error per participant; it now answers 204.
 - T2 asked for a change the plan already contained. Round 2 asks the reviewer to answer the plan's open question instead.
+
+## Round 2 (2026-09-25, prototype at d76654cae plus round-1 fixes)
+
+Five fresh participants with the same personas, so nobody had learned the app. Tasks re-tested every round-1 change; T2 was replaced by T2b (answer the plan's open question in a review). Materials: `round2/tasks.json`, `round2/scores.txt`.
+
+**Result: 23 of 23 task attempts succeeded.** Against round 1: approving the batch write fell from 5 median actions to 2 (both chose the new scoped allow), reading through an interruption from 15 to 7, fixing the offline host went from partial to done in 8, launch from 20.5 to 17.5. Confidence "which session needs me": 5, 4, 4, 4, 5.
+
+### Problems, worst first
+
+| # | Severity | Problem | Evidence | Change |
+|---|---|---|---|---|
+| 1 | 3 | Long-press to comment on a plan failed: the menu opened while the finger was down, and lifting it produced a click that either landed on the scrim (closing the menu) or on the menu item that appeared under the finger ("Copy"). Paragraphs higher on the screen happened to work. | Commuter T2b: `block_menu` logged on every attempt with no comment sheet; Editor T2b: every long-press "just copied". Both took 16-25 actions. | The one click produced by lifting a long-press finger is swallowed; any new touch clears that. Pressed paragraphs highlight while their menu is open. Smoke check `flow-comment-on-low-paragraph`. |
+| 2 | 3 | Alerts held while reading were invisible: nothing in the Reader said something was waiting. | Commuter T10: "no interruption came up". | The Next bar appears in the Reader and Artifact viewer too, with "1 new" for alerts that arrived while reading. |
+| 3 | 3 | Edge-swipe back did nothing in the Reader and in sessions: their scroll areas let the browser claim the drag and cancel the pointer. | Editor T10, twice. | Edge-swipe back is also detected from raw touch events. |
+| 4 | 3 | "Reply" in the Reader's review bar jumped to the session's chat, which read as a document reply. | Editor. | Removed; Send review is the way to respond to a document. |
+| 5 | 3 | A Board notice wasn't tappable, so the host's actual error was two screens away. | Operator T13. | Tapping a notice opens its host or provider detail; its action button still acts directly. |
+| 6 | 3 | The context-chip row scrolled sideways with no hint; Detail was off-screen. | Newcomer T12. | Detail is the first chip (dashed, since it's a view setting); the row fades at its right edge. |
+| 7 | 2 | Needs you rows were told apart only by their marks. | Newcomer, Editor. | Why lines lead with a word: "**Question** ·", "**Approval** ·", "**Failed** ·", "**Restart needed** ·", "**May be stuck** ·". Alert cards use the same words. |
+| 8 | 2 | The scoped approval was a small link under the buttons. | Newcomer. | Three stacked choices that state their consequence: "Allow all of ~/sites/docs · for the rest of this session", "Allow this file only · it will ask again for the next one", "Deny". |
+| 9 | 2 | The Projects chip renamed itself to "Hosts" when grouping changed. | Orchestrator. | The chip always says Projects; only the section heading changes. |
+| 10 | 2 | Editing a setting silently deselected the "Last used" recipe. | Orchestrator. | A "Custom" chip lights up when the settings match no recipe. |
+| 11 | 2 | The plugin picker had no search. | Operator. | Search, and the footer lists what's on. |
+| 12 | 1 | "Ask coordinator to stop it" read oddly on a subagent that had already failed. | Orchestrator. | Failed or waiting subagents offer "Ask coordinator to stop retrying it". |
+| 13 | 1 | A question's last option could sit under the fold unnoticed. | Orchestrator. | The option list fades at its bottom edge when it overflows. |
+| 14 | 1 | Whether a detail level re-renders history was unclear. | Operator. | "…including what's already there." |
+| 15 | 1 | "Access: Workspace write" was unexplained at launch. | Operator. | The Access row says what the choice allows. |
+
+### Test-method problems found and fixed
+
+- Two reported problems were artifacts of each task starting from fresh data ("the Board shows stale status", "changes since you last read reappeared"). Round 3 instructions say every task starts fresh.
+- Taps right after a sheet opened could miss while the sheet was still sliding in. The harness now waits for finite animations to settle before locating a target.

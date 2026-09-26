@@ -82,6 +82,7 @@
         </div>
       </div>
       <div class="recipes" role="radiogroup" aria-label="Recipes">
+        ${L.recipe ? null : html`<span class="chip on" aria-label="Custom settings">Custom</span>`}
         ${recipeChip("last", "Last used", () => applyRecipe(Object.assign({ id: "last", name: "Last used" }, S.lastUsed || S.recipes[0])))}
         ${S.recipes.map((r) => recipeChip(r.id, r.name, () => applyRecipe(r)))}
         <button class="chip" onClick=${() => EV.openSheet("saveRecipe", {})} aria-label="Save as recipe">${I.plus({ s: 14 })} Save</button>
@@ -100,7 +101,7 @@
         <div class="gi static" style="display:block;padding:10px 0 12px"><div style="padding:0 14px 8px;font-size:17px;display:flex;justify-content:space-between"><span>Effort</span><span style="color:var(--ink-low);font-size:13px">${m.name} supports ${m.efforts.length} levels</span></div>
           ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: L.effort, onChange: (e) => { L.effort = e; L.recipe = null; EV.log("launch_effort", { effort: e }); EV.update(); }, disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}</div>
         ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), iconBg: "#3C7A5A", label: "Plugins", value: L.plugins.length + " of " + S.plugins.length, chev: true, onClick: () => EV.openSheet("pickPlugins", {}) })}
-        ${h(EV.Gi, { icon: I.shield({ s: 17 }), iconBg: "#7A5C3C", label: "Access", value: L.access, chev: true, onClick: () => EV.openSheet("pickAccess", {}) })}
+        ${h(EV.Gi, { icon: I.shield({ s: 17 }), iconBg: "#7A5C3C", label: "Access", sub: { "Full access": "Read and write anywhere", "Workspace write": "Writes inside the project; asks first elsewhere", "Read-only": "Reads only", "Restricted": "Only allowed tools; no network" }[L.access], value: L.access, chev: true, onClick: () => EV.openSheet("pickAccess", {}) })}
       </div>
       <div class="gfoot">Host, plugins and access are fixed once the session starts. Model and effort can change later.</div>
       <div class="group" style="margin-top:14px">${h(EV.Gi, { label: "More options", sub: "Context strategy, subagent depth, turn limit", chev: true, onClick: () => EV.openSheet("moreOptions", {}) })}</div>
@@ -155,10 +156,13 @@
     const S = EV.S;
     const L = S.launch;
     const mps = S.marketplaces.map((m) => m.id);
+    const [q, setQ] = useState("");
+    const ok = (p) => !q || (p.id + " " + p.desc + " " + p.mp).toLowerCase().includes(q.toLowerCase());
     const toggle = (id) => { L.plugins = L.plugins.includes(id) ? L.plugins.filter((x) => x !== id) : L.plugins.concat(id); L.recipe = null; EV.log("launch_plugin_toggle", { plugin: id, on: L.plugins.includes(id) }); EV.update(); };
     return html`<${EV.Sheet} title="Plugins for this session" right=${back} left=${html`<span style="display:flex"><button class="text-btn" onClick=${() => { L.plugins = S.plugins.map((p) => p.id); EV.log("launch_plugins_all", {}); EV.update(); }}>All</button><button class="text-btn" onClick=${() => { L.plugins = []; EV.log("launch_plugins_none", {}); EV.update(); }}>None</button></span>`} size=${stacked ? "stacked" : "large"}>
-      <div class="gfoot" style="padding:2px 32px 8px">${L.plugins.length} of ${S.plugins.length} on. Plugins can't be changed after the session starts.</div>
-      ${mps.map((mp) => html`<div class="glabel">${mp}</div><div class="group">${S.plugins.filter((p) => p.mp === mp).map((p) => {
+      <div class="search-field">${I.search({ s: 16 })}<input placeholder="Search plugins" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Search plugins" /></div>
+      <div class="gfoot" style="padding:2px 32px 8px">${L.plugins.length} of ${S.plugins.length} on${L.plugins.length ? ": " + L.plugins.join(", ") : ""}. Plugins can't be changed after the session starts.</div>
+      ${mps.filter((mp) => S.plugins.some((p) => p.mp === mp && ok(p))).map((mp) => html`<div class="glabel">${mp}</div><div class="group">${S.plugins.filter((p) => p.mp === mp && ok(p)).map((p) => {
         const warn = p.id === "superpowers-chrome" && L.host === "magic-kingdom" && L.plugins.includes(p.id);
         return html`<div class="gi static" key=${p.id} onClick=${() => toggle(p.id)} style="cursor:pointer">
           <span></span>

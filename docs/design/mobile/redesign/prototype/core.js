@@ -166,6 +166,7 @@
     S.navAnim = { type: "push", key: S.navSeq, until: Date.now() + 330 };
     S.menu = null;
     EV.log("open", Object.assign({ screen: name }, props || {}));
+    EV.onScreenChange();
     EV.update();
     setTimeout(() => EV.update(), 340);
   };
@@ -212,7 +213,7 @@
   };
   EV.closeSheet = function () { EV.S.sheets.pop(); EV.update(); };
   EV.closeAllSheets = function () { EV.S.sheets = []; EV.update(); };
-  EV.openMenu = function (menu) { EV.S.menu = menu; EV.update(); };
+  EV.openMenu = function (menu) { EV.S.menu = Object.assign({ openedAt: Date.now() }, menu); EV.update(); };
   EV.closeMenu = function () { EV.S.menu = null; EV.update(); };
 
   let toastTimer = null;
@@ -408,7 +409,7 @@
       st.current = { x: e.clientX, y: e.clientY, dx0: dx, moved: false, horiz: null, long: false, id: e.pointerId, edge: e.clientX - appLeft < 24 };
       clearTimeout(st.current.lt);
       st.current.lt = setTimeout(() => {
-        if (!st.current.moved && onLong) { st.current.long = true; EV.S.interacting = false; onLong(); }
+        if (!st.current.moved && onLong) { st.current.long = true; EV.S.interacting = false; EV.swallowNextClick(); onLong(); }
       }, 520);
       EV.S.interacting = true;
     };
@@ -458,7 +459,7 @@
     return {
       onPointerDown: (e) => {
         st.current = { x: e.clientX, y: e.clientY, fired: false };
-        st.current.t = setTimeout(() => { st.current.fired = true; onLong(e); }, 520);
+        st.current.t = setTimeout(() => { st.current.fired = true; EV.swallowNextClick(); onLong(e); }, 520);
       },
       onPointerMove: (e) => { if (st.current.t && Math.hypot(e.clientX - st.current.x, e.clientY - st.current.y) > 8) { clearTimeout(st.current.t); st.current.t = null; } },
       onPointerUp: () => { clearTimeout(st.current.t); const fired = st.current.fired; st.current = {}; if (!fired && onTap) onTap(); },
@@ -490,7 +491,7 @@
     let title = "", why = "", mark = null;
     if (b.kind === "many") { title = b.count + " sessions need you"; why = "Tap to see them on the Board."; mark = html`<span class="mk attention">${I.question()}</span>`; }
     else if (b.kind === "notice") { title = b.title; why = b.why; mark = html`<span class="mk attention">${I.warn()}</span>`; }
-    else if (s) { title = s.title; why = b.why || s.why; mark = h(EV.Mark, { s }); }
+    else if (s) { title = s.title; const w = EV.whyParts && EV.whyParts(s); why = w ? h(EV.WhyText, { w }) : b.why || s.why; mark = h(EV.Mark, { s }); }
     // In-app alerts drop in just below the nav bar, so they never cover the
     // Back button, the title or the ask dock. Swipe up to dismiss.
     return html`<button class="banner" key=${b.key} onClick=${tap}
@@ -513,7 +514,8 @@
     const m = EV.S.menu;
     if (!m) return null;
     const Comp = EV.menus && EV.menus[m.kind];
-    return html`<div class="menu-layer"><div class="menu-scrim" onClick=${EV.closeMenu}></div>${Comp ? h(Comp, m) : null}</div>`;
+    const onScrim = () => EV.closeMenu();
+    return html`<div class="menu-layer"><div class="menu-scrim" onClick=${onScrim}></div>${Comp ? h(Comp, m) : null}</div>`;
   }
 
   EV.ListMenu = function ({ items, top, right, preview, title }) {
@@ -585,10 +587,42 @@
         st = null;
         if (dx > 70 && dy < 80) { EV.log("gesture", { name: "edge_back" }); EV.pop(); }
       };
+      let tst = null;
+      const tdown = (e) => {
+        const t = e.touches[0], r = el.getBoundingClientRect();
+        tst = t && t.clientX - r.left < 22 && EV.S.nav.length > 1 && !EV.S.sheets.length && !EV.S.menu ? { x: t.clientX, y: t.clientY } : null;
+      };
+      const tup = (e) => {
+        const t = e.changedTouches[0];
+        if (!tst || !t) return;
+        const dx = t.clientX - tst.x, dy = Math.abs(t.clientY - tst.y);
+        tst = null;
+        st = null;
+        if (dx > 70 && dy < 80) { EV.log("gesture", { name: "edge_back" }); EV.pop(); }
+      };
       el.addEventListener("pointerdown", down, true);
       el.addEventListener("pointerup", up, true);
       el.addEventListener("pointercancel", () => { st = null; }, true);
-      return () => { el.removeEventListener("pointerdown", down, true); el.removeEventListener("pointerup", up, true); };
+      el.addEventListener("touchstart", tdown, { capture: true, passive: true });
+      el.addEventListener("touchend", tup, { capture: true, passive: true });
+      return () => { el.removeEventListener("pointerdown", down, true); el.removeEventListener("pointerup", up, true); el.removeEventListener("touchstart", tdown, true); el.removeEventListener("touchend", tup, true); };
+    }, []);
+  }
+
+  // A long-press opens its menu while the finger is still down. Lifting that
+  // finger then produces a click wherever it is, which would close the menu
+  // (on the scrim) or trigger whatever item appeared under it. iOS never
+  // does that, so swallow exactly that one click; any new touch clears it.
+  EV.swallowNextClick = () => { EV.S.swallowClick = true; };
+  function useLiftGuard(ref) {
+    useEffect(() => {
+      const el = ref.current;
+      if (!el) return;
+      const click = (e) => { if (EV.S.swallowClick) { EV.S.swallowClick = false; e.stopPropagation(); e.preventDefault(); } };
+      const down = () => { EV.S.swallowClick = false; };
+      el.addEventListener("click", click, true);
+      el.addEventListener("pointerdown", down, true);
+      return () => { el.removeEventListener("click", click, true); el.removeEventListener("pointerdown", down, true); };
     }, []);
   }
 
@@ -597,6 +631,7 @@
     const ref = useRef(null);
     rerender = () => setV((v) => v + 1);
     useEdgeBack(ref);
+    useLiftGuard(ref);
     const framed = EV.framed;
     return html`<div ref=${ref} style="position:absolute;inset:0">
       ${framed ? h(StatusBar) : null}

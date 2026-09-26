@@ -361,7 +361,22 @@ async function main() {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   }
 
+  // A sheet or screen that is still sliding in can't be hit-tested reliably
+  // (its rows are moving under the finger), so wait for finite animations to
+  // settle first. Infinite ones, like a "Thinking…" pulse, never settle and
+  // are ignored.
+  async function settle() {
+    await page
+      .waitForFunction(
+        () => document.getAnimations().every((a) => a.playState !== 'running' || a.effect.getComputedTiming().iterations === Infinity),
+        null,
+        { timeout: 1200, polling: 50 },
+      )
+      .catch(() => {});
+  }
+
   async function locate(text, { climb }) {
+    await settle();
     const candidates = await page.evaluate(
       ({ text: t, climb: c }) => window.__harnessHelpers.findByText(t, { climb: c }),
       { text, climb },

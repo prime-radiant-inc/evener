@@ -739,3 +739,16 @@ input, textarea { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+.ctx-chips { padding-right: 40px; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.cchip.view { background: transparent; border-style: dashed; color: var(--ink-mid); }
+.appr-choices { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px 12px; }
+.appr-choices .choice { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 9px 14px; border-radius: 12px; border: 0.5px solid var(--edge-strong); background: var(--page); text-align: left; }
+.appr-choices .choice b { font: 600 15px/20px var(--sans); color: var(--accent-ink); }
+.appr-choices .choice b .mono { font-family: var(--mono); font-size: 14px; }
+.appr-choices .choice small { font: 13px/17px var(--sans); color: var(--ink-mid); }
+.appr-choices .choice.deny { align-items: center; border-color: transparent; background: transparent; padding: 6px; }
+.appr-choices .choice.deny b { color: var(--danger-ink); }
+.appr-choices .choice:active { background: var(--pressed); }
+
+.dock-b { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); padding-bottom: 22px; }

@@ -97,7 +97,7 @@
         <div class="tx">${tr.map((it, i) => h(SubItem, { key: i, it, s, idx: i, g }))}</div>
       </div>
       <div class="bottom"><div class="readonly-bar">
-        ${canStop ? html`<button class="btn" onClick=${() => { EV.log("subagent_stop_sheet", { sessionId, subagentId: subId }); EV.openSheet("stopSub", { sessionId, subId }); }}>${I.stop({ s: 12 })} Ask coordinator to stop it</button>` : S.stopRequests[subId] ? html`<span class="btn" style="flex:1;border-color:transparent;color:var(--ink-mid)">Stop requested</span>` : null}
+        ${canStop ? html`<button class="btn" onClick=${() => { EV.log("subagent_stop_sheet", { sessionId, subagentId: subId }); EV.openSheet("stopSub", { sessionId, subId }); }}>${I.stop({ s: 12 })} ${g.state === "running" ? "Ask coordinator to stop it" : "Ask coordinator to stop retrying it"}</button>` : S.stopRequests[subId] ? html`<span class="btn" style="flex:1;border-color:transparent;color:var(--ink-mid)">Stop requested</span>` : null}
         <button class="btn primary" onClick=${() => { EV.log("open_coordinator", { sessionId, from: subId }); EV.openSession(sessionId, { from: "subagent" }); }}>Open coordinator</button>
       </div></div>
     </div>`;
@@ -186,13 +186,14 @@
   function RBlock({ b, i, path, sessionId, changed, count, onComment }) {
     const lp = EV.useLongPress(() => {
       EV.log("block_menu", { path, block: i });
-      EV.openMenu({ kind: "list", top: 280, title: "Paragraph", preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${b.text.replace(/[#*`>|-]/g, "").slice(0, 220)}</div></div>`, items: [
+      EV.openMenu({ kind: "list", top: 280, title: "Paragraph", block: i, path, preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${b.text.replace(/[#*`>|-]/g, "").slice(0, 220)}</div></div>`, items: [
         { label: "Comment", icon: I.bubble({ s: 18 }), run: () => onComment(i) },
         { label: "Quote in reply", icon: I.quote({ s: 18 }), run: () => { EV.log("quote_from_doc", { path, block: i }); EV.quoteIntoDraft(sessionId, b.text.replace(/^#+\s*/, "")); } },
         { label: "Copy", icon: I.doc({ s: 18 }), run: () => EV.toast("Copied") },
       ] });
     });
-    return html`<div class=${"rblock" + (changed ? " changed" : "")} data-block=${i} ...${lp}>
+    const pressed = EV.S.menu && EV.S.menu.path === path && EV.S.menu.block === i;
+    return html`<div class=${"rblock" + (changed ? " changed" : "") + (pressed ? " sel" : "")} data-block=${i} ...${lp}>
       ${changed ? html`<span class="chg-label">Changed</span>` : null}
       <div dangerouslySetInnerHTML=${{ __html: b.html }}></div>
       ${count ? html`<button class="cmark" onPointerDown=${(e) => e.stopPropagation()} onPointerUp=${(e) => e.stopPropagation()} onClick=${(e) => { e.stopPropagation(); EV.openSheet("comments", { path, sessionId }); }}>${I.bubble({ s: 12 })} ${count}</button>` : null}
@@ -258,10 +259,9 @@
           ${blocks.map((b, i) => h(RBlock, { key: i, b, i, path, sessionId, changed: changed.includes(i), count: comments.filter((c) => c.block === i).length, onComment }))}
         </article>
       </div>
-      <div class="bottom"><div class="review-bar">
+      <div class="bottom">${h(EV.NextBar, { exceptId: sessionId })}<div class="review-bar">
         <button class="btn quiet" onClick=${() => EV.openSheet("comments", { path, sessionId })}>${I.bubble({ s: 16 })} Comments${comments.length ? " " + comments.length : ""}</button>
         <span style="display:flex;gap:6px">
-          <button class="btn" onClick=${() => { EV.log("reader_reply", { path }); EV.S.focusComposer = sessionId; EV.openSession(sessionId, { from: "reader_reply" }); }}>Reply</button>
           <button class="btn primary" onClick=${() => { EV.log("review_sheet", { path, comments: comments.length }); EV.openSheet("review", { path, sessionId }); }}>Send review</button>
         </span>
       </div></div>
@@ -386,6 +386,7 @@
       </div></div>
       ${failed && !ready ? html`<div class="scroll"><div class="empty"><b>${a.title}</b>${a.summary}<div style="margin-top:12px">This artifact can't run over this connection. Open it on a computer on the same network as the hub.</div></div></div>`
         : html`<iframe ref=${ref} class="art-frame" title=${a.title} sandbox="allow-scripts" srcdoc=${a.html}></iframe>`}
+      <div class="bottom">${h(EV.NextBar, { exceptId: sessionId })}</div>
     </div>`;
   }
   EV.screens.artifact = ArtifactViewer;
