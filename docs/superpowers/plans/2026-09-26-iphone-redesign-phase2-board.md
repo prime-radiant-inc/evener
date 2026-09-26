@@ -1748,7 +1748,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 - Consumes: Tasks 2-6 and `useConnection()` (`client`, `state`, `activeProfile`).
 - Produces:
   - `BoardScreen` (a route component for `"Sessions"`).
-  - `connectionStatus(state: ConnectionState, downSince: number | null, lastLiveAt: number | null, now: number): string | null`, which returns `null` when live, "Reconnecting…" after 2 seconds down, and "Offline · updated 3m ago" after 30 seconds (the age comes from `relativeAge` on `lastLiveAt`; with no `lastLiveAt`, because the hub was never reached this launch, it says "Offline").
+  - `connectionStatus(state: ConnectionState, fatal: boolean, downSince: number | null, lastLiveAt: number | null, now: number): string | null`, which returns "Update needed" whenever `fatal` is true (a close no retry can fix never says Reconnecting), `null` when live, "Reconnecting…" after 2 seconds down, and "Offline · updated 3m ago" after 30 seconds (the age comes from `relativeAge` on `lastLiveAt`; with no `lastLiveAt`, because the hub was never reached this launch, it says "Offline").
   - `DraftRepository.refsWithDrafts(hubId: string): Set<string>` (`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL) UNION SELECT session_ref FROM draft_image_sets WHERE hub_id = ?`: an image-only draft lives only in `draft_image_sets`, since `write` deletes the empty `drafts` row) and `DraftLibrary.refsWithDrafts(hubId)` passing it through (add `"refsWithDrafts"` to the `DraftStorage` `Pick` in `draftLibrary.ts`).
 
 **Requirements (spec 7.1, 7.5, 14; layout from top to bottom):**
@@ -1777,6 +1777,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
    - First load with nothing retained: three skeleton rows, 64pt, `inset` fill, no shimmer.
    - Loaded and every band empty: "Nothing's running. Start a session to put an agent to work." with a New session button, then the section rows.
    - Disconnected: rows stay, meters gray, the toolbar status shows. No Reconnect control exists anywhere on the screen.
+   - A close no retry can fix (`useConnection().fatal`): the toolbar says "Update needed", and a notice row at the top of the Board gives spec 14's sentence, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub." It has no action; the app tries again each time it returns to the foreground (Task 1). Test it with `fatal: true`.
 8. **Opening a session:**
    - Call `seenMarkers(hubId).markSeen(row)`, then `navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title })`.
    - The Board re-renders through `seenMarkers(hubId).subscribe` and `getRevision`.
@@ -1786,7 +1787,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 
 - [ ] **Step 1: Write the failing tests.**
   - `BoardToolbar` under fake timers: disconnected with nothing else changing, it shows nothing at 1 second, "Reconnecting…" at 2 seconds and "Offline · updated …" at 30 seconds, and it schedules no timer once live.
-  - `connectionStatus.test.ts` is a table: live → null; down 1s → null; down 2s → "Reconnecting…"; down 31s with `lastLiveAt` 3 minutes ago → "Offline · updated 3m ago"; down 31s with no `lastLiveAt` → "Offline"; closed → the same timeline.
+  - `connectionStatus.test.ts` is a table: live → null; down 1s → null; down 2s → "Reconnecting…"; down 31s with `lastLiveAt` 3 minutes ago → "Offline · updated 3m ago"; down 31s with no `lastLiveAt` → "Offline"; closed → the same timeline; fatal at any age → "Update needed".
   - `draftRepository.test.ts`: `refsWithDrafts` returns refs with non-empty text, unconfirmed text or only images, for that hub only.
   - `BoardScreen.test.tsx`: mock `react-native`, `expo-symbols`, `@react-navigation/native` (`useFocusEffect`, `useIsFocused`, `useNavigation`) and `../ConnectionProvider` (a `useConnection` returning `screenConnection(...)` from `renderNative.testkit`). Drive the hub through `scriptedClient` from `renderNative.testkit` answering navigation reads with `wireV2`. Cover:
     - the fixture fleet renders bands in order with counts;
