@@ -974,7 +974,7 @@ func TestStreamTransportCloseBoundedByStalledWrite(t *testing.T) {
 	}
 
 	release()
-	<-firstDone
+	requireErrWithin(t, "the admitted Send after the writer is released", firstDone, ErrStreamClosed)
 }
 
 // slowWriteStream is deliberately slow: each Write pauses before appending. A

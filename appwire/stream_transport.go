@@ -166,6 +166,14 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	select {
 	case t.send <- struct{}{}:
 	case <-ctx.Done():
+		// The latch is the stronger cause: if the transport went terminal in the
+		// same instant the context was canceled, report the latch so this call
+		// agrees with every later call.
+		select {
+		case <-t.latched:
+			return t.poisonErr()
+		default:
+		}
 		return ctx.Err()
 	case <-t.latched:
 		// A terminal cause is latched: admit nothing, and do not queue behind a
@@ -174,6 +182,11 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 		// this call agrees with every later call.
 		return t.poisonErr()
 	}
+	// The token is released after opMu.RUnlock (defers run LIFO, and RUnlock is
+	// registered later below), so a write stalled inside rw.Write holds BOTH the
+	// token and the read lock. No second Send can therefore reach opMu.RLock
+	// while a writer is stalled, and a drain waiting on opMu.Lock cannot strand
+	// one.
 	defer func() { <-t.send }()
 
 	// Re-check under the lock. Another call may have poisoned the transport
@@ -509,6 +522,13 @@ func (t *StreamTransport) latchLateCancel(ctx context.Context, stop func() bool)
 // tells the caller shutdown did not complete cleanly, but it does NOT tell the
 // caller the underlying resource was released, because on that path the close
 // goroutine (and a stranded writer) are abandoned.
+//
+// A clean close returns the underlying closer's own error (usually nil), or nil
+// on a repeat call. A clean Close never returns ErrStreamClosed, so a caller
+// that sees errors.Is(err, ErrStreamClosed) from Close knows a bounded step
+// expired and the stream may still be open. Close's return cannot distinguish a
+// timed-out close from an underlying closer that itself reported an error; both
+// are non-nil, which is the one distinction Close does not make.
 func (t *StreamTransport) Close() error {
 	first := t.latch(ErrStreamClosed)
 	t.startClose()
