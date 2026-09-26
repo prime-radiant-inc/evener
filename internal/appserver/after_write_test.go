@@ -55,7 +55,7 @@ func TestAfterResponseWrittenRunsAfterTransportSend(t *testing.T) {
 	}
 
 	conn.send <- appwire.ResponseMessage(id, map[string]any{"ok": true})
-	go runWebSocketSendLoopWithTimeout(t.Context(), &orderRecordingSender{order: order}, conn.send, time.Second, conn.responseWritten)
+	go runWebSocketSendLoopWithTimeout(t.Context(), &orderRecordingSender{order: order}, conn.send, time.Second, conn.responseWritten, nil)
 
 	select {
 	case <-ran:
