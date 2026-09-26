@@ -275,22 +275,7 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	}
 	out := make([]hubcore.LiveEntry, len(in))
 	for i, entry := range in {
-		out[i] = entry
-		out[i].ActiveFlags = append([]string(nil), entry.ActiveFlags...)
-		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
-		out[i].RunningJobs = appwire.CloneEvenerJobs(entry.RunningJobs)
-		out[i].CompletedJobs = appwire.CloneEvenerJobs(entry.CompletedJobs)
-		out[i].Watches = appwire.CloneEvenerWatches(entry.Watches)
-		if entry.ChildWatches != nil {
-			out[i].ChildWatches = make(map[string][]appwire.EvenerWatchInfo, len(entry.ChildWatches))
-			for childID, watches := range entry.ChildWatches {
-				out[i].ChildWatches[childID] = appwire.CloneEvenerWatches(watches)
-			}
-		}
-		if entry.RunningSubagentStates != nil {
-			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
-			maps.Copy(out[i].RunningSubagentStates, entry.RunningSubagentStates)
-		}
+		out[i] = hubcore.CloneLiveEntry(entry)
 	}
 	return out
 }

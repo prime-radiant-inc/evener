@@ -25,6 +25,7 @@ type wireProbeEnvelopeSource struct {
 	askPending  bool
 	escalations []appwire.SandboxEscalationRequested
 	detailed    server.DetailedStatus
+	tasks       *appwire.TaskAggregate
 }
 
 // An entry that names no session yet has only the answer to go on, so the
@@ -131,7 +132,7 @@ func (s wireProbeEnvelopeSource) DetailedStatus() server.DetailedStatus { return
 func (s wireProbeEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
 	return appwire.QueueState{}, nil
 }
-func (s wireProbeEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return nil }
+func (s wireProbeEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return s.tasks }
 func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }
@@ -268,6 +269,34 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 	}
 	if got.Capabilities != want {
 		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)
+	}
+}
+
+// The listed root carries the daemon's task-list progress beside its status,
+// from the same projection cut, and the probe keeps it for the row's task line
+// (S13a). A daemon that cannot read its task state reports no aggregate, and
+// the probe must not stand in an empty list for it.
+func TestStatusProberCarriesTaskProgress(t *testing.T) {
+	tasks := &appwire.TaskAggregate{
+		Total: 7, Done: 2, Cancelled: 1, Remaining: 4,
+		Current: &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"},
+	}
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_tasks",
+		state:     appwire.ThreadStatusActive,
+		source:    wireProbeEnvelopeSource{tasks: tasks},
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if !reflect.DeepEqual(got.Tasks, tasks) {
+		t.Fatalf("probe tasks = %+v, want the daemon's aggregate %+v", got.Tasks, tasks)
+	}
+
+	prober, entry = startProbeDaemon(t, probeDaemonConfig{sessionID: "th_wire_no_tasks", state: appwire.ThreadStatusIdle})
+	if got := prober.Probe(entry); !got.OK || got.Tasks != nil {
+		t.Fatalf("probe of a daemon with no task state = %+v, want ok and nil tasks", got)
 	}
 }
 
