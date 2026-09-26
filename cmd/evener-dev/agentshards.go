@@ -797,6 +797,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	emitted := 0 // exclusive end of the last block written
 	emittedLines := make(map[int]struct{})
 	deferredLines := make(map[string][]int)
+	fallbackOwners := surveyFallbackOwnerStates(lines)
 	for i := 0; i < len(lines) && maxBlocks > 0; {
 		if !surveyRedLine.MatchString(lines[i]) {
 			i++
@@ -805,6 +806,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		maxBlocks--
 		matched = true
 		name := surveyFailureName(lines[i])
+		fallbackClaims := make(map[string]surveyFallbackClaim)
 		deferred := deferredLines[name]
 		delete(deferredLines, name)
 		start := i
@@ -837,9 +839,22 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		}
 		for index := start; index < end; index++ {
 			if index < i {
-				if owner := surveyFallbackLineLaterFailureOwner(lines, index, i, maxBlocks); owner != "" {
-					deferredLines[owner] = append(deferredLines[owner], index)
-					continue
+				if !surveyFrameworkLine(lines[index]) {
+					owner := fallbackOwners[index].owner
+					if fallbackOwners[index].verdict {
+						owner = name
+					}
+					if owner != "" && owner != name {
+						claim, ok := fallbackClaims[owner]
+						if !ok {
+							claim = surveyFallbackLaterFailureClaim(lines, i, maxBlocks, owner)
+							fallbackClaims[owner] = claim
+						}
+						if claim.name != "" && index >= claim.lastRun {
+							deferredLines[claim.name] = append(deferredLines[claim.name], index)
+							continue
+						}
+					}
 				}
 			}
 			if _, alreadyEmitted := emittedLines[index]; alreadyEmitted {
@@ -916,49 +931,62 @@ func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 	return false
 }
 
-// surveyFallbackLineLaterFailureOwner returns the owner of an ordinary fallback
-// line when that owner has a later top-level failure marker within the remaining
-// block budget. The caller defers only those lines, so maxBlocks exhaustion
-// cannot silently discard context. Ownership follows RUN/CONT/NAME frames and
-// verdicts, matching expandSurveyFailure; a parent marker can claim descendant
-// output. A later RUN of the owner or its later failing parent ends the
-// earlier output's claim.
-func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlocks int) string {
-	if surveyFrameworkLine(lines[index]) {
-		return ""
-	}
-	current := surveyFailureName(lines[marker])
+type surveyFallbackOwnerState struct {
+	owner   string
+	verdict bool
+}
+
+// surveyFallbackOwnerStates records the latest ownership frame before each
+// line once for the whole log. A verdict is kept separately because the
+// fallback associates it with the failure marker currently being expanded.
+func surveyFallbackOwnerStates(lines []string) []surveyFallbackOwnerState {
+	states := make([]surveyFallbackOwnerState, len(lines))
 	owner := ""
-	for frame := 0; frame < index; frame++ {
-		if frameOwner := surveyPhaseOwner(lines[frame]); frameOwner != "" {
+	verdict := false
+	for index, line := range lines {
+		states[index] = surveyFallbackOwnerState{owner: owner, verdict: verdict}
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
 			owner = frameOwner
+			verdict = false
 		}
-		if verdict := strings.TrimSpace(lines[frame]); surveyTestVerdictLine.MatchString(verdict) {
-			owner = current
+		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
+			verdict = true
 		}
 	}
-	if owner == "" || owner == current {
-		return ""
-	}
+	return states
+}
+
+type surveyFallbackClaim struct {
+	name    string
+	lastRun int
+}
+
+// surveyFallbackLaterFailureClaim finds the first later failure that can claim
+// an owner's ordinary context. lastRun excludes lines before a repeated owner
+// or parent RUN; the caller can reuse this result for every line with that
+// owner in the current fallback window.
+func surveyFallbackLaterFailureClaim(lines []string, marker, maxBlocks int, owner string) surveyFallbackClaim {
 	for later, failures := marker+1, 0; later < len(lines); later++ {
 		if !surveyRedLine.MatchString(lines[later]) {
 			continue
 		}
 		failures++
 		laterName := surveyFailureName(lines[later])
-		if laterName == owner || strings.HasPrefix(owner, laterName+"/") {
-			for between := index + 1; between < later; between++ {
-				if lines[between] == "=== RUN   "+owner || lines[between] == "=== RUN   "+laterName {
-					return ""
-				}
-			}
-			if failures <= maxBlocks {
-				return laterName
-			}
-			return ""
+		if laterName != owner && !strings.HasPrefix(owner, laterName+"/") {
+			continue
 		}
+		if failures > maxBlocks {
+			return surveyFallbackClaim{}
+		}
+		lastRun := -1
+		for between := marker + 1; between < later; between++ {
+			if lines[between] == "=== RUN   "+owner || lines[between] == "=== RUN   "+laterName {
+				lastRun = between
+			}
+		}
+		return surveyFallbackClaim{name: laterName, lastRun: lastRun}
 	}
-	return ""
+	return surveyFallbackClaim{}
 }
 
 // surveyDiagnosticLine matches the source location that testing prefixes on
