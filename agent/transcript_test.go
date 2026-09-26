@@ -2756,6 +2756,7 @@ func TestReadSessionTranscriptAttemptExpansionIncludesExactHeadersAndSettlement(
 }
 
 func TestAPILogAttemptSettlementLookupLongLogRetainsOnlyMatchingSettlement(t *testing.T) {
+	t.Parallel()
 	const targetGroupID = "ag_target_settlement"
 	lookup := apiLogAttemptSettlementLookup{}
 
@@ -3074,6 +3075,7 @@ func TestReadSessionTranscriptAPILogSizeTrimRemovingSettlementMakesAttemptUnknow
 }
 
 func TestReadSessionTranscriptOversizedExpansionIsBytePaged(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
 	path := transcriptPath(dir, sessionID)
@@ -3607,6 +3609,7 @@ func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
 }
 
 func TestReadSessionTranscriptRejectsUnknownExpansionTurn(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)
@@ -3632,6 +3635,7 @@ func TestReadSessionTranscriptRejectsUnknownExpansionTurn(t *testing.T) {
 }
 
 func TestLargestTranscriptExpansionPrefixHandlesUTF8EncodingTransitions(t *testing.T) {
+	t.Parallel()
 	raw := []byte("€€€")
 	envelope := readMarkdownEnvelope{
 		TranscriptRef: "local:test",
@@ -3667,6 +3671,7 @@ func TestLargestTranscriptExpansionPrefixHandlesUTF8EncodingTransitions(t *testi
 }
 
 func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	const sessionID = "02wMz5TxvBRJC3228LTWod"
 	path := transcriptPath(dir, sessionID)
@@ -3713,6 +3718,7 @@ func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
 }
 
 func TestReadSessionTranscriptJSONLRejectsHeaderLargerThanHardOutputCap(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)

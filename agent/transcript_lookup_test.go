@@ -890,6 +890,7 @@ func TestReadAPILogSummary_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.
 // TestApiLogReadEnvelope_OmitsEmptyTranscriptRef asserts the struct tag
 // directly: apiLogReadEnvelope.TranscriptRef must have ,omitempty.
 func TestApiLogReadEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
 	env := apiLogReadEnvelope{Source: apiLogSource}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -903,6 +904,7 @@ func TestApiLogReadEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
 // TestApiLogAttemptEnvelope_OmitsEmptyTranscriptRef asserts the struct tag
 // directly: apiLogAttemptEnvelope.TranscriptRef must have ,omitempty.
 func TestApiLogAttemptEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
 	env := apiLogAttemptEnvelope{Source: apiLogSource}
 	b, err := json.Marshal(env)
 	if err != nil {

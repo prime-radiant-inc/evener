@@ -122,6 +122,7 @@ func TestTaskTool_UpdateNotesOnlyKeepsStatus(t *testing.T) {
 }
 
 func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
+	t.Parallel()
 	t.Run("notes-only reassertion is not a start", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "investigate", Prompt: "inspect"}})
 		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
@@ -188,6 +189,7 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 }
 
 func TestTaskTool_MixedAddAndNonTerminalUpdateCarriesProgress(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "existing"}})
 	result := h.call(t, map[string]any{
 		"add":    []map[string]any{{"description": "new task", "type": "implement", "prompt": "p"}},
@@ -205,6 +207,7 @@ func TestTaskTool_MixedAddAndNonTerminalUpdateCarriesProgress(t *testing.T) {
 }
 
 func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
+	t.Parallel()
 	t.Run("terminal reassertion is not a settle", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "wrap up", Prompt: "wrap up"}})
 		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
@@ -322,6 +325,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 }
 
 func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "reopen", Prompt: "reopen"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatalf("complete task: %v", err)
@@ -346,6 +350,7 @@ func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
 }
 
 func TestTaskTool_UpdateClassifiesDuplicateIDsFromFinalBatchState(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{
 		{Description: "finish", Prompt: "finish"},
 		{Description: "continue", Prompt: "continue"},
@@ -371,6 +376,7 @@ func TestTaskTool_UpdateClassifiesDuplicateIDsFromFinalBatchState(t *testing.T) 
 }
 
 func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status string
@@ -399,6 +405,7 @@ func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T)
 }
 
 func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
@@ -422,6 +429,7 @@ func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
 // target a PRE-EXISTING task — updates validate against the pre-add state
 // (the model cannot know IDs this call's add would assign).
 func TestTaskTool_CombinedAddUpdate(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p0"}})
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{
@@ -447,6 +455,7 @@ func TestTaskTool_CombinedAddUpdate(t *testing.T) {
 // IDs this call's add would assign, so updates must validate against the
 // pre-add store state, and a failed combined call must apply nothing.
 func TestTaskTool_UpdateReferencesThisCallAddsRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, nil)
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{
@@ -471,6 +480,7 @@ func TestTaskTool_UpdateReferencesThisCallAddsRejected(t *testing.T) {
 // arrays; empty ones must be no-ops. With no mutation, the response is
 // the view output (the list), same as a bare call.
 func TestTaskTool_EmptyArraysAreNoOps(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	res := h.call(t, map[string]any{"add": []any{}, "update": []any{}})
 	if res.IsError {
@@ -483,6 +493,7 @@ func TestTaskTool_EmptyArraysAreNoOps(t *testing.T) {
 
 // TestTaskTool_ViewIsBareCall: no arrays = view, returns the list.
 func TestTaskTool_ViewIsBareCall(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	res := h.call(t, map[string]any{})
 	if res.IsError {
@@ -497,6 +508,7 @@ func TestTaskTool_ViewIsBareCall(t *testing.T) {
 // action-shaped calls fail at validation. The call below deliberately
 // sends the retired action key; do not "migrate" it.
 func TestTaskTool_OldActionShapeRejectedHelpfully(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, nil)
 	res := h.call(t, map[string]any{"action": "view"})
 	if !res.IsError {
@@ -507,6 +519,7 @@ func TestTaskTool_OldActionShapeRejectedHelpfully(t *testing.T) {
 // TestTaskTool_NoOpUpdateEntryRejected: an update entry that changes
 // nothing is a model mistake, not a no-op.
 func TestTaskTool_NoOpUpdateEntryRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	res := h.call(t, map[string]any{
 		"update": []any{map[string]any{"id": 1}},
@@ -524,6 +537,7 @@ func TestTaskTool_NoOpUpdateEntryRejected(t *testing.T) {
 // same publication — "when you mark a task done, the next eligible task
 // auto-starts" applies to same-call adds too.
 func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "first", Prompt: "p1"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -546,6 +560,7 @@ func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
 
 // TestTaskTool_NotesOnlyUpdateWorks: the end-to-end bug fix from the review.
 func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -562,6 +577,7 @@ func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
 }
 
 func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args map[string]any
@@ -626,6 +642,7 @@ func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
 }
 
 func TestTaskStateDataCarriesDistinctOutcomes(t *testing.T) {
+	t.Parallel()
 	summary := taskpkg.Summarize([]taskpkg.Task{
 		{Status: taskpkg.TaskDone},
 		{Status: taskpkg.TaskCancelled},
@@ -642,6 +659,7 @@ func TestTaskStateDataCarriesDistinctOutcomes(t *testing.T) {
 }
 
 func TestTaskTool_CancelledTerminalListUsesOutcomeSummary(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "stop", Prompt: "stop"}})
 	res := h.update(t, map[string]any{"id": 1, "status": "cancelled"})
 	if res.IsError {
@@ -665,6 +683,7 @@ func TestTaskTool_CancelledTerminalListUsesOutcomeSummary(t *testing.T) {
 // know it, and allowing it invites ID-guessing (the same reason update
 // targets validate against the pre-add state).
 func TestTaskTool_UpdateDependsOnSameCallAddRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p"}})
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{

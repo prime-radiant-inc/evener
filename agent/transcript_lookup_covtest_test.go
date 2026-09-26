@@ -10,6 +10,7 @@ import (
 
 // TestStateHomeFor covers the stateHomeFor function (lines 173-186).
 func TestStateHomeFor(t *testing.T) {
+	t.Parallel()
 	// Valid layout: <stateHome>/evener/projects/<project-id>
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "myproject-0123456789")
 	if got := stateHomeFor(dir); got == "" {
@@ -38,6 +39,7 @@ func TestStateHomeFor(t *testing.T) {
 // session" because the transcript is absent, not because the bucket name was
 // invalid.
 func TestResolveTranscript_InvalidBucket(t *testing.T) {
+	t.Parallel()
 	// A legacy-named dir under evener/projects (no matching session).
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "bad project")
 	_, _, err := resolveTranscript("02wMz5Txv2enqVTitaig6F", dir, "02wMz5Txv2enqVTitaig6F")
@@ -49,6 +51,7 @@ func TestResolveTranscript_InvalidBucket(t *testing.T) {
 // TestResolveTranscript_CurrentInvalidSessionID covers the invalid session
 // ID for current (line 32-33).
 func TestResolveTranscript_CurrentInvalidSessionID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("", dir, "../escaped")
 	if err == nil {
@@ -59,6 +62,7 @@ func TestResolveTranscript_CurrentInvalidSessionID(t *testing.T) {
 // TestResolveTranscript_Current covers the current-session happy path
 // (lines 31-36).
 func TestResolveTranscript_CurrentSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path, ref, err := resolveTranscript("", dir, "02wMz5Txv2enqVTitaig6F")
 	if err != nil {
@@ -75,6 +79,7 @@ func TestResolveTranscript_CurrentSession(t *testing.T) {
 // TestResolveTranscript_PathSeparators covers the traversal guard (line
 // 73-74).
 func TestResolveTranscript_PathSeparators(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("foo/bar", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil || !strings.Contains(err.Error(), "path separators") {
@@ -85,6 +90,7 @@ func TestResolveTranscript_PathSeparators(t *testing.T) {
 // TestResolveTranscript_InvalidBareID covers the invalid bare session ID
 // (line 78-79).
 func TestResolveTranscript_InvalidBareID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("../escaped", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil {
@@ -94,6 +100,7 @@ func TestResolveTranscript_InvalidBareID(t *testing.T) {
 
 // TestResolveTranscript_NotFound covers the not-found error (line 116-117).
 func TestResolveTranscript_NotFoundBare(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("02wMz5Txv2enqVTitaig6F", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil || !strings.Contains(err.Error(), "unknown session") {
@@ -104,6 +111,7 @@ func TestResolveTranscript_NotFoundBare(t *testing.T) {
 // TestResolveTranscript_LocalRefNotFound covers the local ref not-found
 // path (line 66-67).
 func TestResolveTranscript_LocalRefNotFound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("local:02wMz5Txv2enqVTitaig6F", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -114,6 +122,7 @@ func TestResolveTranscript_LocalRefNotFound(t *testing.T) {
 // TestResolveTranscript_LocalRefInvalidSessionID covers the local ref with
 // invalid session ID (line 45-46).
 func TestResolveTranscript_LocalRefInvalidSessionID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("local:../escaped", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil {
@@ -124,6 +133,7 @@ func TestResolveTranscript_LocalRefInvalidSessionID(t *testing.T) {
 // TestResolveTranscript_ProjRefInvalidProjectID covers the proj ref with
 // invalid project ID (line 49-50).
 func TestResolveTranscript_ProjRefInvalidProjectID(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "myproject-0123456789")
 	os.MkdirAll(dir, 0o755)
 	_, _, err := resolveTranscript("proj:../bad:02wMz5Txv2enqVTitaig6F", dir, "02wMz5Txv2enqVTitaig6F")
@@ -134,6 +144,7 @@ func TestResolveTranscript_ProjRefInvalidProjectID(t *testing.T) {
 
 // TestResolveTranscript_BadRef covers the decode-ref error (line 42-43).
 func TestResolveTranscript_BadRef(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := resolveTranscript("local:", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil {
@@ -178,6 +189,7 @@ func TestEnumerateBuckets_RejectsMalformedGlobRoot(t *testing.T) {
 // TestEnumerateBuckets_FiltersNonDirs covers the filter for non-directory
 // matches (line 151-153).
 func TestEnumerateBuckets_FiltersNonDirs(t *testing.T) {
+	t.Parallel()
 	// Create a real directory structure.
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "evener", "projects", "myproject-0123456789")
@@ -208,6 +220,7 @@ func TestEnumerateBuckets_FiltersNonDirs(t *testing.T) {
 // TestParentBucketAndID_Current covers the current-session path (lines
 // 203-210).
 func TestParentBucketAndID_Current(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bucket, id, scope, err := parentBucketAndID("", dir, "02wMz5Txv2enqVTitaig6F")
 	if err != nil {
@@ -221,6 +234,7 @@ func TestParentBucketAndID_Current(t *testing.T) {
 // TestParentBucketAndID_CurrentInvalidSessionID covers the invalid session
 // ID for current (line 204-205).
 func TestParentBucketAndID_CurrentInvalidSessionID(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := parentBucketAndID("", t.TempDir(), "../escaped")
 	if err == nil {
 		t.Fatal("expected error for invalid session ID")
@@ -231,6 +245,7 @@ func TestParentBucketAndID_CurrentInvalidSessionID(t *testing.T) {
 // a legacy-named bucket dir. After FU3, buckets under evener/projects are no
 // longer filtered by name, so parentBucketAndID succeeds.
 func TestParentBucketAndID_LegacyNamedBucket(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "bad project")
 	bucket, id, scope, err := parentBucketAndID("", dir, "02wMz5Txv2enqVTitaig6F")
 	if err != nil {
@@ -243,6 +258,7 @@ func TestParentBucketAndID_LegacyNamedBucket(t *testing.T) {
 
 // TestParentBucketAndID_BadRef covers the decode-ref error (line 214-215).
 func TestParentBucketAndID_BadRef(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := parentBucketAndID("local:", t.TempDir(), "02wMz5Txv2enqVTitaig6F")
 	if err == nil {
 		t.Fatal("expected error for bad ref")
@@ -252,6 +268,7 @@ func TestParentBucketAndID_BadRef(t *testing.T) {
 // TestParentBucketAndID_InvalidSessionID covers the invalid session ID in
 // ref (line 217-218).
 func TestParentBucketAndID_InvalidSessionID(t *testing.T) {
+	t.Parallel()
 	_, _, _, err := parentBucketAndID("local:../escaped", t.TempDir(), "02wMz5Txv2enqVTitaig6F")
 	if err == nil {
 		t.Fatal("expected error for invalid session ID")
@@ -261,6 +278,7 @@ func TestParentBucketAndID_InvalidSessionID(t *testing.T) {
 // TestParentBucketAndID_InvalidProjectID covers the invalid project ID in
 // ref (line 221-222).
 func TestParentBucketAndID_InvalidProjectID(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "myproject-0123456789")
 	os.MkdirAll(dir, 0o755)
 	_, _, _, err := parentBucketAndID("proj:../bad:02wMz5Txv2enqVTitaig6F", dir, "02wMz5Txv2enqVTitaig6F")
@@ -271,6 +289,7 @@ func TestParentBucketAndID_InvalidProjectID(t *testing.T) {
 
 // TestParentBucketAndID_LocalRef covers the local ref path (line 225-226).
 func TestParentBucketAndID_LocalRef(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bucket, id, scope, err := parentBucketAndID("local:02wMz5Txv47YP64RR3B9YJ", dir, "02wMz5Txv2enqVTitaig6F")
 	if err != nil {

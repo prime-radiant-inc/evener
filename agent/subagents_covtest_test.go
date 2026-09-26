@@ -17,6 +17,7 @@ import (
 
 // TestCovHasString covers hasString (subagents.go lines 185-187).
 func TestCovHasString2(t *testing.T) {
+	t.Parallel()
 	if !hasString([]string{"a", "b", "c"}, "b") {
 		t.Fatal("should find b")
 	}
@@ -31,6 +32,7 @@ func TestCovHasString2(t *testing.T) {
 // TestCovAppendUniqueStrings covers appendUniqueStrings
 // (subagents.go lines 189-197).
 func TestCovAppendUniqueStrings2(t *testing.T) {
+	t.Parallel()
 	// Add new strings.
 	got := appendUniqueStrings([]string{"a"}, "b", "c")
 	if len(got) != 3 || got[1] != "b" || got[2] != "c" {
@@ -50,6 +52,7 @@ func TestCovAppendUniqueStrings2(t *testing.T) {
 
 // TestCovRemoveStrings covers removeStrings (subagents.go lines 206-218).
 func TestCovRemoveStrings2(t *testing.T) {
+	t.Parallel()
 	// No removals — copy of input.
 	original := []string{"a", "b"}
 	got := removeStrings(original, nil)
@@ -75,6 +78,7 @@ func TestCovRemoveStrings2(t *testing.T) {
 // TestCovRootOnlySubagentTools covers rootOnlySubagentTools
 // (subagents.go lines 220-223).
 func TestCovRootOnlySubagentTools(t *testing.T) {
+	t.Parallel()
 	tools := rootOnlySubagentTools()
 	if want := []string{"delegate", "manage_worktree"}; !slices.Equal(tools, want) {
 		t.Fatalf("root-only tools = %v, want exact ordered list %v", tools, want)
@@ -84,6 +88,7 @@ func TestCovRootOnlySubagentTools(t *testing.T) {
 // TestCovIsRootOnlyJobPresenceTool covers isRootOnlyJobPresenceTool
 // (subagents.go lines 225-227).
 func TestCovIsRootOnlyJobPresenceTool(t *testing.T) {
+	t.Parallel()
 	if !isRootOnlyJobPresenceTool("delegate") {
 		t.Fatal("delegate should be root-only")
 	}
@@ -95,6 +100,7 @@ func TestCovIsRootOnlyJobPresenceTool(t *testing.T) {
 // TestCovIsRootOnlySubagentTool covers isRootOnlySubagentTool
 // (subagents.go lines 229-231).
 func TestCovIsRootOnlySubagentTool(t *testing.T) {
+	t.Parallel()
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate should be root-only")
 	}
@@ -109,6 +115,7 @@ func TestCovIsRootOnlySubagentTool(t *testing.T) {
 // TestCovProtectedGrantTools covers protectedGrantTools and isProtectedGrantTool
 // (subagents.go lines 240-246).
 func TestCovProtectedGrantTools(t *testing.T) {
+	t.Parallel()
 	tools := protectedGrantTools()
 	if want := []string{"ask_user"}; !slices.Equal(tools, want) {
 		t.Fatalf("protected grant tools = %v, want exact ordered list %v", tools, want)
@@ -124,6 +131,7 @@ func TestCovProtectedGrantTools(t *testing.T) {
 // TestCovRemoveRootOnlySubagentTools covers removeRootOnlySubagentTools
 // (subagents.go lines 248-250).
 func TestCovRemoveRootOnlySubagentTools(t *testing.T) {
+	t.Parallel()
 	got := removeRootOnlySubagentTools([]string{"read_file", "delegate", "exec_command"})
 	if want := []string{"read_file", "exec_command"}; !slices.Equal(got, want) {
 		t.Fatalf("tools after root-only removal = %v, want %v", got, want)
@@ -133,6 +141,7 @@ func TestCovRemoveRootOnlySubagentTools(t *testing.T) {
 // TestCovFrozenSubagentToolNames covers frozenSubagentToolNames
 // (subagents.go lines 273-284).
 func TestCovFrozenSubagentToolNames(t *testing.T) {
+	t.Parallel()
 	// allTools=true.
 	got := frozenSubagentToolNames(true, nil, nil)
 	if len(got) != 1 || got[0] != "*" {
@@ -163,6 +172,7 @@ func TestCovFrozenSubagentToolNames(t *testing.T) {
 // TestCovSubagentNeedsCommunicateNudge covers subagentNeedsCommunicateNudge
 // (subagents.go lines 406-411).
 func TestCovSubagentNeedsCommunicateNudge(t *testing.T) {
+	t.Parallel()
 	// nil agent — true (default subagent).
 	if !subagentNeedsCommunicateNudge(nil) {
 		t.Fatal("nil agent should need nudge")
@@ -212,6 +222,7 @@ func TestCovRestoreFrozenSkillBodies(t *testing.T) {
 // TestCovFollowUpProvenance covers followUpProvenance
 // (subagents.go lines 2007-2012): nil subagent and nil session.
 func TestCovFollowUpProvenance(t *testing.T) {
+	t.Parallel()
 	// nil subagent — returns clone of input.
 	var a *subagent
 	input := &provenance.Causal{
@@ -258,6 +269,7 @@ func TestCovFollowUpProvenance(t *testing.T) {
 // TestCovDelegateSettlementModeForRun covers delegateSettlementModeForRun
 // (subagents.go lines 1716-1727).
 func TestCovDelegateSettlementModeForRun(t *testing.T) {
+	t.Parallel()
 	// cancelRequested — terminal.
 	if delegateSettlementModeForRun(nil, true) != delegateSettlementTerminal {
 		t.Fatal("cancelRequested should be terminal")
@@ -288,6 +300,7 @@ func TestCovDelegateSettlementModeForRun(t *testing.T) {
 // TestCovStableDelegateFatalRun covers stableDelegateFatalRun
 // (subagents.go lines 1729-1735).
 func TestCovStableDelegateFatalRun2(t *testing.T) {
+	t.Parallel()
 	// nil error — not fatal.
 	if stableDelegateFatalRun(nil) {
 		t.Fatal("nil should not be fatal")
@@ -315,6 +328,7 @@ func TestCovStableDelegateFatalRun2(t *testing.T) {
 // TestCovHasPendingDelegateAttentionArmRetry covers
 // hasPendingDelegateAttentionArmRetry (session_attention.go lines 485-493).
 func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if s.hasPendingDelegateAttentionArmRetry() {
 		t.Fatal("nil session should return false")
@@ -323,6 +337,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
 
 // TestCovHasPendingDelegateAttentionArmRetry_NoArms covers with no arms.
 func TestCovHasPendingDelegateAttentionArmRetry_NoArms(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.hasPendingDelegateAttentionArmRetry() {
 		t.Fatal("no arms should return false")
@@ -332,6 +347,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_NoArms(t *testing.T) {
 // TestCovPendingDelegateAttentionIDs_NilSession covers
 // pendingDelegateAttentionIDs (session_attention.go lines 495+).
 func TestCovPendingDelegateAttentionIDs_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	ids, err := s.pendingDelegateAttentionIDs()
 	if err != nil {
@@ -345,6 +361,7 @@ func TestCovPendingDelegateAttentionIDs_NilSession(t *testing.T) {
 // TestCovStableDelegateRowsForSession_NilSession covers
 // stableDelegateRowsForSession (session_tools_jobs.go lines 614-635).
 func TestCovStableDelegateRowsForSession_NilSession(t *testing.T) {
+	t.Parallel()
 	if got := stableDelegateRowsForSession(nil, false); got != nil {
 		t.Fatal("nil session should return nil")
 	}
@@ -358,6 +375,7 @@ func TestCovStableDelegateRowsForSession_NilSession(t *testing.T) {
 // TestCovEnsureRecoveryReader covers ensureRecoveryReader
 // (subagents.go lines 199-204).
 func TestCovEnsureRecoveryReader(t *testing.T) {
+	t.Parallel()
 	// nil registry — returns names unchanged.
 	got := ensureRecoveryReader([]string{"read_file", "exec_command"}, nil)
 	if !slices.Equal(got, []string{"read_file", "exec_command"}) {
@@ -375,6 +393,7 @@ func TestCovEnsureRecoveryReader(t *testing.T) {
 // TestCovLocalEnvPolicyName covers localEnvPolicyName
 // (subagents.go lines 350-365).
 func TestCovLocalEnvPolicyName2(t *testing.T) {
+	t.Parallel()
 	// nil env (not a LocalExecutionEnvironment) — empty string.
 	if got := localEnvPolicyName(nil); got != "" {
 		t.Fatalf("nil env: got %q", got)
@@ -384,6 +403,7 @@ func TestCovLocalEnvPolicyName2(t *testing.T) {
 // TestCovLocalEnvPolicyFromName covers localEnvPolicyFromName
 // (subagents.go lines 367-380).
 func TestCovLocalEnvPolicyFromName2(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		want execenv.EnvVarPolicy
@@ -412,6 +432,7 @@ func TestCovLocalEnvPolicyFromName2(t *testing.T) {
 
 // TestCovCloneMap covers cloneMap (subagents.go lines 382-395).
 func TestCovCloneMap2(t *testing.T) {
+	t.Parallel()
 	// Empty/nil — nil.
 	if cloneMap(nil) != nil {
 		t.Fatal("nil should return nil")
@@ -444,6 +465,7 @@ func TestCovCloneMap2(t *testing.T) {
 
 // TestCovCloneShallowMap covers cloneShallowMap (subagents.go lines 397-404).
 func TestCovCloneShallowMap(t *testing.T) {
+	t.Parallel()
 	// Empty/nil — nil.
 	if cloneShallowMap(nil) != nil {
 		t.Fatal("nil should return nil")
@@ -467,6 +489,7 @@ func TestCovCloneShallowMap(t *testing.T) {
 // TestCovSharedWorkspaceDelegateWarning covers
 // sharedWorkspaceDelegateWarning (subagents.go lines 480-513).
 func TestCovSharedWorkspaceDelegateWarning_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if s.sharedWorkspaceDelegateWarning("") != "" {
 		t.Fatal("nil session should return empty")
@@ -475,6 +498,7 @@ func TestCovSharedWorkspaceDelegateWarning_NilSession(t *testing.T) {
 
 // TestCovSharedWorkspaceDelegateWarning_NilSubagents covers with nil subagents.
 func TestCovSharedWorkspaceDelegateWarning_NilSubagents(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.sharedWorkspaceDelegateWarning("") != "" {
 		t.Fatal("nil subagents should return empty")

@@ -712,6 +712,7 @@ func assertReaderEntriesEqual(t *testing.T, aName string, a []transcript.Entry, 
 // back identically through all three readers. It documents the oracle's intent
 // and guards the readers independently of the fuzz engine.
 func TestTranscriptReadersAgreeSanity(t *testing.T) {
+	t.Parallel()
 	// Every record ends with a newline, as transcript.Writer writes them: an
 	// unterminated final line is a torn write and the readers discard it.
 	const tx = `{"kind":"header","format_version":2,"session_id":"sane-1","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}

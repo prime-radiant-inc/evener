@@ -17,6 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestIsDelegateID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		id   string
 		want bool
@@ -42,6 +43,7 @@ func TestIsDelegateID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLaneWorktreePresent(t *testing.T) {
+	t.Parallel()
 	t.Run("present", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /somewhere"), 0644); err != nil {
@@ -69,6 +71,7 @@ func TestLaneWorktreePresent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLaneAheadCount(t *testing.T) {
+	t.Parallel()
 	t.Run("valid count", func(t *testing.T) {
 		run := func(args ...string) (string, error) {
 			if args[0] == "-C" && args[2] == "rev-list" && args[3] == "--count" {
@@ -115,6 +118,7 @@ func TestLaneAheadCount(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDisposeAlreadyDisposedGone(t *testing.T) {
+	t.Parallel()
 	t.Run("not-exist error", func(t *testing.T) {
 		result := disposeAlreadyDisposedGone("dlg_1", "/lane/path", os.ErrNotExist)
 		if result.DelegateID != "dlg_1" {
@@ -152,6 +156,7 @@ func TestDisposeAlreadyDisposedGone(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMetaDirForLane(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		result := metaDirForLane("/path/to/lane")
 		if result != filepath.Join("/path/to", ".meta") { //nolint:gocritic // test needs absolute path
@@ -172,6 +177,7 @@ func TestMetaDirForLane(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeDisposeResultStruct(t *testing.T) {
+	t.Parallel()
 	result := WorktreeDisposeResult{
 		DelegateID:      "dlg_1",
 		LanePath:        "/path",
@@ -192,6 +198,7 @@ func TestWorktreeDisposeResultStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableWorktreeDisposalReason(t *testing.T) {
+	t.Parallel()
 	if stableWorktreeDisposalReason != "isolation_disposed" {
 		t.Fatalf("stableWorktreeDisposalReason = %q", stableWorktreeDisposalReason)
 	}
@@ -202,6 +209,7 @@ func TestStableWorktreeDisposalReason(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubtreeWatchesTargetingNoJobManager(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		subagents: &subagentManager{
 			subs: map[string]*subagent{},
@@ -218,6 +226,7 @@ func TestSubtreeWatchesTargetingNoJobManager(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchesTargetingEmpty(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches:       map[watchKey]*watchConfig{},
 		terminalFlush: map[*watchConfig]bool{},
@@ -237,6 +246,7 @@ func TestWatchesTargetingEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLaneAheadCountWhitespaceTrimmed(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "  42  \n", nil
 	}
@@ -251,6 +261,7 @@ func TestLaneAheadCountWhitespaceTrimmed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDisposeAlreadyDisposedGoneBranch(t *testing.T) {
+	t.Parallel()
 	result := disposeAlreadyDisposedGone("dlg_branch_test", "/path", os.ErrNotExist)
 	if result.Branch != "dlg_branch_test" {
 		t.Fatalf("branch = %q, want 'dlg_branch_test'", result.Branch)
@@ -262,6 +273,7 @@ func TestDisposeAlreadyDisposedGoneBranch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeDisposeEmptyID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// This will fail at beginDispose or earlier, depending on session state.
 	// We can't easily call worktreeDispose without a valid Session, but
@@ -276,6 +288,7 @@ func TestWorktreeDisposeEmptyID(t *testing.T) {
 }
 
 func TestWorktreeDisposeNonDelegateID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	_, err := s.worktreeDispose(context.TODO(), "not_a_delegate_id", false, false)
 	if err == nil {
@@ -287,6 +300,7 @@ func TestWorktreeDisposeNonDelegateID(t *testing.T) {
 }
 
 func TestWorktreeDisposeWhitespaceID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Whitespace-only id should be trimmed to empty
 	_, err := s.worktreeDispose(context.TODO(), "   ", false, false)
@@ -299,6 +313,7 @@ func TestWorktreeDisposeWhitespaceID(t *testing.T) {
 }
 
 func TestWorktreeDisposeValidDelegateID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// A valid delegate id passes the id check but fails at disposeStableDelegateLane
 	// since delegateController is nil

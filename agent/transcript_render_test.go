@@ -360,6 +360,7 @@ func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 }
 
 func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"leading-blank"}`
 	entry := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`
 	path := filepath.Join(t.TempDir(), "leading-blank.transcript.jsonl")
@@ -380,6 +381,7 @@ func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
 }
 
 func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"tail-test"}`
 	complete := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`
 	tests := []struct {
@@ -411,6 +413,7 @@ func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
 }
 
 func TestRawLinesForRangeRejectsMixedOrCorruptTranscript(t *testing.T) {
+	t.Parallel()
 	validEntry := `{"kind":"entry","seq":1,"turn":{"kind":"user_input"}}` + "\n"
 	tests := []string{
 		`{"kind":"header","format_version":1,"session_id":"legacy"}` + "\n",
