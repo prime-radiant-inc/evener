@@ -2,7 +2,7 @@ import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
@@ -87,6 +87,8 @@ afterEach(() => {
   setQueryCwd(null);
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   window.history.pushState({}, "", "/");
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("with this hub selected the section issues the plain launch calls and never the proxy", async () => {
@@ -328,6 +330,11 @@ function forwardedLayerCalls(fake: FakeClient, host: string): number {
 // The project pane converges too: the SELECTED host's own evener/launch/updated
 // re-issues this project's read, and the form shows the host's new value.
 test("a launch-config change for the selected host re-reads the project layer and shows the new value", async () => {
+  // The re-read waits out a 250ms debounce (useConnectedEffect.ts). Fake
+  // timers own that clock, and the stubbed `jest` global lets Testing
+  // Library's findBy/waitFor polls advance it, so the wait costs no real time.
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   setQueryCwd("/repo");
   const fake = connectFakeClient();
   let agent = "beta-agent";
