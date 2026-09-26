@@ -766,13 +766,13 @@ func fileHasContent(path string) bool {
 //
 // A block is the marker with the test's own output around it, and it runs from
 // the previous framework line to the next one, bounded by the two line counts.
+// That keeps the indented t.Log/t.Error lines and the test's unindented direct
+// output (fmt.Println, log.Print, a child process) alike; only the toolchain's
+// own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
+// marker such as `panic:` — ends the run, on either side of the marker.
 // If a mismatched owner separates a marker from its diagnostic context, or the
 // ordinary window is empty, owner-aware expansion recovers bounded context
-// instead. That keeps the indented t.Log/t.Error lines and the test's
-// unindented direct output (fmt.Println, log.Print, a child process) alike;
-// only the toolchain's own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or
-// another failure marker such as `panic:` — ends the run, on either side of
-// the marker.
+// instead.
 //
 // A survey that died with no marker at all — a fatal error, an os.Exit, a
 // killed binary — has no block to show, so a bounded tail of the log stands in.
@@ -827,10 +827,11 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 				continue
 			}
 		}
-		for _, excerpt := range lines[start:end] {
-			_, _ = fmt.Fprintln(w, excerpt)
-		}
 		for index := start; index < end; index++ {
+			if index < i && surveyFallbackLineBelongsToLaterFailure(lines, index, i) {
+				continue
+			}
+			_, _ = fmt.Fprintln(w, lines[index])
 			emittedLines[index] = struct{}{}
 		}
 		// Scanning resumes past the ordinary window. Expansion can reach back
@@ -897,6 +898,29 @@ func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 		if owner := surveyPhaseOwner(lines[index]); owner != "" {
 			return owner != name
 		}
+	}
+	return false
+}
+
+func surveyFallbackLineBelongsToLaterFailure(lines []string, index, marker int) bool {
+	if surveyFrameworkLine(lines[index]) {
+		return false
+	}
+	current := surveyFailureName(lines[marker])
+	for frame := index; frame >= 0; frame-- {
+		owner := surveyPhaseOwner(lines[frame])
+		if owner == "" {
+			continue
+		}
+		if owner == current {
+			return false
+		}
+		for later := marker + 1; later < len(lines); later++ {
+			if surveyRedLine.MatchString(lines[later]) && surveyFailureName(lines[later]) == owner {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -1011,9 +1035,6 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	reserveParentDiagnostic := false
 	reserveFailedChildDiagnostic := false
 	candidateInOrdinaryTail := func(candidates []int, ordinaryBudget int) bool {
-		if len(candidates) == 0 || ordinaryBudget <= 0 {
-			return false
-		}
 		candidate := candidates[len(candidates)-1]
 		start := len(ordinaryOwnedCandidates) - ordinaryBudget
 		if start < 0 {
@@ -1026,7 +1047,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 		return false
 	}
-	for {
+	ordinaryBudgetForReservations := func() int {
 		reservedDiagnostics := 0
 		if reserveParentDiagnostic {
 			reservedDiagnostics++
@@ -1034,7 +1055,10 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		if reserveFailedChildDiagnostic {
 			reservedDiagnostics++
 		}
-		ordinaryBudget := maxExpandedLines - reservedDiagnostics
+		return maxExpandedLines - reservedDiagnostics
+	}
+	for {
+		ordinaryBudget := ordinaryBudgetForReservations()
 		changed := false
 		if !reserveParentDiagnostic && len(parentDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(parentDiagnosticCandidates, ordinaryBudget) {
 			reserveParentDiagnostic = true
@@ -1048,6 +1072,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			break
 		}
 	}
+	ordinaryBudget := ordinaryBudgetForReservations()
 	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
 	selectNewest := func(candidates []int, limit int) {
@@ -1059,18 +1084,9 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			selectedCount++
 		}
 	}
-	reservedDiagnostics := 0
-	if reserveParentDiagnostic {
-		reservedDiagnostics++
-	}
-	if reserveFailedChildDiagnostic {
-		reservedDiagnostics++
-	}
-	ordinaryBudget := maxExpandedLines - reservedDiagnostics
 	selectNewest(ordinaryOwnedCandidates, ordinaryBudget)
 	if len(ordinaryOwnedCandidates) == 0 {
-		descendantBudget := maxExpandedLines - reservedDiagnostics
-		selectNewest(descendantDiagnosticCandidates, descendantBudget)
+		selectNewest(descendantDiagnosticCandidates, ordinaryBudget)
 	}
 	if len(parentDiagnosticCandidates) > 0 {
 		parentBudget := maxExpandedLines

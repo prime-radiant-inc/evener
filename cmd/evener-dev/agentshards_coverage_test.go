@@ -383,11 +383,11 @@ func TestReplaySurveyFailuresDoesNotRepeatEarlierExpandedContext(t *testing.T) {
 		t.Fatalf("parent assertion occurred %d times after overlapping failure expansion: %q", count, got)
 	}
 	if !slices.Equal(got, []string{
-		assertion,
 		"--- FAIL: TestSibling (0.00s)",
+		assertion,
 		"--- FAIL: TestParent (0.00s)",
 	}) {
-		t.Fatalf("replayed overlapping failures as %q, want the earlier context once and both markers", got)
+		t.Fatalf("replayed overlapping failures as %q, want each assertion beside its owning marker", got)
 	}
 }
 
