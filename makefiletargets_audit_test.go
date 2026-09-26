@@ -776,6 +776,7 @@ var lintGateCommands = map[string]string{
 	"lint-evenerfuzz":      "-tags evenerfuzz",
 	"lint-eval":            "-tags eval ",
 	"lint-internal":        "./evener-dev internalcheck",
+	"lint-serial-tests":    "./evener-dev serialtestcheck",
 	"lint-golangci":        "module-lint",
 	"lint-generated":       "docs/appwire-protocol.md",
 	"lint-fuzz-registry":   "scripts/fuzz/fuzz-registry-check.sh",
