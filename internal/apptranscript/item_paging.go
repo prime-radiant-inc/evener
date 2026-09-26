@@ -257,6 +257,23 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 	return selected
 }
 
+// trailingZeroItemGroups returns zero-item logical groups whose records start
+// at or after startRecord, in record order. Only trailing zero-item groups
+// feed the tail flush: a middle zero-item group's communicate may be paired by
+// a later in-window result that the bounded read skipped, so projecting it at
+// flush time would mis-attribute the communicate. The item-window path drops
+// zero-item groups from its ranges (they carry no items), so their unpaired
+// communicates must be projected separately before the flush.
+func trailingZeroItemGroups(index turnIndexDisk, startRecord int) []indexedGroup {
+	var trailing []indexedGroup
+	for _, g := range index.indexedGroups() {
+		if g.items == 0 && g.start >= startRecord {
+			trailing = append(trailing, g)
+		}
+	}
+	return trailing
+}
+
 func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector, tail bool) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0
@@ -299,6 +316,48 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			items, err := positionPreludeItems(turn.Items)
 			if err != nil {
 				return nil, projectedRecords, err
+			}
+			// When the prelude is the last range (no item-bearing group
+			// is in the window), project trailing zero-item groups and
+			// flush their unpaired communicates, appending the flushed
+			// items to the prelude turn — parity with the full read's
+			// FlushUnpairedCommunicates which appends to the last turn.
+			// The prelude is the last range only when the window has no
+			// item-bearing group (tail=true, all groups are zero-item),
+			// so this does not affect middle or previous windows.
+			if tail && ri == len(ranges)-1 {
+				for _, zg := range trailingZeroItemGroups(index, 0) {
+					if file == nil {
+						file, err = os.Open(path)
+						if err != nil {
+							return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
+						}
+					}
+					_, n, perr := projectIndexedGroup(ctx, file, index, &zg, 0, project, reg)
+					if perr != nil {
+						_ = file.Close()
+						return nil, projectedRecords, perr
+					}
+					projectedRecords += n
+				}
+				flushed := flushUnpairedCommunicateItems(reg, turn.ID)
+				if len(flushed) > 0 {
+					base := uint32(len(items))
+					for i := range flushed {
+						pos := appwire.ThreadItemPosition{Entry: 0, Item: base + uint32(i)}
+						flushed[i].Position = &pos
+						flushed[i].TranscriptKey = appitempaging.TranscriptItemKey(turn.ID, pos)
+						flushed[i].TurnID = turn.ID
+					}
+					items = append(items, flushed...)
+					turn.Items = items
+					if uint64(len(items)) > itemRange.count {
+						itemRange.count = uint64(len(items))
+						if itemRange.hi < itemRange.count {
+							itemRange.hi = itemRange.count
+						}
+					}
+				}
 			}
 			for itemIndex, item := range items {
 				position := *item.Position
@@ -369,6 +428,21 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		// result turn outside the window; flushing them would render a
 		// spurious agentMessage.
 		if tail && ri == len(ranges)-1 {
+			// Project trailing zero-item groups so their unpaired
+			// communicates seed reg before the tail flush. The
+			// item-window path drops zero-item groups from its ranges
+			// (they carry no items), so their communicates must be
+			// projected separately. Only trailing groups feed the
+			// flush: a middle group's communicate may be paired by a
+			// later in-window result.
+			for _, zg := range trailingZeroItemGroups(index, group.end) {
+				_, n, err := projectIndexedGroup(ctx, file, index, &zg, 0, project, reg)
+				if err != nil {
+					_ = file.Close()
+					return nil, projectedRecords, err
+				}
+				projectedRecords += n
+			}
 			items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
 		}
 		merged := mergeGroupedItems(items)
