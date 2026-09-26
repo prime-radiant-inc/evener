@@ -10,17 +10,17 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// TestNavigationRowsCarryApprovalPending pins the approval flag's wire
-// contract: a live session blocked on a sandbox approval carries
-// approval_pending on its Live and NeedsYou rows and keeps reporting its real
-// state ("active"), and a row without an approval omits the key. The approval
-// row also names what the oldest card asks for: approval_tool, the tool that
-// was denied, and approval_target, the full path it was denied; a row without
-// an approval omits both keys.
+// TestNavigationRowsCarryApprovalPending pins the approval's wire contract: a
+// live session blocked on a sandbox approval carries approval_pending on its
+// Live and NeedsYou rows, keeps reporting its real state ("active"), and names
+// what the oldest card asks for: approval_tool, the tool that was denied, and
+// approval_target, the full path it was denied. A row without an approval
+// omits all three keys.
 func TestNavigationRowsCarryApprovalPending(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "evener")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -61,18 +61,25 @@ func TestNavigationRowsCarryApprovalPending(t *testing.T) {
 	if len(liveRows) != 2 {
 		t.Fatalf("live rows = %#v, want both sessions", liveRows)
 	}
-	want := map[string]string{"approval_pending": "true", "approval_tool": `"write_file"`, "approval_target": `"/home/me/sites/docs/index.md"`}
 	for _, row := range liveRows {
-		fields := navigationSummaryJSONFields(t, row)
-		for key, value := range want {
-			raw, carried := fields[key]
-			if row.SessionID == "01APPROVAL" {
-				if string(raw) != value {
-					t.Fatalf("approval row JSON %s = %s, want %s (row = %#v)", key, raw, value, row)
-				}
-			} else if carried {
-				t.Fatalf("row %s carries %s; want the key absent: %#v", row.SessionID, key, row)
-			}
+		assertNavigationApprovalJSON(t, row, row.SessionID == "01APPROVAL")
+	}
+}
+
+// assertNavigationApprovalJSON checks a row's approval keys on the wire: the
+// row blocked on the write_file card carries all three with that card's
+// values, and every other row omits them.
+func assertNavigationApprovalJSON(t *testing.T, row hubapi.NavigationSessionSummary, approving bool) {
+	t.Helper()
+	want := map[string]string{"approval_pending": "true", "approval_tool": `"write_file"`, "approval_target": `"/home/me/sites/docs/index.md"`}
+	fields := navigationSummaryJSONFields(t, row)
+	for key, value := range want {
+		raw, carried := fields[key]
+		if approving && string(raw) != value {
+			t.Fatalf("approval row %s JSON %s = %s, want %s (row = %#v)", row.Ref, key, raw, value, row)
+		}
+		if !approving && carried {
+			t.Fatalf("row %s carries %s; want the key absent: %#v", row.Ref, key, row)
 		}
 	}
 }

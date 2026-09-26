@@ -61,19 +61,7 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 			t.Fatalf("row %s carries ask_pending; want the key absent: %#v", ref, row)
 		}
 	}
-	approval := map[string]string{"approval_pending": "true", "approval_tool": `"write_file"`, "approval_target": `"/home/me/sites/docs/index.md"`}
-	approving := navigationSummaryJSONFields(t, navigationProjectedSummary(t, projection, "devbox:approving"))
-	for key, value := range approval {
-		if raw := approving[key]; string(raw) != value {
-			t.Fatalf("approval row JSON %s = %s, want %s", key, raw, value)
-		}
-	}
-	for _, ref := range []string{"devbox:asking", "devbox:working"} {
-		fields := navigationSummaryJSONFields(t, navigationProjectedSummary(t, projection, ref))
-		for key := range approval {
-			if _, carried := fields[key]; carried {
-				t.Fatalf("row %s carries %s; want the key absent", ref, key)
-			}
-		}
+	for _, ref := range []string{"devbox:approving", "devbox:asking", "devbox:working"} {
+		assertNavigationApprovalJSON(t, navigationProjectedSummary(t, projection, ref), ref == "devbox:approving")
 	}
 }
