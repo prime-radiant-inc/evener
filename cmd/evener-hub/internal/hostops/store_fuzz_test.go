@@ -73,6 +73,12 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}]}`,
+		// A file naming a key twice and one whose raw field carries invalid
+		// UTF-8: the decoder would collapse the first and the encoder would
+		// replace the second, so neither is a file this store wrote.
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"records":[]}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","fencingEpoch":{"bootId":"` + "\xff\xfe" + `","opSeq":3},"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 		// A record whose host-removed mark is missing, and a present result
 		// without its outcome: neither is a record this store wrote.
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +

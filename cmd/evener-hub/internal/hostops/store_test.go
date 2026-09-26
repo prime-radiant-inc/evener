@@ -243,6 +243,16 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":true,"message":"deployed"}`, 1) + `]}`,
 		"invalid utf-8 in a message": `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(terminalRecordJSON("00000000000000000001", 1), `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":false,"message":"`+"\xff\xfe"+`"}`, 1) + `]}`,
+		"invalid utf-8 in a raw field": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"fencingEpoch":{"bootId":"`+"\xff\xfe"+`","opSeq":3}`, 1) + `]}`,
+		// The decoder keeps the last occurrence of a duplicated key silently, so a
+		// file naming one twice would be read as the reduced state and rewritten
+		// that way.
+		"duplicate top-level key": `{"version":1,"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
+		"duplicate records key": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[],"records":[` +
+			recordJSON("00000000000000000001", "pending") + `]}`,
+		"duplicate key inside a record": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"host":"h1"`, `"host":"h1","host":"h2"`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1125,4 +1135,61 @@ func TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack(t *testing.T) {
 			t.Fatalf("Transition with an invalid UTF-8 progress entry: err = %v, want ErrInvalidRecord", err)
 		}
 	})
+}
+
+// TestTransitionRefusesARawFieldThatIsNotValidUTF8 pins the raw fields' half of the
+// UTF-8 rule: they are written verbatim, so invalid bytes in one would land in the
+// file and the next load would refuse the store this very call wrote.
+func TestTransitionRefusesARawFieldThatIsNotValidUTF8(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	createTestRecord(t, store, "h2")
+	before := mustReadFile(t, path)
+
+	if _, err := store.Transition(record.ID, StateRunning, func(r *Record) {
+		r.FencingEpoch = json.RawMessage(`{"bootId":"` + "\xff\xfe" + `","opSeq":3}`)
+	}); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("Transition with an invalid UTF-8 fencing epoch: err = %v, want ErrInvalidRecord", err)
+	}
+	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
+		r.OrphanBoundary = json.RawMessage(`[{"host":"` + "\xff\xfe" + `"}]`)
+	}); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("Transition with an invalid UTF-8 boundary: err = %v, want ErrInvalidRecord", err)
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a refused transition rewrote the store file")
+	}
+	// The store the refusals protected still loads.
+	reopenFresh(t, path)
+}
+
+// TestRejectDuplicateObjectKeys pins the walker's state machine: keys inside
+// nested objects and array elements are checked, repeated values are not
+// duplicates, and a clean document passes.
+func TestRejectDuplicateObjectKeys(t *testing.T) {
+	refused := []string{
+		`{"a":1,"a":2}`,
+		`{"a":{"b":1,"b":2}}`,
+		`[{"a":1,"a":2}]`,
+		`{"a":[{"b":"x","b":"y"}]}`,
+		`{"a":"x","a":"y"}`,
+	}
+	for _, body := range refused {
+		if err := rejectDuplicateObjectKeys([]byte(body)); err == nil {
+			t.Fatalf("duplicate key in %s was accepted", body)
+		}
+	}
+	accepted := []string{
+		`{}`,
+		`[]`,
+		`{"a":1,"b":2}`,
+		`{"a":{"b":1},"c":{"b":2}}`,
+		`{"a":["x","x"],"b":true,"c":null}`,
+		validStoreJSON,
+	}
+	for _, body := range accepted {
+		if err := rejectDuplicateObjectKeys([]byte(body)); err != nil {
+			t.Fatalf("clean document %s was refused: %v", body, err)
+		}
+	}
 }

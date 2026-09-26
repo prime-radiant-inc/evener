@@ -240,6 +240,15 @@ func validateRecord(record Record) error {
 	if record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() {
 		return fmt.Errorf("%w: record %q carries no timestamps", ErrInvalidRecord, record.ID)
 	}
+	// The raw fields are written verbatim, so they carry the same UTF-8 rule as
+	// every other persisted string: invalid bytes in one would land in the file
+	// and the next load would refuse the store this call just wrote.
+	if !utf8.Valid(record.FencingEpoch) {
+		return fmt.Errorf("%w: record %q carries a fencing epoch that is not valid UTF-8", ErrInvalidRecord, record.ID)
+	}
+	if !utf8.Valid(record.OrphanBoundary) {
+		return fmt.Errorf("%w: record %q carries an orphan boundary that is not valid UTF-8", ErrInvalidRecord, record.ID)
+	}
 	if len(record.FencingEpoch) > 0 && !jsonFieldIsObject(record.FencingEpoch) {
 		return fmt.Errorf("%w: record %q carries a fencing epoch that is not an object", ErrInvalidRecord, record.ID)
 	}

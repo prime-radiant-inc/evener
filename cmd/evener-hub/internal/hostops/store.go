@@ -543,6 +543,9 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	if !utf8.Valid(raw) {
 		return snapshot{}, fmt.Errorf("%w: %s is not valid UTF-8", ErrStoreCorrupt, path)
 	}
+	if err := rejectDuplicateObjectKeys(raw); err != nil {
+		return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+	}
 	var file storeFile
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -756,6 +759,81 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 		return 0, false
 	}
 	return perm, true
+}
+
+// rejectDuplicateObjectKeys refuses a JSON document in which any object names the
+// same key twice. The decoder keeps the last occurrence silently, so a file
+// carrying two `records` fields — or two fields of one record — would be read as
+// the reduced state and then rewritten in that shape, losing whatever the earlier
+// occurrence held. A corrupted file is refused, never quietly reinterpreted.
+func rejectDuplicateObjectKeys(raw []byte) error {
+	type frame struct {
+		object    bool
+		expectKey bool
+		seen      map[string]struct{}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var stack []*frame
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			// A document this walk cannot read is corrupt at the load, exactly as
+			// the decoder would report it; there is nothing to answer about
+			// duplicate keys in a document that has no shape.
+			return err
+		}
+		switch value := token.(type) {
+		case json.Delim:
+			switch value {
+			case '{':
+				stack = append(stack, &frame{object: true, expectKey: true, seen: map[string]struct{}{}})
+			case '[':
+				stack = append(stack, &frame{})
+			case '}', ']':
+				if len(stack) == 0 {
+					continue
+				}
+				stack = stack[:len(stack)-1]
+				// The container that just closed was the parent object's value, so
+				// the parent's next token is a key again.
+				if len(stack) > 0 && stack[len(stack)-1].object {
+					stack[len(stack)-1].expectKey = true
+				}
+			}
+		case string:
+			top := topFrame(stack)
+			if top == nil || !top.object {
+				continue
+			}
+			if !top.expectKey {
+				// A string value, so the object's next token is a key again.
+				top.expectKey = true
+				continue
+			}
+			if _, duplicate := top.seen[value]; duplicate {
+				return fmt.Errorf("object names the key %q twice", value)
+			}
+			top.seen[value] = struct{}{}
+			top.expectKey = false
+		default:
+			// A scalar in an object is a value, so the object's next token is a
+			// key again.
+			if top := topFrame(stack); top != nil && top.object {
+				top.expectKey = true
+			}
+		}
+	}
+}
+
+// topFrame is the innermost open container of a walk, nil outside every one.
+func topFrame[T any](stack []*T) *T {
+	if len(stack) == 0 {
+		return nil
+	}
+	return stack[len(stack)-1]
 }
 
 // rejectNonStoreFileKind refuses a path that is not a store file this store may
