@@ -943,7 +943,19 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 			parentLevel: parentLevel,
 		})
 	}
-	if len(candidates) == 0 || (ordinaryStart < marker && !parentDiagnostic) {
+	ownedByFailure := func(candidate candidate) bool {
+		return candidate.owner == name || strings.HasPrefix(candidate.owner, name+"/")
+	}
+	ordinaryOwned := func(candidate candidate) bool {
+		return candidate.ordinary && ownedByFailure(candidate)
+	}
+	ordinaryCount := 0
+	for _, candidate := range candidates {
+		if ordinaryOwned(candidate) {
+			ordinaryCount++
+		}
+	}
+	if len(candidates) == 0 || (ordinaryCount > 0 && !parentDiagnostic) {
 		return nil, false
 	}
 
@@ -962,18 +974,6 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	ordinaryBudget := maxExpandedLines
 	if parentDiagnostic {
 		ordinaryBudget--
-	}
-	ownedByFailure := func(candidate candidate) bool {
-		return candidate.owner == name || strings.HasPrefix(candidate.owner, name+"/")
-	}
-	ordinaryOwned := func(candidate candidate) bool {
-		return candidate.ordinary && ownedByFailure(candidate)
-	}
-	ordinaryCount := 0
-	for _, candidate := range candidates {
-		if ordinaryOwned(candidate) {
-			ordinaryCount++
-		}
 	}
 	if ordinaryCount <= ordinaryBudget {
 		for index, candidate := range candidates {

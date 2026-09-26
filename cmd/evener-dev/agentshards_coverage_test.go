@@ -411,6 +411,33 @@ func TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName covers a
+// child failure whose diagnostic is separated from the parent's verdict by a
+// sibling's NAME-owned output. The child diagnostic is still the useful
+// context even though the nearby ordinary window contains only the sibling.
+func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T) {
+	const (
+		childDiagnostic = "    child_test.go:5: child failure"
+		siblingOutput   = "    sibling_test.go:1: sibling output"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString(siblingOutput + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("child diagnostic was omitted across sibling NAME output: %q", got)
+	}
+	if strings.Contains(got, siblingOutput) {
+		t.Fatalf("sibling output was promoted into parent failure context: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail covers
 // non-diagnostic sibling output after NAME. A full ordinary tail must not
 // consume the expansion budget before the parent's source diagnostic is
