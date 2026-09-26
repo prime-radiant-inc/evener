@@ -28,13 +28,6 @@ import (
 // rather than decoding the entry a second time (kata j13r).
 type EntryProjector func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem
 
-// BoundedEntryProjector converts one already-decoded transcript turn into
-// AppWire items. The supported bounded-reader contract is a named adapter that
-// calls ProjectTurn. Its toolNames argument is mutable, ephemeral state for
-// that record only; callers must not inspect unrelated history.
-// EntryProjector remains the full-read contract for existing callers.
-type BoundedEntryProjector func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
-
 // ImageProjector converts transcript image content into an AppWire image item.
 type ImageProjector func(image llm.ImageData) appwire.InputItem
 

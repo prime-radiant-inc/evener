@@ -2,9 +2,6 @@ package apptranscript
 
 import (
 	"sync"
-
-	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/appwire"
 )
 
 // ReadStats describes the work performed by one full-transcript scan. It is
@@ -41,18 +38,5 @@ func observeIndexRead(stats ReadStats) {
 	observeTurnIndexReadMu.RUnlock()
 	if observer != nil {
 		observer(stats)
-	}
-}
-
-// fullProjector adapts a BoundedEntryProjector (which threads a shared
-// tool-name resolver across a whole transcript) into an EntryProjector
-// (one turn at a time), for the full, unbounded transcript projection.
-func fullProjector(project BoundedEntryProjector) EntryProjector {
-	toolNames := map[string]string{}
-	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		if project == nil {
-			return nil
-		}
-		return project(turn, turnID, turnIndex, toolNames)
 	}
 }

@@ -6,10 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/llm"
 )
 
 // mockFileInfo implements os.FileInfo for testing FileIdentity and fileChangeIdentity.
@@ -23,29 +19,6 @@ func (m mockFileInfo) Mode() os.FileMode  { return 0o644 }
 func (m mockFileInfo) ModTime() time.Time { return time.Time{} }
 func (m mockFileInfo) IsDir() bool        { return false }
 func (m mockFileInfo) Sys() any           { return m.sys }
-
-func TestFullProjectorNilProjectReturnsNil(t *testing.T) {
-	fp := fullProjector(nil)
-	turn := schema.NewTurn(schema.TurnUserInput, llm.User("hello"))
-	items := fp(turn, "turn-1", 0)
-	if items != nil {
-		t.Fatalf("fullProjector(nil) should return nil, got %v", items)
-	}
-}
-
-func TestFullProjectorNonNilProjectInvokesProject(t *testing.T) {
-	called := false
-	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-		called = true
-		return nil
-	}
-	fp := fullProjector(project)
-	turn := schema.NewTurn(schema.TurnUserInput, llm.User("hello"))
-	fp(turn, "turn-1", 0)
-	if !called {
-		t.Fatalf("fullProjector should have invoked the project function")
-	}
-}
 
 func TestInstallReadObserverForTestingObserveAndRestore(t *testing.T) {
 	var observed []ReadStats
