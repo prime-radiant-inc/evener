@@ -13,6 +13,7 @@
     "rename": true,
     "live": true,
     "ask_pending": true,
+    "approval_pending": true,
     "dormant": true,
     "offline": true,
     "updated_at": "2026-09-26T12:00:00Z",
@@ -70,6 +71,7 @@
         "end_reason": "finished"
       }
     ],
+    "tasks": { "total": 7, "done": 2, "cancelled": 1, "current_id": 4, "current": "Fix the settle/drain race" },
     "children": []
   },
   "project": {

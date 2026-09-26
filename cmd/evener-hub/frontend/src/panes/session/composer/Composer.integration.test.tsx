@@ -244,7 +244,7 @@ test.each(["pointer", "keyboard"] as const)(
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-    await user.type(message, "ordinary focus proof");
+    await user.type(message, "ok");
     expect(document.activeElement).toBe(message);
     expect(send.disabled).toBe(false);
 
@@ -267,7 +267,7 @@ test.each(["pointer", "keyboard"] as const)(
       expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
         {
           method: "turn/start",
-          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ordinary focus proof" }] }),
+          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ok" }] }),
         },
       ]);
       expect(message.textContent).toBe("");
@@ -319,7 +319,7 @@ test.each(["pointer", "keyboard"] as const)(
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-    await user.type(message, "queue focus proof");
+    await user.type(message, "qf");
     expect(send.disabled).toBe(false);
     if (activation === "pointer") {
       await user.click(send);
@@ -338,7 +338,7 @@ test.each(["pointer", "keyboard"] as const)(
       expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
         {
           method: "turn/queue",
-          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "queue focus proof" }] }),
+          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "qf" }] }),
         },
       ]);
       expect(message.textContent).toBe("");
@@ -361,12 +361,12 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-    await user.type(message, "delayed focus proof");
+    await user.type(message, "df");
     try {
       await user.click(send);
       await storage.commitStarted;
       expect(send.disabled).toBe(true);
-      expect(message.textContent).toBe("delayed focus proof");
+      expect(message.textContent).toBe("df");
       expect(document.activeElement).toBe(message);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
       fireEvent.submit(message.closest("form")!);
@@ -387,7 +387,7 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
         destinationElement = second
           .getAllByRole("textbox", { name: "Message" })
           .find((element) => element !== message)!;
-        await user.type(destinationElement, "other draft");
+        await user.type(destinationElement, "od");
       }
       expect(document.activeElement).toBe(destinationElement);
       await act(async () => storage.release());
@@ -396,8 +396,7 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
       if (destination !== "replacement Composer") await waitFor(() => expect(message.textContent).toBe(""));
       else expect(message.isConnected).toBe(false);
       expect(document.activeElement).toBe(destinationElement);
-      if (destination !== "other control")
-        expect((destinationElement as HTMLDivElement).textContent).toBe("other draft");
+      if (destination !== "other control") expect((destinationElement as HTMLDivElement).textContent).toBe("od");
     } finally {
       storage.release();
     }
@@ -412,7 +411,7 @@ test("ordinary Send does not take another control's focus on programmatic form s
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-  await user.type(message, "unfocused submission");
+  await user.type(message, "us");
   await user.click(elsewhere);
   act(() => message.closest("form")!.requestSubmit(send));
   expect(document.activeElement).toBe(elsewhere);
@@ -429,7 +428,7 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   acceptFocusSubmission(fake, "turn/start");
   const user = userEvent.setup();
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
-  await user.type(message, "shortcut focus proof");
+  await user.type(message, "sf");
   await user.keyboard("{Control>}{Enter}{/Control}");
   await waitFor(() => {
     expect(message.textContent).toBe("");
@@ -459,7 +458,7 @@ test("ordinary Send retains draft and reports local failure without late focus t
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   try {
-    await user.type(message, "keep failed draft");
+    await user.type(message, "kf");
     await user.click(send);
     await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
     expect(send.disabled).toBe(true);
@@ -472,8 +471,8 @@ test("ordinary Send retains draft and reports local failure without late focus t
       ),
     );
     await flushPendingTurnsProjectionForTests();
-    expect(message.textContent).toBe("keep failed draft");
-    expect(readDraft("ref_a")).toBe("keep failed draft");
+    expect(message.textContent).toBe("kf");
+    expect(readDraft("ref_a")).toBe("kf");
     expect(send.disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     expect(document.activeElement).toBe(elsewhere);
@@ -661,10 +660,10 @@ test("a second message queues behind a committed start even when recovery projec
   }
   const user = userEvent.setup();
   try {
-    await user.type(textarea() as HTMLDivElement, "first message");
+    await user.type(textarea() as HTMLDivElement, "m1");
     await user.click(screen.getByTestId("composer-submit"));
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
-    await user.type(textarea() as HTMLDivElement, "second message");
+    await user.type(textarea() as HTMLDivElement, "m2");
     await user.click(screen.getByTestId("composer-submit"));
     expect(await secondRequest).toBe("turn/queue");
   } finally {
@@ -776,7 +775,7 @@ test.each(["storage", "composer"] as const)(
       const fake = await mountComposer("ref_a");
       fake.on("turn/steer", () => new Promise<never>(() => undefined));
       const user = userEvent.setup();
-      await user.type(textarea() as HTMLDivElement, "one submission");
+      await user.type(textarea() as HTMLDivElement, "os");
       await user.click(composerSteerButton());
       await flushPendingTurnsProjectionForTests();
       expect(textarea()?.textContent).toBe("");
@@ -895,20 +894,6 @@ function startTurn(fake: FakeClient, ref: string, turnId: string): void {
 
 // --- T3: queue strip wiring --------------------------------------------------
 
-test("the queue strip renders inside the composer once the queue has entries", async () => {
-  await mountComposer("ref_a", {
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
-      activeTurnId: "turn_1",
-    },
-  });
-
-  expect(await screen.findByText(/queued messages/i)).toBeTruthy();
-  expect(screen.getByText("queued hello")).toBeTruthy();
-});
-
 test("the strip's drain-as-steer reads the composer's live text at click time, not a stale snapshot", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -928,12 +913,12 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "steer this in live");
+  await user.type(textarea() as HTMLDivElement, "st");
   await user.click(drainButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "steer this in live" }] });
+  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "st" }] });
 });
 
 test("a successful strip-triggered drain clears the composer's own text and draft", async () => {
@@ -955,7 +940,7 @@ test("a successful strip-triggered drain clears the composer's own text and draf
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "drain me too");
+  await user.type(textarea() as HTMLDivElement, "dm");
   await user.click(drainButton());
 
   await waitFor(() => expect((textarea() as HTMLDivElement).textContent).toBe(""));
@@ -997,13 +982,13 @@ test("text changed while a strip-triggered drain is in flight survives the drain
       }),
   );
 
-  await user.type(textarea() as HTMLDivElement, "original");
+  await user.type(textarea() as HTMLDivElement, "ab");
   await user.click(drainButton()); // fires the request; handleDrain awaits the still-pending promise
 
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
-  replaceEditorText(textarea() as HTMLDivElement, "original plus more");
-  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
+  replaceEditorText(textarea() as HTMLDivElement, "ab plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 
   resolveDrain?.();
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
@@ -1013,34 +998,8 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   // the time this passes.
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  expect((textarea() as HTMLDivElement).textContent).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
-  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
-});
-
-test("clicking a queued row's Edit button restores its full text into an empty composer verbatim", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full queued text"], preview: ["the full queued text"] },
-      activeTurnId: "turn_1",
-    },
-  });
-  fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
-    removedText: "the full queued text",
-  }));
-
-  await user.click(screen.getByRole("button", { name: /edit message/i }));
-
-  expect((textarea() as HTMLDivElement).textContent).toBe("the full queued text");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  expect((textarea() as HTMLDivElement).textContent).toBe("ab plus more"); // NOT cleared - text changed since the drain was triggered
+  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 });
 
 test("queue edit restores inline selections that a nonempty composer drain sends unchanged", async () => {
@@ -1251,10 +1210,10 @@ test("clicking Edit appends the restored text after a blank line when the compos
     removedText: "queued copy",
   }));
 
-  await user.type(textarea() as HTMLDivElement, "my own draft");
+  await user.type(textarea() as HTMLDivElement, "mine");
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLDivElement).textContent).toBe("my own draft\n\nqueued copy");
+  expect((textarea() as HTMLDivElement).textContent).toBe("mine\n\nqueued copy");
 });
 
 test("clicking a queued row's cancel button fires turn/cancelQueued with that row's expectedEntryId", async () => {
@@ -1438,7 +1397,7 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "drain me");
+  await user.type(textarea() as HTMLDivElement, "dm");
   await user.click(composerSteerButton());
 
   await storage.commitStarted;
@@ -1461,13 +1420,13 @@ test("a plain send exposes its durable pending entry while the network remains u
   fake.on("turn/start", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
 
-  await user.type(textarea() as HTMLDivElement, "hello agent");
+  await user.type(textarea() as HTMLDivElement, "ha");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
   await storage.committed;
   await flushPendingTurnsProjectionForTests();
 
   expect(result.current).toHaveLength(1);
-  expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
+  expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "ha" });
 });
 
 test("a queue submit also exposes its durable pending entry in the composed UI while the network remains unsettled", async () => {
@@ -1479,7 +1438,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   fake.on("turn/queue", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
 
-  await user.type(textarea() as HTMLDivElement, "queued message");
+  await user.type(textarea() as HTMLDivElement, "qm");
   // "Send" in every state - a mid-turn submit still queues (that is the ROUTE,
   // which this test proves) but the verb never changes under the user; see
   // Composer.tsx's own submitLabel comment.
@@ -1494,7 +1453,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   // through the REAL, fully composed Composer+QueueStrip tree via an actual
   // user submit, not just the store's own hook state (queue-strip stream
   // review, Minor).
-  expect(await screen.findByText("queued message")).toBeTruthy();
+  expect(await screen.findByText("qm")).toBeTruthy();
 });
 
 test("relay recovery refreshes stale queue capability without reconnecting or remounting the composer", async () => {
@@ -1529,12 +1488,12 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
     </ClientProvider>,
   );
 
-  await user.type(textarea() as HTMLDivElement, "follow up");
+  await user.type(textarea() as HTMLDivElement, "fu");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
   expect(await screen.findByText("Send is not available for this session")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "turn/queue" || call.method === "turn/start")).toHaveLength(0);
-  expect((textarea() as HTMLDivElement).textContent).toBe("follow up");
+  expect((textarea() as HTMLDivElement).textContent).toBe("fu");
 
   await act(async () => {
     fake.emitNotification({
@@ -1567,27 +1526,9 @@ function idleNoTurnOverrides(): Partial<Thread> {
   };
 }
 
-test("a pending ask hides and inerts the composer's input row, and the dock is no longer the composer's child", async () => {
+test("a pending ask hides the composer's input row, which un-hides once the ask resolves through the normal send path", async () => {
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
-
-  startTurn(fake, "ref_a", "turn_1");
-  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
-
-  // Excluded from the accessibility tree by the `hidden` attribute (RTL's
-  // byRole queries respect it, matching real assistive-tech behavior) -
-  // a stronger, more meaningful signal than probing the `inert` IDL
-  // property directly, and it also proves the textarea can't be tabbed to.
-  await waitFor(() => expect(textarea()).toBeNull());
-  // The answering surface is the transcript's trailing row now (Session.tsx
-  // passes AskDock as TranscriptBody's trailingRow; AskDock.test.tsx and
-  // Session.test.tsx prove that half) - nothing ask-shaped renders here.
-  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
-  expect(screen.queryByText("Deploy?")).toBeNull();
-});
-
-test("the composer un-hides once the pending ask resolves through the normal send path", async () => {
-  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   let observeTurnStart!: (params: MethodTypes["turn/start"]["params"]) => void;
   const turnStarted = new Promise<MethodTypes["turn/start"]["params"]>((resolve) => {
     observeTurnStart = resolve;
@@ -1609,8 +1550,18 @@ test("the composer un-hides once the pending ask resolves through the normal sen
   // The dock itself is the transcript's trailing row now, so this test
   // resolves the batch through the same store seam its Send button calls
   // (askDockStore.sendBatch, the real durable send path) rather than a UI
-  // click - what THIS component owns is the un-hide that follows.
+  // click - what THIS component owns is the hide and the un-hide that follows.
+  //
+  // Excluded from the accessibility tree by the `hidden` attribute (RTL's
+  // byRole queries respect it, matching real assistive-tech behavior) -
+  // a stronger, more meaningful signal than probing the `inert` IDL
+  // property directly, and it also proves the textarea can't be tabbed to.
   await waitFor(() => expect(textarea()).toBeNull());
+  // Nothing ask-shaped renders here: the answering surface is the
+  // transcript's trailing row (Session.tsx passes AskDock as TranscriptBody's
+  // trailingRow; AskDock.test.tsx and Session.test.tsx prove that half).
+  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
+  expect(screen.queryByText("Deploy?")).toBeNull();
   const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
 
@@ -1710,7 +1661,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "first queued message");
+  await user.type(textarea() as HTMLDivElement, "fq");
   await user.click(screen.getByTestId("composer-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
   expect((textarea() as HTMLDivElement).textContent).toBe(""); // clears optimistically like any other successful submit
@@ -1733,15 +1684,15 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
           depth: 1,
           ids: ["q1"],
           clientMutationIds: [clientMutationId!],
-          texts: ["first queued message"],
-          preview: ["first queued message"],
+          texts: ["fq"],
+          preview: ["fq"],
         },
       },
     });
   });
 
   expect(await screen.findByText(/queued messages/i)).toBeTruthy();
-  expect(screen.getByText("first queued message")).toBeTruthy();
+  expect(screen.getByText("fq")).toBeTruthy();
 
   fake.on("turn/cancelQueued", (params) => ({
     receipt: {
@@ -1750,11 +1701,11 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
       threadId: "thread_a",
       projectionState: "reflected",
     },
-    removedText: "first queued message",
+    removedText: "fq",
   }));
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLDivElement).textContent).toBe("first queued message"); // restored into the (now empty) composer
+  expect((textarea() as HTMLDivElement).textContent).toBe("fq"); // restored into the (now empty) composer
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
