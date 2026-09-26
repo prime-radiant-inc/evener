@@ -841,19 +841,13 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		}
 		if len(deferred) > 0 || start == i || surveyFailureHasMismatchedOwner(lines, i) {
 			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines, deferred); ok {
-				unselected := make([]int, 0, i-start)
 				for index := start; index < i; index++ {
-					if _, alreadyEmitted := emittedLines[index]; alreadyEmitted || deferFallbackLine(index) {
-						continue
+					if _, alreadyEmitted := emittedLines[index]; !alreadyEmitted {
+						deferFallbackLine(index)
 					}
-					unselected = append(unselected, index)
 				}
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
-				}
-				for _, index := range unselected {
-					_, _ = fmt.Fprintln(w, lines[index])
-					emittedLines[index] = struct{}{}
 				}
 				for _, excerpt := range lines[i+1 : end] {
 					_, _ = fmt.Fprintln(w, excerpt)
