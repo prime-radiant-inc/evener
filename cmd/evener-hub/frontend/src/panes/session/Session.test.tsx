@@ -1055,38 +1055,10 @@ test("shows the seen divider above the first turn that arrived after the stored 
   expect(text.indexOf("New since your last visit")).toBeLessThan(text.indexOf("second"));
 });
 
-test("no divider when nothing arrived since the stored watermark (watermark is the last turn)", async () => {
-  writeSeenWatermark("ref_a", "turn_1");
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a", { turns: [turnFixture("turn_1", "only")] }));
-
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
-  expect(screen.queryByTestId("seen-divider")).toBeNull();
-});
-
-test("no divider on a first-ever visit (no watermark stored)", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
-  );
-
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
-  expect(screen.queryByTestId("seen-divider")).toBeNull();
-});
-
-test("unmounting the pane stores the current last turn as the new watermark for next time", async () => {
+// The hook's own cases (useSeenDivider.test.ts) cover every watermark
+// position; this pins that Session renders no divider when the hook finds
+// none, and that unmounting records the last turn for the next visit.
+test("a first-ever visit shows no divider, and unmounting stores the last turn as the watermark", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
@@ -1099,6 +1071,7 @@ test("unmounting the pane stores the current last turn as the new watermark for 
   );
 
   await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
+  expect(screen.queryByTestId("seen-divider")).toBeNull();
   unmount();
   expect(localStorage.getItem("evener.transcript.seen.v1.ref_a")).toBe("turn_2");
 });
