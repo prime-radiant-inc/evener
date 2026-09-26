@@ -438,12 +438,30 @@ func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T)
 	}
 }
 
+func TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "sibling direct output line %d\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("child diagnostic was omitted ahead of sibling direct output: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected covers
-// direct output between a sibling NAME frame and the parent's verdict. There
+// sibling output between a sibling NAME frame and the parent's verdict. There
 // is no failing-test-owned candidate to expand, so the ordinary block must be
 // retained instead of being replaced by a marker-only excerpt.
 func TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected(t *testing.T) {
-	const output = "parent stdout via fmt.Println"
+	const output = "    sibling_test.go:1: sibling output"
 	var log strings.Builder
 	log.WriteString("=== RUN   TestParent\n")
 	log.WriteString("=== NAME  TestSibling\n")

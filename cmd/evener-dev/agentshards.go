@@ -910,14 +910,25 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	}
 
 	type candidate struct {
-		line       string
-		owner      string
-		ordinary   bool
-		diagnostic bool
+		index int
+	}
+	const maxExpandedLines = surveyContextBefore
+	appendNewest := func(candidates *[]candidate, candidate candidate) {
+		if len(*candidates) == maxExpandedLines {
+			copy((*candidates)[:], (*candidates)[1:])
+			(*candidates)[maxExpandedLines-1] = candidate
+			return
+		}
+		*candidates = append(*candidates, candidate)
 	}
 	owner := name
 	parentDiagnostic := false
-	candidates := make([]candidate, 0, marker-run)
+	ordinaryOwnedCandidates := make([]candidate, 0, maxExpandedLines)
+	parentDiagnosticCandidates := make([]candidate, 0, maxExpandedLines)
+	ownedDiagnosticCandidates := make([]candidate, 0, maxExpandedLines)
+	ownedOutputCandidates := make([]candidate, 0, maxExpandedLines)
+	ordinaryContextCandidates := make([]candidate, 0, maxExpandedLines)
+	ordinaryCount := 0
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
 			owner = frameOwner
@@ -930,50 +941,42 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 			continue
 		}
 		diagnostic := surveyDiagnosticLine.MatchString(line)
-		parentLevel := owner == name
-		if diagnostic && parentLevel {
+		lineIndex := run + 1 + index
+		if diagnostic && owner == name {
 			parentDiagnostic = true
+			appendNewest(&parentDiagnosticCandidates, candidate{index: lineIndex})
 		}
-		candidates = append(candidates, candidate{
-			line:       line,
-			owner:      owner,
-			ordinary:   run+1+index >= ordinaryStart,
-			diagnostic: diagnostic,
-		})
-	}
-	ownedByFailure := func(candidate candidate) bool {
-		return candidate.owner == name || strings.HasPrefix(candidate.owner, name+"/")
-	}
-	ordinaryOwned := func(candidate candidate) bool {
-		return candidate.ordinary && ownedByFailure(candidate)
-	}
-	ordinaryContext := func(candidate candidate) bool {
-		return candidate.ordinary && (ordinaryOwned(candidate) ||
-			(!strings.HasPrefix(candidate.line, " ") && !strings.HasPrefix(candidate.line, "\t")))
-	}
-	ordinaryCount := 0
-	ordinaryContextCount := 0
-	for _, candidate := range candidates {
-		if ordinaryOwned(candidate) {
+		owned := owner == name || strings.HasPrefix(owner, name+"/")
+		ordinary := lineIndex >= ordinaryStart
+		if ordinary && owned {
 			ordinaryCount++
+			appendNewest(&ordinaryOwnedCandidates, candidate{index: lineIndex})
 		}
-		if ordinaryContext(candidate) {
-			ordinaryContextCount++
+		if owned {
+			if diagnostic {
+				appendNewest(&ownedDiagnosticCandidates, candidate{index: lineIndex})
+			} else {
+				appendNewest(&ownedOutputCandidates, candidate{index: lineIndex})
+			}
+		}
+		if ordinary && !owned && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			appendNewest(&ordinaryContextCandidates, candidate{index: lineIndex})
 		}
 	}
-	if len(candidates) == 0 || (ordinaryCount > 0 && !parentDiagnostic) {
+	if ordinaryCount == 0 && len(ownedDiagnosticCandidates) == 0 && len(ownedOutputCandidates) == 0 && len(ordinaryContextCandidates) == 0 {
 		return nil, false
 	}
-
-	const maxExpandedLines = surveyContextBefore
-	keep := make([]bool, len(candidates))
+	if ordinaryCount > 0 && !parentDiagnostic {
+		return nil, false
+	}
+	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
-	selectNewest := func(limit int, selectCandidate func(candidate) bool) {
+	selectNewest := func(candidates []candidate, limit int) {
 		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
-			if keep[i] || !selectCandidate(candidates[i]) {
+			if _, exists := keep[candidates[i].index]; exists {
 				continue
 			}
-			keep[i] = true
+			keep[candidates[i].index] = struct{}{}
 			selectedCount++
 		}
 	}
@@ -981,57 +984,59 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	if parentDiagnostic {
 		ordinaryBudget--
 	}
-	if ordinaryContextCount <= ordinaryBudget {
-		for index, candidate := range candidates {
-			if ordinaryContext(candidate) {
-				keep[index] = true
-				selectedCount++
-			}
-		}
+	if ordinaryCount <= ordinaryBudget {
+		selectNewest(ordinaryOwnedCandidates, ordinaryCount)
 	} else {
-		selectNewest(ordinaryBudget, func(candidate candidate) bool {
-			return ordinaryContext(candidate)
-		})
+		selectNewest(ordinaryOwnedCandidates, ordinaryBudget)
 	}
 	if parentDiagnostic {
-		selectNewest(maxExpandedLines, func(candidate candidate) bool {
-			return candidate.diagnostic && candidate.owner == name
-		})
+		selectNewest(parentDiagnosticCandidates, maxExpandedLines)
 	}
-	selectNewest(maxExpandedLines, func(candidate candidate) bool {
-		return candidate.diagnostic && ownedByFailure(candidate)
-	})
-	selectNewest(maxExpandedLines, func(candidate candidate) bool {
-		return !candidate.diagnostic && ownedByFailure(candidate)
-	})
+	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
+	selectNewest(ownedOutputCandidates, maxExpandedLines)
+	selectNewest(ordinaryContextCandidates, maxExpandedLines)
 	if selectedCount == 0 {
 		return nil, false
 	}
-	selected := make([]candidate, 0, selectedCount)
-	for index, candidate := range candidates {
-		if keep[index] {
-			selected = append(selected, candidate)
+	selected := make([]string, 0, selectedCount)
+	for index := run + 1; index < marker; index++ {
+		if _, exists := keep[index]; exists {
+			selected = append(selected, lines[index])
 		}
 	}
 
 	result := make([]string, 0, len(selected)+1)
-	for _, candidate := range selected {
-		result = append(result, candidate.line)
-	}
+	result = append(result, selected...)
 	result = append(result, lines[marker])
 	return result, true
 }
 
-// surveyPhaseOwner extracts the test name from the testing package's RUN,
-// CONT, or NAME frame. Fields are joined rather than taking fields[2] so
-// subtest names containing spaces remain associated with the right owner.
-func surveyPhaseOwner(line string) string {
+// surveyPhase parses the testing package's phase frame. Fields are joined
+// rather than taking fields[2] so subtest names containing spaces remain
+// associated with the right owner.
+func surveyPhase(line string) (string, string, bool) {
 	fields := strings.Fields(line)
-	if len(fields) < 3 || fields[0] != "===" ||
-		(fields[1] != "RUN" && fields[1] != "CONT" && fields[1] != "NAME") {
+	if len(fields) < 3 || fields[0] != "===" {
+		return "", "", false
+	}
+	phase := fields[1]
+	if !strings.HasPrefix(line, "=== "+phase+" ") {
+		return "", "", false
+	}
+	if phase != "RUN" && phase != "PAUSE" && phase != "CONT" && phase != "NAME" {
+		return "", "", false
+	}
+	return phase, strings.Join(fields[2:], " "), true
+}
+
+// surveyPhaseOwner extracts the test name from the testing package's RUN,
+// CONT, or NAME frame. PAUSE is a framing boundary without an owner.
+func surveyPhaseOwner(line string) string {
+	phase, owner, ok := surveyPhase(line)
+	if !ok || phase == "PAUSE" {
 		return ""
 	}
-	return strings.Join(fields[2:], " ")
+	return owner
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
@@ -1039,7 +1044,10 @@ func surveyPhaseOwner(line string) string {
 // when testing switches output ownership. The space after the directive
 // closes it off from the test name, so a test's own line that merely begins
 // with one of the words (`=== PAUSED ...`) is output.
-var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT|NAME) `)
+func surveyPhaseLine(line string) bool {
+	_, _, ok := surveyPhase(line)
+	return ok
+}
 
 // surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
 // closed by the colon `go test -v` always writes. Without the colon a line is
@@ -1081,7 +1089,7 @@ var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok 
 // lookalike costs a bounded amount of context; mis-classifying one loses the
 // diagnosis.
 func surveyFrameworkLine(line string) bool {
-	return surveyPhaseLine.MatchString(line) ||
+	return surveyPhaseLine(line) ||
 		surveyTestVerdictLine.MatchString(line) ||
 		surveyVerdictLine.MatchString(line) ||
 		surveyRedLine.MatchString(line)
