@@ -127,6 +127,12 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 					cmd = fetchHubSessionExpectingStateToken(m.client, ref, params.Status.Type, m.statusRefreshToken)
 				}
 			}
+			// The running-turn display rule (spec "Turn status"): an open
+			// turn shows as running only while this names it, and as
+			// interrupted otherwise — the sole source of truth for it under
+			// the read model, never inferred from an item's or turn's own
+			// recorded status.
+			m.setActiveTurnID(params.ActiveTurnID)
 		}
 	case appwire.NotifyItemStarted:
 		var params appwire.ItemLifecycleParams
@@ -151,6 +157,39 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		}
 	case appwire.NotifyToolOutputDelta:
 		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
+	case appwire.NotifyHistoryUpdated:
+		var params appwire.HistoryUpdatedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.applyHistoryUpdated(params)
+		}
+	case appwire.NotifyOverlayUpserted:
+		var params appwire.OverlayUpsertedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayItem(params.Item)
+			m.applySessionTranscriptReducer(reducer)
+		}
+	case appwire.NotifyOverlayDelta:
+		var params appwire.OverlayDeltaParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayDelta(params.Key, params.Field, params.Delta)
+			m.applySessionTranscriptReducer(reducer)
+		}
+	case appwire.NotifyOverlayReset:
+		var params appwire.OverlayResetParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayReset(params.StreamID)
+			m.applySessionTranscriptReducer(reducer)
+		}
+	case appwire.NotifyOverlayEnd:
+		var params appwire.OverlayEndParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayEnd(params.RoundID)
+			m.applySessionTranscriptReducer(reducer)
+		}
 	case appwire.NotifyEvenerThreadResync:
 		// The hub is saying the model this session holds belongs to a daemon
 		// that has been replaced. A relaunched daemon seeds its live "turn_%d"
@@ -355,9 +394,16 @@ func (m *hubModel) refreshPluginsPanel() tea.Cmd {
 
 // reconcilePendingFromNotification translates an inbound daemon
 // notification into the wire-method name(s) the pending coordinator
-// registered under, then calls TryReconcile. Some notifications
-// match multiple methods (evener/steering/injected reconciles both
-// turn/steer with matching text AND any in-flight turn/drainAsSteer).
+// registered under, then reconciles. Some notifications match multiple
+// methods (evener/steering/injected reconciles both turn/steer AND any
+// in-flight turn/drainAsSteer).
+//
+// A steering or history userMessage item that carries the server's
+// authoritative ClientMutationID reconciles by that identity
+// (PendingCoordinator.Reconcile's preferred path) rather than by matching
+// text: the daemon can substitute an image placeholder or, for a drain,
+// join several queued texts into one, so a client-side text match is only
+// ever a fallback for an older daemon that sends no mutation id.
 //
 // Drain-special: turn/drainAsSteer matches first-come-first-served
 // regardless of text, because the daemon collapses queued entries
@@ -368,7 +414,7 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 	case appwire.NotifyEvenerSteeringInjected:
 		var p appwire.EvenerSteeringInjectedParams
 		_ = json.Unmarshal(n.Params, &p)
-		pending.TryReconcile(appwire.MethodTurnSteer, p.Text, ref)
+		pending.Reconcile(appwire.MethodTurnSteer, p.ClientMutationID, p.Text, ref)
 		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)
 	case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
 		// userMessage item carries the user's text. Match against
@@ -377,12 +423,17 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
-		if p.Item.Type == "userMessage" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
-			text := p.Item.Text
-			if text == "" {
-				text = transcript.ImageItemsPlaceholder(p.Item.Images)
-			}
-			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
+		reconcileUserMessageItem(pending, p.Item, ref)
+	case appwire.NotifyHistoryUpdated:
+		// The read model's equivalent of item/started|completed: history/updated
+		// carries the recorded form of every affected item, including a
+		// userMessage steering echo or the turn-opening user message.
+		var p appwire.HistoryUpdatedParams
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			return
+		}
+		for _, item := range p.Items {
+			reconcileUserMessageItem(pending, item, ref)
 		}
 	case appwire.NotifyTurnCompleted:
 		var p appwire.TurnCompletedParams
@@ -390,16 +441,22 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 			return
 		}
 		for _, item := range p.Turn.Items {
-			if item.Type != "userMessage" || (item.Text == "" && len(item.Images) == 0) {
-				continue
-			}
-			text := item.Text
-			if text == "" {
-				text = transcript.ImageItemsPlaceholder(item.Images)
-			}
-			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
+			reconcileUserMessageItem(pending, item, ref)
 		}
 	}
+}
+
+// reconcileUserMessageItem reconciles a pending turn/start entry against one
+// thread item, if it is a non-empty userMessage.
+func reconcileUserMessageItem(pending *pendingpkg.PendingCoordinator, item appwire.ThreadItem, ref string) {
+	if item.Type != "userMessage" || (item.Text == "" && len(item.Images) == 0) {
+		return
+	}
+	text := item.Text
+	if text == "" {
+		text = transcript.ImageItemsPlaceholder(item.Images)
+	}
+	pending.Reconcile(appwire.MethodTurnStart, item.ClientMutationID, text, ref)
 }
 
 func notificationPendingRef(n appwire.Notification) string {
@@ -800,6 +857,26 @@ func (m *hubModel) applyToolOutputDelta(itemID, callID, delta string) {
 	reducer := m.sessionTranscriptReducer()
 	reducer.ApplyToolOutputDelta(itemID, delta)
 	m.applySessionTranscriptReducer(reducer)
+}
+
+// applyHistoryUpdated folds one history/updated notification — the full
+// current, recorded form and version of every item and turn a just-appended
+// entry affected — into the transcript. Items merge by version through
+// ApplyHistoryItem; turns carry no items (the spec: "the reducer merges them
+// against items it already holds by key") and exist here only to surface a
+// turn's failure, the same system line turn/completed used to append.
+func (m *hubModel) applyHistoryUpdated(params appwire.HistoryUpdatedParams) {
+	reducer := m.sessionTranscriptReducer()
+	for _, item := range params.Items {
+		reducer.ApplyHistoryItem(item, transcript.TurnIndexFromID(item.TurnID))
+	}
+	reducer.FinalizeReasoning()
+	m.applySessionTranscriptReducer(reducer)
+	for _, turn := range params.Turns {
+		if turn.Status == appwire.TurnStatusFailed && turn.Error != nil {
+			m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(turn.Error, "Session error"))
+		}
+	}
 }
 
 func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {

@@ -46,6 +46,13 @@ var notifyMethods = []string{
 	appwire.NotifyEvenerPluginUpdated,
 	appwire.NotifyEvenerSandboxEscalationRequested,
 	appwire.NotifyEvenerThreadResync,
+	// The read model (Task 17): the TUI renders history/updated and the
+	// overlay instead of turn/*/item/*.
+	appwire.NotifyHistoryUpdated,
+	appwire.NotifyOverlayUpserted,
+	appwire.NotifyOverlayDelta,
+	appwire.NotifyOverlayReset,
+	appwire.NotifyOverlayEnd,
 }
 
 // FuzzApplyHubNotification drives the evener-tui hub's real notification-decode
@@ -74,6 +81,11 @@ func FuzzApplyHubNotification(f *testing.F) {
 		{0, `not json`},
 		{2, `{"turn":null}`},
 		{3, `{"item":{}}`},
+		{28, `{"items":[{"type":"agentMessage","id":"i1","text":"hi","version":1}],"turns":[{"id":"turn_1","status":"failed"}]}`},
+		{29, `{"item":{"key":"stream:round_1/0:agentMessage","kind":"stream","item":{"type":"agentMessage","id":"stream:round_1/0:agentMessage","text":"hi"}}}`},
+		{30, `{"key":"stream:round_1/0:agentMessage","field":"text","delta":"abc"}`},
+		{31, `{"streamId":"round_1/0"}`},
+		{32, `{"roundId":"round_1"}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.params)

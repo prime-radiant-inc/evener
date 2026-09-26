@@ -4391,7 +4391,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // at once rather than showing an incomplete transcript until the next
         // resync. Thread-level frames (a status, a name, the queue) never
         // touch turns and are not gaps, so they are named out.
+        //
+        // history/updated is the read model's transcript frame and belongs in
+        // this same rule, unchanged: the package's applyHistoryUpdated hands
+        // back `turns` by reference whenever it merged nothing (a stale
+        // replay under the one generation state machine) or invalidated the
+        // thread (a newer epoch or incarnation than held — the read model's
+        // own gap, "a history update whose epoch is newer than held"), so
+        // the identity check below already recognizes both without a
+        // separate epoch comparison here.
         const touchesTranscript =
+          n.method === "history/updated" ||
           n.method.startsWith("item/") ||
           n.method.startsWith("turn/") ||
           n.method === "warning" ||

@@ -49,7 +49,7 @@ func FuzzPendingCoordinator(f *testing.F) {
 		messages := make(chan tea.Msg, 8)
 		coord := NewPendingCoordinator(clock, nil)
 		coord.SetSend(func(msg tea.Msg) { messages <- msg })
-		handle := coord.Register(method, text, ref).(*PendingHandleImpl)
+		handle := coord.Register(method, text, ref, "").(*PendingHandleImpl)
 		if _, ok := receivePending(t, messages).(PendingRegisteredMsg); !ok {
 			t.Fatal("first message was not registration")
 		}
@@ -108,8 +108,8 @@ func TestPendingReconcileOrdering(t *testing.T) {
 		clock := &fuzzClock{}
 		messages := make(chan tea.Msg, 16)
 		coord := NewPendingCoordinator(clock, func(msg tea.Msg) { messages <- msg })
-		coord.Register(method, "same text", "ref")
-		coord.Register(method, "same text", "ref")
+		coord.Register(method, "same text", "ref", "")
+		coord.Register(method, "same text", "ref", "")
 		receivePending(t, messages)
 		receivePending(t, messages)
 		if !coord.TryReconcile(method, "same text", "ref") {
@@ -125,7 +125,7 @@ func TestPendingReconcileOrdering(t *testing.T) {
 	}
 	clock := &fuzzClock{}
 	coord := NewPendingCoordinator(clock, nil)
-	coord.Register("other", "text", "ref")
+	coord.Register("other", "text", "ref", "")
 	if coord.TryReconcile(appwire.MethodTurnDrainAsSteer, "", "ref") {
 		t.Fatal("drain reconciliation matched a different method")
 	}

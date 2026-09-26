@@ -81,7 +81,7 @@ func TestPendingCoordinator_RegisterEmitsRegisteredMsg(t *testing.T) {
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 
-	h := p.Register("turn/steer", "look at this", "")
+	h := p.Register("turn/steer", "look at this", "", "")
 	if h == nil {
 		t.Fatal("Register returned nil")
 	}
@@ -106,7 +106,7 @@ func TestPendingCoordinator_FailEmitsFailedMsg(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	h := p.Register("turn/steer", "x", "")
+	h := p.Register("turn/steer", "x", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // consume Registered
 
 	h.Fail("steer is not available for this session")
@@ -134,7 +134,7 @@ func TestPendingCoordinator_TimeoutMarksFailed(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register("turn/steer", "x", "")
+	p.Register("turn/steer", "x", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
 	clock.Advance(11 * time.Second)
@@ -156,7 +156,7 @@ func TestPendingCoordinator_TimedOutEntryReconcilesLateNotification(t *testing.T
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register("turn/steer", "eventually lands", "")
+	p.Register("turn/steer", "eventually lands", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
 	clock.Advance(11 * time.Second)
@@ -188,11 +188,11 @@ func TestPendingCoordinator_ReconcilePrefersLivePendingOverFailedDuplicate(t *te
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	failedID := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
+	failedID := p.Register("turn/steer", "same text", "", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 	clock.Advance(11 * time.Second)
 	drainMessages(msgs, 1, 100*time.Millisecond) // Failed
-	liveID := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
+	liveID := p.Register("turn/steer", "same text", "", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
 	if !p.TryReconcile("turn/steer", "same text", "") {
@@ -215,7 +215,7 @@ func TestPendingCoordinator_TryReconcile_MatchesByMethodAndText(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register("turn/steer", "look at this", "")
+	p.Register("turn/steer", "look at this", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	if !p.TryReconcile("turn/steer", "look  at  this", "") {
@@ -239,7 +239,7 @@ func TestPendingCoordinator_TryReconcile_DrainSpecialIgnoresText(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register("turn/drainAsSteer", "", "")
+	p.Register("turn/drainAsSteer", "", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
 	// Drain matches the first in-flight entry regardless of text.
@@ -259,8 +259,8 @@ func TestPendingCoordinator_TryReconcile_MatchesOldestDuplicate(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	first := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
-	second := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
+	first := p.Register("turn/steer", "same text", "", "").(*pendingpkg.PendingHandleImpl).ID
+	second := p.Register("turn/steer", "same text", "", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 2, 100*time.Millisecond)
 
 	if !p.TryReconcile("turn/steer", "same text", "") {
@@ -283,8 +283,8 @@ func TestPendingCoordinator_TryReconcile_DrainMatchesOldest(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	first := p.Register("turn/drainAsSteer", "", "").(*pendingpkg.PendingHandleImpl).ID
-	second := p.Register("turn/drainAsSteer", "", "").(*pendingpkg.PendingHandleImpl).ID
+	first := p.Register("turn/drainAsSteer", "", "", "").(*pendingpkg.PendingHandleImpl).ID
+	second := p.Register("turn/drainAsSteer", "", "", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 2, 100*time.Millisecond)
 
 	if !p.TryReconcile("turn/drainAsSteer", "joined text", "") {
@@ -307,7 +307,7 @@ func TestPendingCoordinator_TryReconcile_NoMatchReturnsFalse(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register("turn/steer", "look at this", "")
+	p.Register("turn/steer", "look at this", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	if p.TryReconcile("turn/steer", "completely different text", "") {
@@ -319,7 +319,7 @@ func TestPendingCoordinator_TryReconcileScopesByRef(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register("turn/steer", "same text", "local:current")
+	p.Register("turn/steer", "same text", "local:current", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	if p.TryReconcile("turn/steer", "same text", "local:other") {
@@ -334,7 +334,7 @@ func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register(appwire.MethodTurnStart, "[image]", "")
+	p.Register(appwire.MethodTurnStart, "[image]", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
@@ -360,7 +360,7 @@ func TestReconcilePendingFromNotification_TurnCompletedUserMessage(t *testing.T)
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register(appwire.MethodTurnStart, "completed only", "")
+	p.Register(appwire.MethodTurnStart, "completed only", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
@@ -387,7 +387,7 @@ func TestReconcilePendingFromNotification_TurnCompletedImageOnlyUserMessage(t *t
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register(appwire.MethodTurnStart, "[image]", "")
+	p.Register(appwire.MethodTurnStart, "[image]", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
@@ -417,7 +417,7 @@ func TestPendingCoordinator_FailIsIdempotent(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	h := p.Register("turn/steer", "x", "")
+	h := p.Register("turn/steer", "x", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 	h.Fail("a")
 	h.Fail("b") // second call must be a no-op
@@ -435,7 +435,7 @@ func TestPendingCoordinator_DispatchDoesNotDropBeyondFormerOutboxCap(t *testing.
 	const n = 40
 	handles := make([]appwire.PendingHandle, 0, n)
 	for range n {
-		handles = append(handles, p.Register("turn/queue", "queued", ""))
+		handles = append(handles, p.Register("turn/queue", "queued", "", ""))
 	}
 	got := drainMessages(msgs, n, time.Second)
 	if len(got) != n {
@@ -581,7 +581,7 @@ func TestPendingCoordinator_DispatchIsAsync_NoDeadlock(t *testing.T) {
 	// Register synchronously must not block on send (we always dispatch).
 	done := make(chan bool, 1)
 	go func() {
-		p.Register("turn/drainAsSteer", "", "")
+		p.Register("turn/drainAsSteer", "", "", "")
 		done <- true
 	}()
 	select {
