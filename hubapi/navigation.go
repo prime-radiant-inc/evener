@@ -221,6 +221,20 @@ type NavigationWatchSummary struct {
 	EndReason     string   `json:"end_reason,omitempty"`
 }
 
+// NavigationTaskProgress is a live session's task-list progress: how many of
+// its tasks exist, are done and were cancelled, and the first task in
+// progress. Carried only when the list is non-empty.
+type NavigationTaskProgress struct {
+	Total     int `json:"total"`
+	Done      int `json:"done"`
+	Cancelled int `json:"cancelled,omitempty"`
+	// CurrentID and Current name the first task in progress: its ID in the
+	// session's task list and its description, cut to the label bound. Both
+	// are absent while no task is in progress.
+	CurrentID int    `json:"current_id,omitempty"`
+	Current   string `json:"current,omitempty"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref          string `json:"ref"`
@@ -236,7 +250,12 @@ type NavigationSessionSummary struct {
 	Rename       bool   `json:"rename,omitempty"`
 	Live         bool   `json:"live"`
 	AskPending   bool   `json:"ask_pending,omitempty"`
-	Dormant      bool   `json:"dormant,omitempty"`
+	// ApprovalPending is true while the session is blocked on a sandbox
+	// escalation a human must allow or deny (M7). The row keeps its real State
+	// ("active": the escalation blocks mid-turn); the flag says why the session
+	// is in NeedsYou, beside AskPending for a question.
+	ApprovalPending bool `json:"approval_pending,omitempty"`
+	Dormant         bool `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.
@@ -265,7 +284,12 @@ type NavigationSessionSummary struct {
 	CompletedJobs       NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
 	// Watches carries this session's own live watches. Absent on an older
 	// daemon (or a past-index entry) and therefore absent-able for consumers.
-	Watches  NavigationArray[NavigationWatchSummary]   `json:"watches,omitempty"`
+	Watches NavigationArray[NavigationWatchSummary] `json:"watches,omitempty"`
+	// Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
+	// race"). Absent for a session with no task list or an empty one, and for
+	// every session this hub has no live daemon entry for: ended sessions,
+	// in-process children, and rows from other hosts.
+	Tasks    *NavigationTaskProgress                   `json:"tasks,omitempty"`
 	Children NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 

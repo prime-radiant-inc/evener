@@ -6,6 +6,8 @@ import type { NavigationReadParams, NavigationSessionSummary } from "@evener/app
 import {
 	decodeNavigationResponse,
 	materializeSnapshot,
+	NAVIGATION_CATALOG_LIMIT,
+	NAVIGATION_SECTION_LIMIT,
 	navigationParamsToResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION } from "./demoFleet.js";
@@ -396,6 +398,29 @@ describe("demo fleet paging", () => {
 			offset += rows.length;
 		}
 		expect(seen.size).toBe(271);
+	});
+
+	// cmd/evener-hub/app_navigation.go's navigationReadPage rejects an
+	// out-of-range page request outright rather than clamping it into range;
+	// the demo fleet's own page() must match, not silently coerce.
+	it("rejects a limit over the section maximum, like the hub's own validation", () => {
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: NAVIGATION_SECTION_LIMIT + 1 })),
+		).toThrow(/limit/i);
+	});
+
+	it("rejects a limit over the catalog maximum, like the hub's own validation", () => {
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "catalog", catalog: "projects", offset: 0, limit: NAVIGATION_CATALOG_LIMIT + 1 })),
+		).toThrow(/limit/i);
+	});
+
+	it("rejects a limit of zero, like the hub's own validation", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 0 }))).toThrow(/limit/i);
+	});
+
+	it("rejects a negative offset, like the hub's own validation", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 }))).toThrow(/offset/i);
 	});
 });
 

@@ -106,6 +106,16 @@ test("codec accepts the offline source marker on a session row", () => {
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, malformed))).toThrow();
 });
 
+// approval_pending is an optional boolean like ask_pending: a non-boolean value
+// is a schema error. The value-records fixture test proves a valid one is kept.
+test("codec refuses a non-boolean approval flag on a session row", () => {
+  const snapshot = liveSnapshot();
+  const first = snapshot.entities[0];
+  if (!first) throw new Error("missing entity");
+  first.value = { ...(first.value as object), approval_pending: "private-body-value" };
+  expectContentFreeRejection(key, snapshot);
+});
+
 test("codec accepts stateless records and rejects obsolete entity and container revisions", () => {
   const stateless = structuredClone(liveSnapshot()) as unknown as {
     entities: Array<Record<string, unknown>>;
@@ -1198,6 +1208,52 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
   expect(statusFor(undefined, 0)).toBe("snapshot");
   // An absent total is zero, not unknown: the Go schema rejects this shape too.
   expect(() => statusFor(undefined, 1)).toThrow();
+});
+
+// A live session's task-list progress (S13a) is a nested value record the hub
+// carries only when the list is non-empty. The codec keeps every key it knows,
+// drops a key inside the record that it does not know, and holds the record to
+// the hub schema's bounds (navigation_schema.go navigationTaskProgressValid).
+const snapshotWithTasks = (tasks: unknown): NavigationSnapshot => ({
+  ...liveSnapshot(),
+  entities: [{ key: entityKey(key, "1"), kind: "session", value: { ...sessionValue("local:session"), tasks } }],
+});
+
+test("codec keeps a session's task progress and drops keys inside it that it does not know", () => {
+  const tasks = { total: 7, done: 2, cancelled: 1, current_id: 4, current: "Fix the settle/drain race" };
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, snapshotWithTasks({ ...tasks, future_task_key: futureValue })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.tasks).toEqual(tasks);
+  const onTheBounds = {
+    total: Number.MAX_SAFE_INTEGER,
+    done: Number.MAX_SAFE_INTEGER,
+    current_id: Number.MAX_SAFE_INTEGER,
+    current: "😀".repeat(512),
+  };
+  expect(decodedSnapshot(key, snapshotWithTasks(onTheBounds)).snapshot.entities[0]?.value).toEqual({
+    ...sessionValue("local:session"),
+    tasks: onTheBounds,
+  });
+});
+
+test.each([
+  ["null", null],
+  ["a list in place of the record", [{ total: 1, done: 0 }]],
+  ["a missing total", { done: 0 }],
+  ["a missing done count", { total: 1 }],
+  ["a negative total", { total: -1, done: 0 }],
+  ["a fractional count", { total: 1.5, done: 0 }],
+  ["a count beyond the safe range", { total: Number.MAX_SAFE_INTEGER + 1, done: 0 }],
+  ["a string count", { total: "7", done: 0 }],
+  ["a negative cancelled count", { total: 1, done: 0, cancelled: -1 }],
+  ["a negative current id", { total: 1, done: 0, current_id: -1 }],
+  ["more done than exist", { total: 2, done: 3 }],
+  ["more settled than exist", { total: 2, done: 1, cancelled: 2 }],
+  ["an over-long current task", { total: 1, done: 0, current_id: 1, current: "t".repeat(513) }],
+] as const)("codec refuses task progress with %s", (_name, tasks) => {
+  expectContentFreeRejection(key, snapshotWithTasks(tasks));
 });
 
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
