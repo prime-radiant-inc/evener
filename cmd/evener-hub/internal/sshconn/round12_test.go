@@ -276,6 +276,10 @@ func restartBareFixture(port string, script restartBareScript) *fakeRunner {
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, "ps -o user= -p "):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			return script.portProbe(), nil
 		case strings.Contains(joined, "-ww -o "):
