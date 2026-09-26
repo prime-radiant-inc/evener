@@ -53,7 +53,10 @@ const EXPLAINED = new Set(["awaiting", "warning", "restartRequired", "errored"])
 /** The hub promotes a session with a pending sandbox escalation into its
  * needs_you section but leaves the row "active" (promotedAttentionLevel in
  * cmd/evener-hub/internal/hubcore/attention.go), so a row there whose state
- * explains nothing else is there for an approval. S2 puts the flag on rows. */
+ * explains nothing else is there for an approval. Since S2a (#2508), the row
+ * also carries approval_pending itself, which boardState reads directly; this
+ * inference stays because a hub without S2a never sets that flag, so its rows
+ * still need the needs_you section's membership to say why they're there. */
 export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[]): Set<string> {
 	const refs = new Set<string>();
 	for (const row of needsYouSection) if (!EXPLAINED.has(row.state)) refs.add(row.ref);
@@ -80,7 +83,7 @@ export function boardState(
 			return "shutDown";
 	}
 	if (row.state === "awaiting" && row.ask_pending) return "question";
-	if (approval) return "approval";
+	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";
 	if (row.dormant || seen) return "idle";
 	return "finished";
