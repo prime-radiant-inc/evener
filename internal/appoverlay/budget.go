@@ -46,6 +46,15 @@ func NewBudget(limit int) *Budget {
 	return &Budget{limit: limit}
 }
 
+// Used reports the bytes currently charged against the budget, across every
+// thread sharing it. For the acceptance measurement (spec: "16 MB
+// daemon-wide").
+func (b *Budget) Used() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.used
+}
+
 // charge adds a notice of the given size as the newest, evicting the oldest
 // notices until the budget is within its limit. The caller never charges more
 // than the limit, so the new notice itself is never evicted here.
