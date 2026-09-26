@@ -889,8 +889,9 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearest context. The lines from ordinaryStart up to marker are the
 // already-selected ordinary context. Selection starts with owned ordinary
 // output. When that window has no lines owned by the failing test or its
-// descendants, descendant diagnostics reserve a slot before the newest parent
-// diagnostics. With owned ordinary output, newest parent diagnostics take
+// descendants, descendant diagnostics are selected first, with one slot
+// reserved for the newest parent diagnostic. With owned ordinary output,
+// newest parent diagnostics take
 // priority over other diagnostic and ordinary backfill. Source diagnostics are
 // associated with the most recent go test RUN/CONT/NAME frame; a verdict
 // returns ownership to the failing test. If ordinary context owned by the
@@ -1026,17 +1027,6 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	}
 	result = append(result, lines[marker])
 	return result, true
-}
-
-// surveyPhase parses the testing package's phase frame. Fields are joined
-// rather than taking fields[2] so subtest names containing spaces remain
-// associated with the right owner.
-func surveyPhase(line string) (string, string, bool) {
-	phase, rawOwner, ok := surveyPhaseParts(line)
-	if !ok {
-		return "", "", false
-	}
-	return phase, strings.Join(strings.Fields(rawOwner), " "), true
 }
 
 // surveyPhaseOwner extracts the test name from the testing package's RUN,
