@@ -148,6 +148,18 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	buf = append(buf, data...)
 	buf = append(buf, '\n')
 
+	// Prefer a latched stop over taking the token: a Send that arrives after the
+	// latch must be refused before it acquires admission, not one step later. The
+	// select below can still race a free token against a latch that closes in the
+	// same instant; the poisonErr re-check under the lock refuses that case
+	// without writing, so the ordering is belt-and-suspenders rather than load
+	// bearing.
+	select {
+	case <-t.latched:
+		return t.poisonErr()
+	default:
+	}
+
 	// A send queued behind another stalled write must still obey its own
 	// context, so the write lock is acquired through a select rather than a
 	// plain lock.
