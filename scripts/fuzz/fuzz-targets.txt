@@ -444,6 +444,7 @@ native:.:./cmd/evener-hub/internal/fspaths:FuzzFSPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/fspaths:FuzzAppPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/hostlock:FuzzAcquireLock
 native:.:./cmd/evener-hub/internal/hostlock:FuzzHostLockBehaviorProgram
+native:.:./cmd/evener-hub/internal/hostops:FuzzLoadStore
 native:.:./cmd/evener-hub/internal/httpsec:FuzzCSPMiddleware
 native:.:./cmd/evener-hub/internal/hubedge:FuzzAuthGuard
 native:.:./cmd/evener-hub/internal/hubedge:FuzzHandleAuth

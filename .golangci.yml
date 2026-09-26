@@ -105,6 +105,11 @@ linters:
           - pkg: cmd/evener-hub/internal/launchconfig
             rules:
               json: camel
+          # The deploy pipeline's operation store persists spec 08b §4's record
+          # schema, whose wire shape §10 pins field-for-field in lowerCamel.
+          - pkg: cmd/evener-hub/internal/hostops
+            rules:
+              json: camel
           # Google's REST API wire format is camelCase; these structs mirror
           # its ListModels response verbatim.
           - pkg: providers/google
