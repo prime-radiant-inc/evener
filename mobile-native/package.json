@@ -5,7 +5,9 @@
   "expo": {
     "autolinking": {
       "ios": {
-        "buildFromSource": ["expo-modules-core"]
+        "buildFromSource": [
+          "expo-modules-core"
+        ]
       }
     }
   },
@@ -27,6 +29,7 @@
     "expo-splash-screen": "57.0.8",
     "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
+    "expo-symbols": "~57.0.3",
     "expo-system-ui": "~57.0.3",
     "react": "19.2.3",
     "react-native": "0.86.3",
