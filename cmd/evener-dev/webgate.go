@@ -95,7 +95,7 @@ type webGate struct {
 	unsignalled []string
 
 	launcher guardLauncher
-	// now is the clock each check's wall time is read from.
+	// now is the clock each check's wall time is read from; nil is time.Now.
 	now           func() time.Time
 	slots         int
 	scratch       string
@@ -121,6 +121,9 @@ func signalStatus(sig os.Signal) int {
 // run runs every guard and returns the gate's exit status, plus whether the
 // scratch must be kept (a failure, or an interrupt, keeps it).
 func (g *webGate) run() (int, bool) {
+	if g.now == nil {
+		g.now = time.Now
+	}
 	buildStatus := 0
 	buildLog := filepath.Join(g.scratch, g.needsBuild+"-build.log")
 	if g.buildFrontend {
@@ -344,7 +347,6 @@ func runWebGate(gate *webGate, scratchPrefix string) int {
 		return 1
 	}
 	gate.launcher = execGuardLauncher{}
-	gate.now = time.Now
 	gate.scratch = dir.Path()
 	gate.signals = signals
 	gate.stdout, gate.stderr = os.Stdout, os.Stderr

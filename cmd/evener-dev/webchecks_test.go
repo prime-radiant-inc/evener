@@ -12,7 +12,26 @@ import (
 
 func startWebChecks(t *testing.T, launcher *fakeLauncher) *testGate {
 	t.Helper()
-	return startGate(t, newWebChecksGate(), launcher, make(chan os.Signal, 4))
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	return startGate(t, gate, launcher, make(chan os.Signal, 4))
+}
+
+// A gate given no clock times its checks by the wall clock: run is the
+// gate's entry point, and a caller that sets only the launcher, scratch and
+// streams still gets verdicts.
+func TestWebChecksWithoutAClockUseTheWallClock(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startGate(t, newWebChecksGate(), launcher, make(chan os.Signal, 4))
+	for range webChecks {
+		launcher.awaitStart(t).exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 {
+		t.Fatalf("result = %+v, want 0", r)
+	}
+	if got := strings.Count(tg.stdout.String(), "PASS  web-"); got != len(webChecks) {
+		t.Fatalf("stdout = %q, want a PASS per check", tg.stdout.String())
+	}
 }
 
 // typecheck, test and lint are independent readers of the same sources, so all

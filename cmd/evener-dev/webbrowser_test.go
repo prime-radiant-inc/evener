@@ -157,7 +157,9 @@ func startTestGate(t *testing.T, launcher guardLauncher, slots int, buildFronten
 // unbuffered one: a send on it completes only once the gate receives it.
 func startTestGateWithSignals(t *testing.T, launcher guardLauncher, slots int, buildFrontend bool, signals chan os.Signal) *testGate {
 	t.Helper()
-	return startGate(t, newBrowserGate(slots, buildFrontend), launcher, signals)
+	gate := newBrowserGate(slots, buildFrontend)
+	gate.now = stoppedClock()
+	return startGate(t, gate, launcher, signals)
 }
 
 // stoppedClock never advances, so every check that ran reports (0.0s),
@@ -172,9 +174,6 @@ func stoppedClock() func() time.Time {
 func startGate(t *testing.T, gate *webGate, launcher guardLauncher, signals chan os.Signal) *testGate {
 	t.Helper()
 	tg := &testGate{gate: gate, signals: signals, result: make(chan gateResult, 1)}
-	if gate.now == nil {
-		gate.now = stoppedClock()
-	}
 	gate.launcher = launcher
 	gate.scratch = t.TempDir()
 	gate.signals = signals

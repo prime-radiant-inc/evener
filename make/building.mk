@@ -95,8 +95,8 @@ build-llmcall:
 # step time, alongside the checks' own timed verdicts.
 build-dev:
 	@echo 'go build -o evener-dev ./cmd/evener-dev/bin/'; start="$$(date +%s)"; \
-	go build -o evener-dev ./cmd/evener-dev/bin/ || exit $$?; \
-	printf 'built evener-dev (%ss)\n' "$$(($$(date +%s) - $$start))"
+	status=0; go build -o evener-dev ./cmd/evener-dev/bin/ || status=$$?; \
+	printf 'build evener-dev: exit %s (%ss)\n' "$$status" "$$(($$(date +%s) - $$start))"; exit $$status
 
 # build-all builds both the runtime binary and the dev binary.
 ## Build every binary: the evener runtime binary and the evener-dev
