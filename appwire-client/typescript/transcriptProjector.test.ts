@@ -348,6 +348,33 @@ describe("transcript projector", () => {
         expect.objectContaining({ kind: "critical", id: "budget" }),
       ]);
 
+      // The suppression trades on the end cap, and the renderer gates the
+      // end cap on the error being a real TurnError (a { message: string }
+      // object - asTurnError). A malformed error (a scalar, an object with
+      // no string message) renders no end cap, so its fallback must also
+      // keep the never-empty guarantee.
+      for (const malformedError of ["boom", {}, { message: 7 }]) {
+        const malformedTurn = {
+          ...BASE_THREAD,
+          turns: [
+            {
+              id: "turn-1",
+              status: "failed",
+              error: malformedError,
+              items: [
+                item("budget", "warning", {
+                  text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+                  warning: { title: "Context budget", code: WarningCodeContextBudget },
+                }),
+              ],
+            },
+          ],
+        } as unknown as ThreadModel;
+        expect(entriesFor(malformedTurn, preset("tools"))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "budget" }),
+        ]);
+      }
+
       // An uncoded actionable warning keeps the fallback: a failed turn
       // whose only item is a real warning must never render empty.
       const failedActionableTurn = {

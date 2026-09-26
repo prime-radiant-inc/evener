@@ -1,4 +1,11 @@
-import { hasFailureStatus, hasItemFailure, isActiveItem, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import {
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+  isTurnError,
+} from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { hasWarningText } from "./reducer";
 import {
@@ -352,12 +359,12 @@ function terminalFallbackEntry(
   // The fallback exists so a terminal turn never renders empty - but it
   // must not resurrect an informational warning decisionFor just hid (a
   // failed turn whose only item is a context-budget notice). The trade
-  // holds only where a failure end cap will actually render
-  // (TurnBlock renders it from asTurnError(sourceTurn.error), and an
-  // interrupted turn carries no error object): an errorless terminal turn
-  // has nothing else to show, so its fallback keeps the never-empty
-  // guarantee.
-  if (isInformationalWarning(sourceItem) && !informationalNoticesVisible(vector) && turn.error != null) {
+  // holds only where a failure end cap will actually render, which both
+  // this gate and the renderer decide by isTurnError (the web's
+  // TurnFailureEndCap renders from asTurnError, the same narrowing). An
+  // errorless or malformed-error terminal turn renders no end cap, so its
+  // fallback keeps the never-empty guarantee.
+  if (isInformationalWarning(sourceItem) && !informationalNoticesVisible(vector) && isTurnError(turn.error)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));

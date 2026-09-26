@@ -190,6 +190,7 @@ export {
   isActiveItem,
   isInProgressStatus,
   isNonZeroExit,
+  isTurnError,
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
