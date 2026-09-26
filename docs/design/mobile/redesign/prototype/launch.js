@@ -86,18 +86,17 @@
         ${S.recipes.map((r) => recipeChip(r.id, r.name, () => applyRecipe(r)))}
         <button class="chip" onClick=${() => EV.openSheet("saveRecipe", {})} aria-label="Save as recipe">${I.plus({ s: 14 })} Save</button>
       </div>
-      <div class="recipe-sum">${L.recipe ? "Sets " : "Custom: "}${[L.host, L.project, m.name + " " + L.effort, L.plugins.length + " plugins", L.access].join(" · ")}</div>
       ${L.error ? html`<div class="notice boxed" style="background:var(--danger-bg);border-color:var(--danger-edge);grid-template-columns:22px 1fr"><span class="ic" style="color:var(--danger)">${I.failed({ s: 16 })}</span><span class="txt">${L.error}</span></div>` : null}
       ${L.note ? html`<div class="gfoot" style="padding-top:10px">${L.note}</div>` : null}
       <div class="glabel">Where</div>
       <div class="group">
-        ${h(EV.Gi, { icon: I.host({ s: 17 }), label: "Host", value: html`<span class=${"conn-dot" + (hst.state === "offline" ? " offline" : "")}></span>${L.host}`, chev: true, onClick: () => EV.openSheet("pickHost", {}) })}
+        ${h(EV.Gi, { icon: I.host({ s: 17 }), label: "Host", value: html`${hst.state === "offline" ? html`<span class="tag amber">Offline</span> ` : null}${L.host}`, chev: true, onClick: () => EV.openSheet("pickHost", {}) })}
         ${h(EV.Gi, { icon: I.folder({ s: 17 }), label: "Project", value: L.project, chev: true, onClick: () => EV.openSheet("pickProject", {}) })}
         ${h(EV.Gi, { icon: I.branch({ s: 17 }), label: "Branch", value: L.branch === "New worktree branch" ? "New: " + (L.branchName || "lane") : "Current (main)", chev: true, onClick: () => EV.openSheet("pickBranch", {}) })}
       </div>
       <div class="glabel">Agent</div>
       <div class="group">
-        ${h(EV.Gi, { icon: I.cpu({ s: 17 }), label: "Model", sub: m.provider, value: m.name, chev: true, onClick: () => EV.openSheet("model", { target: "launch" }) })}
+        ${h(EV.Gi, { icon: I.cpu({ s: 17 }), label: "Model", sub: "via " + m.provider, value: m.name, chev: true, onClick: () => EV.openSheet("model", { target: "launch" }) })}
         <div class="gi static" style="display:block;padding:10px 0 12px"><div style="padding:0 14px 8px"><div style="font-size:17px">Effort</div><div style="color:var(--ink-low);font-size:13px">How long it thinks before acting</div></div>
           ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: L.effort, onChange: (e) => { L.effort = e; L.recipe = null; EV.log("launch_effort", { effort: e }); EV.update(); }, disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}</div>
         ${h(EV.Gi, { icon: I.puzzle({ s: 17 }), label: "Plugins", value: L.plugins.length + " of " + S.plugins.length, chev: true, onClick: () => EV.openSheet("pickPlugins", {}) })}
@@ -130,7 +129,7 @@
       <div class="group">${S.hosts.map((x) => html`<button class=${"gi" + (x.state === "offline" ? " disabled" : "")} key=${x.id} onClick=${() => pick(x)}>
         <span style="width:22px;display:flex;color:var(--accent)">${L.host === x.id ? I.check({ s: 18 }) : null}</span>
         <span class="gl">${x.id}<small>${x.state === "offline" ? "Offline" : x.os + " · " + S.sessions.filter((s) => s.live && s.host === x.id).length + " live sessions"}</small></span>
-        <span class="gv">${x.state === "offline" ? html`<span class="mini-btn" role="button" onClick=${(e) => { e.stopPropagation(); EV.reconnectHost(x.id); }}>Connect</span>` : html`<span class="conn-dot"></span>`}</span>
+        <span class="gv">${x.state === "offline" ? html`<span class="mini-btn" role="button" onClick=${(e) => { e.stopPropagation(); EV.reconnectHost(x.id); }}>Connect</span>` : null}</span>
       </button>`)}</div>
     </${EV.Sheet}>`;
   };
@@ -161,8 +160,8 @@
     const toggle = (id) => { L.plugins = L.plugins.includes(id) ? L.plugins.filter((x) => x !== id) : L.plugins.concat(id); L.recipe = null; EV.log("launch_plugin_toggle", { plugin: id, on: L.plugins.includes(id) }); EV.update(); };
     return html`<${EV.Sheet} title="Plugins for this session" right=${back} left=${html`<span style="display:flex"><button class="text-btn" onClick=${() => { L.plugins = S.plugins.map((p) => p.id); EV.log("launch_plugins_all", {}); EV.update(); }}>All</button><button class="text-btn" onClick=${() => { L.plugins = []; EV.log("launch_plugins_none", {}); EV.update(); }}>None</button></span>`} size=${stacked ? "stacked" : "large"}>
       <div class="search-field">${I.search({ s: 16 })}<input placeholder="Search plugins" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Search plugins" /></div>
-      <div class="gfoot" style="padding:2px 32px 8px">${L.plugins.length} of ${S.plugins.length} on${L.plugins.length ? ": " + L.plugins.join(", ") : ""}. Plugins can't be changed after the session starts.</div>
-      ${mps.filter((mp) => S.plugins.some((p) => p.mp === mp && ok(p))).map((mp) => html`<div class="glabel">${mp}</div><div class="group">${S.plugins.filter((p) => p.mp === mp && ok(p)).map((p) => {
+      <div class="gfoot" style="padding:2px 32px 8px">${L.plugins.length} of ${S.plugins.length} on. Plugins can't be changed after the session starts.</div>
+      ${mps.filter((mp) => S.plugins.some((p) => p.mp === mp && ok(p))).map((mp) => html`<div class="glabel id">${mp}</div><div class="group">${S.plugins.filter((p) => p.mp === mp && ok(p)).map((p) => {
         const warn = p.id === "superpowers-chrome" && L.host === "magic-kingdom" && L.plugins.includes(p.id);
         return html`<div class="gi static" key=${p.id} onClick=${() => toggle(p.id)} style="cursor:pointer">
           <span></span>

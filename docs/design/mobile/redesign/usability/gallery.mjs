@@ -52,6 +52,7 @@ const PICK = {
   'dark-session-working.png': '20-session-working-dark.png',
   'dark-session-question.png': '21-session-question-dark.png',
   'dark-reader.png': '22-reader-dark.png',
+  'light-sheet-notes.png': '23-notes-links.png',
 };
 let n = 0;
 for (const f of fs.readdirSync(shots)) {

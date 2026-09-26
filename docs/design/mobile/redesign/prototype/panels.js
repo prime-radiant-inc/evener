@@ -5,6 +5,13 @@
   const { html, h, useRef, useEffect, useLayoutEffect, useState } = EV;
   const I = EV.I;
 
+  // Back for the quiet screens (the Reader, the artifact viewer): alerts that
+  // arrive while you read are held, and a small amber dot on Back says so.
+  EV.HeldBack = function () {
+    const held = EV.S.held.length;
+    return html`<button class="icon-btn back-btn" onClick=${EV.pop} aria-label=${held ? "Back. " + held + " new while you read" : "Back"}>${I.chevL({ s: 22 })}${held ? html`<span class="held-dot"></span>` : null}</button>`;
+  };
+
   // ---------- subagents ----------
   function subMark(g) {
     // One pulse meter per view: here that's the session's, so a running
@@ -14,18 +21,18 @@
     return html`<span class="mk low">${I.check({ s: 16 })}</span>`;
   }
 
-  function SubRow({ g, sessionId, depth }) {
+  function SubRow({ g, sessionId, parent }) {
     const tap = () => { EV.log("subagent_open", { sessionId, subagentId: g.id, from: "subagents" }); EV.push("subagent", { sessionId, subId: g.id }); };
     const stopping = EV.S.stopRequests[g.id];
-    const body = html`<div class="row" style=${depth ? "padding-left:" + (16 + depth * 22) + "px" : ""}>
+    const body = html`<div class="row">
       <div class="mark">${subMark(g)}</div>
       <div style="min-width:0">
-        <div class="l1"><span class="title" style="font-size:16px">${g.title}</span><span class="age">${g.state === "running" ? EV.fmtDur(g.elapsed * 1000) : EV.fmtAgo(g.ago * 1000) + " ago"}</span></div>
+        <div class="l1"><span class="title" style="font-size:16px">${g.title}</span><span class="age">${EV.subTime(g)}</span></div>
         <div class=${"why" + (g.state === "failed" ? " danger" : "")}>${stopping && g.state !== "stopped" ? "Stop requested from the coordinator" : g.line}</div>
-        <div class="meta"><span>${EV.modelLabel(g.model)}</span>${g.lane ? html`<span class="sep"></span><span class="host">${I.branch({ s: 12 })}<span class="mono">${g.lane}</span></span>` : null}<span class="sep"></span><span>${g.tokens} tokens</span></div>
+        <div class="meta">${parent ? html`<span class="from">from ${parent}</span><span class="sep"></span>` : null}${g.model !== (EV.sess(sessionId) || {}).model ? html`<span>${EV.modelLabel(g.model)}</span><span class="sep"></span>` : null}${g.lane ? html`<span class="host">${I.branch({ s: 12 })}<span class="mono">${g.lane}</span></span><span class="sep"></span>` : null}<span>${g.tokens} tokens</span></div>
       </div>
     </div>`;
-    return html`${h(EV.SwipeRow, { onTap: tap }, body)}${(g.children || []).map((c) => html`<${SubRow} key=${c.id} g=${c} sessionId=${sessionId} depth=${(depth || 0) + 1} />`)}`;
+    return h(EV.SwipeRow, { onTap: tap }, body);
   }
 
   function Subagents({ sessionId }) {
@@ -37,8 +44,11 @@
     const [q, setQ] = useState("");
     const [doneOpen, setDoneOpen] = useState(false);
     const ok = (g) => !q || g.title.toLowerCase().includes(q.toLowerCase());
-    const by = (st) => list.filter((g) => g.state === st && ok(g));
-    const running = by("running").sort((a, b) => a.ago - b.ago);
+    const flat = [];
+    const walk = (arr, parent) => (arr || []).forEach((g) => { flat.push({ g, parent }); walk(g.children, g.title); });
+    walk(list, null);
+    const by = (st) => flat.filter((x) => x.g.state === st && ok(x.g));
+    const running = by("running").sort((a, b) => a.g.ago - b.g.ago);
     const groups = { failed: by("failed"), running, done: by("done").concat(by("stopped")) };
     const chip = (k, label, n) => html`<button class=${"chip" + (filter === k ? " on" : "")} onClick=${() => { setFilter(k); EV.log("subagent_filter", { sessionId, filter: k }); }}>${label} <span class="n">${n}</span></button>`;
     const show = (k) => filter === "all" || filter === k;
@@ -50,12 +60,12 @@
       </div></div>
       <div class="scroll">
         <div style="padding:12px 16px 4px">${h(EV.Strip, { t, wide: true })}</div>
-        <div class="chips" style="top:0">${chip("all", "All", EV.tallyTotal(t))}${chip("running", "Running", t.run)}${chip("failed", "Failed", t.fail)}${chip("done", "Done", t.done)}</div>
+        <div class="chips" style="top:0">${chip("all", "All", EV.tallyTotal(t))}${chip("failed", html`<span class="lg fail"></span>Failed`, t.fail)}${chip("running", html`<span class="lg run"></span>Running`, t.run)}${chip("done", html`<span class="lg done"></span>Done`, t.done)}</div>
         ${list.length > 8 ? html`<div class="search-field">${I.search({ s: 16 })}<input placeholder="Filter subagents" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Filter subagents" /></div>` : null}
-        ${show("failed") && groups.failed.length ? html`<div class="sec-h">Failed <span class="n">${groups.failed.length}</span></div>${groups.failed.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}` : null}
-        ${show("running") && groups.running.length ? html`<div class="sec-h">Running <span class="n">${groups.running.length}</span></div>${groups.running.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}` : null}
-        ${show("done") && groups.done.length ? (filter === "done" ? html`<div class="sec-h">Done <span class="n">${groups.done.length}</span></div>${groups.done.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`)}`
-          : html`<button class=${"fold" + (doneOpen ? " open" : "")} style="margin-top:8px" onClick=${() => setDoneOpen(!doneOpen)}><span class="lbl">Done <span class="cnt">${groups.done.length}</span></span><span class="chev">${I.chevR()}</span></button>${doneOpen ? groups.done.map((g) => html`<${SubRow} key=${g.id} g=${g} sessionId=${sessionId} />`) : null}`) : null}
+        ${show("failed") && groups.failed.length ? html`<div class="sec-h">Failed <span class="n">${groups.failed.length}</span></div>${groups.failed.map((x) => html`<${SubRow} key=${x.g.id} g=${x.g} parent=${x.parent} sessionId=${sessionId} />`)}` : null}
+        ${show("running") && groups.running.length ? html`<div class="sec-h">Running <span class="n">${groups.running.length}</span></div>${groups.running.map((x) => html`<${SubRow} key=${x.g.id} g=${x.g} parent=${x.parent} sessionId=${sessionId} />`)}` : null}
+        ${show("done") && groups.done.length ? (filter === "done" ? html`<div class="sec-h">Done <span class="n">${groups.done.length}</span></div>${groups.done.map((x) => html`<${SubRow} key=${x.g.id} g=${x.g} parent=${x.parent} sessionId=${sessionId} />`)}`
+          : html`<button class=${"fold" + (doneOpen ? " open" : "")} style="margin-top:8px" onClick=${() => setDoneOpen(!doneOpen)}><span class="lbl">Done <span class="cnt">${groups.done.length}</span></span><span class="chev">${I.chevR()}</span></button>${doneOpen ? groups.done.map((x) => html`<${SubRow} key=${x.g.id} g=${x.g} parent=${x.parent} sessionId=${sessionId} />`) : null}`) : null}
         <div style="height:30px"></div>
       </div>
     </div>`;
@@ -250,8 +260,8 @@
     const hint = !comments.length && !S.readerHintDismissed;
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row">
-        <div class="lead"><button class="icon-btn back-btn" onClick=${EV.pop} aria-label="Back">${I.chevL({ s: 22 })}</button></div>
-        <div class="nav-title" style="cursor:default">${pastTitle ? html`<div class="t">${(blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop()}</div>` : null}<div class=${pastTitle ? "s" : "s solo"}><span style="overflow:hidden;text-overflow:ellipsis;min-width:0">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago</span></div></div>
+        <div class="lead">${h(EV.HeldBack)}</div>
+        <div class="nav-title" style="cursor:default">${pastTitle ? html`<div class="t">${(blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop()}</div><div class="s"><span style="overflow:hidden;text-overflow:ellipsis;min-width:0">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago</span></div>` : null}</div>
         <div class="trail">
           <button class="icon-btn" aria-label="Outline" onClick=${() => EV.openSheet("outline", { path })}>${I.outline()}</button>
           <button class="icon-btn" aria-label="Document menu" onClick=${() => EV.openMenu({ kind: "list", top: 96, right: true, title: "Document", items: [
@@ -262,14 +272,14 @@
         </div>
       </div></div>
       <div class="scroll" ref=${scrollRef} onScroll=${(e) => { const past = e.currentTarget.scrollTop > 64; if (past !== pastTitle) setPastTitle(past); }}>
-        ${changed.length ? html`<div class="changes-bar"><span>${changed.length} change${changed.length > 1 ? "s" : ""} since you read it yesterday</span><span class="arrows"><button class="icon-btn" style="height:32px;min-width:32px" aria-label="Previous change" onClick=${() => goChange(-1)}>${h(I.chevL, { s: 16 })}</button><button class="icon-btn" style="height:32px;min-width:32px" aria-label="Next change" onClick=${() => goChange(1)}>${I.chevR({ s: 16 })}</button></span></div>` : null}
-        ${hint ? html`<div class="hint" style="margin:10px 16px 0;padding:8px 10px;background:var(--inset);border-radius:10px">${I.bubble({ s: 14 })}<span>Touch and hold a paragraph to comment on it or quote it. <button class="mini-btn" style="padding:0 4px" onClick=${() => { S.readerHintDismissed = true; EV.update(); }}>Got it</button></span></div>` : null}
+        <div class="doc-cap">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago${changed.length ? html` · <span class="chg">${changed.length} change${changed.length > 1 ? "s" : ""} since you read it yesterday</span>` : null}</div>
         <article class="reader" aria-label=${path}>
           ${blocks.map((b, i) => h(RBlock, { key: i, b, i, path, sessionId, changed: changed.includes(i), count: comments.filter((c) => c.block === i).length, onComment }))}
         </article>
       </div>
-      <div class="bottom"><div class="review-bar">
-        <button class="btn quiet" onClick=${() => EV.openSheet("comments", { path, sessionId })}>${I.bubble({ s: 16 })} Comments${comments.length ? " " + comments.length : ""}</button>
+      <div class="bottom">${comments.length ? null : html`<div class="rb-tip">${I.bubble({ s: 14 })} Touch and hold a paragraph to comment on it</div>`}<div class="review-bar">
+        ${comments.length ? html`<button class="btn quiet" onClick=${() => EV.openSheet("comments", { path, sessionId })}>${I.bubble({ s: 16 })} ${comments.length}</button>` : html`<span></span>`}
+        ${changed.length ? html`<span class="chg-step"><button class="icon-btn" aria-label="Previous change" onClick=${() => goChange(-1)}>${I.chevL({ s: 16 })}</button><span>${ci < 0 ? changed.length + " changes" : "Change " + (ci + 1) + " of " + changed.length}</span><button class="icon-btn" aria-label="Next change" onClick=${() => goChange(1)}>${I.chevR({ s: 16 })}</button></span>` : null}
         <span style="display:flex;gap:6px">
           <button class="btn primary" onClick=${() => { EV.log("review_sheet", { path, comments: comments.length }); EV.openSheet("review", { path, sessionId }); }}>Send review</button>
         </span>
@@ -387,7 +397,7 @@
     if (showSaved) setTimeout(() => EV.update(), 2600);
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row">
-        <div class="lead"><button class="icon-btn back-btn" onClick=${EV.pop} aria-label="Back">${I.chevL({ s: 22 })}</button></div>
+        <div class="lead">${h(EV.HeldBack)}</div>
         <div class="nav-title" style="cursor:default"><div class="t">${a.title}</div><div class="s">${showSaved ? html`<span class="saved">Saved</span>` : html`<span>Artifact · v${a.version} · updated ${EV.fmtAgo(a.ago * 1000)} ago</span>`}</div></div>
         <div class="trail"><button class="icon-btn" aria-label="Artifact menu" onClick=${() => EV.openMenu({ kind: "list", top: 96, right: true, title: "Artifact", items: [
           { label: "About this artifact", icon: I.artifact({ s: 18 }), run: () => EV.openSheet("aboutArtifact", { id }) },

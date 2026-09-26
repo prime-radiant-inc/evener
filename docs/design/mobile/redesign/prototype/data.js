@@ -339,7 +339,7 @@
     { t: "agent", md: "Good call. I added a Linux `-race` run to the plan and gave it its own subagent on magic-kingdom." },
     { t: "act", live: true, steps: [
       { i: "Started 31 subagents for -race runs and fixes", s: "ok" },
-      { i: "Waiting on subagents", g: "31 running · 2 failed · 21 done", s: "run" },
+      { i: "Waiting on subagents", g: "32 running · 2 failed · 21 done", s: "run" },
     ] },
   ];
 

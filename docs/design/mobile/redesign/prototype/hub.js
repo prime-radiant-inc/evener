@@ -16,7 +16,7 @@
     const updates = S.plugins.filter((p) => p.update).length;
     return html`<${EV.Sheet} title="magic-kingdom" right=${h(Done)} size=${stacked ? "stacked" : "large"}>
       <div style="padding:2px 20px 6px;display:flex;gap:8px;align-items:center;color:var(--ink-mid);font-size:14px">
-        <span class=${"conn-dot" + (S.conn === "live" ? "" : S.conn === "reconnecting" ? " reconnecting" : " offline")}></span>${S.conn === "live" ? "Connected · live" : S.conn === "reconnecting" ? "Reconnecting…" : "Offline"} · evener ${hubHost.version} · up to date
+        ${S.conn === "live" ? "Connected" : S.conn === "reconnecting" ? "Reconnecting…" : "Offline"} · evener ${hubHost.version} · up to date
       </div>
       <div class="glabel">Fleet</div>
       <div class="group">${h(EV.Gi, { icon: I.host({ s: 17 }), label: "Hosts", value: html`${S.hosts.length}${offline ? html` <span class="tag red">${offline} offline</span>` : mismatch ? html` <span class="tag gray">${mismatch} on another version</span>` : ""}`, chev: true, onClick: () => EV.openSheet("hosts", {}) })}</div>
@@ -34,9 +34,7 @@
       </div>
       <div class="glabel">About</div>
       <div class="group">
-        ${h(EV.Gi, { label: "Hub version", value: hubHost.version })}
         ${h(EV.Gi, { label: "Evener for iPhone", value: "2.0 prototype" })}
-        ${h(EV.Gi, { label: "Update hub", value: "Up to date" })}
       </div>
       <div class="gfoot" style="padding-top:12px">More settings are in the web app: keyboard shortcuts, launch configuration, AGENTS.md, MCP servers and storage.</div>
     </${EV.Sheet}>`;
@@ -60,11 +58,11 @@
     const hubV = EV.host("magic-kingdom").version;
     return html`<${EV.Sheet} title=${x.id} left=${Back("Hosts")} size="stacked">
       <div class="group">
-        ${h(EV.Gi, { label: "Status", value: html`<span class=${"conn-dot" + (x.state === "offline" ? " offline" : x.state === "connecting" ? " reconnecting" : "")}></span>${EV.cap(x.state)}` })}
+        ${h(EV.Gi, { label: "Status", value: x.state === "offline" ? html`<span class="tag amber">Offline</span>` : x.state === "connecting" ? "Connecting…" : "Connected" })}
         ${h(EV.Gi, { label: "Version", value: x.version !== hubV ? html`${x.version} <span class="tag gray">Hub runs ${hubV}</span>` : x.version })}
         ${h(EV.Gi, { label: "System", value: x.os })}
         ${h(EV.Gi, { label: "Resources", value: x.cpus + " CPUs · " + x.memGB + " GB" })}
-        ${h(EV.Gi, { label: "Live sessions", value: S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length })}
+        ${h(EV.Gi, { label: "Sessions", value: S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length + (x.state === "offline" ? " live, out of reach" : " live") })}
         ${h(EV.Gi, { label: "Project roots", value: html`<span class="mono">${x.roots.join(", ")}</span>` })}
         ${h(EV.Gi, { label: "Defined in", value: x.origin })}
       </div>
@@ -74,7 +72,7 @@
           ? h(EV.Gi, { label: "Connecting…", sub: "Trying ssh " + x.id, value: h(EV.Pulse, { values: [0.3, 0.6, 0.9, 0.6, 0.3, 0.6, 0.9] }) })
           : h(EV.Gi, { label: x.state === "offline" ? "Reconnect" : "Reconnect now", cls: "accent", onClick: () => { EV.log("host_reconnect", { host: x.id }); EV.reconnectHost(x.id); } })}
       </div>
-      <div class="gfoot">${x.version !== hubV ? "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient. " : ""}${x.origin === "hub.toml" ? "This host is defined in hub.toml, so it can only be edited there." : "Hosts added in the app can be edited or removed here."}</div>
+      <div class="gfoot">${x.state === "offline" ? "This host is offline, so its sessions can't be reached. Reconnect to reach them. " : x.version !== hubV ? "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient. " : ""}${x.origin === "hub.toml" ? "This host is defined in hub.toml, so it can only be edited there." : "Hosts added in the app can be edited or removed here."}</div>
     </${EV.Sheet}>`;
   };
 

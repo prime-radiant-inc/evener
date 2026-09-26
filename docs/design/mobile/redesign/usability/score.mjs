@@ -18,7 +18,9 @@ const PLAN = 'docs/superpowers/plans/2026-09-25-host-project-hierarchy.md';
 const has = (L, type, pred) => L.some((e) => e.type === type && (!pred || pred(e)));
 const find = (L, type, pred) => L.find((e) => e.type === type && (!pred || pred(e)));
 
-// Each returns [verdict, evidence].
+// Each takes the task's action log and the participant's claim, and returns
+// [verdict, evidence]. Most judge the log alone; T16, whose answer is a
+// report, also reads the claim.
 const CRITERIA = {
   T1: (L) => has(L, 'answer', (e) => e.sessionId === 's-audit') ? ['success', 'answered s-audit via ' + find(L, 'answer', (e) => e.sessionId === 's-audit').how]
     : has(L, 'open', (e) => e.id === 's-audit') ? ['partial', 'opened s-audit, no answer'] : ['fail', 'never opened s-audit'],
@@ -92,6 +94,25 @@ const CRITERIA = {
     : has(L, 'evidence_toggle', (e) => e.open) ? ['success', 'expanded step output by hand'] : has(L, 'activity_toggle') ? ['partial', 'expanded an activity run only'] : ['fail', 'no change'],
   T13: (L) => has(L, 'host_reconnect', (e) => e.host === 'paradise-park') || has(L, 'notice_action', (e) => e.notice === 'reconnect') ? ['success', 'reconnected paradise-park']
     : has(L, 'sheet', (e) => ['hub', 'hosts', 'host'].includes(e.kind)) ? ['partial', 'looked at hosts, did not reconnect'] : ['fail', 'no action'],
+  // Round 4: a session's shared links and your note.
+  T15: (L) => {
+    const opened = has(L, 'link_open', (e) => e.sessionId === 's-pr2138' && /\/pull\/2138$/.test(e.url || ''));
+    const noted = has(L, 'note_leave', (e) => e.sessionId === 's-pr2138' && /linux/i.test(e.text || ''));
+    if (opened && noted) return ['success', 'opened the PR and left the note'];
+    if (opened || noted) return ['partial', opened ? 'opened the PR only' : 'left the note only'];
+    if (has(L, 'send', (e) => e.sessionId === 's-pr2138' && /linux/i.test(e.text || ''))) return ['partial', 'sent the note as a message'];
+    return has(L, 'notes_open') ? ['partial', 'opened notes and links, did neither'] : ['fail', 'neither'];
+  },
+  // Round 4: read a session's activity and progress off the Board.
+  T16: (L, claim) => {
+    const c = (claim || '').toLowerCase();
+    const what = /go test|test/.test(c);
+    const far = /2 of 4|task 2|fold/.test(c);
+    const opened = has(L, 'row_tap', (e) => e.sessionId === 's-tasklist') || has(L, 'open', (e) => e.screen === 'session' && e.id === 's-tasklist');
+    if (what && far) return [opened ? 'partial' : 'success', (opened ? 'opened the session to find it' : 'read it off the Board') + ': activity and progress'];
+    if (what || far) return ['partial', 'reported ' + (what ? 'the activity' : 'the progress') + ' only'];
+    return ['fail', 'reported neither'];
+  },
   T14: (L) => has(L, 'model_change', (e) => e.model === 'claude-sonnet-5' && e.effort === 'high') ? ['success', 'sonnet 5, high']
     : has(L, 'model_change') ? ['partial', 'changed to ' + find(L, 'model_change').model + ' / ' + find(L, 'model_change').effort] : ['fail', 'no change'],
 };
@@ -111,7 +132,8 @@ for (const p of parts) {
     const id = f.replace(/^task-|-log\.json$/g, '');
     const L = JSON.parse(fs.readFileSync(path.join(pdir, f), 'utf8'));
     const crit = CRITERIA[id];
-    const [verdict, evidence] = crit ? crit(L) : ['unscored', 'no criteria'];
+    const claimOf = summary && (summary.tasks || summary.taskResults || []).find((x) => x.id === id || x.task === id);
+    const [verdict, evidence] = crit ? crit(L, claimOf && claimOf.claim) : ['unscored', 'no criteria'];
     if (totals[verdict] != null) totals[verdict]++;
     const t = summary && (summary.tasks || summary.taskResults || []).find((x) => x.id === id || x.task === id);
     const actions = t ? (t.actions ?? t.actionCount ?? '?') : '?';

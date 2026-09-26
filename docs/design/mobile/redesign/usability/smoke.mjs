@@ -152,7 +152,10 @@ async function runChecks(page, scheme) {
   for (const e of ['question', 'failure', 'many', 'host-offline', 'reconnecting', 'approval', 'finish']) {
     await check(S('event-' + e), page, async () => { await reset(page); await ev(page, `window.__proto.trigger('${e}')`); await sleep(1200); });
   }
-  await check(S('event-held-while-reading'), page, async () => { await reset(page, 'reading'); await ev(page, `window.__proto.trigger('question')`); await sleep(300); await logHas(page, 'banner_held'); });
+  await check(S('event-held-while-reading'), page, async () => {
+    await reset(page, 'reading'); await ev(page, `window.__proto.trigger('question')`); await sleep(300); await logHas(page, 'banner_held');
+    if (!(await page.locator('[data-screen="reader"] .held-dot').count())) throw new Error('the Reader\'s Back shows no sign of the held alert');
+  });
 
   // Real UI flows, by tapping, asserted against the action log.
   const tapRole = async (role, name) => { const loc = page.getByRole(role, { name, exact: false }).first(); await loc.waitFor({ timeout: 4000 }); await loc.tap(); await sleep(250); };

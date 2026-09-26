@@ -160,6 +160,7 @@
     return t;
   };
   EV.tallyTotal = (t) => (t ? t.run + t.fail + t.done : 0);
+  EV.subTime = (g) => (g.state === "running" ? EV.fmtDur(g.elapsed * 1000) : EV.fmtAgo(g.ago * 1000));
 
   EV.activityLine = function (s) {
     const st = EV.stateOf(s);
@@ -304,7 +305,7 @@
     dots: (o) => sv(html`<circle cx="5" cy="12" r="1.6" fill="currentColor" /><circle cx="12" cy="12" r="1.6" fill="currentColor" /><circle cx="19" cy="12" r="1.6" fill="currentColor" />`, o),
     failed: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2h8l6 6v8l-6 6H8l-6-6V8z" fill="currentColor" /><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#fff" stroke-width="2.4" stroke-linecap="round" /></svg>`,
     question: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="currentColor" /><path d="M9.2 9.3a2.9 2.9 0 1 1 4.1 2.6c-.8.4-1.3 1-1.3 1.9v.6" stroke="#fff" stroke-width="2.3" fill="none" stroke-linecap="round" /><circle cx="12" cy="17.6" r="1.35" fill="#fff" /></svg>`,
-    hand: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><path d="M7.4 12.2V6.3a1.5 1.5 0 0 1 3 0v5M10.4 11.3V4.7a1.5 1.5 0 0 1 3 0v6.6M13.4 11.3V5.6a1.5 1.5 0 0 1 3 0v7.2M16.4 12.8V8.9a1.5 1.5 0 0 1 3 0v5.4c0 4.1-3 7.2-6.9 7.2-2.4 0-4.1-.9-5.5-2.8L4.3 14.9a1.5 1.5 0 0 1 2.3-1.9l.8 1" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" /></svg>`,
+    hand: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="currentColor" /><g transform="translate(3.9 3.6) scale(.68)"><path d="M7.4 12.2V6.3a1.5 1.5 0 0 1 3 0v5M10.4 11.3V4.7a1.5 1.5 0 0 1 3 0v6.6M13.4 11.3V5.6a1.5 1.5 0 0 1 3 0v7.2M16.4 12.8V8.9a1.5 1.5 0 0 1 3 0v5.4c0 4.1-3 7.2-6.9 7.2-2.4 0-4.1-.9-5.5-2.8L4.3 14.9a1.5 1.5 0 0 1 2.3-1.9l.8 1" fill="none" stroke="#fff" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" /></g></svg>`,
     warn: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 3.4a2 2 0 0 1 3.4 0l8.3 14.4a2 2 0 0 1-1.7 3H3.7a2 2 0 0 1-1.7-3z" fill="currentColor" /><path d="M12 9v4.6" stroke="#fff" stroke-width="2.3" stroke-linecap="round" /><circle cx="12" cy="17" r="1.3" fill="#fff" /></svg>`,
     restart: (o) => html`<svg width=${(o && o.s) || 18} height=${(o && o.s) || 18} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="currentColor" /><path d="M7.9 10.5A4.4 4.4 0 0 1 16.1 10.5M16.1 13.5A4.4 4.4 0 0 1 7.9 13.5" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" /><path d="M17.7 9.9 14.5 11.1 16.9 12.6zM6.3 14.1 9.5 12.9 7.1 11.4z" fill="#fff" stroke="#fff" stroke-width=".8" stroke-linejoin="round" /></svg>`,
     pin: (o) => sv(html`<path d="M12 16v5" /><path d="M8.5 3.5h7l-1 6 3.5 3.5v1.5H6V13l3.5-3.5z" />`, o),
@@ -325,6 +326,7 @@
     target: (o) => sv(html`<circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="1" fill="currentColor" />`, o),
     note: (o) => sv(html`<rect x="4.5" y="3.5" width="15" height="17" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" />`, o),
     hub: (o) => sv(html`<circle cx="12" cy="12.5" r="2.6" /><circle cx="12" cy="4" r="1.9" /><circle cx="4.6" cy="18" r="1.9" /><circle cx="19.4" cy="18" r="1.9" /><path d="M12 6v3.9M6.2 16.8l3.6-2.6M17.8 16.8l-3.6-2.6" />`, o),
+    command: (o) => sv(html`<path d="M9 6.5a2.5 2.5 0 1 0-2.5 2.5H9zM9 9v6M15 9h2.5A2.5 2.5 0 1 0 15 6.5zM15 9v6M9 15H6.5A2.5 2.5 0 1 0 9 17.5zM15 15v2.5a2.5 2.5 0 1 0 2.5-2.5zM9 9h6M9 15h6" />`, o),
     power: (o) => sv(html`<path d="M12 3.5v8" /><path d="M7.1 6.6a7.5 7.5 0 1 0 9.8 0" />`, o),
     copy: (o) => sv(html`<rect x="8.5" y="8.5" width="11" height="12" rx="2" /><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2" />`, o),
     person: (o) => sv(html`<circle cx="12" cy="8" r="3.6" /><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6" />`, o),
@@ -355,11 +357,11 @@
   // fleet-wide log scale, 0 to 1), so two meters can be compared. A minute
   // with nothing in it leaves only the baseline, so a session going quiet
   // shows a flat right end instead of a shorter glyph.
-  EV.Pulse = function ({ values, off, flat }) {
+  EV.Pulse = function ({ values, off, flat, stuck }) {
     const vals = values || [0, 0, 0, 0, 0, 0, 0];
     const isFlat = flat || vals.every((v) => v < 0.05);
     const last = vals.length - 1;
-    return html`<span class=${"pulse" + (off ? " off" : isFlat ? " flat" : "")} aria-hidden="true">${vals.map((v, i) => html`<i style=${"height:" + (v < 0.05 ? 0 : Math.max(2, Math.round(Math.min(1, v) * 13))) + "px;opacity:" + (0.45 + (0.55 * i) / last).toFixed(2)}></i>`)}</span>`;
+    return html`<span class=${"pulse" + (stuck ? " stuck" : off ? " off" : isFlat ? " flat" : "")} aria-hidden="true">${vals.map((v, i) => html`<i style=${"height:" + (stuck ? 2 : v < 0.05 ? 0 : Math.max(2, Math.round(Math.min(1, v) * 13))) + "px;opacity:" + (0.45 + (0.55 * i) / last).toFixed(2)}></i>`)}</span>`;
   };
   // The whole fleet's activity, for the Board header: each minute is the
   // working sessions' activity summed and put back on the same scale.
@@ -379,20 +381,20 @@
     if (st === "approval") return html`<span class="mk attention" title="Approval">${I.hand({ s: size })}</span>`;
     if (st === "warning") return html`<span class="mk attention" title="Warning">${I.warn({ s: size })}</span>`;
     if (st === "restart") return html`<span class="mk attention" title="Restart needed">${I.restart({ s: size })}</span>`;
-    if (st === "stuck") return html`<span class="mk" title="May be stuck"><span class="hollow"></span></span>`;
+    if (st === "stuck") return html`<span class="mk" title="May be stuck">${h(EV.Pulse, { values: [0, 0, 0, 0, 0, 0, 0], stuck: true })}</span>`;
     if (st === "working") return still ? html`<span class="mk" title="Working"><span class=${"run-dot" + (offline ? " off" : "")}></span></span>` : html`<span class="mk" title="Working">${h(EV.Pulse, { values: s.pulse, off: offline })}</span>`;
     if (st === "yourmove" && s.unseen) return html`<span class="mk" title="Finished, not yet seen"><span class="dot"></span></span>`;
     return html`<span class="mk"></span>`;
   };
 
-  // The subagent strip reads as progress: finished work fills from the
-  // left in ink, then failures in red (never thinner than 3pt, so 2 of 55
-  // still shows), then running work in green. Once everything is done the
-  // strip says nothing, so it isn't drawn.
+  // The subagent strip, in the Subagents list's order: failures in red
+  // (never thinner than 3pt, so 2 of 55 still shows), running work in
+  // green, then finished work in the lightest neutral. Once everything is
+  // done the strip says nothing, so it isn't drawn.
   EV.Strip = function ({ t, wide }) {
     if (!t || (!t.run && !t.fail)) return null;
     const seg = (n, c, min) => (n ? html`<i class=${c} style=${"flex:" + n + " 1 " + (min ? "3px" : "0px") + ";min-width:" + (min ? "3px" : "1px")}></i>` : null);
-    return html`<span class=${"strip" + (wide ? " wide" : "")} aria-hidden="true">${seg(t.done, "s-done")}${seg(t.fail, "s-fail", true)}${seg(t.run, "s-run")}</span>`;
+    return html`<span class=${"strip" + (wide ? " wide" : "")} aria-hidden="true">${seg(t.fail, "s-fail", true)}${seg(t.run, "s-run")}${seg(t.done, "s-done")}</span>`;
   };
 
   EV.Switch = function ({ on, onChange, label }) {
@@ -535,7 +537,7 @@
       onPointerCancel=${() => { EV.S.bannerHeld = false; }}
       aria-live="polite">
       ${mark}
-      <span><span class="bt"><span>${title}</span><span class="w">now</span></span><span class=${"bw" + (b.kind === "failed" ? " why danger" : "")}>${why}</span></span>
+      <span><span class="bt"><span>${title}</span><span class="w">now</span></span><span class=${"bw why " + ((s && EV.whyParts && (EV.whyParts(s) || {}).cls) || "")}>${why}</span></span>
     </button>`;
   }
 

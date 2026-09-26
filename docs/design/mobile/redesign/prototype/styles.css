@@ -57,7 +57,7 @@
     --edge-strong: #51514A;
     --ink-hi: #F2F1EB;
     --prose: #E0DED6;
-    --bubble: #2B2B28;
+    --bubble: color-mix(in oklab, var(--accent) 15%, var(--surface));
     --ink-mid: #B0AFA6;
     --ink-low: #99998F;
     --attention: #F68F3C;
@@ -88,7 +88,7 @@
   --edge-strong: #51514A;
   --ink-hi: #F2F1EB;
   --prose: #E0DED6;
-  --bubble: #2B2B28;
+  --bubble: color-mix(in oklab, var(--accent) 15%, var(--surface));
   --ink-mid: #B0AFA6;
   --ink-low: #99998F;
   --attention: #F68F3C;
@@ -863,3 +863,52 @@ input, textarea { font: inherit; color: inherit; }
 .meta .task svg { flex: none; }
 .meta .task b { font-weight: 600; color: var(--ink-mid); font-variant-numeric: tabular-nums; flex: none; }
 .meta .task .tt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta .from { color: var(--ink-mid); }
+
+/* First-glance fixes. */
+.bottom .next-cap { gap: 8px; padding: 0 10px 0 14px; font-weight: 500; font-size: 14px; }
+.bottom .next-cap .nc-n { color: var(--ink-mid); }
+.bottom .next-cap .nc-go { display: inline-flex; align-items: center; gap: 2px; font-weight: 600; font-size: 15px; color: var(--accent-ink); }
+.notes-bar .nb-who { color: var(--ink-low); }
+.meta .task .tt::before { content: "· "; }
+/* A chip row that scrolls fades at its trailing edge, so a cut-off chip reads as "more". */
+.chips, .ctx-chips { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.back-btn .held-dot { width: 8px; height: 8px; border-radius: 4px; background: var(--attention); margin-left: -4px; align-self: flex-start; margin-top: 12px; }
+
+/* Batch E. */
+.pulse.stuck { background: linear-gradient(var(--attention), var(--attention)) left bottom / 100% 1px no-repeat; }
+.pulse.stuck i { background: var(--attention); }
+.live-sum .ls .pulse { margin-right: 2px; }
+.sub-item .ln { font: 14px/19px var(--sans); color: var(--ink-mid); }
+.appr .what { font: 600 17px/22px var(--sans); }
+.cchip .bad { color: var(--danger-ink); font-weight: 500; }
+.strip .s-done { background: var(--edge-strong); }
+.chip .lg { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.chip .lg.fail { background: var(--danger); }
+.chip .lg.run { background: var(--alive); }
+.chip .lg.done { background: var(--edge-strong); }
+mark.hit { background: var(--accent-bg); color: inherit; font-weight: 600; border-radius: 3px; }
+.glabel.id { text-transform: none; letter-spacing: 0; font-family: var(--mono); font-size: 12px; }
+.rb-tip { display: inline-flex; align-items: center; gap: 6px; padding: 0 6px; font: 13px/17px var(--sans); color: var(--ink-low); }
+
+/* Batch F. A filled button's blue is darker than the link blue, so white on
+   it reads (4.8:1) in both themes; dark mode's link blue left 2.9:1. */
+:root { --accent-fill: #0070E0; }
+.btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); }
+.send, .steer { background: var(--accent-fill); }
+.appr-choices .abtn.primary { background: var(--accent-fill); }
+.appr-choices .abtn.primary b, .appr-choices .abtn.primary small { color: #fff; }
+.appr-choices .abtn.primary small { opacity: .85; }
+.appr-choices .abtn.deny { min-height: 40px; background: transparent; }
+.bottom .next-cap { background: var(--surface); }
+.bottom .next-cap .nc-n { color: var(--attention-ink); }
+.doc-cap { padding: 12px 20px 0; font: 13px/18px var(--sans); color: var(--ink-low); }
+.doc-cap .chg { color: var(--accent-ink); }
+.bottom .rb-tip { display: flex; justify-content: center; padding: 6px 12px 0; }
+.chg-step { display: inline-flex; align-items: center; font: 13px var(--sans); color: var(--ink-mid); font-variant-numeric: tabular-nums; }
+.chg-step .icon-btn { height: 36px; min-width: 36px; }
+.sec-h.cat-h .h-left { text-transform: none; letter-spacing: 0; font-size: 15px; color: var(--ink-hi); }
+.meta { flex-wrap: nowrap; overflow: hidden; }
+.meta > span { flex: none; }
+.meta > .task { flex: 0 1 auto; }
+.row .meta { flex-wrap: nowrap; }

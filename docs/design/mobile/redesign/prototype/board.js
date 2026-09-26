@@ -43,7 +43,7 @@
   EV.whyParts = function (s) {
     const st = EV.stateOf(s);
     const rest = (s.why || "").replace(/^(Failed|Asks):\s*/, "");
-    if (st === "failed") return { label: "Failed", text: rest, cls: "danger" };
+    if (st === "failed") return { label: "Failed", text: rest, cls: "danger", two: true };
     if (st === "question") return { label: "Question", text: rest, cls: "attention", two: true };
     if (st === "approval") return { label: "Approval", text: rest.replace(/^Wants to /, "wants to "), cls: "attention", two: true };
     if (st === "restart") return { label: "Restart needed", text: "to pick up the hub's update", cls: "attention" };
@@ -67,12 +67,12 @@
     const t = EV.tally(s);
     const k = s.tasks;
     const parts = [];
-    if (k && k.done < k.total) parts.push(html`<span class="task">${I.checklist({ s: 13 })}<b>${k.done}/${k.total}</b>${k.current ? html`<span class="tt">${k.current}</span>` : null}</span>`);
+    if (k && k.done < k.total) parts.push(html`<span class="task">${I.checklist({ s: 13 })}<b>Task ${k.done + 1} of ${k.total}</b>${k.current ? html`<span class="tt">${k.current}</span>` : null}</span>`);
     if (t && t.fail) parts.push(html`<span class="bad">${t.fail} subagent${t.fail === 1 ? "" : "s"} failed</span>`);
     // Project and host only when they aren't the fleet's usual ones, so the
     // ones that do print stand out.
     const u = EV.usual();
-    if (s.project !== u.project) parts.push(html`<span>${s.project}</span>`);
+    if (s.project !== u.project) parts.push(html`<span class="host">${I.folder({ s: 12 })}${s.project}</span>`);
     if (EV.multiHost() && s.host !== u.host) parts.push(html`<span class="host">${I.host({ s: 12 })}${s.host}</span>`);
     if (EV.S.prefs.showModel) parts.push(html`<span>${EV.modelLabel(s.model)}</span>`);
     if (!parts.length) return null;
@@ -188,17 +188,16 @@
     const why = whyFor(s);
     EV.log("row_menu", { sessionId: s.id });
     const items = [
-      { label: "Open", icon: I.chevR({ s: 16 }), run: () => EV.openSession(s.id, { from: "menu" }) },
       !s.archived ? { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) } : null,
       s.state === "yourmove" ? { label: s.unseen ? "Mark as read" : "Mark as unread", icon: I.check({ s: 18 }), run: () => { s.unseen = !s.unseen; EV.log(s.unseen ? "mark_unread" : "mark_read", { sessionId: s.id }); EV.update(); } } : null,
       s.state === "idle" ? { label: "Mark as unread", icon: I.check({ s: 18 }), run: () => { s.state = "yourmove"; s.unseen = true; EV.log("mark_unread", { sessionId: s.id }); EV.update(); } } : null,
       st === "working" || st === "stuck" ? { label: "Stop this turn", icon: I.stop({ s: 14 }), run: () => EV.stopTurn(s, "menu") } : null,
       { label: "Rename", icon: I.compose({ s: 18 }), run: () => EV.openSheet("rename", { sessionId: s.id }) },
-      { label: "Copy link", icon: I.doc({ s: 18 }), run: () => { EV.log("copy_link", { sessionId: s.id }); EV.toast("Link copied"); } },
+      { label: "Copy link", icon: I.link({ s: 18 }), run: () => { EV.log("copy_link", { sessionId: s.id }); EV.toast("Link copied"); } },
       { label: s.archived ? "Unarchive" : "Archive", icon: I.archive({ s: 18 }), sep: true, run: () => EV.setArchived(s, !s.archived) },
-      s.live ? { label: "Shut down…", icon: I.x({ s: 18 }), danger: true, run: () => setTimeout(() => EV.confirmShutdown(s), 30) } : null,
+      s.live ? { label: "Shut down…", icon: I.power({ s: 18 }), danger: true, run: () => setTimeout(() => EV.confirmShutdown(s), 30) } : null,
     ];
-    const preview = html`<div class="preview">
+    const preview = html`<div class="preview" role="button" tabindex="0" style="cursor:pointer" onClick=${() => { EV.closeMenu(); EV.log("row_menu_open", { sessionId: s.id }); EV.openSession(s.id, { from: "menu" }); }}>
       <div style="display:flex;gap:8px;align-items:center">${h(EV.Mark, { s })}<div class="pt">${s.title}</div></div>
       ${why ? html`<div class=${"pw" + (why.cls ? " why " + why.cls : "")}>${h(EV.WhyText, { w: why })}</div>` : null}
       <div class="pm">${s.tasks ? html`<span>${s.tasks.done}/${s.tasks.total} tasks</span><span>·</span>` : null}${t ? html`<span>${EV.tallyTotal(t)} subagents${t.fail ? ", " + t.fail + " failed" : ""}</span><span>·</span>` : null}<span>${s.project}</span><span>·</span><span>${s.host}</span><span>·</span><span>${EV.modelLabel(s.model, s.effort)}</span></div>
@@ -252,7 +251,7 @@
     const sum = [
       needs.length ? html`<button class="ls needs" onClick=${() => go("needs", "needs")}><b>${needs.length}</b> need you</button>` : null,
       your.length ? html`<button class="ls" onClick=${() => go("finished", "your")}><b>${your.length}</b> finished</button>` : null,
-      work.length ? html`<button class="ls work" onClick=${() => go("working", "work")}><span class="run-dot"></span><b>${work.length}</b> working</button>` : null,
+      work.length ? html`<button class="ls work" onClick=${() => go("working", "work")}>${h(EV.Pulse, { values: EV.fleetPulse(), off: EV.S.conn !== "live" })}<b>${work.length}</b> working</button>` : null,
       idle.length ? html`<button class="ls" onClick=${() => go("idle", "idle")}><b>${idle.length}</b> idle</button>` : null,
     ].filter(Boolean);
     return html`<section aria-label="Live">
@@ -354,7 +353,7 @@
           ${S.board.open[pid] ? (EV.multiHost() ? hostsWith.map((x) => {
             const hid = "host:" + p.id + ":" + x.id;
             const hl = list.filter((s) => s.host === x.id);
-            return html`<div key=${hid}><${TreeHead} id=${hid} level=${2} name=${x.id} count=${liveN(hl) ? liveN(hl) + " live" : ""} dot=${html`<span class=${"conn-dot" + (x.state === "offline" ? " offline" : x.state === "connecting" ? " reconnecting" : "")}></span>`} />
+            return html`<div key=${hid}><${TreeHead} id=${hid} level=${2} name=${x.id} count=${x.state === "offline" ? html`<span class="tag amber">Offline</span>` : liveN(hl) ? liveN(hl) + " live" : ""} />
               ${S.board.open[hid] ? html`<div class="subrow">${h(SessionTiers, { list: hl })}</div>` : null}</div>`;
           }) : h(SessionTiers, { list })) : null}
         </div>`;
@@ -365,7 +364,7 @@
         const hl = S.sessions.filter((s) => s.host === x.id && !s.test);
         const hp = projs.filter((p) => hl.some((s) => s.project === p.id));
         return html`<div key=${hid}>
-          <${TreeHead} id=${hid} name=${x.id} sub=${x.state === "offline" ? "Offline" : x.os} count=${liveN(hl) ? liveN(hl) + " live" : ""} dot=${html`<span class=${"conn-dot" + (x.state === "offline" ? " offline" : x.state === "connecting" ? " reconnecting" : "")}></span>`} />
+          <${TreeHead} id=${hid} name=${x.id} sub=${x.os} count=${x.state === "offline" ? html`<span class="tag amber">Offline</span>` : liveN(hl) ? liveN(hl) + " live" : ""} dot=${I.host({ s: 18 })} />
           ${S.board.open[hid] ? hp.map((p) => {
             const pid = "hp:" + x.id + ":" + p.id;
             const pl = hl.filter((s) => s.project === p.id);
@@ -434,7 +433,12 @@
       const w = q.split(/\s+/)[0];
       const i = w ? text.toLowerCase().indexOf(w) : -1;
       if (i < 0) return text;
-      return html`${text.slice(0, i)}<mark style="background:var(--attention-bg);color:inherit;border-radius:3px">${text.slice(i, i + w.length)}</mark>${text.slice(i + w.length)}`;
+      return html`${text.slice(0, i)}<mark class="hit">${text.slice(i, i + w.length)}</mark>${text.slice(i + w.length)}`;
+    };
+    const around = (text) => {
+      const w = q.split(/\s+/)[0];
+      const i = w ? text.toLowerCase().indexOf(w) : -1;
+      return i > 60 ? "…" + text.slice(text.lastIndexOf(" ", i - 40) + 1) : text;
     };
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div style="display:flex;align-items:center;gap:4px;padding:6px 8px 0 0">
@@ -446,7 +450,7 @@
         ${!q ? html`<div class="sec-h">Recent searches</div>${["retry loop", "settle race"].map((r) => html`<button class="fold" onClick=${() => { S.board.query = r; EV.log("search", { query: r, recent: true }); EV.update(); }}><span class="lbl" style="color:var(--ink-hi)">${I.search({ s: 15 })} ${r}</span></button>`)}` : null}
         ${q && !sessions.length && !hits.length && !projs.length ? html`<div class="empty"><b>No matches</b>Nothing in live or archived sessions matches “${S.board.query}”.</div>` : null}
         ${sessions.length ? html`<div class="sec-h">Sessions <span class="n">${sessions.length}</span></div>${sessions.map((s) => h(EV.SwipeRow, { key: "s" + s.id, onTap: () => openHit({ id: s.id, kind: "session" }) }, html`<div class="row"><div class="mark">${h(EV.Mark, { s })}</div><div style="min-width:0"><div class="l1"><span class="title">${hl(s.title)}</span><span class="age">${EV.fmtAgo(Date.now() - s.updatedAt)}</span></div><div class="meta"><span>${s.archived ? "Archived" : s.live ? "Live" : "Shut down"}</span><span class="sep"></span><span>${s.project}</span></div></div></div>`))}` : null}
-        ${hits.length ? html`<div class="sec-h">In sessions <span class="n">${hits.length}</span></div>${hits.map((x) => h(EV.SwipeRow, { key: "h" + x.id + x.snippet.length, onTap: () => openHit(x) }, html`<div class="row"><div class="mark"><span class="mk low">${I.bubble({ s: 17 })}</span></div><div style="min-width:0"><div class="l1"><span class="title" style="font-size:15px">${x.title}</span><span class="age">${EV.fmtAgo(x.ago * 1000)}</span></div><div class="why two" style="font-family:var(--read-font)">${hl(x.snippet)}</div></div></div>`))}` : null}
+        ${hits.length ? html`<div class="sec-h">In sessions <span class="n">${hits.length}</span></div>${hits.map((x) => h(EV.SwipeRow, { key: "h" + x.id + x.snippet.length, onTap: () => openHit(x) }, html`<div class="row"><div class="mark"><span class="mk low">${I.bubble({ s: 17 })}</span></div><div style="min-width:0"><div class="l1"><span class="title" style="font-size:15px">${x.title}</span><span class="age">${EV.fmtAgo(x.ago * 1000)}</span></div><div class="why two" style="font-family:var(--read-font)">${hl(around(x.snippet))}</div></div></div>`))}` : null}
         ${projs.length ? html`<div class="sec-h">Projects</div>${projs.map((p) => html`<button class="fold" onClick=${() => { S.board.searching = false; S.board.open["proj:" + p.id] = true; S.board.jump = "projects"; EV.update(); }}><span class="lbl" style="color:var(--ink-hi)">${I.folder({ s: 16 })} ${p.id}</span><span class="chev">${I.chevR()}</span></button>`)}` : null}
       </div>
     </div>`;
@@ -476,7 +480,7 @@
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row board-nav">
         <div class="lead"><button class="hub-btn" onClick=${() => EV.openSheet("hub", {})} aria-label=${"Hub: magic-kingdom, " + (conn === "live" ? "connected" : conn === "reconnecting" ? "reconnecting" : "offline")}>
-          ${h(EV.Pulse, { values: EV.fleetPulse(), off: conn !== "live" })}magic-kingdom<span style="color:var(--ink-low);display:flex">${I.chevD({ s: 12 })}</span></button></div>
+          magic-kingdom<span style="color:var(--ink-low);display:flex">${I.chevD({ s: 12 })}</span></button></div>
         <div class="trail"><button class="icon-btn" aria-label="Search" onClick=${() => { S.board.searching = true; EV.log("search_open_field", {}); EV.update(); }}>${I.search()}</button></div>
       </div></div>
       <div class="scroll" ref=${scrollRef}>
