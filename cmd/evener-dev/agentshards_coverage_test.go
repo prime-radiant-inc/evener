@@ -323,6 +323,28 @@ func TestReplaySurveyFailuresPrefersLateParentAssertion(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics covers
+// source-located t.Log/t.Error output from a nested subtest. Those lines are
+// newer than the parent's assertion, but the parent assertion must still win
+// a bounded diagnostic excerpt.
+func TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before nested output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestParent/subtest\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    nested_test.go:%d: nested diagnostic\n", i+1)
+	}
+	log.WriteString("--- PASS: TestParent/subtest (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was crowded out by nested diagnostics: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework
