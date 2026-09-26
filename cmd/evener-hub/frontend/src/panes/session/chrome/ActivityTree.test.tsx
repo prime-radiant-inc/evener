@@ -11,16 +11,10 @@ import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
 import { detailLineByText } from "./detailLine.testFixture";
 
-// vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
-// (this file's own subject) without ever mocking this module, so under a
-// shared module registry ActivityTree.tsx's own `import { openTranscript }`
-// binding is already resolved to the real function by the time this file's
-// tests run - a vi.mock() factory registered this late replaces what THIS
-// file's test-level import resolves to, but not what the already-loaded
-// ActivityTree.tsx calls internally. Spying on the real module's own export
-// patches the one binding every importer (this file's assertions AND
-// ActivityTree.tsx's internal calls) actually shares, regardless of import
-// order. OpenTranscriptButton is stubbed: it lives in the SAME module as
+// Spies on the real modules' own exports, installed fresh before each test
+// and restored by afterEach's vi.restoreAllMocks, patch the one binding both
+// this file's assertions and ActivityTree.tsx's internal calls read.
+// OpenTranscriptButton is stubbed: it lives in the SAME module as
 // openTranscript, so its internal call uses the module-local binding and the
 // spy above would never observe it. The stub records the props the tree
 // passes and routes its click to the spied openTranscript;
@@ -34,9 +28,8 @@ let openButtonProps: Array<{
 }>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
-  // Spied for the same reason openTranscript is: ActivityTree.tsx's binding is
-  // already resolved by the time this file loads, so the real module's export
-  // is the one both sides share.
+  // Spied the same way as openTranscript, so ActivityTree.tsx and these
+  // assertions share one binding.
   openSessionByRef = vi.spyOn(sessionPlacementModule, "openSessionByRef").mockImplementation(() => {});
   openButtonProps = [];
   vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) => {

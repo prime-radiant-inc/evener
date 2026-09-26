@@ -12,7 +12,26 @@ import (
 
 func startWebChecks(t *testing.T, launcher *fakeLauncher) *testGate {
 	t.Helper()
-	return startGate(t, newWebChecksGate(), launcher, make(chan os.Signal, 4))
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	return startGate(t, gate, launcher, make(chan os.Signal, 4))
+}
+
+// A gate given no clock times its checks by the wall clock: run is the
+// gate's entry point, and a caller that sets only the launcher, scratch and
+// streams still gets verdicts.
+func TestWebChecksWithoutAClockUseTheWallClock(t *testing.T) {
+	launcher := newFakeLauncher()
+	tg := startGate(t, newWebChecksGate(), launcher, make(chan os.Signal, 4))
+	for range webChecks {
+		launcher.awaitStart(t).exit <- 0
+	}
+	if r := tg.await(t); r.status != 0 {
+		t.Fatalf("result = %+v, want 0", r)
+	}
+	if got := strings.Count(tg.stdout.String(), "PASS  web-"); got != len(webChecks) {
+		t.Fatalf("stdout = %q, want a PASS per check", tg.stdout.String())
+	}
 }
 
 // typecheck, test and lint are independent readers of the same sources, so all
@@ -32,8 +51,56 @@ func TestWebChecksRunTogetherAndReportInOrder(t *testing.T) {
 	if r := tg.await(t); r.status != 0 || r.keep {
 		t.Fatalf("result = %+v, want 0 and the scratch removed", r)
 	}
-	if want := "PASS  web-typecheck\nPASS  web-test\nPASS  web-lint\n"; tg.stdout.String() != want {
+	if want := "PASS  web-typecheck (0.0s)\nPASS  web-test (0.0s)\nPASS  web-lint (0.0s)\n"; tg.stdout.String() != want {
 		t.Fatalf("stdout = %q, want %q", tg.stdout.String(), want)
+	}
+}
+
+// Each verdict carries its check's wall time, start to exit, so a slow gate
+// names its critical path. The clock is read once per start and once per
+// exit; the test hands it each reading, so the order it reads them is pinned.
+func TestWebChecksVerdictsCarryEachChecksWallTime(t *testing.T) {
+	launcher := newFakeLauncher()
+	launcher.output["typecheck"] = "src/app.tsx(3,1): error TS2322\n"
+	readings := make(chan time.Time)
+	gate := newWebChecksGate()
+	gate.now = func() time.Time { return <-readings }
+	read := func(at time.Time) {
+		t.Helper()
+		select {
+		case readings <- at:
+		case <-time.After(tripwire):
+			t.Fatal("the gate never read the clock")
+		}
+	}
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+	t0 := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	guards := map[string]*fakeGuard{}
+	for range webChecks {
+		read(t0)
+		g := launcher.awaitStart(t)
+		guards[g.name] = g
+	}
+	for _, finish := range []struct {
+		check   string
+		status  int
+		elapsed time.Duration
+	}{
+		{"lint", 0, 2449 * time.Millisecond},
+		{"typecheck", 2, 61080 * time.Millisecond},
+		{"test", 0, 143240 * time.Millisecond},
+	} {
+		guards[finish.check].exit <- finish.status
+		read(t0.Add(finish.elapsed))
+	}
+	if r := tg.await(t); r.status != 2 {
+		t.Fatalf("result = %+v, want typecheck's 2", r)
+	}
+	if want := "PASS  web-test (143.2s)\nPASS  web-lint (2.4s)\n"; !strings.HasSuffix(tg.stdout.String(), want) {
+		t.Fatalf("stdout = %q, want it to end with %q", tg.stdout.String(), want)
+	}
+	if want := "FAIL  web-typecheck (exit 2, 61.1s)\n"; tg.stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", tg.stderr.String(), want)
 	}
 }
 
@@ -76,7 +143,7 @@ func TestWebChecksFailureReplaysOnlyTheFailingLog(t *testing.T) {
 	if r.status != 2 || !r.keep {
 		t.Fatalf("result = %+v, want typecheck's 2 and the scratch kept", r)
 	}
-	if !strings.Contains(tg.stderr.String(), "FAIL  web-typecheck (exit 2)") || !strings.Contains(tg.stdout.String(), "error TS2322") {
+	if !strings.Contains(tg.stderr.String(), "FAIL  web-typecheck (exit 2, 0.0s)") || !strings.Contains(tg.stdout.String(), "error TS2322") {
 		t.Fatalf("stdout = %s\nstderr = %s", tg.stdout.String(), tg.stderr.String())
 	}
 	if strings.Contains(tg.stdout.String(), "lint chatter") {

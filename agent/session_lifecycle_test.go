@@ -260,7 +260,7 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 	}
 }
 
-// TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus covers kata
+// TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus covers kata
 // hen0: kata r6y9 already made a genuine (non-cancelled) turn failure correct
 // the session's own State() to idle, but processInputKindWithProvenance's
 // genuine-failure fall-through emitted no EventSessionEnd to carry that
@@ -268,8 +268,10 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 // the loop (the cancellation branch right above it, and the successful-settle
 // tail), which each emit one. A live subscriber saw turn/completed(Failed)
 // and then silence; its belief that a turn was still running leaked until it
-// left and re-entered the session.
-func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing.T) {
+// left and re-entered the session. The failure exit announces systemError: the
+// session is idle inside and takes the next message, and the wire reports it
+// resting on a failed turn (RestingWireState).
+func TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -313,23 +315,23 @@ func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing
 	if found == nil {
 		t.Fatalf("expected a SESSION_END with Reason=turn_failed restoring status, got events=%+v", *eventsPtr)
 	}
-	if found.State != string(SessionIdle) {
-		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, SessionIdle)
+	if found.State != appwire.ThreadStatusSystemError {
+		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, appwire.ThreadStatusSystemError)
 	}
 	if found.Interrupted {
 		t.Fatalf("genuine failure incorrectly marked Interrupted=true: %+v", *found)
 	}
 }
 
-// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus is the
+// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfFailedStatus is the
 // end-to-end kata hen0 repro: it feeds the session's real events through the
 // real appwire projector, exactly as server.RecordAppEvent does for a live
-// subscriber, and asserts a thread/status/changed(idle) notification follows
-// turn/completed(Failed) — without re-reading the thread. It also pins that
+// subscriber, and asserts a thread/status/changed(systemError) notification
+// follows turn/completed(Failed), without re-reading the thread. It also pins that
 // the specific failure text lands on turn/completed unaltered (Jesse,
 // 2026-07-30): the new status notification carries no message of its own, so
 // there is nothing to bury or duplicate it with.
-func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing.T) {
+func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -357,9 +359,9 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 		t.Fatal("expected genuine provider failure")
 	}
 	// Close so doneCh signals the collector has drained every buffered event
-	// (the established race-free pattern in this file); the projector below
-	// sees Close()'s own session_closed SESSION_END too, harmless since it
-	// projects a "closed" status, not "idle".
+	// (the established race-free pattern in this file). Close() emits no
+	// session_closed SESSION_END here: the failure exit's turn_failed
+	// SESSION_END already claimed the sessionEndEmitted gate.
 	sess.Close()
 	<-doneCh
 
@@ -395,31 +397,36 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 		t.Fatalf("no failed turn/completed notification in stream: %+v", notifications)
 	}
 
-	// Exactly one idle status notification follows the failure, immediately
-	// adjacent to it (EventTurnEnded, the only event between them, is a
-	// projector no-op once the turn is already closed). Filtering on Type ==
-	// idle (not just presence) excludes the later "closed" status change
-	// Close() legitimately produces further down the same stream.
-	idleAfterFailure := 0
+	// Exactly one systemError status notification follows the failure,
+	// immediately adjacent to it (EventTurnEnded, the only event between them,
+	// is a projector no-op once the turn is already closed).
+	failedAfterFailure := 0
 	for i, n := range notifications {
 		if i <= turnCompletedIdx || n.Method != appwire.NotifyThreadStatusChanged {
 			continue
 		}
 		params, ok := n.Params.(appwire.ThreadStatusChangedParams)
-		if ok && params.Status.Type == appwire.ThreadStatusIdle {
-			idleAfterFailure++
+		if ok && params.Status.Type == appwire.ThreadStatusSystemError {
+			failedAfterFailure++
 		}
 	}
-	if idleAfterFailure != 1 {
-		t.Fatalf("expected exactly 1 idle status notification after the failed turn, got %d: %+v", idleAfterFailure, notifications)
+	if failedAfterFailure != 1 {
+		t.Fatalf("expected exactly 1 systemError status notification after the failed turn, got %d: %+v", failedAfterFailure, notifications)
+	}
+	// The failure leaves the session open: nothing in the stream announces
+	// thread/closed.
+	for _, n := range notifications {
+		if n.Method == appwire.NotifyThreadClosed {
+			t.Fatalf("a failed turn announced thread/closed: %+v", notifications)
+		}
 	}
 	next := notifications[turnCompletedIdx+1]
 	if next.Method != appwire.NotifyThreadStatusChanged {
 		t.Fatalf("notification immediately after turn/completed(Failed)=%q, want %q: %+v", next.Method, appwire.NotifyThreadStatusChanged, notifications)
 	}
 	statusParams, ok := next.Params.(appwire.ThreadStatusChangedParams)
-	if !ok || statusParams.Status.Type != appwire.ThreadStatusIdle {
-		t.Fatalf("status immediately after failure=%+v, want idle", next.Params)
+	if !ok || statusParams.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("status immediately after failure=%+v, want systemError", next.Params)
 	}
 }
 

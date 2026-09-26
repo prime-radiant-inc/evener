@@ -44,10 +44,9 @@ test("makes the content region focusable and consumes a toggle-open focus marker
   );
   expect(document.activeElement).toBe(previousFocus);
   // A raw DOM node appended straight to document.body, outside any React
-  // tree - cleanup() only unmounts React roots, so under isolate:false this
-  // would otherwise outlive the file and false-positive a later file's own
-  // plain getByRole("button")/queryByRole("button") query against the
-  // shared jsdom document.
+  // tree - cleanup() only unmounts React roots, so this would otherwise
+  // outlive the test and false-positive a later test's own plain
+  // getByRole("button")/queryByRole("button") query against the document.
   previousFocus.remove();
 });
 

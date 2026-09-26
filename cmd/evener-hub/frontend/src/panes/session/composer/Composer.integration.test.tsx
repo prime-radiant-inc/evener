@@ -179,25 +179,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  // This file mounts the singleton toast region and its relay-recovery test
-  // deliberately pushes an unavailable-send toast. Unmounting only cancels
-  // that toast's timer; it does not remove the queue entry, so retire it here
-  // before another isolate:false file mounts the same region.
-  resetToastStoreForTests();
-  // Every test here calls ensureThread(ref) directly for setup - Composer
-  // takes its ref as a prop and never calls ensureThread/releaseThread
-  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
-  // test. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 function textarea(): HTMLDivElement | null {

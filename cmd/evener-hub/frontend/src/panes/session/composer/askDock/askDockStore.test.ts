@@ -10,7 +10,7 @@ import type {
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -152,22 +152,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
-});
-
-afterEach(() => {
-  // Every test here calls ensureThread(ref) directly for setup - nothing in
-  // this file's own reconciliation path calls releaseThread, so the ref
-  // stays refcounted after the LAST test. Under isolate:false that is what a
-  // later file's own connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 describe("reconciliation from the live ThreadModel", () => {
