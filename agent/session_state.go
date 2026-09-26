@@ -246,6 +246,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,
 		WorkMillis:               s.workMillis,
+		LastTurnEndedAt:          s.lastTurnEndedAt,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		JobTreeRevision:          jobTreeRevision,
@@ -322,6 +323,7 @@ func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (tran
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
 		turnMS = s.accumulateWorkLocked()
+		s.lastTurnEndedAt = s.sclock().Now().UTC()
 		transitioned = true
 	}
 	return transitioned, turnMS
