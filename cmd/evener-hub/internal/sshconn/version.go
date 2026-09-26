@@ -758,11 +758,18 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced h
 }
 
 // stopAndRelaunch is the half of restartBare that runs once the listener has been
-// proved to be the hub this host is configured for: it recovers the log
-// destination, stops the old process, and relaunches the recovered argv detached.
+// proved to be the hub this host is configured for: it completes the identity
+// read by proving the process runs as the host's effective SSH user (spec 04,
+// §"Stop/restart mechanics" checks 1–4), then recovers the log destination,
+// stops the old process, and relaunches the recovered argv detached. The owner
+// check lives here, immediately before the signal, so no future call path can
+// reach `kill` without it.
 func (m *Manager) stopAndRelaunch(ctx context.Context, host hostreg.Host, port, pid string, argv []string, replaced hubIdentity) error {
 	pid, err := numericPID(pid)
 	if err != nil {
+		return err
+	}
+	if err := m.checkHubOwner(ctx, host, pid); err != nil {
 		return err
 	}
 	logPath := ""
@@ -801,6 +808,69 @@ func (m *Manager) stopAndRelaunch(ctx context.Context, host hostreg.Host, port, 
 		return fmt.Errorf("%w: host %q relaunch: %w: %s", ErrRestart, host.Name, rerr, tail(rout))
 	}
 	return nil
+}
+
+// checkHubOwner proves the identified listener runs as the host's effective SSH
+// user before it is signaled (spec 04, §"Stop/restart mechanics" check 3): a
+// process owned by another user is not provably this host's hub, so a mismatch —
+// or an owner or effective user the probe cannot read — refuses with ErrRestart,
+// with no kill and no relaunch (§"Unverifiable restart target"). The effective
+// user is the entry's User when set, else the user part of a user@host SSH
+// destination, else the login user the host reports (`id -un`), exactly the chain
+// the spec defines; the owner is read with `ps -o user= -p <pid>`. pid must
+// already have been validated by numericPID.
+func (m *Manager) checkHubOwner(ctx context.Context, host hostreg.Host, pid string) error {
+	user, ok := effectiveUserName(host)
+	if !ok {
+		// The entry names no user — a host written as a bare hostname, or one
+		// resolved through an ambient ssh_config — so ask the host which user the
+		// non-interactive session runs as. Comparing the owner against the empty
+		// string instead would refuse every legitimate hub on such a host and
+		// block automated restarts.
+		out, err := m.runRemote(ctx, host, "id -un")
+		if err != nil {
+			return fmt.Errorf("%w: host %q could not read the login user to check the restart target's owner: %w", ErrRestart, host.Name, err)
+		}
+		user = firstLine(string(out))
+		if user == "" {
+			return fmt.Errorf("%w: host %q reported no login user to check the restart target's owner against; refusing to restart it", ErrRestart, host.Name)
+		}
+	}
+	out, err := m.runRemote(ctx, host, pidOwnerRemote(pid))
+	if err != nil {
+		return fmt.Errorf("%w: host %q could not read the owner of pid %s: %w", ErrRestart, host.Name, pid, err)
+	}
+	owner := firstLine(string(out))
+	if owner == "" {
+		return fmt.Errorf("%w: host %q pid %s reported no owning user; refusing to restart a process whose owner cannot be read", ErrRestart, host.Name, pid)
+	}
+	if owner != user {
+		return fmt.Errorf("%w: host %q pid %s is owned by user %q, not the host's effective SSH user %q; refusing to restart it",
+			ErrRestart, host.Name, pid, owner, user)
+	}
+	return nil
+}
+
+// effectiveUserName resolves the effective user of the host's SSH session from
+// the registry entry alone: the user part of the destination ssh will dial,
+// derived from composeDest so the destination's one definition also decides the
+// user. ok is false when the destination names no user — a bare hostname, or a
+// host resolved through an ambient ssh_config — and the caller must then probe
+// the login user the host reports.
+func effectiveUserName(host hostreg.Host) (string, bool) {
+	if user, _, found := strings.Cut(composeDest(host), "@"); found && user != "" {
+		return user, true
+	}
+	return "", false
+}
+
+// pidOwnerRemote builds the remote command that prints the user pid runs as.
+// `ps -o user=` reports the process's effective user, the field the identity
+// read compares against the host's effective SSH user; ps is the package's
+// process-inspection tool for a host without a readable /proc. pid must already
+// have been validated by numericPID.
+func pidOwnerRemote(pid string) string {
+	return "ps -o user= -p " + pid
 }
 
 // noListenerMarker is printed by the port probe when a probe tool ran and found
