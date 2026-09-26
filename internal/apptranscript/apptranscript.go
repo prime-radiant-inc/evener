@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -1063,7 +1064,7 @@ func positionPreludeItems(items []appwire.ThreadItem) ([]appwire.ThreadItem, err
 	positioned := make([]appwire.ThreadItem, len(items))
 	for i, item := range items {
 		if uint64(i) > uint64(^uint32(0)) {
-			return nil, fmt.Errorf("prelude item index exceeds uint32")
+			return nil, errors.New("prelude item index exceeds uint32")
 		}
 		position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 		item.Position = &position

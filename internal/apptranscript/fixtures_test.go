@@ -100,18 +100,3 @@ func marshalEntryLine(t testing.TB, entry transcript.Entry) []byte {
 	}
 	return append(line, '\n')
 }
-
-func appendFile(t testing.TB, path string, data []byte) {
-	t.Helper()
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
