@@ -32,26 +32,16 @@ function fixtureDescriptor<P>(
   };
 }
 
-// paneRegistry.ts is a shared module singleton, not fresh per test file -
-// the afterAll below restores whatever each of these ids resolved to before
-// this file ran, so a later file sharing the same module registry never
-// inherits these never-resolving fixtures in place of the real panes.
-const restorePaneFixtures: Array<() => void> = [];
-
 beforeAll(() => {
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("settings", { singleton: true })));
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("doc")));
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("session")));
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("spawn", { singleton: true })));
+  registerPaneForTests(fixtureDescriptor("settings", { singleton: true }));
+  registerPaneForTests(fixtureDescriptor("doc"));
+  registerPaneForTests(fixtureDescriptor("session"));
+  registerPaneForTests(fixtureDescriptor("spawn", { singleton: true }));
   // "welcome" is a real PaneTypeId and the main slot's empty state, so the
   // placement tests below open one. openPane has ALWAYS resolved its type
   // through paneFor (that is where an unregistered type throws), so this is a
   // missing fixture registration, not the store reaching somewhere new.
-  restorePaneFixtures.push(registerPaneForTests(fixtureDescriptor("welcome", { singleton: true })));
-});
-
-afterAll(() => {
-  for (const restore of restorePaneFixtures) restore();
+  registerPaneForTests(fixtureDescriptor("welcome", { singleton: true }));
 });
 
 beforeEach(() => {
@@ -242,13 +232,10 @@ describe("openPane", () => {
 
   test("throws for an unregistered pane type (mirrors paneFor's own contract)", () => {
     // Every real PaneTypeId gets registered by its own production module at
-    // import time - under isolate:false, paneRegistry is a module singleton
-    // shared by every file in the worker, so any real id (like "transcript")
-    // may already be registered by an earlier-run file's own transitive
-    // imports (paneRegistry.test.ts hit this exact issue - see its own
-    // "paneFor throws a clear error for an id that was never registered").
-    // An id outside the closed union (cast past the type check) is the only
-    // one guaranteed to stay unregistered regardless of run order.
+    // import time, so any real id (like "transcript") is registered as soon
+    // as something this file imports pulls that module in. An id outside the
+    // closed union (cast past the type check) is the only one guaranteed to
+    // stay unregistered whatever this file imports.
     expect(() => workspaceStore.getState().openPane("not-a-real-pane-type" as PaneTypeId, {})).toThrow(
       /not-a-real-pane-type/,
     );
@@ -577,13 +564,11 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
       // Every real PaneTypeId gets registered by its own production module at
-      // import time - under isolate:false, paneRegistry is a module singleton
-      // shared by every file in the worker, so a real id here could already be
-      // registered by an earlier-run file's own transitive imports. An id
-      // outside the closed union (cast past the type check) simulates a
-      // layout saved by a build that shipped a pane type this one never
-      // registers, and is the only id guaranteed to stay unregistered
-      // regardless of run order.
+      // import time, so a real id here is registered as soon as something this
+      // file imports pulls that module in. An id outside the closed union
+      // (cast past the type check) simulates a layout saved by a build that
+      // shipped a pane type this one never registers, and is the only id
+      // guaranteed to stay unregistered whatever this file imports.
       fake.panels = [
         { id: "p1", params: { paneType: "not-a-real-pane-type", paneParams: { ref: "a" } } },
         { id: "p2", params: { paneType: "doc", paneParams: { ref: "b" } } },

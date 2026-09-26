@@ -168,6 +168,7 @@ const SESSION_KEYS = valueRecordKeys(
     "favorite",
     "rename",
     "ask_pending",
+    "approval_pending",
     "dormant",
     "offline",
     "updated_at",
@@ -307,6 +308,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.favorite, bool) &&
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&
+    optional(value.approval_pending, bool) &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&

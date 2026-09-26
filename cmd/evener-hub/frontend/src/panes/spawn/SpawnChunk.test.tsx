@@ -25,14 +25,10 @@ import { resetSpawnDraftsForTests } from "./spawnDrafts";
 // loader is that failure with no network involved; the real dialog (plus its
 // instance-credential editors) never loads here.
 //
-// The spy goes on the namespace import (DockRegion.test.tsx's own recipe):
-// under isolate:false the module registry is shared by every file in the
-// worker, so a hoisted vi.mock would fix whichever file instantiated
-// Spawn.tsx first to whatever was in effect at that moment. Mutating the
-// shared connectDialogChunk module object's own `loadConnectDialog`
-// property in place keeps Spawn.tsx's live binding pointed at the spy's
-// current implementation, and mockRestore() in afterEach hands the real
-// function back for whatever file runs next.
+// The spy goes on the namespace import (DockRegion.test.tsx's own recipe) so
+// each test can script its own loader: Spawn.tsx's binding follows the spy's
+// current implementation, and beforeEach points it back at the real loader so
+// one test's override never reaches the next.
 const realLoadConnectDialog = connectDialogChunk.loadConnectDialog;
 const loadConnectDialog = vi.spyOn(connectDialogChunk, "loadConnectDialog");
 
@@ -118,12 +114,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
   resetToastStoreForTests();
-  // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
-  // mockResolvedValueOnce...) would otherwise still be armed on this shared
-  // spy for the next file in the worker that calls the real loadConnectDialog -
-  // see this file's own comment on the vi.spyOn call above.
-  loadConnectDialog.mockReset();
-  loadConnectDialog.mockImplementation(realLoadConnectDialog);
 });
 
 test("a rejected dialog chunk shows the failure message with a Retry", async () => {

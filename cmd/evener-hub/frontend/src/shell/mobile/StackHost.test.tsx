@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/transcript";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
@@ -37,20 +37,13 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
-// paneRegistry.ts is a shared module singleton - the restorers below (called
-// in the afterAll further down) put back whatever "doc"/"settings" resolved
-// to before this file ran, so a later file sharing the same registry never
-// inherits these fixtures.
-let restoreDocPane: () => void;
-let restoreSettingsPane: () => void;
-
 beforeAll(async () => {
-  restoreDocPane = registerPaneForTests<{ ref: string }>({
+  registerPaneForTests<{ ref: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
-  restoreSettingsPane = registerPaneForTests<{ section?: string }>({
+  registerPaneForTests<{ section?: string }>({
     id: "settings",
     singleton: true,
     title: (params) => `Settings${params.section ? `: ${params.section}` : ""}`,
@@ -95,11 +88,6 @@ beforeAll(async () => {
 // for a hung render, not a responsiveness budget. Same value and reasoning as App.test.tsx's own
 // WARM_ROUTE_TRIPWIRE_MS.
 const PANE_WARMUP_TRIPWIRE_MS = 10_000;
-
-afterAll(() => {
-  restoreDocPane();
-  restoreSettingsPane();
-});
 
 // Renders StackHost once with `open`'s pane focused and awaits its landmark,
 // so both halves of that pane's lazy-loading cost are already paid by the

@@ -81,6 +81,16 @@ it was never read). Under an XDG home the layout is:
   root. Only a true override / scratch root (a directory outside any
   `evener/projects/` layout) is a single-bucket root.
 
+**Symlink policy.** The doctor's bucket sweep follows symlinks: a symlinked
+bucket directory under `projects/` is enumerated like any other (its `isDir`
+helper uses `os.Stat`), so the doctor can see symlinked state layouts an
+operator has wired up. This is deliberate — the doctor is a user-facing
+diagnostic tool. The agent's model-facing transcript read paths
+(`read_transcript` / `enumerateBuckets`) refuse symlinked resolution paths as
+a security boundary (#2205); the divergence is by owner ruling, recorded in
+issue #2275 ("this is a user tool. allow symlinked buckets."). Do not
+"harmonize" the two without the owner.
+
 Parent, observer, and delegate sub-sessions are different SIDs and frequently
 live in **different buckets**. Don't assume one bucket.
 

@@ -17,7 +17,7 @@ import { manifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -111,37 +111,22 @@ function PaneFixture() {
   return <div>pane</div>;
 }
 
-// paneRegistry.ts is a shared module singleton, not fresh per file - the
-// afterAll below restores whatever each of these ids resolved to before
-// this file ran, so a later file sharing the same module registry never
-// inherits these fixtures in place of the real session/sessionTasks/
-// sessionActivity/sessionDetails panes.
-const restorePaneFixtures: Array<() => void> = [];
-
 beforeAll(() => {
   // Minimal, test-only pane registrations (TreeDrawer.test.tsx's precedent):
   // the workspace store's openPane refuses an unregistered type, and the
   // unified menu's Details/Tasks/Activity items open real panes now.
-  restorePaneFixtures.push(
-    registerPaneForTests<{ ref: string }>({
-      id: "session",
-      title: () => "Session",
-      component: lazy(() => Promise.resolve({ default: PaneFixture })),
-    }),
-  );
+  registerPaneForTests<{ ref: string }>({
+    id: "session",
+    title: () => "Session",
+    component: lazy(() => Promise.resolve({ default: PaneFixture })),
+  });
   for (const id of ["sessionTasks", "sessionActivity", "sessionDetails"] as const) {
-    restorePaneFixtures.push(
-      registerPaneForTests<{ ref: string }>({
-        id,
-        title: () => id,
-        component: lazy(() => Promise.resolve({ default: PaneFixture })),
-      }),
-    );
+    registerPaneForTests<{ ref: string }>({
+      id,
+      title: () => id,
+      component: lazy(() => Promise.resolve({ default: PaneFixture })),
+    });
   }
-});
-
-afterAll(() => {
-  for (const restore of restorePaneFixtures) restore();
 });
 
 beforeEach(() => {
