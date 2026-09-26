@@ -46,7 +46,7 @@ func TestRunMainHubLockDerivesFromConfiguredHubStateRoot(t *testing.T) {
 	var gotLockPath string
 	deps := mainDeps{
 		loadRegistry: hermeticRegistryLoader,
-		loadConfig:   func(string) (Config, error) { return cfg, nil },
+		loadConfig:   func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:   func() error { return nil },
 		acquireLock: func(path string) (func(), error) {
 			gotLockPath = path
@@ -107,7 +107,7 @@ func TestRunMainFixesThePluginRegistryRootBeforeLaunchingChildren(t *testing.T) 
 	var webConfig hubcore.WebConfig
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },

@@ -1302,7 +1302,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// Use a window large enough for the base prompt but small enough for the
 	// accumulated tool results to force compaction.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_000)
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
 	profile = withTestSessionNamer(c, profile)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
