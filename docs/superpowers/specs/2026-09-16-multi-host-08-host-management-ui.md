@@ -1,11 +1,14 @@
-# Component spec 08 — Host management registry (mutations, sidecar, reads, UI)
+# Component spec 08 — Host management registry (mutations, hub.toml, reads, UI)
 
-Status: slices 1–2 landed. The live registry, the durable sidecar, `add`/
-`update`/`remove`/`list`/`status`, the generation fence, `evener/host/attach`,
-and the Hosts settings section shipped in #1784 and the edit slice #2111; this
-spec is the hand-off for the remaining registry-durability work (mutation
-guards and receipts, tombstones, remnants, and the store-owned helpers `remove`
-depends on).
+Status: slices 1–2 landed. The live registry, the durable store (shipped as a
+sidecar; §19/§6 re-home it to an in-place machine-managed `hub.toml`),
+`add`/`update`/`remove`/`list`/`status`, the generation fence,
+`evener/host/attach`, and the Hosts settings section shipped in #1784 and the
+edit slice #2111; this spec is the hand-off for the remaining
+registry-durability work (mutation guards and receipts, tombstones, remnants,
+and the store-owned helpers `remove` depends on). §19 open question 1 was
+decided on 2026-09-26 (Jesse): `hub.toml` is rewritten in place, machine-managed,
+and the sidecar is retired; §6 carries the re-homed storage text.
 
 Depends on: PR #1603 (the attached-only seams and the shared origin guard) —
 **landed**. `sshManager.ChannelIfAttached`, the `RemoteHostClientIfAttached`/
@@ -22,8 +25,9 @@ machinery), `…-06-fleet-view.md` (picker, rail badges, online flags),
 component adds the user-facing management surface they deliberately left out.
 
 This document is one of three. It owns the registry surface: the host
-mutations, the sidecar and its receipts/remnants/tombstones, the
-`hub.toml` reconcile, the list/status reads, and the Hosts UI. The
+mutations, the machine-managed `hub.toml` store and its
+receipts/remnants/tombstones, the `hub.toml` reconcile, the list/status reads,
+and the Hosts UI. The
 deploy pipeline (plan/deploy/restart, tokens, gates, the operation store)
 is defined in `2026-09-16-multi-host-08b-deploy-pipeline.md`. Crash
 orphans, fencing, and orphan-resolve are defined in
@@ -50,7 +54,7 @@ sixteen shared terms below are identical in all three documents.
 
 **OperationId (client operation ID).** The client-supplied operation ID on `deploy`/`restart`: opaque, non-empty, at most 128 bytes, no required structure. `deploy`/`restart` responses carry `id` (the controller-assigned record id) and `clientOperationId` (echoing the caller's value).
 
-**Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (§15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
+**Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in `hub.toml`. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (§15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
 
 **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused: at most 128 bytes, and the generator pins its output to 36 bytes (canonical UUID text), so the 8 KiB cursor-cap bound in the deploy-pipeline spec §8 holds by construction. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 
@@ -58,11 +62,11 @@ sixteen shared terms below are identical in all three documents.
 
 **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 
-**Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
+**Tombstone.** The durable removed-host record carrying retained rows, persisted in `hub.toml`. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 
 **Per-host gate.** The try-acquire (never wait) mutex serializing deploy/restart/`plan`/teardown work for one host name. A held gate fails new work fast with the typed busy error.
 
-**Mutation lock.** The process-wide lock serializing sidecar read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (deploy-pipeline spec §5).
+**Mutation lock.** The process-wide lock serializing `hub.toml` read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (deploy-pipeline spec §5).
 
 **Store mutex.** The lock serializing operation-store read-modify-write. No path holding the store mutex ever acquires the mutation lock.
 
@@ -76,7 +80,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
 
-**Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge. It persists in the sidecar per live entry and per tombstone; every sidecar write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
+**Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live entry and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
 
 **Intent.** A durable record the controller writes before acting, so a crash
 leaves recovery instructions on disk. The registry intents are the
@@ -89,11 +93,11 @@ renders, a staged-but-unpersisted change) is never an intent.
 **Marker.** Each marker below is a distinct persisted value; no section uses
 "marker" for any other:
 - Staged-receipt marker (`pendingMutation`): the transient per-host entry the
-  step-(2) sidecar write carries before the post-commit write replaces it with
+  step-(2) `hub.toml` write carries before the post-commit write replaces it with
   the finalized receipt (§5).
 - Finalizing claim (`finalizingMutation`): the same entry under a
   server-generated opaque attempt token while a foreign path finalizes it (§5).
-- Reconcile marker: the (re-read `hub.toml` fingerprint, about-to-drop sidecar
+- Reconcile marker: the (re-read `hub.toml` fingerprint, about-to-drop staged
   entry) pair the post-rename reconcile stages in the same write as its
   cleanup (§6).
 - Pruned marker (`prunedReceipts`): the scoped key plus `{prunedAt}` a
@@ -107,14 +111,14 @@ renders, a staged-but-unpersisted change) is never an intent.
   plus all replay metadata until expiry.
 
 **High-water mark.** The greatest generation a name ever carried, surviving
-removals, persisted in the sidecar alongside the tombstone (§15) as the
+removals, persisted in `hub.toml` alongside the tombstone (§15) as the
 (generation, incarnationId, presenceEpoch) triple — the incarnation id covers
 the historical case, and an expiry prune that deletes the tombstone still
 advances the presence epoch into the entry. Re-add mints strictly above every
 retained mark; a name with no surviving mark and no live history re-adds clean
 at generation 1 with a fresh incarnation id plus an advanced presence epoch
 (§15). The operation store mirrors the triple (deploy-pipeline
-spec §4), which owns the mirrored-generation rule: on a store-newer/sidecar-older split with no matching commit marker boot rolls back to the sidecar mark and keeps the discarded value only as the high-water mark (deploy-pipeline spec §4). This document states no independent maximum rule.
+spec §4), which owns the mirrored-generation rule: on a store-newer/`hub.toml`-older split with no matching commit marker boot rolls back to the `hub.toml` mark and keeps the discarded value only as the high-water mark (deploy-pipeline spec §4). This document states no independent maximum rule.
 
 ## 2. PR sequence
 
@@ -136,7 +140,7 @@ This table is the only place the three-document split is defined.
 | `evener/host/running` probe | — | ships (handler + catalog + client) | — |
 | `evener/host/orphan-resolve` | — | — | ships (handler + catalog + client) |
 | `attachUnderGate` primitive + live host-set surface (registry/manager) | ships | uses (restart reattach) | — |
-| Sidecar, staged commit, receipts, remnants, tombstones, generations | ships | mirrors generations in store | — |
+| `hub.toml` in-place rewrite, staged commit, receipts, remnants, tombstones, generations | ships | mirrors generations in store | — |
 | Operation-store skeleton `remove` depends on (`host-removed` mark path, outstanding-token-row purge path, atomic writes, no pipeline behavior behind them) | ships as store-owned helpers | full store (records, dedup, tokens, reconciliation) | — |
 | Union-registration generator work (`internal/appwirets/emit.go`) | — | ships | — |
 | Origin guard pre-admission hook at request ingress | ships (hook + registry-surface orderings: `list`/`status` here; union-surface orderings in the pipeline PR where those handlers ship) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship | — |
@@ -283,7 +287,9 @@ never dials and never takes the mutation lock. Every configured host renders
 its full effective `HostConfig` fields plus live state: `attached` (via
 `sshManager.ChannelIfAttached(name)`), preflight facts when known (installed
 version, OS/arch), last attach error, whether the manager is mid-`Ensure`, and
-the origin marker (`hub.toml` vs sidecar — the effective source after merge).
+the origin marker — `hub.toml` on every row: the machine-managed file is every
+host's one effective source, and the wire field is retained for compatibility
+with a single value (there is no second origin to distinguish).
 The registry extends the manager to expose the channel's pinned (generation,
 incarnation id) beside the lookup; the row reports the channel's live state
 only when that pair equals the registry snapshot's current pair for the name,
@@ -298,7 +304,7 @@ removed entry's `origin`, `generation`, and `incarnationId`; the facts/error
 optionals stay absent (never null) per the absent-when-unknown rule (§11).
 `list` never prunes durably: expiry is in-memory filtering only (expired
 tombstones are omitted from the response), while durable pruning of expired
-tombstones lands on the mutation path — every sidecar mutation prunes expired
+tombstones lands on the mutation path — every `hub.toml` mutation prunes expired
 entries in its atomic write under the mutation lock — so the read-only
 contract holds and `list` cannot contend with mutations.
 
@@ -349,8 +355,8 @@ concurrent swap can never tear a row — and cross-half skew is resolved by the
 snapshot's current pair for the name render absent, exactly as after an
 update). `status` reads the same two snapshots for its single row.
 
-`evener/host/add` is a mutation: params are one full host entry (all seven
-`HostConfig` fields; `name` required) plus optional `mutationId`. It validates
+`evener/host/add` is a mutation: params are one full host entry (all eight
+`HostConfig` fields — the component-03 set plus `key_path`; `name` required) plus optional `mutationId`. It validates
 with the component-03 rules (name validation, the `[[hosts]]` field validation
 at `cmd/evener-hub/config.go:247` — `validateHostConfigs`). The component-03 host-count cap was
 withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
@@ -358,23 +364,25 @@ withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
 `ErrTooManyHosts` is not a sentinel. A `[[hosts]]` list larger than the
 navigation manifest's 64-source limit is therefore accepted, and such a config
 fails navigation for the entire hub until it shrinks. The staged commit
-validates the merged post-change live set under the mutation lock before the
-sidecar persist; boot load and the registry `Add`/`Update` paths run the
+validates the post-change live set under the mutation lock before the
+`hub.toml` persist; boot load and the registry `Add`/`Update` paths run the
 same validation, with no count rule among them. `add` refuses any name already
-declared in `hub.toml` or held as a live sidecar entry — the duplicate refusal
-applies to live entries only: a name present solely as a tombstone is accepted
-(re-add) past the remnant fence (a re-add naming a host with an open teardown
+live — the duplicate refusal applies to live entries only: a name present
+solely as a tombstone is accepted (re-add) past the remnant fence (a re-add
+naming a host with an open teardown
 remnant is refused with `remnant-open` until `teardown-retry` completes that
 generation's teardown — §6), and the same staged commit purges that tombstone
-in its atomic sidecar write. A hand-created duplicate name across files at boot
-is a hard startup error (§6). Surfaced validation errors are the dialog's
-inline errors.
+in its atomic `hub.toml` write. A duplicate name inside `hub.toml` is a hard
+startup error, exactly like every other file the host validation refuses (§6).
+Surfaced validation errors are the dialog's inline errors.
 
-`evener/host/update` is a mutation: the target name MUST be a live sidecar
-entry. A `hub.toml`-declared name is refused with the "edit the file"
-explanation; a name absent from both files — or present solely as a tombstone —
-is refused as not-found. Params are `{name, entry (the six non-name
-HostConfig fields), mutationId, expectedGeneration, expectedIncarnationId}` —
+`evener/host/update` is a mutation: the target name MUST be a live entry.
+Every host lives in the machine-managed `hub.toml`, and the hub is its writer,
+so a hand-declared host is as editable as a UI-added one — the storage decision
+(§19) retired the split's "declared in `hub.toml`; edit the file" refusal; a
+name absent from the file — or present solely as a tombstone —
+is refused as not-found. Params are `{name, entry (the seven non-name
+`HostConfig` fields, key_path included), mutationId, expectedGeneration, expectedIncarnationId}` —
 the idempotency key and the (generation, incarnation id) guard, all three
 required together. Presence of all three is validated before the dedup check
 (missing any is a validation refusal committing nothing). The pair is checked
@@ -401,9 +409,10 @@ mandatory because optional fields make a first-time call indistinguishable from
 a lost-response retry after re-add. A replay carrying a known key returns the
 recorded receipt without re-applying.
 
-`evener/host/remove` is a mutation: live sidecar entries only (same refusal
-for `hub.toml` names as update; a name present solely as a tombstone is
-refused as not-found, never re-removed). Params are `{name, mutationId,
+`evener/host/remove` is a mutation: live entries only — every host is
+removable through the UI, the same storage-decision consequence update carries
+(§19); a name present solely as a tombstone is
+refused as not-found, never re-removed. Params are `{name, mutationId,
 expectedGeneration, expectedIncarnationId}` with the same required-together
 presence, dedup ordering, under-lock pair check, and `stale-entry` refusal as
 update. It is refused with the same typed busy error while the host's
@@ -412,7 +421,7 @@ cancels, so its staged supervisor/channel teardown cannot race a push or a
 `waitHealthy`. A refused remove leaves the in-flight operation to finish and
 record its normal terminal state. A successful remove marks that host's
 operation records `host-removed` (readable history, never a dedup match; the
-mark lands with the pipeline store — and a crash between the sidecar commit and the
+mark lands with the pipeline store — and a crash between the `hub.toml` commit and the
 mark has the mark reconstructed from the tombstone at boot (deploy-pipeline spec §4)). Removing an
 attached host stops its supervisor and detaches. The removed host's cached
 snapshot rows are not silently dropped: the source's last-known-good snapshot
@@ -440,7 +449,7 @@ incarnation id)-scoped running-state/refusal snapshots in the manager store
 deploy confirmation renders `plan`'s minted response, never `status` (§13).
 
 `evener/host/plan`, `deploy`, `restart`, and `status` on a name present solely
-as a tombstone — or absent from both files — return the same typed not-found as
+as a tombstone — or absent from the file — return the same typed not-found as
 `update`/`remove`, scoped to remnant-free tombstones only: where the name holds
 an open remnant (exactly the state a failed `remove` leaves — tombstone plus
 open remnant), the remnant fence (§6) is evaluated first and these methods
@@ -453,21 +462,21 @@ the `add` re-add path accepts them.
 Host mutations are serialized by one process-wide lock. `add`/`update`/`remove`
 hold it only across stage, persist, and swap plus the remnant/receipt state
 transitions — released across post-commit teardowns and re-acquired to
-finalize — and so does every other sidecar read-modify-write:
+finalize — and so does every other `hub.toml` read-modify-write:
 `teardown-retry`'s remnant clearance, retention-expiry pruning, and marker
 finalization all run under the same lock for their transitions only, never
 across a teardown. The lock is released across slow teardowns so one host's
 teardown never blocks unrelated hosts. Lock order is fixed: the host gate first, then the process-wide
 mutation lock, then the store mutex innermost (deploy-pipeline spec §§4–5). Concurrent
-read-modify-write on the sidecar cannot lose updates.
+read-modify-write on `hub.toml` cannot lose updates.
 
 `add` accepts an optional opaque `mutationId`; `update`/`remove` require
 `mutationId` with `expectedGeneration` plus `expectedIncarnationId` (§4) — a
 keyless `update`/`remove` never stages. The staged commit persists a durable
 mutation receipt in two writes — the single explicit receipt write point. The
-step-(2) sidecar write carries a transient staged-receipt marker: the scoped
+step-(2) `hub.toml` write carries a transient staged-receipt marker: the scoped
 key plus `stagedAt`, a `swapStarted` intent (false at stage time, flipped true
-in its own atomic sidecar write under the mutation lock before the runtime
+in its own atomic `hub.toml` write under the mutation lock before the runtime
 transition begins; a finalizing claim preserves the marker's persisted value,
 never forcing it true), a `teardownStarted`
 flag (false at stage time, flipped true in its own atomic write after the swap
@@ -499,19 +508,19 @@ form (retry with backoff). Once the lock is free and the marker persists — the
 post-commit write failed or its response was lost while the process stayed
 alive — the replay first reads the marker's persisted runtime phase and
 `swapStarted` intent and finalizes by phase (recovery re-applies the staged
-runtime set first so sidecar and runtime converge before any teardown destroys
+runtime set first so `hub.toml` and runtime converge before any teardown destroys
 a handle; the swap re-resolves idempotently, so an already-applied swap lands
 on the same values):
 - Phase `runtime-swapped` (or an unknown post-swap phase): re-run the marker's
   pinned teardown to completion (the pinned target is idempotent, so a
   teardown that already ran is a no-op and an interrupted one completes) to
   derive the real outcome and remnant, then finalize the receipt from that
-  observed result in one atomic sidecar write and return the finalized receipt
+  observed result in one atomic `hub.toml` write and return the finalized receipt
   (`committed`, or `committed-with-teardown-failure` with the pre-minted
   `remnantId` when the re-run actually failed — never the staged provisional
   outcome on its own).
 - Phase `staged` with `swapStarted: false`: re-apply the staged runtime set
-  to the live handles first (the sidecar already holds the new config, so the
+  to the live handles first (`hub.toml` already holds the new config, so the
   live runtime must converge to it), then re-run the marker's pinned teardown
   to completion, then finalize the receipt from that observed result
   (`committed`, or `committed-with-teardown-failure` with the pre-minted
@@ -532,9 +541,9 @@ Any mutation-path write that finds a marker it did not stage for its own host
 finalizes that marker first — a marker for a different host rides along
 untouched in the same atomic writes and never forces finalization, so
 unrelated-host mutations proceed while serializing only same-host
-teardown/finalize work plus the sidecar write itself. The pinned-teardown
+teardown/finalize work plus the `hub.toml` write itself. The pinned-teardown
 re-run executes outside the mutation lock. The finder first atomically claims
-the marker in one sidecar write under the lock — replacing the staged-receipt
+the marker in one `hub.toml` write under the lock — replacing the staged-receipt
 marker with a finalizing claim carrying the same scoped key plus a
 server-generated opaque attempt token. Any other path finding a finalizing
 claim waits for or recovers the claim instead of re-finalizing; a live
@@ -561,10 +570,10 @@ foreign mutator, and `teardown-retry`.
 
 Crash-window recovery: the step-(2) write persists a `teardownStarted` flag
 with the marker (false at stage time), and the commit flips it to true in its
-own atomic sidecar write after the swap and before the first teardown executes
+own atomic `hub.toml` write after the swap and before the first teardown executes
 — under the mutation lock, before the mutation lock is released across
 post-commit teardowns — so the first teardown runs only after that flip is
-durable. The staged sidecar write additionally persists a runtime phase with
+durable. The staged `hub.toml` write additionally persists a runtime phase with
 the marker (`staged` at stage time, flipped to `runtime-swapped` in the same
 atomic write that flips `teardownStarted` after a successful swap). A marker
 found in phase `runtime-swapped` (or in an unknown phase that follows the
@@ -578,7 +587,7 @@ finalizes each host entry by the persisted phase and flags (a leftover finalizin
 claim preserves both: the claim write carries the marker's `teardownStarted`
 value and runtime phase over unchanged, and boot recovery decides by them —
 never by treating every claim as teardown-started): a marker with `teardownStarted:
-false` AND `swapStarted: false` re-applies the staged runtime set to the live handles first (the sidecar
+false` AND `swapStarted: false` re-applies the staged runtime set to the live handles first (`hub.toml`
 already holds the new config, so the live runtime must converge to it before
 the receipt finalizes), then re-runs the pinned teardown to completion and
 finalizes from the observed result — and the receipt records `bootRecovered: true` (the
@@ -599,7 +608,7 @@ generation at commit — the resulting post-commit generation: for `update`, the
 post-bump value the same commit advances to, pinned into the receipt at stage
 time, so a commit-then-replay names the generation the commit actually landed
 and hits instead of missing as superseded — plus the incarnation id minted
-beside that generation in the same atomic sidecar write), mirroring the
+beside that generation in the same atomic `hub.toml` write), mirroring the
 operation store's (host, kind, client operation ID, generation) scope plus the
 same incarnation id. The (generation, incarnation id) pair is unique and the incarnation id is never reused: generations are strictly monotonic per the §1 glossary —
 no live re-add path reuses a retained generation — so no two incarnations share a pair. A replay matches only a retained
@@ -670,25 +679,81 @@ dedup match returns the recorded receipt with no `expectedGeneration`/
 `expectedIncarnationId` value check, gate, or remnant validation; only a
 non-replay proceeds into those checks. Guard-before-admission (§3) outranks
 dedup-first: dedup-first applies only post-admission among handler stages.
-## 6. Persistence: sidecar, commit, remnants, retention
+## 6. Persistence: hub.toml, commit, remnants, retention
 
-Persistence target: the controller's `hub.toml` is hand-authored with
-comments; a TOML re-marshal would strip them. The UI writes a managed sidecar
-in the same config dir (e.g. `hub.hosts.json`), loaded after `hub.toml`. The
-sidecar is the UI's only writable source. Config-path retention: the hub
+Persistence target (decided 2026-09-26, §19 open question 1): the
+controller's `hub.toml` is machine-managed, and the hub rewrites it in place.
+UI-added and UI-edited hosts live IN `hub.toml`, in its one `[[hosts]]` array;
+there is no sidecar. Because a rewrite replaces the whole file, `hub.toml`
+carries a machine-managed banner comment at its top:
+
+```toml
+# This file is machine-managed by the evener hub.
+# The hub rewrites it in place; comments and formatting are not preserved.
+```
+
+The rewrite is a read-modify-write of the whole document, not a hosts-only
+marshal: it replaces the `[[hosts]]` array and nothing else, so every other key
+the file holds — the hub's own settings, provider overlays, plugin settings,
+and the machine-managed records below — round-trips unchanged. That banner is
+how the file states the trade itself: an operator's comments,
+blank lines, key order, and formatting do not survive a rewrite, so the file
+says so before the first one. Hand edits are still read (the external-edit
+reconciliation below and in §15 still applies), but they are unsupported: the
+next rewrite replaces the file's bytes wholesale — the banner is re-emitted at the top of every rewrite. The
+migration path is one-time and lossless, and its order is its crash-safety
+story: (1) `hub.toml` is rewritten once with the merged set and the banner —
+atomically, directory synced, so the merged state is durable first; (2) the
+retired sidecar is renamed aside (`hub.hosts.json.migrated` beside it) rather
+than deleted and the directory synced. The same atomic write as the merged set
+records a machine-managed marker in `hub.toml` — `legacy_sidecar_migrated` —
+and the marker, not the rename's durability alone, is what makes the retirement
+authoritative: the filesystem's directory-sync tolerance (§6 file posture) means
+a rename can be lost to a power failure, but the marker and every later mutation
+live in the one file, so a survivor of one proves the other survived. A boot that
+finds `hub.hosts.json` again with the marker present therefore ignores it as
+stale — logged, never merged, and mutations stay live — so a name the UI removed
+after a completed migration cannot come back on such a filesystem either. The retired split made a live name in
+both files a hard startup error, so the collision rule here is the migration's
+own: a name `hub.toml` already declares wins and the sidecar's duplicate is
+dropped. While an unmigrated sidecar remains, mutations are refused — no
+`hub.toml` rewrite (and no UI mutation) can land before the sidecar's entries
+are folded in or the operator fixes the file — so a name removed through the
+UI after a completed migration can never be resurrected by a rename that a
+power loss undid: no write could have acted on the merged state first. A crash
+at any point re-runs the whole migration on the next boot and converges, since
+already-merged names collide and are skipped and the set-aside rename either
+already landed or is retried. The retired sidecar's durable content is exactly
+its host entries: the JSON shape carries no tombstones, receipts, remnants,
+generations, high-water marks, presence epochs, or fencing records — those are
+the §15/§6 records, and they live in `hub.toml`. The merge therefore drops at
+most a colliding duplicate *host entry* (the file's wins) and never any other
+record, and because the merged rewrite is a read-modify-write, every
+machine-managed record the file already holds survives it unchanged. A sidecar that fails to parse or validate is not
+migrated at all: boot logs the refusal loudly and leaves both files untouched
+(the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set plus `key_path` (the
+SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
+with), so a UI host with a key path round-trips through a rewrite; component
+03's schema carries the field. `hub.toml` also carries the per-host records the
+sibling specs define there: the crash-fencing spec's bootstrap-attempt fence and
+`helperInstalled` flag, the tombstone/generation records of §15, this section's
+receipts, remnants, and markers, and the `legacy_sidecar_migrated` marker a
+completed migration records. Config-path retention: the hub
 supports `--config` paths (`cmd/evener-hub/main.go:203` —
 `deps.loadConfig(opts.configPath, opts.configExplicit)`), but neither the runtime `Config` nor
 `WebConfig` retains the selected path, so the registry carries the canonical config
 path (absolute, resolved at startup) through startup into the web
-configuration; both the sidecar path (same dir as the selected `hub.toml`) and
+configuration; both the rewrite target (the selected `hub.toml` itself) and
 the `hub.toml` fingerprint bytes (read from that same path at plan/mint,
 deploy/validate, and mutation stage/final-check time) derive from it — UI
-mutations against a `--config` hub land beside the selected file and
+mutations against a `--config` hub land in the selected file and
 invalidate against the same file. File posture: the config dir's private state
-holds mode `0600` for the sidecar and the operation store — temp files created
-`0600`, atomic renames preserving the mode, and startup validation refusing to
-load a sidecar/store readable beyond its owner (the bearer confirmation tokens
-persist in the store). Every sidecar, receipt, remnant, cleared-marker, and
+holds mode `0600` for the rewritten `hub.toml` and the operation store — temp files created
+`0600`, atomic renames preserving the mode. A `hub.toml` that predates the
+decision keeps the operator's mode until the hub's first rewrite; the rewrite
+itself creates its temp file `0600` and the rename installs that mode, and the
+operation store additionally refuses to load when readable beyond its owner
+(the bearer confirmation tokens persist in the store). Every `hub.toml`, receipt, remnant, cleared-marker, and
 stash write is temp-file + file-fsync + rename + parent-dir-fsync — the temp
 file is fsynced before the rename and the containing directory is fsynced
 after it, so the canonical file always holds either the complete old or the
@@ -701,20 +766,20 @@ as a corrupt file). The same pair covers the stash write, the stash restore
 rename, the `pendingCompensation` record, the purged-row re-insert, and the
 compensation-record clear — every durable step of the cross-file protocol (deploy-pipeline spec §9).
 
-Merge rules: `add`/`update` refuse any name already declared in `hub.toml`
-(the file is authoritative for its own names); `remove` deletes only sidecar
-entries; a `hub.toml`-declared host can never be shadowed or UI-removed — its
-`list` entry says "declared in hub.toml". The refuse rule is enforced at write
-time AND the boot merge rejects the hand-edited collision. Every sidecar
-mutation re-reads the current `hub.toml` bytes under the mutation lock and
+Single-host-set rules: there is no second host source, so there is no ongoing
+merge and no cross-file collision (the one-time legacy-sidecar fold above is
+the sole merge, and it runs once). A name is unique within `hub.toml`; a file that
+declares the same name twice fails host validation at load, exactly like every
+other component-03 refusal. Every live host is UI-editable: `add`/`update`/
+`remove` write the one file and no longer partition names by which file declared
+them. External hand edits are read as input, never written by the store: every
+`hub.toml` mutation re-reads the current `hub.toml` bytes under the mutation lock and
 validates the staged change against them — reusing the same `hub.toml`
 content-hash fingerprint the plan/deploy path binds into confirmation tokens
 (deploy-pipeline spec §3), or an equivalent fingerprint comparison: if the file changed since
-startup (or since the last mutation), a staged name now colliding with a live
-`hub.toml` entry is refused, and a collision already persisted into the
-sidecar by an earlier racing edit is rebased (the sidecar live entry dropped,
-the mutation retried against the re-read file) rather than committed as a
-duplicate. Final check: between staging the new sidecar bytes and the atomic
+startup (or since the last mutation), a change already on disk is adopted (the
+live entry takes the re-read file's effective values) rather than committed
+against the stale snapshot. Final check: between staging the new `hub.toml` bytes and the atomic
 rename — still under the same mutation lock — the commit re-reads the
 `hub.toml` bytes once more and compares the content-hash fingerprint against
 the validation read; if the file changed in between, the staged bytes are
@@ -725,68 +790,58 @@ against plus the fingerprint observed at refusal, so the client can re-read
 and retry). The re-read plus rename is not an atomic compare-and-swap, so the
 guarantee is reconciliation, not prevention: after the rename the commit
 re-reads `hub.toml` once more, and if the file changed across the rename, the
-mutation reconciles forward — a newly colliding live entry drops the committed
-sidecar duplicate in a follow-up atomic write under the same lock AND
-immediately rebuilds plus applies the merged runtime host set (registry,
-manager bindings, sources, controllers — the step-(3) swap with the re-read
+mutation reconciles forward — adopting the re-read file's host set (a hand
+edit's added, changed, or deleted entry) in a follow-up atomic write under the
+same lock AND immediately rebuilding plus applying the reconciled runtime host set
+(registry, manager bindings, sources, controllers — the step-(3) swap with the re-read
 values, not a deferred pickup), so disk and live state agree before the
-mutation returns; the runtime-apply half of that reconcile is a persisted
-sidecar phase on the reconcile marker (`reconcile-applied: false` at reconcile
-stage time, flipped true in the same atomic sidecar write that publishes the
-dropped-then-rebuilt set, before the receipt finalizes): a crash or
-runtime-apply error between the follow-up drop and the rebuild leaves the
+mutation returns; the runtime-apply half of that reconcile is a persisted phase in
+`hub.toml` on the reconcile marker (`reconcile-applied: false` at reconcile
+stage time, flipped true in the same atomic `hub.toml` write that publishes the
+adopted-then-rebuilt set, before the receipt finalizes): a crash or
+runtime-apply error between the follow-up adopt and the rebuild leaves the
 marker open, a lost-response retry re-runs the pending runtime-apply under the
 same marker before finalizing the `collision-dropped` receipt, and boot
-completes an open marker the same way it completes the drop (reconcile marker
+completes an open marker the same way it completes the adopt (reconcile marker
 with a matching fingerprint finishes the rebuild, never the hard error); other
 changes are picked up by the fingerprint-bound
 invalidation at the next mutation or token validation. When the post-rename
-reconcile drops the just-committed sidecar entry as the colliding duplicate,
+reconcile finds the file no longer carries the just-committed staged change,
 the mutation's finalized receipt and response describe the authoritative
-`hub.toml` result, never the staged-then-dropped entry: the persisted receipt
+`hub.toml` result, never the staged-then-replaced entry: the persisted receipt
 carries the explicit `collision-dropped` outcome (the staged mutation
-committed, then lost to the authoritative file in the same call — the receipt
-names the winning `hub.toml` fingerprint plus the dropped staged entry), and a
+committed, then lost to the file's on-disk content in the same call — the
+outcome literal is retained from the retired two-file design and names the
+reconciliation drop, not a cross-file collision; the receipt names the winning
+`hub.toml` fingerprint plus the dropped staged entry), and a
 replay carrying the same key returns that `collision-dropped` receipt, so a
 suppressed retry can never read it as a live commit.
 
-A name found in both `hub.toml` and the sidecar's live entries at load time is
-a hard startup error naming both locations — UNLESS the collision is covered
-by a managed sidecar reconcile marker the previous process left behind. The
-reconcile write above records that marker (the re-read `hub.toml` fingerprint
-the reconcile is running against plus the sidecar live entry it is about to
-drop) in the same atomic sidecar write that stages the follow-up cleanup — the
-re-read fingerprint is durable before the cleanup rename lands, never after
-it — and the commit armed the intent one write earlier (the step-(2) staged
-write carries the validation-read fingerprint — §5), so a crash between the
-commit rename and the reconcile staging write is covered too. When boot sees
-both live entries AND a reconcile marker whose fingerprint matches a re-read of
-the on-disk `hub.toml`, boot completes the interrupted cleanup (the follow-up
-drop plus runtime rebuild) instead of the hard error — and with no marker at
-all, boot still completes the cleanup against the on-disk file (clearing the
-armed intent in the same write) when the staged armed intent is present and
-the on-disk fingerprint differs from the armed validation fingerprint (the
-commit raced a `hub.toml` change across its rename; a concurrent hand edit
-races identically and reconciles identically: `hub.toml` wins, the sidecar
-duplicate drops). A collision with no marker and no armed intent, or with a
-marker whose fingerprint no longer matches the on-disk file (a further hand
-edit superseded the interrupted reconcile), stays the hard startup error. An
-armed intent whose validation fingerprint still matches the on-disk file while
-a staged sidecar duplicate is present is likewise a hard startup error naming
-both locations and the required explicit recovery (drop the staged duplicate
-or re-stage the mutation): the fingerprint equality proves no race crossed the
-commit, so the duplicate is either a post-crash manual edit or an ambiguous
-crash state the spec refuses to auto-resolve — the marker plus a mismatching
-armed intent scope the silent recovery to exactly the race the spec
-reconciles, never a hand-created duplicate.
+The retired sidecar's cross-file boot-collision machinery goes with it: with
+one file there is no cross-file collision to reconcile, and a `hub.toml` that
+fails host validation at boot — a duplicate name included — is a hard startup
+error naming the file, the same posture as any corrupt machine-state section.
+Recovery is to fix the file. The only reconciliation left across versions is
+the one-time legacy-sidecar migration above, and the only reconciliation left
+within a running hub is the fingerprint-bound adopt/reconcile discipline this
+section defines: a hand edit the re-reads observe — before the staged write or
+after the rename — is adopted (after the rename the file's bytes win and the
+receipt says `collision-dropped`). The re-reads bound the race, they do not
+prevent it: a hand edit that lands between the final fingerprint check and the
+rename is itself overwritten by the rename (last writer wins, and the
+post-rename re-read then sees the hub's own bytes, so there is nothing left to
+reconcile). Writers are not coordinated through an OS lock, and the spec does
+not promise a compare-and-swap.
 
-The sidecar file also carries the tombstone records (§15), so a removal's
+`hub.toml` also carries the tombstone records (§15), so a removal's
 entry-delete plus tombstone-write is one atomic write and the tombstone set
 cannot diverge from the host set; a tombstone whose name matches a live host
-at boot is discarded — the live host wins. A sidecar that fails schema
+at boot is discarded — the live host wins. A `hub.toml` that fails schema
 validation or is corrupt at boot is a hard startup error naming the file (the
 same posture as the duplicate-name collision; recovery: fix or delete the
-file; only sidecar state is lost). The sidecar file also carries the mutation
+offending records — the file is machine-managed, so a repair that discards hub
+state, never operator comments a rewrite would discard anyway, is the last
+resort). `hub.toml` also carries the mutation
 receipts and teardown-remnant records: `mutationReceipts` maps the scoped
 receipt key (mutationId, host name, mutation kind, post-commit generation,
 incarnation id — §5; a lookup compares all five) to `{outcome, row,
@@ -835,8 +890,8 @@ Cleared-remnant records carry their own bounded retention independent of
 tombstones (owner-set cleared-marker TTL plus an at-most-64-newest-per-name
 count bound in the same owner-knob family — a live host's repaired failures
 create no tombstone, so without both bounds repeated recovered-update failures
-grow the sidecar without limit): every
-boot and every sidecar mutation compacts retry records past either bound in the
+grow `hub.toml` without limit): every
+boot and every `hub.toml` mutation compacts retry records past either bound in the
 same atomic write, and lost-response retries past the bounds read as
 `teardown-unknown-key` not-found instead of `already-cleared`. Recovery
 (`recover`-kind) records compact under the same dual bound — their TTL and
@@ -853,13 +908,13 @@ open remnants are resolved (remnant fence below) — its stale remnants are
 dropped in the same atomic write that mints the new generation, so the
 sections stay bounded by the live host set plus at most one superseded
 generation per name for removed names. Active (live, never-removed) hosts
-compact superseded receipts the same way: the same atomic sidecar write that
+compact superseded receipts the same way: the same atomic `hub.toml` write that
 finalizes a mutation receipt drops that name's receipts pinned to earlier
 generations — the live set keeps the current generation's receipts (at most
 one finalized receipt per (mutationId, kind) at current generation) plus at
 most 8 newest same-key superseded receipts per name (owner-adjustable count
 bound; a same-key superseded receipt older than the owner-set superseded-receipt
-TTL compacts the same way) — so repeated updates cannot grow the sidecar
+TTL compacts the same way) — so repeated updates cannot grow `hub.toml`
 without bound. The newest same-key superseded receipt per name is retained
 until that name's tombstone expires (never pruned by the count/TTL bound while
 the tombstone lives); a same-key `remove` retry naming a count/TTL-pruned
@@ -870,7 +925,7 @@ superseded receipt persists a bounded pruned marker keyed by the full receipt
 scope (markers carry the scoped key only, no row bytes, so each stays small)
 compacting under its own owner-set bound — at most 64 newest markers per live
 name plus a marker TTL in the same owner-knob family as the superseded-receipt
-TTL (every sidecar mutation and every boot compacts markers past either bound
+TTL (every `hub.toml` mutation and every boot compacts markers past either bound
 in the same atomic write; defaults ship in the implementing PR). The backstop
 marker's twin for a tombstoned name is exempt from that bound — that one
 `remove`-retry backstop marker per tombstoned name persists until the tombstone
@@ -916,11 +971,10 @@ remnant refuses `remnant-open`, never not-found — the not-found arm covers
 remnant-free tombstones only. Open remnants pin their generation: while a
 remnant is open for a name, no path advances that name past the remnant's
 generation (the name stays tombstoned until the remnant resolves), and a
-boot-merge collision involving a remnant-gated name leaves the open remnant
+boot collision involving a remnant-gated name leaves the open remnant
 resumable by `remnantId`: the boot-collision above-mark bump is forbidden
-while a remnant is open for that name — boot fails startup on a sidecar-held
-colliding live entry, or excludes a `hub.toml`-declared colliding entry from
-the live set as `blocked-pending-teardown` (never published live) until
+while a remnant is open for that name — boot excludes the colliding live entry
+from the live set as `blocked-pending-teardown` (never published live) until
 `teardown-retry` resolves it, so no
 live incarnation is ever created over an open remnant and no mutation strands
 a remnant by opening a second one for the same name.
@@ -931,12 +985,12 @@ description captured at commit, bound to the remnant's generation — and never
 the name's live entry, live channel, or live supervisor set. Every lifecycle
 handle the retry can touch carries a generation tag AND a persisted
 incarnation identifier: the incarnation id is minted fresh on every
-`add`/re-add in the same atomic sidecar write that mints the generation,
+`add`/re-add in the same atomic `hub.toml` write that mints the generation,
 persisted per live entry alongside it (never derived from the generation,
 never reused across incarnations even when generation numbers collide), and
 copied into the remnant's pinned teardown target at commit; handles
 (supervisor binding, channel handle, fan-out subscription) are tagged at bind
-time with both values. Generations can collide across boot-merge, so handles
+time with both values. Generations can collide across boot collisions, so handles
 carry the never-reused incarnation id targeted by equality. The retry targets
 handles by incarnation-id equality — never by generation alone and never by
 name lookup: a name-based lookup resolving to a handle whose incarnation id
@@ -964,25 +1018,25 @@ incrementally. Holding the process-wide mutation lock only across the
 transitions below — released across post-commit teardowns, re-acquired to
 finalize (the same pattern as foreign-marker finalization and
 `teardown-retry`, which never hold the lock across a teardown — the lock
-serializes sidecar read-modify-write only, so an unrelated host's mutation
+serializes `hub.toml` read-modify-write only, so an unrelated host's mutation
 proceeds past a foreign-host marker, serializing only same-host
 teardown/finalize work and the atomic file write): (1) stage the complete
 change — new registry value, the *description* of the manager deltas
 (including the planned supervisor/channel teardown for removals),
 source-registry rows, host-admin-controller host set and its notification
-fan-outs, web-config host view, and the new sidecar bytes; (2) persist the
-sidecar first — stashing a durable copy of the prior sidecar bytes (including
+fan-outs, web-config host view, and the new `hub.toml` bytes; (2) persist the
+`hub.toml` first — stashing a durable copy of the prior `hub.toml` bytes (including
 the decision-source validation state — the archive/favorite host-set
 acceptance rewired from the startup `RemoteHosts` snapshot to the live set,
 preferably through a live-registry callback, so newly added hosts validate and
 removed hosts stop validating as part of the same swap; same config dir —
-same file posture as the sidecar: stash temps created `0600`, temp-file +
+same file posture as `hub.toml`: stash temps created `0600`, temp-file +
 file-fsync + rename + parent-dir-fsync preserving the mode, startup refusing a
 stash readable beyond its owner, and stray/expired stash files pruned or
 ignored at boot) before the atomic rename, so the swap is compensable; (3)
 persist the swap-started intent, then swap the runtime to the staged set — the
-step-(2) staged sidecar write carries a durable `swapStarted` intent (false at
-stage time, flipped to true in its own atomic sidecar write under the mutation
+step-(2) staged `hub.toml` write carries a durable `swapStarted` intent (false at
+stage time, flipped to true in its own atomic `hub.toml` write under the mutation
 lock BEFORE the non-atomic runtime transition begins — a durable record now
 exists on both sides of the transition) — then rebinding or wiring the live
 handles to the new values (flipping the staged phase to `runtime-swapped` as
@@ -991,14 +1045,14 @@ that transition lands), and only then executing the planned teardowns
 phase (deploy-pipeline spec §5) with the lock released across the teardowns and re-acquired to
 persist the committed receipt plus real remnant (verifying the claim's attempt
 token still owns the marker); (4) if the swap itself fails, compensate fully
-before responding: restore the prior sidecar bytes from the stash (atomic
+before responding: restore the prior `hub.toml` bytes from the stash (atomic
 rename), then revert the runtime to the previous set, then report exactly
 which step failed. Compensation runs in persisted phases, tracked in the
 store-side compensation record (deploy-pipeline spec §9 pins the phase field)
-— which the sidecar restore cannot touch — never on the sidecar
+— which the `hub.toml` restore cannot touch — never on `hub.toml`
 staged-receipt marker: the committer persists that record with the stash
-reference before the sidecar restore lands, the
-sidecar restore lands first, then the runtime revert, and the store-side record
+reference before the `hub.toml` restore lands, the
+`hub.toml` restore lands first, then the runtime revert, and the store-side record
 plus its stash reference persist until the runtime revert succeeds — so a
 runtime-revert failure or a crash between the two restores still names its
 restore source, and boot resumes the rollback plus stash cleanup from that
@@ -1012,7 +1066,7 @@ the teardown-repair operation, never a blind full-mutation retry (replaying
 the original mutationId stays a no-op receipt return, so the API has a repair
 path that is not the replay). Restoring bytes after a teardown cannot rebuild
 destroyed handles, so compensation covers pre-commit failures only. The same
-atomic sidecar write that persists the committed receipt also persists a
+atomic `hub.toml` write that persists the committed receipt also persists a
 durable teardown-remnant record — the mutation's scoped receipt key plus the
 in-progress remnant already pinned in the step-(2) marker — the named pending
 teardown (handles, seam, generation, incarnation id, cleanup handle) plus a
@@ -1027,7 +1081,7 @@ live process, staging failures change nothing. The stash is deleted once the
 commit reaches either outcome; a stash left by a crash is ignored (safe to
 prune) at boot — EXCEPT a stash named by a live `pendingCompensation` record's
 stash reference (deploy-pipeline spec §9): that record is the compensation's
-sole durable authority, applied in phase order (sidecar first, rows second) before
+sole durable authority, applied in phase order (`hub.toml` first, rows second) before
 any prune. An open staged-receipt marker names the in-progress commit, never the
 compensation source. Boot reconciles the compensation record before pruning any
 stash: a live compensation record naming the stash preserves it, and only a
@@ -1050,7 +1104,7 @@ Hot-apply mechanics touch the seams built once at startup today:
 `newHubSourceRegistry`, and the host-admin controller (07a), whose per-host
 request forwarding and notification fan-outs are initialized from the startup
 snapshot — they must consume the live host set and start/stop fan-outs as part
-of the staged commit (and its rollback — the stashed prior sidecar bytes
+of the staged commit (and its rollback — the stashed prior `hub.toml` bytes
 included). The live host-set surface (registry `Add`/`Update`/`Remove` with
 the existing cycle and validation rules, manager add/update/remove safe
 against in-flight `Ensure` and running supervisors) is the registry's core work.
@@ -1076,10 +1130,10 @@ across the teardown, re-acquire to finalize). It runs the remnant's pinned
 teardown to completion with no mutation lock held — through the persisted
 `cleanupHandle` after a crash, under a fresh fencing epoch (including its
 bounded kill/wait contexts; the retry's own teardown run carries a bounded
-execution deadline of the same owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time, `open` state) in the same atomic sidecar write that claims the remnant, and holds the host gate only while its attempt is live: on timeout the retry releases the host gate in the same atomic sidecar write that marks its attempt record timed-out-but-open, then reports
+execution deadline of the same owner-set family. The retry persists each attempt as a durable attempt record (server-generated attempt id, fencing epoch, start time, `open` state) in the same atomic `hub.toml` write that claims the remnant, and holds the host gate only while its attempt is live: on timeout the retry releases the host gate in the same atomic `hub.toml` write that marks its attempt record timed-out-but-open, then reports
 the terminal `committed-with-teardown-failure` outcome with the remnant still
 open plus its attempt record open for fencing — a stuck remote process therefore surfaces a terminal
-outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then fences the timed-out attempt first: it takes over the prior attempt's fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4), marks the prior attempt record fenced-closed in the same atomic sidecar write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so two retries never execute the same cleanup concurrently and a wedged gate never blocks repair. The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and fences the open attempt record). The retry
+outcome with a live retry handle, never an indefinitely held gate. The open attempt record is an attempt fence: while one stands, every lifecycle path on the name refuses except a later `teardown-retry` naming the same remnant (a live attempt still holding the gate refuses even that retry with the typed busy error — the gate holder owns the attempt). A later retry try-acquires the freed gate, then fences the timed-out attempt first: it takes over the prior attempt's fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4), marks the prior attempt record fenced-closed in the same atomic `hub.toml` write that claims the remnant under a fresh attempt record, and only then runs the pinned teardown again, so two retries never execute the same cleanup concurrently and a wedged gate never blocks repair. The gate is therefore never held past a returned response: live attempt → gate held, later retries busy-fail; timed-out attempt → gate free, later retry adopts and fences the open attempt record). The retry
 validates against the remnant's OWN pinned identity, never against the
 registry's current values: it re-resolves the pinned teardown target by the
 remnant's recorded `(generation, incarnationId)` plus its persisted
@@ -1099,14 +1153,14 @@ orphan) — (params
 response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
 cleared `remnantId`): the call try-acquires the host's per-host gate first — the
 same gate a live `teardown-retry` attempt holds — failing fast with the typed busy error when a
-retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover fences it first — takeover of its fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4) and a fenced-closed mark in the same atomic sidecar write as the remnant claim — before the safety checks below, so the clearance never lands past possibly-live cleanup. Under the gate it claims
+retry attempt is live, and holds it through the clearance. When a timed-out-but-open attempt record stands (gate free, attempt fence open), the recover fences it first — takeover of its fencing epoch (kill/wait plus guard advance per the crash-fencing spec §4) and a fenced-closed mark in the same atomic `hub.toml` write as the remnant claim — before the safety checks below, so the clearance never lands past possibly-live cleanup. Under the gate it claims
 the remnant atomically (claim under the mutation lock with an attempt token, so a
 concurrent retry racing the claim loses exactly one of the two), then verifies
 the operator attestation is present and well-formed, re-runs the safety checks
 (no live handle tagged with the remnant's `(generation, incarnationId)` pair
 exists, no supervisor or channel binding names the remnant's pinned target),
 re-checks the safety conditions immediately before the clearing write, and only
-then clears the remnant in one atomic sidecar write — recording the attestation
+then clears the remnant in one atomic `hub.toml` write — recording the attestation
 (operator, statement, observedAt) on the original mutation receipt beside
 `remnantResolvedAt` (outcome becomes `committed` with `remnantResolvedAt`) — so
 the forced clearance is an explicit audited operator decision, never a silent
@@ -1133,7 +1187,7 @@ per host name — `{generation: number, incarnationId: string, presenceEpoch:
 number}` — written in the same atomic store writes that mirror the
 generation, reconciled by the same boot rule, and rolled back by the same
 rollback rule (deploy-pipeline spec §§4, 8 cite this schema, never restate
-it). A tombstone-expiry prune that deletes the name's last sidecar trace
+it). A tombstone-expiry prune that deletes the name's last `hub.toml` trace
 still advances the presence epoch into the high-water entry, so the next
 clean-slate re-add carries the advanced epoch.
 
@@ -1248,7 +1302,7 @@ union-shaped catalog/client changes for the registry methods (the mutation-resul
 arms, `RemovedRow`, `teardown-retry`'s outcome arms) land in the pipeline PR with that
 generator work, never in the registry PR: the union-returning handlers register
 in the pipeline PR with them (§2 — the router-vs-catalog test rejects routed-
-but-uncataloged methods), the registry ships the sidecar/commit behavior behind
+but-uncataloged methods), the registry ships the `hub.toml` rewrite/commit behavior behind
 hand-written request/response types plus the store-skeleton helpers, and the
 regenerated client for the union-shaped registry responses arrives with the pipeline PR. The
 single-response-interface alternative is rejected: collapsing the arms would
@@ -1261,13 +1315,13 @@ documents and are cited, never restated):
 
 - `evener/host/list`: params `{}`; response `{hosts: HostRow[]}`. `HostRow` is
   the full effective `HostConfig` fields (`name`, `ssh`, `user`, `evenerPath`,
-  `configPath`, `addr`, `roots`) plus live state — wire JSON is lowerCamel
+  `configPath`, `addr`, `roots`, `keyPath`) plus live state — wire JSON is lowerCamel
   throughout (`evenerPath`, `configPath`); snake_case (`evener_path`,
   `config_path`) is the TOML-file spelling only (`config.go` TOML tags), never
   the wire: `attached: bool`, `installedVersion?: string`,
   `installedVersionAgeSec?: number`, `osArch?: string`,
   `lastAttachError?: string`, `lastAttachErrorAgeSec?: number`, `midEnsure:
-  bool`, `origin: "hub.toml" | "sidecar"`, `removed: bool`, `retainedRows?:
+  bool`, `origin: "hub.toml"` (the retired `"sidecar"` member is gone with the split; the field stays single-valued for wire compatibility), `removed: bool`, `retainedRows?:
   number` (tombstone rows only), `rowsTruncated?: bool` (present as `true`
   exactly on tombstone rows whose retained projection was truncated at the
   500-row/1 MiB persist bound — §15; absent everywhere else per the
@@ -1289,23 +1343,26 @@ documents and are cited, never restated):
   explicit value above, so no non-optional field is left unknown.
   **Shipped-wire reconciliation:** slices 1–2 shipped `HostRow`/`HostEntry`
   under different spellings — `address` for this contract's `ssh`, an extra
-  `keyPath` (an SSH key path that is not a `HostConfig` field, recorded in
-  `2026-09-20-multi-host-host-edit-slice.md`), and the live-state names
+  `keyPath` (an SSH key path recorded in
+  `2026-09-20-multi-host-host-edit-slice.md`; the storage decision makes it a
+  stored schema field — `key_path` in `hub.toml`, §6, and in component 03's
+  schema — so a UI host with a key path round-trips through a rewrite), and the
+  live-state names
   `midAttach`, `os`, `arch`, `hubVersion`, `serverVersion`, and `serverName` —
   and the shipped
   Add/Edit dialog and `stores/hosts.ts` consume exactly those names (the target
   contract has no `serverName`, so the reshape drops it). The registry PR
   reshapes the shipped wire and dialog to this contract (`ssh`, `midEnsure`,
   `osArch`, `installedVersion`) and adds `generation`/`incarnationId`,
-  regenerating the client it ships (§2); the shipped `keyPath` is retained as
-  the documented non-schema field. Until that lands, the shipped spellings are
-  the wire.
-- `evener/host/add`: params are one full host entry (all seven `HostConfig`
-  fields; `name` required) plus optional `mutationId: string` (opaque,
-  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every sidecar mutation and every boot compacting past either bound in the same atomic write — so keyless-add spam against one name cannot grow the sidecar without limit; the §15 tombstone cap is tombstone-scoped and does not cover these records, so across names sidecar size scales with the operator's host list, the same accepted bound as the withdrawn host-count cap); response is the
+  regenerating the client it ships (§2); the shipped `keyPath` is the stored
+  schema field of §6, retained under that name. Until that lands, the shipped
+  spellings are the wire.
+- `evener/host/add`: params are one full host entry (all eight `HostConfig`
+  fields — the component-03 set plus `key_path`; `name` required) plus optional `mutationId: string` (opaque,
+  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every `hub.toml` mutation and every boot compacting past either bound in the same atomic write — so keyless-add spam against one name cannot grow `hub.toml` without limit; the §15 tombstone cap is tombstone-scoped and does not cover these records, so across names `hub.toml` size scales with the operator's host list, the same accepted bound as the withdrawn host-count cap); response is the
   mutation-result union below.
-- `evener/host/update`: params `{name: string, entry: <the six non-name
-  `HostConfig` fields>, mutationId: string, expectedGeneration: number,
+- `evener/host/update`: params `{name: string, entry: <the seven non-name
+  `HostConfig` fields, key_path included>, mutationId: string, expectedGeneration: number,
   expectedIncarnationId: string}` — the idempotency key and the (generation,
   incarnation id) guard, all three required together, with the
   check-and-refusal semantics in §4 (presence of all three validated before
@@ -1351,8 +1408,8 @@ documents and are cited, never restated):
   tags would generate `Name`/`SSH`/`EvenerPath`/… instead of
   `name`/`ssh`/`evenerPath` —, winningFingerprint: string, host: HostRow}` (the
   dropped arm always carries the authoritative `HostRow` regardless of
-  mutation kind — when the post-rename reconcile drops the just-committed
-  sidecar entry, the authoritative result is the winning `hub.toml` live
+  mutation kind — when the post-rename reconcile finds the file no longer carries the
+  just-committed staged entry, the authoritative result is the winning `hub.toml` live
   entry, never a tombstone, so a remove whose name was re-added through
   `hub.toml` mid-remove returns the live row — the arm names the staged entry
   the post-rename reconcile dropped plus the winning `hub.toml` fingerprint
@@ -1414,7 +1471,7 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   same tombstone shape `remove`'s clean path returns). An already-cleared ID
   returns `{outcome: "already-cleared", ...}` with the same `hostKind` pairing
   for idempotent lost-response retry — the typed resolved-remnant record persists
-  in the sidecar past the clearance carrying the replay payload (`clearedAt`,
+  in `hub.toml` past the clearance carrying the replay payload (`clearedAt`,
   `retry` kind, host kind, host/name payload) so a later lost-response retry,
   even after restart, still returns `already-cleared`, and is purged only by
   the name's next re-add or retention-expiry prune (plus the cleared-marker
@@ -1438,14 +1495,14 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   produced one. The call persists a typed resolved-remnant record (the
   recovery marker — `remnantId` → the replay payload in §6, same record shape
   as the retry's cleared-remnant record)
-  in the same atomic sidecar write that clears the remnant, so a retry naming
+  in the same atomic `hub.toml` write that clears the remnant, so a retry naming
   an already-recovered ID replays `{outcome: "recovered-cleared", remnantId,
   clearedName, clearedAt, hostKind}` from the record — `hostKind` required on
   the initial response and on every replay, pinned field-for-field by the
   protocol-shape test — never a second clearance, never
   not-found. Recovery markers compact under their own bounded retention — at most
 64 newest recovery records per name plus a recovery-marker TTL in the same
-owner-knob family as the cleared-marker TTL (every sidecar mutation and every
+owner-knob family as the cleared-marker TTL (every `hub.toml` mutation and every
 boot compacts markers past either bound in the same atomic write; defaults ship
 in the implementing PR) — so a live host's recovered clearances stay bounded
 exactly like its retry markers. A `recovered-cleared` replay past the bound
@@ -1455,9 +1512,9 @@ reads as `teardown-unknown-key`, never a second clearance. The attestation is va
   classification plus the request/response shapes field-for-field.
 - Mutation `concurrent-edit` refusal: conflict class, discriminator
   `concurrent-edit`, data `{stagedFingerprint: string, observedFingerprint:
-  string}`. It fires on two paths: (1) the sidecar commit's final check (§6) finds
+  string}`. It fires on two paths: (1) the `hub.toml` commit's final check (§6) finds
   the `hub.toml` fingerprint moved between the validation read and the final
-  check after bounded retries; (2) the live-external reconcile validation (§15) rejects merged-config drift — data on that path is `{firstSource: string, firstCount: number, secondSource: string, secondCount: number}` naming both merged sources and their host counts. The protocol-shapes test asserts the
+  check after bounded retries; (2) the live-external reconcile validation (§15) rejects external-config drift — data on that path is `{source: string, hostCount: number}` naming the file and the host count the validation refused. The protocol-shapes test asserts the
   code-plus-discriminator pair plus the data shape per path.
 - Mutation `tombstone-capacity` refusal: conflict class, discriminator
   `tombstone-capacity`, data `{bound: string, blockingNames: string[]}`. It
@@ -1497,7 +1554,7 @@ fails `update` and `remove` fast with a typed busy error (deploy-pipeline
 spec §5 for the holder classes). A refused mutation
 leaves the running operation untouched — it finishes and records its normal
 terminal state. Hot-apply failures: staging failures change nothing; a failed
-swap compensates by restoring the prior sidecar bytes and reverting the
+swap compensates by restoring the prior `hub.toml` bytes and reverting the
 runtime (both before the response), and the error carries which seam failed
 (registry / manager / source / admin controller / web view / persistence /
 decision-source validation). `evener/host/*` on an unknown host name: typed
@@ -1531,9 +1588,9 @@ affordance, and an orphan-fenced row showing the resolve-first affordance.
 Add / Edit dialog: fields exactly the `HostConfig` schema — `name`, `ssh`,
 `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
 `config.go:32-46` — TOML-file spellings; the wire carries `evenerPath` /
-`configPath` per §11) — all seven fields, none invented, none hidden, plus the
-shipped `keyPath` SSH-key field the schema does not carry (§11 shipped-wire
-reconciliation); each
+`configPath` per §11) — all eight fields, none invented, none hidden, `key_path`
+(`keyPath` on the wire) included, since the machine-managed file stores it and a
+rewrite must round-trip it (§6, §11 shipped-wire reconciliation); each
 with its validation message mapped from the backend response. Edit does not
 offer `name` (immutable).
 
@@ -1591,8 +1648,11 @@ mutable module state.
   worker's post-verification handoff — the restart worker's reattach path,
   consumed in the deploy-pipeline spec §6); `Ensure`/`Attached`/
   `ChannelIfAttached`/facts unchanged.
-- `cmd/evener-hub/config.go` — sidecar load/merge (hard-error duplicate rule)
-  + atomic write.
+- `cmd/evener-hub/config.go` — `hub.toml` load (`[[hosts]]` decode and
+  validation, hard-error duplicate rule) and the `key_path` field the UI's
+  dialog carries; the in-place rewrite, the atomic write, and the one-time
+  `hub.toml` migration live beside the host-management surface
+  (`app_host_manage.go`), which owns the durable host set.
 - `cmd/evener-hub/app_host_manage.go` (exists — it already registers
   `list`/`status`/`add`/`update`/`remove`; extend it) — the `list`/`status`
   handlers
@@ -1652,7 +1712,7 @@ mutable module state.
 `refreshRemoteThreadSnapshot` enumerates the registered sources; removing one
 would otherwise drop its rows from the next snapshot. Removal instead writes
 an explicit tombstone record for the source (name, the removed entry's
-effective `HostConfig` — all seven fields `HostRow` requires, so `list` can
+effective `HostConfig` — all eight fields `HostRow` requires, so `list` can
 render the removed row without a live entry — last-known-good rows, removal
 timestamp, the removed incarnation's id persisted alongside the generation
 high-water mark — boot reconciles on the exact persisted (generation,
@@ -1662,7 +1722,7 @@ re-add reusing a generation) — with a hard bound: at
 most 500 retained rows per tombstone and at most 1 MiB of serialized row bytes
 per tombstone (owner-adjustable knobs in the same family as the cleared-marker
 TTL; the defaults ship in the implementing PR) — plus a GLOBAL cap across all
-tombstones in the sidecar/state dir: at most 64 tombstones and at most 16 MiB
+tombstones in `hub.toml`: at most 64 tombstones and at most 16 MiB
 of total serialized tombstone bytes (same knob family; defaults ship in the
 implementing PR) — enforced deterministically newest-first by removal
 timestamp (with the name as tie-break) on every tombstone persist: a persist
@@ -1680,7 +1740,7 @@ through `teardown-retry` first, then retries the removal), so repeated
 add/remove churn over distinct names within the 7-day window converges to the
 newest 64 instead of accumulating unbounded growth that exhausts disk or fails
 atomic renames. A per-tombstone bound alone lets distinct-name churn grow the
-sidecar without limit, so the global cap holds it. Removal persists a bounded
+file without limit, so the global cap holds it. Removal persists a bounded
 projection (newest-first by each row's last-updated timestamp with a total
 tie-break — (lastUpdated, row id) lexicographic, rows with a missing timestamp
 sorting oldest (a missing timestamp never outranks a present one), applied
@@ -1747,7 +1807,7 @@ tombstone is purged when the same host name is re-added, or after the
 tombstone retention period (owner-set `tombstoneRetention` knob, default 7
 days). Expiry mechanism (explicit, no background timer): the controller
 evaluates expiry lazily — `list` filters in memory with no lock (§4), and
-every sidecar mutation prunes durably in its atomic write under the mutation
+every `hub.toml` mutation prunes durably in its atomic write under the mutation
 lock, and every boot prunes durably in the same atomic-write posture before
 serving requests (lazy + mutation-path + boot — no background timer, so a
 read-only workload still converges at the next restart; disk growth between
@@ -1755,7 +1815,7 @@ the last mutation and the next boot is bounded by one tombstone plus its
 receipts and remnants per removed host) — and drops each tombstone whose
 `removal timestamp + retention period` has passed: the read path omits it from
 the response without taking the lock, and the next mutation-path atomic
-sidecar write under the lock prunes it durably (plus that name's receipts and
+`hub.toml` write under the lock prunes it durably (plus that name's receipts and
 remnants, per the retention rule — §6). The prune advances that name's
 presence epoch in the same atomic write and persists the advanced value in
 the name's high-water entry (§1), so a later clean-slate re-add carries the
@@ -1774,7 +1834,7 @@ gate still never auto-purges an open remnant — the bound escalates, never
 silently drops, so storage cannot pin forever without a visible operator
 action.
 
-Tombstones are durable: they persist as a section of the managed sidecar
+Tombstones are durable: they persist as a section of the managed `hub.toml`
 itself (same file, same atomic writes — §6), so a removal's delete-entry +
 write-tombstone is one write, boot restores them alongside the host entries,
 and they survive controller restarts; re-add and retention-expiry purges
@@ -1782,7 +1842,7 @@ rewrite the same file atomically under the mutation lock.
 
 Host generations: every `add` (including re-add) mints, and every `update`
 advances, a per-name generation that is durable: persisted in the managed
-sidecar alongside the host entries (including the per-name high-water mark for
+`hub.toml` alongside the host entries (including the per-name high-water mark for
 removed names — bounded below) in the same atomic write as the entry mutation — `add` mints
 generation 1 for a never-seen name, `update` advances the live generation by
 one, and re-add mints a generation strictly above every retained high-water
@@ -1799,12 +1859,12 @@ restart silently invalidates or re-validates anything. Store-side mirror: the
 per-name generation high-water mark is mirrored into the operation store
 itself (same atomic store writes as records). The mirrored-generation boot
 rule is owned by the deploy-pipeline spec §4 (marker-gated rollback: a store
-mirror newer than the sidecar mark with no matching commit marker rolls back
-to the sidecar mark, the discarded value kept only as the high-water mark) and
-is cited here, never restated — with
-the missing-sidecar preservation: a name with no sidecar mark contributes no
+mirror newer than the `hub.toml` mark with no matching commit marker rolls back
+to the `hub.toml` mark, the discarded value kept only as the high-water mark)
+and is cited here, never restated — with
+the missing-mark preservation: a name with no `hub.toml` mark contributes no
 mark (the surviving mirror alone is the high-water mark),
-never a zero that drags it down — so deleting a corrupt sidecar and re-adding
+never a zero that drags it down — so deleting a corrupt `hub.toml` and re-adding
 an identical host cannot restart its generation at 1 and adopt the old
 incarnation's records or tokens: the re-add mints above the mirrored
 high-water mark instead. Deleting both durable files is the only clean-slate
@@ -1812,48 +1872,47 @@ path, and the spec names it as such — there is no silent history adoption
 either way. High-water marks are bounded: a per-name high-water entry survives
 only while a live entry, tombstone, retained receipt, pruned marker, open
 remnant, resolved-remnant record, mirrored store generation, or outstanding
-token still names that generation; every sidecar mutation and every boot
+token still names that generation; every `hub.toml` mutation and every boot
 compacts entries with no surviving referrer in the same atomic write. Distinct
 names that churned and fully expired therefore leave no durable trace —
 re-add mints generation 1 for a name with no surviving mark and no live
 history — while any surviving token or replay record keeps its entry alive
-until it too expires. Boot-merge collision: when a retained tombstone collides at boot
-with a newly live `hub.toml` host (or a live sidecar entry from a re-add), the
-live host is treated as a new incarnation: its restored generation is set
-strictly above the tombstone's high-water mark before any historical
+until it too expires. Boot collision (one file): when a retained tombstone collides at boot
+with a newly live entry for the same name — a hand edit or a re-add put the name
+back — the live host is treated as a new incarnation: its restored generation
+is set strictly above the tombstone's high-water mark before any historical
 receipts/remnants apply, so old `host-removed` records stay at or below the
 mark and live records stay unmarked — never a promotion of a pre-collision
 record into the current generation, never a block on valid operation-ID reuse
 — unless the colliding name holds an open teardown remnant, in which case
-boot fails startup when the colliding live entry comes from the on-disk sidecar
-itself, or excludes the colliding declared entry from the live set (fenced
+boot excludes the live entry from the live set (fenced
 `blocked-pending-teardown`, never published live, stale handles and tokens for
-the name observe nothing new) when it comes from a `hub.toml` declaration, and
-represents the declaration as blocked until `teardown-retry` resolves the open
-remnant; only then does the declaration mint a new generation and incarnation
+the name observe nothing new) and
+represents it as blocked until `teardown-retry` resolves the open
+remnant; only then does the entry mint a new generation and incarnation
 above the high-water mark (§6 — never a live incarnation over an open
-remnant). `hub.toml`-declared hosts carry a stable generation as long as their
-effective entry is unchanged — the sidecar persists each declared host's
+remnant). `hub.toml` hosts carry a stable generation as long as their
+effective entry is unchanged — the file persists each host's
 effective-entry fingerprint (content hash of the resolved entry) alongside the
 generations, and boot compares the freshly read entry against it before
 serving requests: a mismatch advances that host's generation and clears or
 rebinds its name-keyed cached state, so an edit made while the controller was
 stopped can never restore the old generation with old records and cached state
 reading as current — initial assignment at boot is generation 1 for every
-`hub.toml`-declared name with no persisted high-water mark, AND boot mints a
-fresh incarnation id for every `hub.toml`-declared name with no persisted
-incarnation in that same atomic sidecar write (so token generation checks and
-every incarnation-scoped read have a defined pair on both sides; a declared
-host whose effective entry changed while stopped still advances its generation
-AND mints a fresh incarnation in the same write, and a boot-merge collision on
-a declared name takes the same above-mark bump plus fresh incarnation as any
+`hub.toml` host name with no persisted high-water mark, AND boot mints a
+fresh incarnation id for every `hub.toml` host name with no persisted
+incarnation in that same atomic `hub.toml` write (so token generation checks and
+every incarnation-scoped read have a defined pair on both sides; a host
+whose effective entry changed while stopped still advances its generation
+AND mints a fresh incarnation in the same write, and a boot collision on
+a host name takes the same above-mark bump plus fresh incarnation as any
 other collision, never a stable generation with an undefined incarnation).
-Collision precedence: the boot-merge collision bump above overrides stable
+Collision precedence: the boot-collision bump above overrides stable
 generation for that boot — the live host's above-mark generation replaces the
 stable one, and tokens bound to the pre-bump generation are invalidated (their
 generation no longer equals current) — since the sibling reconciling commit
 detects external `hub.toml` edits after the fact, any detected change to a
-`hub.toml`-declared host's effective entry — detected by the sidecar staged
+`hub.toml` host's effective entry — detected by the staged
 commit's `hub.toml` re-reads (validation, final check, post-rename reconcile,
 all under the mutation lock), by a `plan`/`deploy` fingerprint check, or by
 the live external-reconciliation path below (never by an unsynchronized
@@ -1873,9 +1932,9 @@ view on mismatch — §4): on a fingerprint match the call proceeds
 on the current snapshot with no lock; on mismatch a mutation/`plan`/`deploy`
 admission takes the mutation lock synchronously and runs the same
 adopt-then-bump-then-clear sequence as the sibling reconciling commit (re-read
-the file, adopt added/changed declared entries into the running registry, drop
-declared hosts deleted from the file out of the registry/manifest/admin host
-set and fan-outs — a deleted declared host reads as not-found on all
+the file, adopt added/changed hand-edited entries into the running registry, drop
+hosts deleted from the file out of the registry/manifest/admin host
+set and fan-outs — a deleted host reads as not-found on all
 `evener/host/*` methods until re-declared, and its name-keyed caches clear —
 then bump affected generations and clear or rebind every name-keyed cache
 above — and the adopt-then-bump-then-clear sequence coordinates with in-flight
@@ -1890,20 +1949,20 @@ no external edit survives past the in-flight operations' completion — a
 changed entry never rebinds the registry entry, generation,
 channel, or supervisor under an in-flight deploy/restart still operating on
 the pinned old configuration), so no external edit — including a
-declared-host removal — survives past the next mutation/`plan`/`deploy`
+hand-edited removal — survives past the next mutation/`plan`/`deploy`
 admission (a `list`/`status` admission serves the file-filtered view
 immediately — §4: deleted names absent, changed names unavailable — and
 schedules the same sequence asynchronously, debounced):
 the step publishes a new snapshot under the lock and the admitted
 mutation-path call then serves from it — but only after the reconciled merged
-set passes the complete merged-config validation first (the reconcile
+set passes the complete host-config validation first (the reconcile
 validates the merged post-adopt live set against the full component-03 rules
 under the mutation lock BEFORE publishing: valid sets
 publish exactly as above, while a failed validation publishes nothing — the
 last-good snapshot stays live, the admitted call serves its file-filtered
 view from it, and the
-failure surfaces as the typed `concurrent-edit` configuration error (merged-config drift), naming both sources and
-their counts), and all live consumers (registry, manager
+failure surfaces as the typed `concurrent-edit` configuration error (external-config drift), naming the file and
+the refused host count), and all live consumers (registry, manager
 bindings, sources, manifest, host-admin controller fan-outs, web-config view)
 update atomically under that lock before the admitted call proceeds (a
 `list`/`status` read arriving while the reconcile holds the lock serves the
@@ -1921,11 +1980,13 @@ through that callback, which runs the same fingerprint-compare-then-reconcile
 pre-handler step with the same filtered-serve-and-reconcile-async read posture
 in §4 (the callback applies the same bounded synchronous host-set filter and
 never takes the mutation lock on the read path), so a deleted or changed
-declared host is invisible to every live consumer by its next read — a deleted
+host is invisible to every live consumer by its next read — a deleted
 host absent, a content-changed host unavailable (never the old SSH/path
 config) until the reconcile publishes the new runtime snapshot — not only
-after the next host-management request. The UI cannot remove or re-add these
-hosts; only the entry-change rule moves their generation. Token bindings
+after the next host-management request. The UI can add, edit, and remove
+every host (the storage decision retired the read-only rule); the entry-change
+rule above still moves a generation when a hand edit lands outside the UI, and
+the reconcile adopts that edit into the running set. Token bindings
 reference these generations (deploy-pipeline spec §3): validation requires the token's generation
 to equal the registry's current generation for the name. Snapshot publications
 carry the generation of the source they were read from, and a publication
@@ -1941,13 +2002,18 @@ Registry tests (all bullets in this section ship with the registry PR, except th
 - Registry live-update tests (including the add-time cycle rules),
   manager add/remove-vs-supervisor tests (removing an attached host stops its
   supervisor, closes its channel, and drains its per-host lifecycle handles
-  before the entry is gone), sidecar merge/atomicity tests including the
-  refuse rules (a live external `hub.toml` edit that fails the merged-config
+  before the entry is gone), `hub.toml` rewrite/atomicity tests including the
+  reconcile rules (a live external `hub.toml` edit that fails the host-config
   validation fails the reconcile instead of publishing: the
   last-good snapshot stays live and the failure surfaces as the typed
-  `concurrent-edit` configuration error), the boot-time hard-error duplicate,
-  swap-failure compensation (prior sidecar bytes restored, runtime reverted,
-  retry re-applies cleanly), and the corrupt/schema-invalid sidecar boot hard
+  `concurrent-edit` configuration error), the machine-managed banner, an
+  in-place rewrite that preserves every pre-existing host entry and every
+  non-host key the file carries, the one-time
+  `hub.toml` migration (entries and every machine-managed record survive, the
+  marker is recorded, and a sidecar that reappears with the marker present is
+  ignored as stale and never re-merged), the boot-time hard-error duplicate,
+  swap-failure compensation (prior `hub.toml` bytes restored, runtime reverted,
+  retry re-applies cleanly), and the corrupt/schema-invalid `hub.toml` boot hard
   error, the host-admin controller live-set tests (forwarded requests reach
   newly added hosts; removed hosts' fan-outs stop), update-rebind tests (a
   running supervisor's next reconnect uses the updated entry; the rebind
@@ -2029,7 +2095,7 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   exactly `{outcome, row, generation, incarnationId, committedAt,
   droppedEntry?, winningFingerprint?, remnantId?, remnantResolvedAt?,
   recoveryAttestation?, bootRecovered?}` (`incarnationId` the pinned incarnation — the commit-point
-  test pins the full five-part scoped key, so a crash-torn boot-merge
+  test pins the full five-part scoped key, so a crash-torn boot collision
   looks the receipt up under the right incarnation (strict monotonicity per
   §1 means no live path produces a shared generation); `remnantId` while the
   remnant is open, `remnantResolvedAt` after resolution, `recoveryAttestation`
@@ -2099,24 +2165,19 @@ lost). Remnant-gate tests:
   registers, and the registry PR keeps only status-rendering of pair-scoped
   refusals published via fake publishers.
   Config-path tests: a `--config`
-  startup carries the canonical path into the web config and the sidecar +
-  fingerprint derive from it. Collision tests: a tombstone/live collision
-  restores the live generation strictly above the high-water mark with
-  pre-collision records marked and live records unmarked. Crash-window test: a
-  `hub.toml`/sidecar live-entry collision covered by a pending reconcile
-  marker whose fingerprint matches the on-disk file boots into the completed
-  cleanup (no hard error) — the step-(2) write arms the validation fingerprint
-  and the pending marker rides the staging write, so a crash between the
-  commit rename and the staging write, or between staging and the cleanup
-  rename, still boots covered, never unmarked (while an armed intent whose
-  validation fingerprint still matches the on-disk file with a staged duplicate
-  present boots hard-error naming both locations — the equality proves no race
-  crossed the commit, so the duplicate is hand-made or ambiguous and requires
-  explicit recovery); the same collision with no marker and no
-  armed intent, or with a marker whose fingerprint no longer matches, boots
-  into the hard startup error. Swap-window tests: a marker with `swapStarted:
+  startup carries the canonical path into the web config and the `hub.toml`
+  rewrite + fingerprint derive from it. Legacy-migration tests: a pre-existing sidecar folds into `hub.toml` exactly
+  once (entries survive, the sidecar is left aside, a second boot does not
+  re-merge), and an unreadable sidecar leaves both files untouched with host
+  mutations refused. Adoption tests: a hand edit the post-rename re-read
+  observes is adopted (the file's bytes win, the receipt says
+  `collision-dropped`), a
+  `hub.toml` that fails validation at boot is a hard startup error, and a
+  tombstone/live collision restores the live generation strictly above the
+  high-water mark with
+  pre-collision records marked and live records unmarked. Swap-window tests: a marker with `swapStarted:
   false` and `teardownStarted: false` re-applies the staged runtime set to
-  the live handles first (the sidecar already holds the new config — a
+  the live handles first (`hub.toml` already holds the new config — a
   finalize that skips the swap diverges the live process from durable state),
   then re-runs the pinned teardown to completion and finalizes from the
   observed outcome (a clean run returns `committed` with no remnant; a failed
@@ -2127,8 +2188,9 @@ lost). Remnant-gate tests:
   one. A leftover finalizing claim preserves the marker's `teardownStarted`
   value and runtime phase, and boot decides by the persisted phase — never a
   blanket teardown-started claim. File-posture
-  tests: sidecar and store temp files are `0600`, renames preserve the mode,
-  and startup refuses a file readable beyond its owner, and the stash gets the
+  tests: `hub.toml` rewrite and store temp files are `0600`, renames preserve the mode,
+  the operation store (not a pre-decision `hub.toml`) refuses startup when
+  readable beyond its owner, and the stash gets the
 same coverage (stash temps `0600`, mode-preserving rename, owner-only
 readability refusal).
 ## 17. Acceptance criteria
@@ -2146,21 +2208,29 @@ readability refusal).
    (published to the (generation, incarnation id)-scoped last-known store
    before the operation marks `complete`), and the version-skew signal (facts
    vs controller build) is truthful.
-4. Hand-edited `hub.toml` hosts keep working exactly as today; UI add/update
-   refuse their names; the origin marker shows which file owns each entry; a
-   hand-created duplicate name across files is a hard startup error.
-5. Removing a sidecar host retains its last-known-good rows as an explicitly
+4. Hand-edited `hub.toml` hosts keep working — they load and connect exactly
+   as today — but the file is machine-managed: a UI mutation rewrites it in
+   place, the banner says so, and an operator's comments and formatting do not
+   survive. Every live host is UI-editable (the storage decision retired the
+   split's refuse-to-edit-the-file rule), and a duplicate name inside `hub.toml`
+   is a hard startup error.
+5. Migration: a pre-existing `hub.hosts.json` beside the selected `hub.toml`
+   merges into it exactly once at boot — every sidecar entry survives in
+   `hub.toml`, the retired sidecar is renamed aside rather than deleted, and a
+   second boot does not merge again (a name removed through the UI afterwards
+   cannot resurrect).
+6. Removing a host retains its last-known-good rows as an explicitly
    stale, non-actionable tombstone (tree + action capabilities, test-pinned)
    while the manifest's `sources` array drops the host; the tombstone survives
    a controller restart; re-adding the same name purges it, clears its
    name-keyed caches, and mints a new generation, so stale rows from the old
    incarnation cannot republish; `list` shows it with `removed: true`.
-6. No lazy-attachment regression: with no attach call, no explicit source, no
+7. No lazy-attachment regression: with no attach call, no explicit source, no
    read dials anything — `list`/`status` never attach
    (test-pinned) — and the pipeline's two deliberate non-attach SSH uses
    (deploy-pipeline spec §6) are channel-free by construction (no initialize,
    no supervisor, no attach state machine; test-pinned).
-7. Standard gates green on every PR (go/build/vet, package races, full hub
+8. Standard gates green on every PR (go/build/vet, package races, full hub
    suite, module-lint; web + browser + lint-generated for the UI PR).
 
 ## 18. PR size estimate (LOC)
@@ -2174,9 +2244,13 @@ readability refusal).
 
 ## 19. Open questions
 
-1. **Sidecar vs rewrite of `hub.toml`** — spec'd as sidecar with the refuse
-   rules and hard-error duplicate; the owner may still prefer in-place
-   `hub.toml` rewrite accepting comment loss.
+1. **Sidecar vs rewrite of `hub.toml`** — decided (Jesse, 2026-09-26):
+   rewrite `hub.toml` in place, machine-managed, with a banner comment saying
+   so and stating that comments and formatting (blank lines included) are not preserved. The sidecar is retired; the
+   durable properties it carried (atomic staged write, mode `0600`, the
+   commit/reconcile discipline, generations, tombstones, and the presence
+   epoch) move to `hub.toml` unchanged (§6), and an existing sidecar migrates
+   into the file once, left aside rather than deleted.
 2. **Tombstone retention period** — decided: re-add purges by name; the
    default retention for never-re-added hosts is 7 days (owner-set
    `tombstoneRetention` knob).
@@ -2189,6 +2263,10 @@ readability refusal).
 
 ## 20. Changelog
 
+- 2026-09-26: §19 open question 1 decided (Jesse): `hub.toml` is rewritten in
+  place as a machine-managed store carrying a banner that comments and
+  formatting are not preserved; the sidecar is retired, its durable properties re-homed to
+  `hub.toml` (§6), and its entries migrate into the file once at boot.
 - 2026-09-17: three-way split of the 08 host-management spec. This document
   keeps the registry surface; the deploy pipeline moves to
   `2026-09-16-multi-host-08b-deploy-pipeline.md`; crash orphans and fencing

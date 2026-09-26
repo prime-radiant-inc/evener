@@ -23,7 +23,8 @@ not open connections, does not spawn SSH, and does not implement a source.
 
 - Add `Hosts []HostConfig` to the hub's `Config` and its TOML decoding path
   (`cmd/evener-hub/config.go`).
-- A `HostConfig` entry `{ name, ssh, user?, evener_path?, roots[] }` where
+- A `HostConfig` entry `{ name, ssh, user?, evener_path?, roots[], config_path?,
+  addr?, key_path? }` where
   `name` is the source ID surfaced in refs (`name:<sessionID>`) and URLs.
 - Validation of `name` against the ref grammar, reserve `local`, reject `..`,
   reject duplicates.
@@ -68,19 +69,34 @@ evener_path = "/usr/local/bin/evener"    # optional; remote binary path
 roots       = ["/Users/jesse/src"]       # optional; remote working roots
 config_path = "/etc/evener/hub.toml"     # optional; the host's hub.toml
 addr        = "127.0.0.1:9180"           # optional; the host hub's loopback address
+key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolute; used verbatim)
 ```
 
 - `name` → `appwire.Ref.SourceID`; refs surface as `name:<sessionID>`
   (design §5, `appwire/refs.go`).
 - `ssh` is the destination token passed to `ssh`; component 04 owns how it is
   used. If `user` is set and `ssh` already carries a user, that is a validation
-  error (ambiguous authority) — see "Error handling". Non-default ports,
-  identity files, and jump hosts are expressed through the user's `ssh_config`,
-  never by smuggling options into `ssh` (component 04, §"SSH channel argv"):
+  error (ambiguous authority) — see "Error handling". Non-default ports and
+  jump hosts — and identity files, unless the entry sets `key_path` — are
+  expressed through the user's `ssh_config`, never by smuggling options into
+  `ssh` (component 04, §"SSH channel argv"):
   `ssh` is a destination, not an option string.
 - `evener_path` and `roots` are advisory inputs to components 04/05; this
   component only stores and validates their shape (`roots` entries must be
   non-empty after trim; no path validation here).
+- `key_path` (optional) is the SSH private-key file the controller dials with.
+  It is a component-08 addition to the stored schema: the machine-managed
+  `hub.toml` carries it so a UI-added host's key path round-trips through a
+  rewrite (component 08, §6). Shape rules, matching the shipped behavior: it is
+  optional, trimmed, and empty-after-trim is absent (`hostreg.Normalize` trims;
+  `validateHostConfigs` then validates the normalized value, so a padded value
+  never reaches a consumer untrimmed); the hub performs no `~` or environment
+  expansion — the value travels to ssh verbatim as `["-i", key_path]` before
+  the `--` destination terminator (component 04, §"SSH channel argv") — so an
+  absolute path is what a client should store. Like `evener_path`, this is
+  shape-only validation: a key file that does not exist surfaces at dial time
+  as ssh's own failure, not as a load-time refusal. A rewrite round-trips the
+  field (component 08's rewrite tests pin it).
 - **`config_path` / `addr` — the connection parameters both halves must
   agree on (corrected contract).** The bridge resolves the host hub's address
   and capability-token state root from the `hub.toml` it reads; component 04's
@@ -170,6 +186,7 @@ type HostConfig struct {
     Roots      []string `toml:"roots"`
     ConfigPath string   `toml:"config_path"` // optional; host hub.toml the bridge must read
     Addr       string   `toml:"addr"`        // optional; host hub loopback host:port
+    KeyPath    string   `toml:"key_path"`    // optional; SSH identity file (component 08 §6)
 }
 ```
 
@@ -200,6 +217,7 @@ type Host struct {
     Roots      []string
     ConfigPath string
     Addr       string
+    KeyPath    string
 }
 
 type Registry struct { /* mu sync.RWMutex; hosts map[string]Host; edges ... */ }
@@ -231,8 +249,9 @@ import direction is therefore `hub → hostreg` and nothing else — no cycle an
 type mismatch. `LoadConfig` validates by converting `cfg.Hosts` into
 `[]hostreg.Host` and calling `hostreg.New` on that throwaway list
 (`validateHostConfigs`), and the hub converts the same way, field for field
-  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots` — see
-  "`config_path` / `addr`"), when it builds the live registry at
+  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots`,
+  `KeyPath` — see
+  "`config_path` / `addr`" and `key_path`), when it builds the live registry at
 startup. That conversion is the only place the two types meet.
 
 `All()` is the hook surface: component 05 iterates it to `appsource.Registry.Add`

@@ -10,7 +10,7 @@ Every later section uses these terms with exactly these meanings.
 
 **OperationId (client operation ID).** The client-supplied operation ID on `deploy`/`restart`: opaque, non-empty, at most 128 bytes, no required structure. `deploy`/`restart` responses carry `id` (the controller-assigned record id) and `clientOperationId` (echoing the caller's value).
 
-**Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (registry spec §15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
+**Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in `hub.toml`. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (registry spec §15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
 
 **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused: at most 128 bytes, and the generator pins its output to 36 bytes (canonical UUID text), so the 8 KiB cursor-cap bound in the deploy-pipeline spec §8 holds by construction. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 
@@ -18,11 +18,11 @@ Every later section uses these terms with exactly these meanings.
 
 **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 
-**Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
+**Tombstone.** The durable removed-host record carrying retained rows, persisted in `hub.toml`. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 
 **Per-host gate.** The try-acquire (never wait) mutex serializing deploy/restart/`plan`/teardown work for one host name. A held gate fails new work fast with the typed busy error.
 
-**Mutation lock.** The process-wide lock serializing sidecar read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (deploy-pipeline spec §5).
+**Mutation lock.** The process-wide lock serializing `hub.toml` read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (deploy-pipeline spec §5).
 
 **Store mutex.** The lock serializing operation-store read-modify-write. No path holding the store mutex ever acquires the mutation lock.
 
@@ -36,7 +36,7 @@ Every later section uses these terms with exactly these meanings.
 
 **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
 
-**Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge. It persists in the sidecar per live entry and per tombstone; every sidecar write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (deploy-pipeline spec §4); cursor validation reads the mirrored value (§8 there).
+**Presence epoch.** The per-host monotonic removal/presence counter advanced in the same atomic `hub.toml` write as every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live entry and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (deploy-pipeline spec §4); cursor validation reads the mirrored value (§8 there).
 
 The fencing-specific terms below appear only in this spec.
 
@@ -56,9 +56,9 @@ The fencing-specific terms below appear only in this spec.
 
 **Pending-spawn intent.** The durable pre-spawn record holding the per-spawn nonce. It opens before spawn and drops on clean reap or resolve.
 
-**Bootstrap-attempt fence.** The durable sidecar record that a first-contact delivery started. It closes the unfenced exception after a crash.
+**Bootstrap-attempt fence.** The durable `hub.toml` record that a first-contact delivery started. It closes the unfenced exception after a crash.
 
-**`helperInstalled`.** The sidecar flag recording that a host carries the pinned fencing helper.
+**`helperInstalled`.** The `hub.toml` flag recording that a host carries the pinned fencing helper.
 
 ## 2. Scope
 
@@ -128,13 +128,13 @@ Every mutating SSH command the controller issues to the host — deploy pushes, 
 
 `Manager.preflight` one-shots (`uname` / env-probe / `id -u` / `launch-check` over `runRemote`, strictly read-only with no remote state written) are exempt from the wrapper and mutation fencing entirely. Gateless `plan` refresh runs them with no worker epoch and no operation lifecycle: read-only probes write no remote state and the gateless refresh has no epoch to present. A host without an installed helper therefore cannot accept a remote mutation at all. The no-overlap guarantee holds vacuously, never as an unfenced exception.
 
-First-ever contact with a never-provisioned host is one exempt delivery step otherwise forbidden. The first-attach repair for starting a stopped hub — supervisor/ad-hoc launch shipping the deployed payload with helper bytes inside — runs unfenced exactly once per never-provisioned host: a host the controller never fenced an epoch on and whose sidecar entry carries no `helperInstalled` flag yet. It never runs for a host with a prior fenced epoch, a prior helper version record, or an interrupted record from a crashed incarnation, where prior remote work may still run and an unfenced window would overlap it. It runs under the worker's persisted epoch. No other mutating step shares the exemption.
+First-ever contact with a never-provisioned host is one exempt delivery step otherwise forbidden. The first-attach repair for starting a stopped hub — supervisor/ad-hoc launch shipping the deployed payload with helper bytes inside — runs unfenced exactly once per never-provisioned host: a host the controller never fenced an epoch on and whose `hub.toml` entry carries no `helperInstalled` flag yet. It never runs for a host with a prior fenced epoch, a prior helper version record, or an interrupted record from a crashed incarnation, where prior remote work may still run and an unfenced window would overlap it. It runs under the worker's persisted epoch. No other mutating step shares the exemption.
 
-Before any remote side effect the worker persists a durable bootstrap-attempt fence on the host's sidecar entry in its own atomic sidecar write. The attempt fence lands before the first remote side effect, so a crash before `helperInstalled` lands leaves the host attempt-fenced, never never-provisioned again.
+Before any remote side effect the worker persists a durable bootstrap-attempt fence on the host's `hub.toml` entry in its own atomic `hub.toml` write. The attempt fence lands before the first remote side effect, so a crash before `helperInstalled` lands leaves the host attempt-fenced, never never-provisioned again.
 
 Delivery is fenced against other controllers' and earlier unrecorded work, not only this controller's flags. Delivery is permitted only after a host-side atomic bootstrap/fencing primitive proves the target truly bare. Unfenced delivery opens by atomically claiming and quiescing through a pre-existing trusted host-side primitive: a single atomic claim-plus-quiesce naming this controller's fencing epoch. Concurrent claimants serialize on the host and exactly one wins. Quiesce holds for the entire delivery so no process or controller starting after the claim can overlap it. This is never an ordinary-SSH claim-then-check pair, whose check cannot cover mid-delivery starts. Where no such host-side primitive exists delivery is unavailable: out-of-band helper provisioning is required. Delivery verifies no foreign process or foreign guard holder live as part of the same atomic quiesce: no running managed process outside the claimed guard's ownership, no live foreign guard claim. A lost claim race, an unavailable primitive, or any live foreign presence refuses fail-closed with the typed `fencing-helper-absent` refusal. The exemption never degrades to overwrite. Ordinary-SSH claim-then-check cannot cover processes starting mid-delivery and controller-local flags cannot see other controllers' work, so only the atomic claim-plus-quiesce proves bareness.
 
-Delivery converges the flag in the same step: the worker sets `helperInstalled` on the host's sidecar entry in the same atomic sidecar write finalizing bootstrap, or refuses finalize on failure. A host carrying the attempt fence without `helperInstalled` takes the fenced path on every later attempt. A bare host with no pre-existing trusted host-side claim/quiesce primitive is not bootstrapable through the UI at all: the operator provisions the helper out-of-band through the one-time migration path. The acceptance criteria promise add-from-UI plus Connect only for helper-capable hosts, never bare-metal first contact.
+Delivery converges the flag in the same step: the worker sets `helperInstalled` on the host's `hub.toml` entry in the same atomic `hub.toml` write finalizing bootstrap, or refuses finalize on failure. A host carrying the attempt fence without `helperInstalled` takes the fenced path on every later attempt. A bare host with no pre-existing trusted host-side claim/quiesce primitive is not bootstrapable through the UI at all: the operator provisions the helper out-of-band through the one-time migration path. The acceptance criteria promise add-from-UI plus Connect only for helper-capable hosts, never bare-metal first contact.
 
 Recovery first re-probes the remote and verifies no bootstrapped process from the crashed attempt is live (or the operator repairs out-of-band through the one-time migration path), and only then runs the next mutation under the worker's persisted epoch. A retry racing the finalize replays under dedup rather than running a second delivery. The next operation's pre-fence verification runs a helper self-test round-trip before kill/wait.
 
@@ -142,7 +142,8 @@ Migration for handler-absent remotes — remotes predating the running-state pro
 
 ## 7. Boot reaping
 
-Boot runs the operation-store load plus the safety-critical local reap of its local orphan boundary first (the reap in §3), then sidecar load (defined in the registry spec §6), then the interrupted transition — the identical order the deploy-pipeline spec §7 states, which also owns the later passes this spec never restates. A corrupt sidecar is still a hard startup error, but only after the operation store's local reap has run: a valid operation store is never left unreaped because an unrelated sidecar failed validation. A corrupt operation store takes the quarantine path the deploy-pipeline spec §4 owns, never a silent drop. A missing file reads as empty: a missing sidecar loads as no entries, a missing store as no records. Remote fencing lands lazily at the next operation's guard advance, after the store already serves `interrupted` records. Boot performs no SSH anywhere in this order: an unreachable host never blocks startup.
+Boot runs the operation-store load plus the safety-critical local reap of its local orphan boundary first (the reap in §3), then `hub.toml` load (defined in the registry spec §6, the one-time legacy-sidecar
+migration included), then the interrupted transition — the identical order the deploy-pipeline spec §7 states, which also owns the later passes this spec never restates. A corrupt `hub.toml` is still a hard startup error, but only after the operation store's local reap has run: a valid operation store is never left unreaped because an unrelated `hub.toml` failed validation. A corrupt operation store takes the quarantine path the deploy-pipeline spec §4 owns, never a silent drop. A missing file reads as empty: a missing `hub.toml` loads as no entries, a missing store as no records. Remote fencing lands lazily at the next operation's guard advance, after the store already serves `interrupted` records. Boot performs no SSH anywhere in this order: an unreachable host never blocks startup.
 
 Every record still in `pending`/`running` transitions to `interrupted` (a terminal unknown outcome) with a note naming the crash, except `orphan-unverified`, which stays open with its boundary. A retry with the same operation ID gets the `interrupted` record back. A new operation ID on a host with an interrupted record starts only after local reaping completes and under a fresh fencing epoch with the guard advanced past kill/wait of the superseded epoch, so it never overlaps orphaned local or remote work from the crashed incarnation.
 
