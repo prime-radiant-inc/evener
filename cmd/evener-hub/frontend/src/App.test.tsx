@@ -4,6 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
@@ -11,6 +12,7 @@ import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
+import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
 // client is injected anywhere in this file), which dials a real jsdom
@@ -162,6 +164,20 @@ beforeEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
+  // The dev widget gallery route pushes real toasts through the
+  // module-singleton toast store (widgets/toast/store.ts), and unmounting
+  // cancels their timers without removing them; reset so no test starts
+  // with another test's toasts queued.
+  resetToastStoreForTests();
+  // notifications/index.ts keeps module state (its init guard, the
+  // "reconnect" detector's sawReady, the attention baseline) for every test
+  // in this file, and a test that connects a client straight to "ready" arms
+  // that detector. Reset and re-init before each test's own fresh connect so
+  // every test starts from the state a fresh module evaluation leaves:
+  // engine started, seeded from the idle connection and reset navigation
+  // store above, with nothing carried over from the previous test.
+  resetNotificationsForTests();
+  initNotifications();
 });
 
 afterEach(() => {

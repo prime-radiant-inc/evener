@@ -5,6 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { holdChunk } from "../lazyChunkTestUtils";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { connectionStore } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { AppShell } from "./AppShell";
@@ -76,6 +77,15 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
+  // notifications/index.ts keeps module state (its init guard, the
+  // "reconnect" detector's sawReady, the attention baseline) for every test
+  // in this file, and a test that connects a client straight to "ready" arms
+  // that detector. Reset and re-init before each test's own fresh connect so
+  // every test starts from the state a fresh module evaluation leaves:
+  // engine started, seeded from the idle connection and reset navigation
+  // store above, with nothing carried over from the previous test.
+  resetNotificationsForTests();
+  initNotifications();
   loadDockHost.mockReset();
   loadDockHost.mockImplementation(realLoadDockHost);
   // The chunk is one shared lazy() payload per page load, so each test needs

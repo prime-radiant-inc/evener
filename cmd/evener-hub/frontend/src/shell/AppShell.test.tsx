@@ -401,6 +401,15 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
+  // notifications/index.ts keeps module state (its init guard, the
+  // "reconnect" detector's sawReady, the attention baseline) for every test
+  // in this file, and a test that connects a client straight to "ready" arms
+  // that detector. Reset and re-init before each test's own fresh connect so
+  // every test starts from the state a fresh module evaluation leaves:
+  // engine started, seeded from the idle connection and reset navigation
+  // store above, with nothing carried over from the previous test.
+  resetNotificationsForTests();
+  initNotifications();
   navigationStore.setState({ mode: "v2" });
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.

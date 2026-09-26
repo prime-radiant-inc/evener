@@ -5,6 +5,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { connectionStore } from "../stores/connection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
@@ -59,6 +60,15 @@ const ALL_FEATURES_OFF = {
 // below relies on exactly that; other blocks override it per case.
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+  // The notification engine runs in the real app beside this banner, and
+  // several tests here connect a fresh client straight to "ready", the exact
+  // transition its "reconnect" detector (sawReady) watches for. Its module
+  // state lives across every test in this file, so reset and re-init it
+  // before each test: every test runs with the engine started, seeded from
+  // an idle connection, with nothing armed by an earlier test. Runs after the fetch stub above so the
+  // engine's baseline load hits the stub, not the network.
+  resetNotificationsForTests();
+  initNotifications();
 });
 
 afterEach(() => {
@@ -345,6 +355,10 @@ describe("clicking Retry", () => {
       .mockResolvedValueOnce(new Response(null, { status: 200 })) // post-retry: auth check
       .mockResolvedValueOnce(new Response(null, { status: 200 })); // post-retry: not-built check
     vi.stubGlobal("fetch", fetchMock);
+    // This component test isolates its closed-reason probes from the global
+    // notification engine, whose capability-absence path legitimately starts
+    // a navigation refresh after a ready client is published.
+    resetNotificationsForTests();
     const fresh = new FakeClient("ready");
 
     render(<ConnectionBanner state="closed" delayMs={0} createClient={() => fresh} />);
