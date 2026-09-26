@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Colors are exactly the spec's table (16.1): page #FAF9F6/#191918, canvas #F1F0EB/#1D1D1B, surface #FCFBF8/#232320, inset #F4F3EE/#20201E, pressed #F0EFE9/#2B2B28, edge #DDDCD4/#34342F, edge-strong #B7B6AC/#51514A, ink-hi #252521/#F2F1EB, ink-mid #5F5F57/#B0AFA6, ink-low #6D6D64/#99998F, prose = ink-hi/#E0DED6, attention #F59E0B/#F68F3C with attention-ink #AD5209/#F68F3C, alive #189A4D/#3DBB72 with alive-ink #12763B/#3DBB72, danger #E3474C/#EE5C61 with danger-ink #C51D23/#F17478, accent #0285FF/#3D9AFF with accent-ink #0064C2/#459EFF, accent-fill #0070E0 in both, diff add #E9F4EE/#19251A, diff delete #F5EAF0/#170B17.
-- Tints: each hue's `-bg` is the hue at 15% over surface; `-edge` is the hue at 40% over edge. Your message bubble is accent-bg in both themes.
+- Tints: each hue's `-bg` is the hue at 15% over surface; `-edge` is the hue at 40% over edge, both mixed in OKLab as the web's `color-mix(in oklab, …)` does. Your message bubble is accent-bg in both themes.
 - "No other hues exist in the app." Amber appears only where a human is needed.
 - Text on a fill uses accent-fill (#0070E0) with white: 4.8:1 in both themes. Accent-colored text uses accent-ink.
 - Type: SF Pro (the system font) for everything you operate; Source Serif 4 for words someone wrote (agent prose 17/26, your messages 17/25, documents 18/28); the app's existing machine face, Menlo, for paths, commands and code. Agent-message headings are SF Pro semibold 20/17/15.
@@ -78,22 +78,22 @@ describe("the palette is the spec's (section 16.1)", () => {
 });
 
 describe("tints: the hue at 15% over surface, edges at 40% over edge", () => {
-	it("mix blends in sRGB and rounds each channel", () => {
-		expect(mix("#000000", "#FFFFFF", 0.5)).toBe("#808080");
-		expect(mix("#F59E0B", "#FCFBF8", 0.15)).toBe("#FBEDD4");
+	it("mix blends in OKLab, as CSS color-mix does, and rounds each channel", () => {
+		expect(mix("#000000", "#FFFFFF", 0.5)).toBe("#636363");
+		expect(mix("#F59E0B", "#FCFBF8", 0.15)).toBe("#FCEEDC");
 	});
 	it("light tints", () => {
 		expect(palettes.light).toMatchObject({
-			attentionBg: "#FBEDD4", attentionEdge: "#E7C384", aliveBg: "#DAECDE",
-			dangerBg: "#F8E0DE", dangerEdge: "#DFA09E", accentBg: "#D7E9F9", accentEdge: "#85B9E5",
-			bubble: "#D7E9F9",
+			attentionBg: "#FCEEDC", attentionEdge: "#E9C598", aliveBg: "#DEEDDE", aliveEdge: "#9BC29E",
+			dangerBg: "#FDE2DD", dangerEdge: "#E7A69D", accentBg: "#DDEBFC", accentEdge: "#97BDEA",
+			bubble: "#DDEBFC",
 		});
 	});
 	it("dark tints", () => {
 		expect(palettes.dark).toMatchObject({
-			attentionBg: "#433324", attentionEdge: "#825834", aliveBg: "#273A2C",
-			dangerBg: "#412C2A", dangerEdge: "#7E4443", accentBg: "#273541", accentEdge: "#385D82",
-			bubble: "#273541",
+			attentionBg: "#3F3227", attentionEdge: "#7D583A", aliveBg: "#2B372C", aliveEdge: "#416749",
+			dangerBg: "#3F2D29", dangerEdge: "#7C4743", accentBg: "#2A343D", accentEdge: "#3D5C7D",
+			bubble: "#2A343D",
 		});
 	});
 });
@@ -165,6 +165,7 @@ export interface Palette {
 	alive: string;
 	aliveInk: string;
 	aliveBg: string;
+	aliveEdge: string;
 	danger: string;
 	dangerInk: string;
 	dangerBg: string;
@@ -182,22 +183,54 @@ export interface Palette {
 	diffDel: string;
 }
 
-function channels(hex: string): [number, number, number] {
-	return [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+type Triple = [number, number, number];
+
+// sRGB <-> OKLab with Björn Ottosson's reference matrices: the same math the
+// web's token contract test uses to reproduce CSS color-mix(in oklab)
+// (cmd/evener-hub/frontend/src/styles/token-contract.test.ts).
+function toOklab(hex: string): Triple {
+	const [r, g, b] = [1, 3, 5].map((i) => {
+		const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+		return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+	});
+	const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+	const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+	const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+	return [
+		0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+		1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+		0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+	];
 }
 
-/** `hue` laid over `base` at `amount` (0 to 1), blended per sRGB channel and
- * rounded: the spec's tints ("the hue at 15% over surface"). */
-export function mix(hue: string, base: string, amount: number): string {
-	const h = channels(hue);
-	const b = channels(base);
-	return `#${b
-		.map((c, i) => Math.round(c + (h[i] - c) * amount).toString(16).padStart(2, "0"))
+function fromOklab([L, a, b]: Triple): string {
+	const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+	const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+	const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+	const linear = [
+		4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+		-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+		-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+	];
+	return `#${linear
+		.map((v) => {
+			const c = v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
+			return Math.max(0, Math.min(255, Math.round(c * 255))).toString(16).padStart(2, "0");
+		})
 		.join("")
 		.toUpperCase()}`;
 }
 
-type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
+/** `hue` laid over `base` at `amount` (0 to 1), blended in OKLab as the web's
+ * `color-mix(in oklab, …)` does: the spec's tints ("the hue at 15% over
+ * surface"). Two in-gamut colors mix in gamut, so a clamp is enough. */
+export function mix(hue: string, base: string, amount: number): string {
+	const h = toOklab(hue);
+	const b = toOklab(base);
+	return fromOklab([0, 1, 2].map((i) => h[i] * amount + b[i] * (1 - amount)) as Triple);
+}
+
+type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "aliveEdge" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
 
 function withTints(core: Core): Palette {
 	const accentBg = mix(core.accent, core.surface, 0.15);
@@ -206,6 +239,7 @@ function withTints(core: Core): Palette {
 		attentionBg: mix(core.attention, core.surface, 0.15),
 		attentionEdge: mix(core.attention, core.edge, 0.4),
 		aliveBg: mix(core.alive, core.surface, 0.15),
+		aliveEdge: mix(core.alive, core.edge, 0.4),
 		dangerBg: mix(core.danger, core.surface, 0.15),
 		dangerEdge: mix(core.danger, core.edge, 0.4),
 		accentBg,
@@ -637,7 +671,7 @@ it("uses the dimmer prose ink in dark mode", () => {
 });
 ```
 
-Add to `mobile-native/src/TimelineItem.test.tsx` a case that renders a `user` row (build it the way the file's existing user-row cases do) and asserts that the message text node's style has `fontFamily: "SourceSerif4-Regular"`, `fontSize: 17`, `lineHeight: 25`, and that the bubble view's `backgroundColor` is `#D7E9F9` in light mode. The text itself and its accessibility label ("You: …") must not change.
+Add to `mobile-native/src/TimelineItem.test.tsx` a case that renders a `user` row (build it the way the file's existing user-row cases do) and asserts that the message text node's style has `fontFamily: "SourceSerif4-Regular"`, `fontSize: 17`, `lineHeight: 25`, and that the bubble view's `backgroundColor` is `#DDEBFC` in light mode. The text itself and its accessibility label ("You: …") must not change.
 
 - [ ] **Step 2: Run them to verify they fail**
 

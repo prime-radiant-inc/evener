@@ -282,7 +282,7 @@ These are the hub's levels and names, shared with the web because the setting is
 | Item | Rendering |
 |---|---|
 | Time marker | Centered caption, ink-low: "Today 2:14 PM". Shown at a turn start after a gap of 10 minutes or more, and at day changes. |
-| Your message | Right-aligned bubble, max 85% width, a `bubble` fill (the accent tint in light mode, a warm neutral in dark), Source Serif 4 17/25 as on the web, continuous 18pt radius. Steered messages carry a small "Steered in mid-turn" caption; queued messages that were delivered carry "Queued". Long-press: Copy, Fork from here, Quote. |
+| Your message | Right-aligned bubble, max 85% width, a `bubble` fill (the accent tint in both themes, as on the web), Source Serif 4 17/25 as on the web, continuous 18pt radius. Steered messages carry a small "Steered in mid-turn" caption; queued messages that were delivered carry "Queued". Long-press: Copy, Fork from here, Quote. |
 | Agent message | No bubble. Source Serif 4, 17/26, ink-hi, full width with 16pt margins. Markdown: headings in SF Pro semibold (20/17/15), lists, block quotes with a 2pt ink-low rule, tables and code blocks in their own horizontally scrolling insets, links in accent ink. Paths to files become document chips. Long-press: Copy, Quote in reply, Select text. |
 | Activity run | One collapsed line per run of tool calls: "▸ 12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files" in 14pt ink-mid, with how long the run took. A live run lists only its finished steps; the step in progress is the status tray's one live line, so "working" is said once. Failure counts show in red ink even when collapsed. Tap to expand into one line per step: intent sentence, target in SF Mono, and a status mark. Tapping a step shows its evidence: command output in an SF Mono inset (first 40 lines, then "Show all 412 lines" which opens a full-screen log viewer), diffs as unified hunks with the web's add/delete washes and a "+18 −4" summary. A live run never folds. |
 | Thinking | Settled: "Thought for 12s ›" (collapsed). Live: "Thinking… ~1.2K tokens" with the one sanctioned pulse. |
@@ -642,7 +642,7 @@ The phone uses the web's tokens (`cmd/evener-hub/frontend/src/styles/tokens.css`
 | accent-fill | #0070E0 | #0070E0 | filled buttons (Send, Steer, Send review, the primary approval): white on it is 4.8:1 in both themes, where white on dark mode's #3D9AFF was 2.9:1 |
 | diff add / delete bg | #E9F4EE / #F5EAF0 | #19251A / #170B17 | diffs only |
 
-Tints: each hue's `-bg` is the hue at 15% over surface; `-edge` is the hue at 40% over edge. No other hues exist in the app. Diff washes are not status colors.
+Tints: each hue's `-bg` is the hue at 15% over surface; `-edge` is the hue at 40% over edge, both mixed in OKLab as `tokens.css`'s `color-mix(in oklab, …)` does. No other hues exist in the app. Diff washes are not status colors.
 
 Each hue has one job, including in the details: switches are accent, not the working green; a selected chip or segment is accent-bg with accent ink, never an ink fill; pins and their swipe action are ink or slate, never amber; search hits are bold, never an amber wash; "Recommended" is an ink-mid caption; version drift is a gray tag; Deny is ink. Amber appears only where a human is needed: marks, the state word on a row, the Needs you counts, the dock's edge and alerts.
 
