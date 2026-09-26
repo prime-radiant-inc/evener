@@ -280,7 +280,7 @@ type Session struct {
 	//   cfg knobs (ReasoningEffort, command timeouts, MaxToolRoundsPerInput),
 	//   cachedSystemPrompt, cachedToolDefs, the comm communicate-result,
 	//   steeringQueue, activeProvenance, followups, inputQueue,
-	//   loopDetectionCount, the task* reminder counters and taskStoreLoadErr, depth, the goalInTurn
+	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
@@ -805,10 +805,6 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *task.TaskStore
 	taskStoreOnce sync.Once
-	// taskStoreLoadErr records whether the session's persisted task store could
-	// be loaded. It is published by taskStoreOnce before any snapshot reads use
-	// it, then guarded by mu because a successful task-tool recovery clears it.
-	taskStoreLoadErr error
 
 	// goal store (lazy-init)
 	goalStore     *goal.Store

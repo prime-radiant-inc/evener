@@ -68,7 +68,6 @@ func TestSession_TasksWithErrorClearsInitialLoadErrorAfterStoreRepair(t *testing
 	store.SetFs(base) // external repair: the file is readable again.
 	s := newTestSession(t)
 	s.taskStore = store
-	s.taskStoreLoadErr = initialErr
 	s.taskStoreOnce.Do(func() {})
 	reg := tool.NewRegistry()
 	registerTaskTools(reg, newToolDeps(s))
@@ -116,7 +115,6 @@ func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 
 	s := newTestSession(t)
 	s.taskStore = store
-	s.taskStoreLoadErr = store.LoadError()
 	s.taskStoreOnce.Do(func() {})
 	reg := tool.NewRegistry()
 	registerTaskTools(reg, newToolDeps(s))
@@ -145,8 +143,8 @@ func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 func TestSession_SharedTaskListRecoveryClearsOwnerLoadError(t *testing.T) {
 	t.Parallel()
 	base := afero.NewMemMapFs()
-	path := "/state/tasks/shared-recovery.json"
-	if err := afero.WriteFile(base, path, []byte("[]"), 0o644); err != nil {
+	seed := taskpkg.NewTaskStore("/state", "shared-recovery").SetFs(base)
+	if _, err := seed.Append([]taskpkg.TaskInput{{Description: "shared task", Prompt: "survives child repair"}}); err != nil {
 		t.Fatal(err)
 	}
 	store := taskpkg.NewTaskStore("/state", "shared-recovery").SetFs(base)
@@ -159,7 +157,6 @@ func TestSession_SharedTaskListRecoveryClearsOwnerLoadError(t *testing.T) {
 
 	owner := newTestSession(t)
 	owner.taskStore = store
-	owner.taskStoreLoadErr = initialErr
 	owner.taskStoreOnce.Do(func() {})
 	child := newTestSession(t)
 	child.taskStore = store
@@ -177,6 +174,9 @@ func TestSession_SharedTaskListRecoveryClearsOwnerLoadError(t *testing.T) {
 	if childResult.IsError {
 		t.Fatalf("descendant task_list recovery = %q; want success", childResult.Output)
 	}
+	if tasks, err := owner.TasksWithError(); len(tasks) != 1 || tasks[0].Description != "shared task" || err != nil {
+		t.Fatalf("owner TasksWithError immediately after child recovery = tasks=%v err=%v; want recovered authoritative task snapshot", tasks, err)
+	}
 
 	ownerReg := tool.NewRegistry()
 	registerTaskTools(ownerReg, newToolDeps(owner))
@@ -186,8 +186,8 @@ func TestSession_SharedTaskListRecoveryClearsOwnerLoadError(t *testing.T) {
 	if ownerResult.IsError {
 		t.Fatalf("owner task_list after shared recovery = %q; want success", ownerResult.Output)
 	}
-	if tasks, err := owner.TasksWithError(); len(tasks) != 0 || err != nil {
-		t.Fatalf("owner TasksWithError after shared recovery = tasks=%v err=%v; want authoritative empty snapshot", tasks, err)
+	if tasks, err := owner.TasksWithError(); len(tasks) != 1 || tasks[0].Description != "shared task" || err != nil {
+		t.Fatalf("owner TasksWithError after owner task_list = tasks=%v err=%v; want recovered authoritative task snapshot", tasks, err)
 	}
 }
 

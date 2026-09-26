@@ -345,9 +345,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					return nil, store.LoadError()
 				}
 			}
-			// A shared store may have been repaired by another session. Clear
-			// this session's copy even when no local retry was needed.
-			deps.taskGuard.ClearLoadError()
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil
 				// slices; a mutation with nothing to mutate is the view.)

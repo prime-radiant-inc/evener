@@ -332,6 +332,10 @@ func (s *TaskStore) Load() error {
 func (s *TaskStore) LoadError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadErrorLocked()
+}
+
+func (s *TaskStore) loadErrorLocked() error {
 	if s.loadErr == nil {
 		return nil
 	}
@@ -380,6 +384,15 @@ func (s *TaskStore) View() []Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Task{}, s.tasks...)
+}
+
+// ViewWithError returns one coherent copy of the tasks and their availability
+// status. The same store lock covers both values so a concurrent Load cannot
+// make the snapshot and error describe different states.
+func (s *TaskStore) ViewWithError() ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Task{}, s.tasks...), s.loadErrorLocked()
 }
 
 // validateDependencies checks that all IDs in deps exist (in s.tasks or pending)
