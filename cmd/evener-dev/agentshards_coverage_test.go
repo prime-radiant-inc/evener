@@ -438,6 +438,9 @@ func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T)
 	}
 }
 
+// TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput
+// keeps an owned child diagnostic ahead of unindented output after a sibling
+// NAME frame, which cannot be attributed to either test.
 func TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput(t *testing.T) {
 	const childDiagnostic = "    child_test.go:5: child failure"
 	var log strings.Builder
@@ -457,9 +460,9 @@ func TestReplaySurveyFailuresPrioritizesChildDiagnosticOverSiblingDirectOutput(t
 }
 
 // TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected covers
-// sibling output between a sibling NAME frame and the parent's verdict. There
-// is no failing-test-owned candidate to expand, so the ordinary block must be
-// retained instead of being replaced by a marker-only excerpt.
+// indented sibling output between a sibling NAME frame and the parent's
+// verdict. It cannot be expanded as owned context, so the ordinary block must
+// be retained instead of being replaced by a marker-only excerpt.
 func TestReplaySurveyFailuresFallsBackWhenOnlySiblingOutputIsSelected(t *testing.T) {
 	const output = "    sibling_test.go:1: sibling output"
 	var log strings.Builder
@@ -635,6 +638,29 @@ func TestReplaySurveyFailuresExpandsChildDiagnosticWithEmptyWindow(t *testing.T)
 	got := strings.Join(replayLines(t, path, 10), "\n")
 	if !strings.Contains(got, diagnostic) {
 		t.Fatalf("child diagnostic was omitted from empty-window expansion: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup covers
+// an empty ordinary window where a sibling verdict sits immediately before
+// the parent failure. The child's diagnostic must outrank older parent setup.
+func TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    setup_test.go:%d: parent setup diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("child diagnostic was omitted after verbose parent setup: %q", got)
 	}
 }
 

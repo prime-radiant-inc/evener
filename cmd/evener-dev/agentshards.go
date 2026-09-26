@@ -879,18 +879,16 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict or a different test owns the
 // nearest context. The lines from ordinaryStart up to marker are the
-// already-selected ordinary context. Owned ordinary lines from the failing
-// test or a descendant are selected first, reserving one slot for the newest
-// parent-owned diagnostic when one exists; unindented direct output is also
-// retained because it cannot be attributed to a sibling's t.Log/t.Error.
-// Remaining candidates from those owners fill the bound. An empty ordinary
-// window may expand child diagnostics without that reservation. Source
-// diagnostics are associated with the most recent go test RUN/CONT/NAME
-// frame; a verdict returns ownership to the failing test. If ordinary context
-// owned by the failing test or its descendants exists, expansion requires a
-// parent-owned source diagnostic. When ordinary context overflows its budget,
-// the newest budget-sized tail is kept contiguously, dropping only older
-// lines.
+// already-selected ordinary context. Selection priority is owned ordinary
+// output, the newest parent diagnostic, descendant diagnostics, other owned
+// output, then unindented output after a foreign frame as lowest-priority
+// backfill. An empty ordinary window reserves space for both parent and
+// descendant diagnostics when both exist. Source diagnostics are associated
+// with the most recent go test RUN/CONT/NAME frame; a verdict returns ownership
+// to the failing test. If ordinary context owned by the failing test or its
+// descendants exists, expansion requires a parent-owned source diagnostic.
+// When ordinary context overflows its budget, the newest budget-sized tail is
+// kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
 // marker.
 func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]string, bool) {
@@ -909,25 +907,23 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 		return nil, false
 	}
 
-	type candidate struct {
-		index int
-	}
 	const maxExpandedLines = surveyContextBefore
-	appendNewest := func(candidates *[]candidate, candidate candidate) {
+	appendNewest := func(candidates *[]int, index int) {
 		if len(*candidates) == maxExpandedLines {
 			copy((*candidates)[:], (*candidates)[1:])
-			(*candidates)[maxExpandedLines-1] = candidate
+			(*candidates)[maxExpandedLines-1] = index
 			return
 		}
-		*candidates = append(*candidates, candidate)
+		*candidates = append(*candidates, index)
 	}
 	owner := name
 	parentDiagnostic := false
-	ordinaryOwnedCandidates := make([]candidate, 0, maxExpandedLines)
-	parentDiagnosticCandidates := make([]candidate, 0, maxExpandedLines)
-	ownedDiagnosticCandidates := make([]candidate, 0, maxExpandedLines)
-	ownedOutputCandidates := make([]candidate, 0, maxExpandedLines)
-	ordinaryContextCandidates := make([]candidate, 0, maxExpandedLines)
+	ordinaryOwnedCandidates := make([]int, 0, maxExpandedLines)
+	parentDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	descendantDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	ownedDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	ownedOutputCandidates := make([]int, 0, maxExpandedLines)
+	ordinaryContextCandidates := make([]int, 0, maxExpandedLines)
 	ordinaryCount := 0
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
@@ -944,39 +940,39 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 		lineIndex := run + 1 + index
 		if diagnostic && owner == name {
 			parentDiagnostic = true
-			appendNewest(&parentDiagnosticCandidates, candidate{index: lineIndex})
+			appendNewest(&parentDiagnosticCandidates, lineIndex)
 		}
 		owned := owner == name || strings.HasPrefix(owner, name+"/")
 		ordinary := lineIndex >= ordinaryStart
 		if ordinary && owned {
 			ordinaryCount++
-			appendNewest(&ordinaryOwnedCandidates, candidate{index: lineIndex})
+			appendNewest(&ordinaryOwnedCandidates, lineIndex)
 		}
 		if owned {
 			if diagnostic {
-				appendNewest(&ownedDiagnosticCandidates, candidate{index: lineIndex})
+				if owner != name {
+					appendNewest(&descendantDiagnosticCandidates, lineIndex)
+				}
+				appendNewest(&ownedDiagnosticCandidates, lineIndex)
 			} else {
-				appendNewest(&ownedOutputCandidates, candidate{index: lineIndex})
+				appendNewest(&ownedOutputCandidates, lineIndex)
 			}
 		}
 		if ordinary && !owned && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			appendNewest(&ordinaryContextCandidates, candidate{index: lineIndex})
+			appendNewest(&ordinaryContextCandidates, lineIndex)
 		}
-	}
-	if ordinaryCount == 0 && len(ownedDiagnosticCandidates) == 0 && len(ownedOutputCandidates) == 0 && len(ordinaryContextCandidates) == 0 {
-		return nil, false
 	}
 	if ordinaryCount > 0 && !parentDiagnostic {
 		return nil, false
 	}
 	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
-	selectNewest := func(candidates []candidate, limit int) {
+	selectNewest := func(candidates []int, limit int) {
 		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
-			if _, exists := keep[candidates[i].index]; exists {
+			if _, exists := keep[candidates[i]]; exists {
 				continue
 			}
-			keep[candidates[i].index] = struct{}{}
+			keep[candidates[i]] = struct{}{}
 			selectedCount++
 		}
 	}
@@ -984,10 +980,13 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	if parentDiagnostic {
 		ordinaryBudget--
 	}
-	if ordinaryCount <= ordinaryBudget {
-		selectNewest(ordinaryOwnedCandidates, ordinaryCount)
-	} else {
-		selectNewest(ordinaryOwnedCandidates, ordinaryBudget)
+	selectNewest(ordinaryOwnedCandidates, min(ordinaryCount, ordinaryBudget))
+	if ordinaryCount == 0 {
+		descendantBudget := maxExpandedLines
+		if parentDiagnostic {
+			descendantBudget--
+		}
+		selectNewest(descendantDiagnosticCandidates, descendantBudget)
 	}
 	if parentDiagnostic {
 		selectNewest(parentDiagnosticCandidates, maxExpandedLines)
