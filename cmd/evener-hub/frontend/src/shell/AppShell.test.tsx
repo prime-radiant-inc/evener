@@ -312,25 +312,17 @@ test("keeps the desktop shell full-bleed contract in AppShell.module.css", () =>
 // already paid by the time a test measures it. The module cache is only the
 // first half: React.lazy keeps a payload of its own that stays uninitialized
 // until React first RENDERS the component, so a warm module cache still
-// leaves the first render suspending, committing its Suspense fallback, and
-// then waiting out react-dom's FALLBACK_THROTTLE_MS (300ms, react-dom 19.2)
-// before it will commit the revealed content - a flicker guard that is pure
-// wall clock and does not shrink on a fast machine. The welcome route
-// crosses two nested boundaries (AppShell's lazy DockHost, then PaneHost's
-// lazy Welcome); each other pane crosses one more of its own. Measured here:
-// ~654ms for the two-boundary welcome route and ~310-380ms per additional
-// pane the first time, ~10-20ms every time after. Mirrors App.test.tsx's own
-// warmRoute (commit c1a8616ea) for the same reason.
+// leaves the first render suspending. The welcome route crosses two nested
+// boundaries (AppShell's lazy DockHost, then PaneHost's lazy Welcome); each
+// other pane crosses one more of its own. Rendering inside an awaited act
+// lets each reveal commit as soon as its already-imported chunk resolves;
+// outside act, react-dom holds every reveal for FALLBACK_THROTTLE_MS (300ms,
+// react-dom 19.2) on a real timer. Mirrors App.test.tsx's own warmRoute.
 //
 // The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than findBy's 1000ms
 // default. That default is an assertion window - it exists to hold a test to a
-// responsiveness bar - and a warm-up has no such bar to hold: its whole job is
-// to absorb the variable cost so the real assertions don't. At ~654ms of a
-// 1000ms budget the warm-up had under 40% headroom and failed roughly one full
-// suite run in two. The awaitable half of the cost is already awaited (the
-// beforeAll imports below); what remains is react-dom's fixed per-boundary
-// flicker throttle, which publishes no completion signal to wait on, so a
-// deadline here can only ever be a tripwire for a hung render.
+// responsiveness bar - and a warm-up has no such bar to hold, so the deadline
+// here is a tripwire for a hung render.
 const WARM_ROUTE_TRIPWIRE_MS = 10_000;
 
 async function warmRoute(
@@ -359,7 +351,9 @@ async function warmRoute(
       },
     });
   }
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
   // Unmounting also clears DockHost's pending debounced layout save (its own
   // effect cleanup), so no warm render leaks a write into a later test.
