@@ -211,14 +211,20 @@ record: the line was written but its fsync failed (`transcript.go:729-735`).
     counter is numerically lower: a delegate later served by its own daemon
     (unqualified) replaces a qualified token from its former root, and vice
     versa.
-  - **Which response wins.** Request generations decide which response applies.
-    A client has one latest-window read per thread in flight and applies only the
-    newest, so a delayed response from any generation cannot overtake a newer
-    one. The client's request-generation counter is monotonic across boot
-    changes: it is never reset when a thread is marked invalid, so a response
-    still in flight from before the invalidating event always carries an older
-    generation than the read that follows it and is discarded, never applied
-    after the newer read's response.
+  - **Which response wins.** The client keeps a **per-thread** request-generation
+    counter that is monotonic across boot changes: it is never reset when a
+    thread is marked invalid. Ordinarily the client has one latest-window
+    read per thread outstanding at a time. Marking a thread invalid can leave
+    a second one outstanding: the read already in flight from before the
+    invalidating event, alongside the fresh read the invalidation issues. The
+    guarantee does not depend on how many are outstanding — it depends only on
+    the counter and comparing each response's echoed generation against the
+    newest one issued for that thread: a response whose generation is lower
+    than the newest issued is discarded, and so is one issued before the
+    thread's last invalidation. So the pre-invalidation read's response, which
+    always carries a lower generation than the invalidating read that
+    followed it, is discarded, never applied after the newer read's response,
+    and a delayed response from any generation cannot overtake a newer one.
   - **Replace or merge.** The generation token decides only that.
     - A latest-window response whose token differs from the one the client holds
       replaces the thread's whole history. That covers numeric to `daemonless`,
@@ -316,16 +322,23 @@ delivery and stop goroutines at any time: model-bound attention STEERING
   closes it. An async write that loses the race to the completion therefore
   takes a delivery turn.
 - **Lock order.** Three locks nest in one fixed order: the thread's projection
-  serialization (held by its projection goroutine, and by a read recovering a
-  failed thread) is outermost, then the append lock, then the per-thread
-  projection queue's mutex, a leaf. The recorded hook takes only the queue
-  mutex. A rebuild captures its boundary ordinal by taking the append lock and
-  then the queue mutex while it already holds the serialization, so the
-  boundary and the queue's contents are one atomic snapshot. Nothing takes the
-  serialization while the append lock is held, and nothing takes the append
-  lock while the queue mutex is held. Neither the queue mutex nor the
-  serialization is held across file I/O, except the projection goroutine's own
-  index reads, which run under the serialization alone.
+  serialization (held by its projection goroutine for each step, and by a read
+  recovering a failed thread, for the same kind of step) is outermost, then
+  the append lock, then the per-thread projection queue's mutex, a leaf. The
+  recorded hook takes only the queue mutex. A rebuild — whether the
+  goroutine's own, or a read's recovery of a failed thread — captures its
+  boundary ordinal by briefly taking the append lock and then the queue mutex
+  while it already holds the serialization, so the boundary and the queue's
+  contents are one atomic snapshot; releasing both locks again before doing
+  any I/O. Nothing takes the serialization while the append lock is held, and
+  nothing takes the append lock while the queue mutex is held. The queue mutex
+  is never held across I/O. The serialization *is* routinely held across file
+  and index I/O — normal projection, a rebuild, and a read's recovery all read
+  and write the transcript and its index while holding only the
+  serialization, with the append lock and queue mutex both released — since
+  serialization ordering, not lock-freedom during I/O, is what keeps one
+  thread's projection steps from interleaving. That I/O never blocks an
+  appender, because the append lock is never nested inside it.
 
 **Turn membership** comes from `TurnID`, not from entry-kind adjacency.
 
@@ -515,14 +528,22 @@ does not catch up, the thread's history enters a failed state. The server
 stops projecting that thread, drops its queued entries, stops enqueueing new
 ones for it, and pushes a resync. Nothing accumulates for a failed thread. This
 failed state is reserved for rebuild and infrastructure failures — an index or
-file I/O error, or a projector too slow to keep up — never for one bad entry
-(see Quarantine, below).
+file I/O error, or a projector too slow to keep up — and for a builder error
+applying an already-decoded entry, which a rebuild might still recover from a
+clean incremental or file-projection state. It is never entered for one entry
+that fails to decode (see Quarantine, below): that failure is a pure function
+of the entry's own bytes, which do not change, so no rebuild or retry can ever
+recover it, and quarantining it is strictly better than failing the whole
+thread's history over it.
 
-**Quarantine.** A single entry that deterministically fails to project — a
-line that does not decode, or a builder error over an otherwise-valid entry —
-does not fail the thread. It is quarantined: the entry projects as its own
-turn holding one visible "unreadable entry" item naming its ordinal, and the
-thread's history continues past it, live and on reload alike. A quarantined
+**Quarantine.** A single entry that fails to decode — a line whose bytes are
+not a well-formed entry — does not fail the thread. It is quarantined: the
+entry projects as its own turn holding one visible "unreadable entry" item
+naming its ordinal, and the thread's history continues past it, live and on
+reload alike. Quarantine applies only to a decode failure, never to a builder
+error over an entry that did decode; a builder error goes through the rebuild
+and failed-state path above instead, so a failure that a whole-file rebuild
+might recover from is never permanently masked as one quarantined item. A quarantined
 entry never triggers a resync, a rebuild, or the failed-history state.
 
 A history read of a failed thread first attempts recovery: it rebuilds inside
@@ -741,7 +762,14 @@ response is authoritative for the position range it returned:
 - Pages from the same snapshot accumulate.
 - A daemonless latest-window response is authoritative from its first position
   to the end of history. The client drops any item it holds past the returned
-  window. Live responses merge by version and never drop items.
+  window. This scoped, position-range drop is a daemonless-only rule: within
+  one boot generation, epoch and incarnation, a live response never drops
+  items this way, and merges by version instead. It is still subject to the
+  whole-history replacement triggers above (a higher boot generation, a newer
+  resync epoch, or a different incarnation), which a live latest-window
+  response can carry too — an index rebuild rotates the incarnation. Those
+  triggers replace the whole history rather than dropping a range; they are
+  not the position-scoped rule this bullet states.
 - **Later completions of held items.** A daemonless latest-window request
   carries the snapshot the client holds. The response also returns every item
   and turn outside the window whose version grew since that snapshot, found
@@ -761,9 +789,10 @@ read it issues, and the response echoes it.
   to a later generation has been applied. So a slow response from an old sidecar
   can never overwrite history from a newer one.
 - **Backfill pages** carry no generation. They accumulate within their snapshot,
-  in any arrival order. A page is dropped only when its snapshot is older than
-  the one the client holds: an older incarnation, or the same incarnation with a
-  shorter recorded length. Only the current
+  in any arrival order. A page is dropped when its snapshot cannot be the
+  current one: a different incarnation (incarnations compare by equality
+  only, never by age), or the same incarnation with a shorter recorded length
+  than the client already holds. Only the current
 incarnation is valid. Each rule applies on one side:
 - **The server rejects.** A backfill request whose cursor names an incarnation
   other than the current one gets `TranscriptItemCursorStale`, and the client
@@ -920,8 +949,12 @@ hub along with the daemon.
 These came from the last spec review round and are pinned as tests in the
 phase 3 plan.
 
-- **Incarnations** compare by equality only. A client issues one latest-window
-  read per thread at a time and applies only the newest request generation.
+- **Incarnations** compare by equality only. A client normally issues one
+  latest-window read per thread at a time; an invalidation can leave an older
+  one still outstanding alongside the fresh read it issues. Either way the
+  client applies only the response whose request generation is the newest
+  issued so far for that thread (see Which response wins, under Crash/boot
+  generation).
 - **After an incarnation change**, the latest-window response replaces the whole
   history. The client then backfills older pages again as it needs them.
 - **Queue overflow during a rebuild** restarts the rebuild through a new boundary
