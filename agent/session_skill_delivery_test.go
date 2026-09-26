@@ -1099,6 +1099,7 @@ func newContinuationSession(t *testing.T, adapter *skillContinuationAdapter, dir
 // the typed causal notification and the rebuilt request commits through the
 // same seam.
 func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
@@ -1191,6 +1192,7 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 // session rebuilds the request from full history; the seam revalidates and
 // commits against that rebuilt shape.
 func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)

@@ -14,6 +14,7 @@ import (
 // line 105: validatedOutputStatsForRecord returns a non-NotExist error because
 // the terminal record's OutputBytes does not match the file's actual size.
 func TestLoadSessionJobOutputTail_TerminalRecordMismatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")
@@ -54,6 +55,7 @@ func TestLoadSessionJobOutputTail_TerminalRecordMismatch(t *testing.T) {
 // lines 109-112: windowOutputFile returns a non-NotExist error because the
 // output path is a directory (read fails).
 func TestLoadSessionJobOutputTail_OutputIsDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")
@@ -93,6 +95,7 @@ func TestLoadSessionJobOutputTail_OutputIsDirectory(t *testing.T) {
 // line 102-103: validatedOutputStatsForRecord returns os.ErrNotExist for a
 // running job whose output file does not exist.
 func TestLoadSessionJobOutputTail_NoOutputFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")
@@ -129,6 +132,7 @@ func TestLoadSessionJobOutputTail_NoOutputFile(t *testing.T) {
 // TestLoadSessionJobOutputTail_EmptyOutputPath covers the default-path path at
 // line 98: rec.OutputPath is empty, so outPath is built from stateDir/sessionID/jobs.
 func TestLoadSessionJobOutputTail_EmptyOutputPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")

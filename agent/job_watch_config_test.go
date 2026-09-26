@@ -307,6 +307,7 @@ func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsImpossibleConcreteJobEventWatches(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "watched"})
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 // Only an explicit opt-in may send the parent's conversation to a delegate.
 // Completed tool exchanges must survive, while the in-flight spawn must not.
 func TestDelegateForkContext_OptInHistory(t *testing.T) {
+	t.Parallel()
 	for _, option := range []any{nil, false, true} {
 		name := "default"
 		if option != nil {
@@ -111,6 +112,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 }
 
 func TestDelegateForkContext_DescendantsStartClean(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	root.appendTurn(schema.TurnUserInput, llm.User("ancestor-context-sentinel"))
 	grandchild := newTask6FrozenDescriptorAdapter()
@@ -147,6 +149,7 @@ func TestDelegateForkContext_DescendantsStartClean(t *testing.T) {
 }
 
 func TestDelegateForkContext_RejectsMismatchedSourceTranscript(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	if err := root.closeAttachedTranscript(); err != nil {
 		t.Fatal(err)
@@ -167,6 +170,7 @@ func TestDelegateForkContext_RejectsMismatchedSourceTranscript(t *testing.T) {
 // has continued. Parent compaction controls the working context but must not
 // erase the earlier conversation from the child's transcript.
 func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	root.appendTurn(schema.TurnUserInput, llm.User("archived-parent-sentinel"))
 	root.appendTurn(schema.TurnCheckpoint, llm.User("parent-summary-sentinel"))
@@ -242,6 +246,7 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 }
 
 func TestDelegateForkContext_RejectsDifferentModelBeforeCreation(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "unit", ForkContext: true, Model: "gpt-5.5"})
 	if result.Err == nil || !strings.Contains(result.Err.Error(), "fork_context") || result.DelegateID != "" {
@@ -252,6 +257,7 @@ func TestDelegateForkContext_RejectsDifferentModelBeforeCreation(t *testing.T) {
 // A direct resume has no live parent spawn config. It must still identify the
 // delegate by its assignment rather than the first inherited user message.
 func TestDelegateForkContext_DirectResumeKeepsAssignment(t *testing.T) {
+	t.Parallel()
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
 	meta.IsSubagent = true
 	meta.ParentSessionID = identifier.MustNewSessionID()
@@ -283,6 +289,7 @@ func TestDelegateForkContext_DirectResumeKeepsAssignment(t *testing.T) {
 }
 
 func TestDelegateForkContext_SchemaOffersOptionalBoolean(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	definition := root.delegateToolDefinition()
 	property, ok := definition.Parameters["properties"].(map[string]any)["fork_context"].(map[string]any)
@@ -297,6 +304,7 @@ func TestDelegateForkContext_SchemaOffersOptionalBoolean(t *testing.T) {
 }
 
 func TestDelegateForkContext_RejectsMalformedOption(t *testing.T) {
+	t.Parallel()
 	for _, option := range []any{"true", 1, nil, []any{true}} {
 		if _, err := decodeDelegateArgs(map[string]any{"prompt": "unit", "fork_context": option}); err == nil {
 			t.Errorf("accepted fork_context=%#v", option)

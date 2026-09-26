@@ -223,6 +223,7 @@ func TestDecodeActivityContinuation_Validation(t *testing.T) {
 }
 
 func TestProjectActivityJobStampsLastOutputAt(t *testing.T) {
+	t.Parallel()
 	last := time.Date(2026, 8, 5, 15, 2, 11, 0, time.UTC)
 	job := projectActivityJob(&jobstore.JobRecord{
 		JobID: "job_live", Type: jobstore.JobShell, Status: jobstore.StatusRunning,
@@ -234,6 +235,7 @@ func TestProjectActivityJobStampsLastOutputAt(t *testing.T) {
 }
 
 func TestProjectStableActivityDelegateCopiesChildUsage(t *testing.T) {
+	t.Parallel()
 	want := &appwire.EvenerUsage{InputTokens: 41200, OutputTokens: 6100}
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child", Usage: want}
 	snap := activitySessionSnapshot{
@@ -280,6 +282,7 @@ func activityRecordIDs(records []*jobstore.JobRecord) []string {
 }
 
 func TestActivityTreeJSONOmitsLegacyDelegateTurns(t *testing.T) {
+	t.Parallel()
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},

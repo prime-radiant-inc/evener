@@ -225,6 +225,7 @@ func TestHookCompletedTurnIsNeverSentToModel(t *testing.T) {
 }
 
 func TestCompactedHookToolExchangeProjectsValidProviderMessages(t *testing.T) {
+	t.Parallel()
 	const callID = "call_with_hook"
 	tests := []struct {
 		name           string

@@ -19,6 +19,7 @@ import (
 )
 
 func TestPrepareToolCall_HealsDefaultCommunicateEnvelopeIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 
 	outputString := `{"message":"output-only text","data":{"status":"ok"},"artifacts":["artifact:result"]}`
@@ -115,6 +116,7 @@ func TestPrepareToolCall_HealsDefaultCommunicateEnvelopeIssue831(t *testing.T) {
 }
 
 func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	const depthBeyondLimit = 65
 	tooDeep := strings.Repeat(`{"nested":`, depthBeyondLimit) + `{}` + strings.Repeat(`}`, depthBeyondLimit)
@@ -155,6 +157,7 @@ func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t
 }
 
 func TestPrepareToolCall_PromotedCommunicateOutputGuidanceOnlyNamesOutputFailuresIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	const outputGuidance = "the decoded object did not satisfy the communicate output schema"
 
@@ -187,6 +190,7 @@ func TestPrepareToolCall_PromotedCommunicateOutputGuidanceOnlyNamesOutputFailure
 }
 
 func TestPrepareToolCall_DefaultCommunicateObjectStillRejectsInvalidNestedFieldsIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	for _, arguments := range []string{
 		`{"end_turn":true,"message":"top-level","output":{"message":"nested","data":{},"artifacts":[],"unexpected":true}}`,
@@ -200,6 +204,7 @@ func TestPrepareToolCall_DefaultCommunicateObjectStillRejectsInvalidNestedFields
 }
 
 func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue831(t *testing.T) {
+	t.Parallel()
 	def := tool.DefCommunicateNamed("communicate")
 	params := tool.CloneSchemaMap(def.Parameters)
 	output := params["properties"].(map[string]any)["output"].(map[string]any)
@@ -226,6 +231,7 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 }
 
 func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withoutGitSnapshot())
 	sess.stateDir = t.TempDir()
 	repairedCh := drainRepairedEvents(sess)
@@ -254,6 +260,7 @@ func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t
 }
 
 func TestSession_FailedCommunicateOutputPromotionDoesNotEmitUnappliedJSONRepairIssue831(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withoutGitSnapshot())
 	sess.stateDir = t.TempDir()
 	observed := make(chan struct {
@@ -306,6 +313,7 @@ func TestSession_FailedCommunicateOutputPromotionDoesNotEmitUnappliedJSONRepairI
 }
 
 func TestPrepareToolCall_RepairsCommitArgumentsAndChangesAtomicallyIssue831(t *testing.T) {
+	t.Parallel()
 	def := issue831NumericRepairDefinition()
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(def)); err != nil {
@@ -325,6 +333,7 @@ func TestPrepareToolCall_RepairsCommitArgumentsAndChangesAtomicallyIssue831(t *t
 }
 
 func TestCommitPreparedRepairs_MarshalFailureDoesNotPartiallyCommitIssue831(t *testing.T) {
+	t.Parallel()
 	raw := json.RawMessage(`{"s":"raw"}`)
 	res := prepareResult{Call: llm.ToolCallData{Arguments: raw}}
 	changes := []repair.Change{{Kind: repair.ChangeCoerceType, Field: "n", Detail: `"NaN"→NaN`}}
@@ -340,6 +349,7 @@ func TestCommitPreparedRepairs_MarshalFailureDoesNotPartiallyCommitIssue831(t *t
 }
 
 func TestSession_NonFiniteNumericRepairDoesNotEmitUnappliedChangesIssue831(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withoutGitSnapshot())
 	sess.stateDir = t.TempDir()
 	def := issue831NumericRepairDefinition()
@@ -364,6 +374,7 @@ func TestSession_NonFiniteNumericRepairDoesNotEmitUnappliedChangesIssue831(t *te
 }
 
 func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	for _, output := range []struct {
 		name string
@@ -414,6 +425,7 @@ func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue
 }
 
 func TestPrepareToolCall_ValidRawCommunicateArgumentsAtLimitAndUTF8StillHealIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	base := `{"end_turn":true,"message":"top-level"}`
 	for _, args := range [][]byte{
@@ -431,6 +443,7 @@ func TestPrepareToolCall_ValidRawCommunicateArgumentsAtLimitAndUTF8StillHealIssu
 }
 
 func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(t *testing.T) {
+	t.Parallel()
 	for _, output := range []struct {
 		name string
 		tail string
@@ -485,6 +498,7 @@ func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(
 }
 
 func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args func() []byte
@@ -594,6 +608,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 }
 
 func TestSession_PreToolUseHookDenialCannotOverrideInvalidRawArgumentsIssue831(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withoutGitSnapshot())
 	sess.stateDir = t.TempDir()
 	var mu sync.Mutex
@@ -623,6 +638,7 @@ func TestSession_PreToolUseHookDenialCannotOverrideInvalidRawArgumentsIssue831(t
 }
 
 func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue831(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		hookResponse string
@@ -697,6 +713,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 }
 
 func TestSession_PreToolUseHookStillReceivesValidSchemaInvalidArgumentsIssue831(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withoutGitSnapshot())
 	sess.stateDir = t.TempDir()
 	var mu sync.Mutex
@@ -736,6 +753,7 @@ func boundedStringForIssue831(values []string) string {
 }
 
 func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssue831(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
 	res := prepareToolCall(llm.ToolCallData{ID: "issue831-whitespace", Name: "communicate", Arguments: raw}, rt, []string{"communicate"}, "communicate", "communicate", "")
@@ -748,6 +766,7 @@ func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssu
 }
 
 func TestSession_WhitespaceOutputMessageDoesNotEmitRepairIssue831(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withoutGitSnapshot())
 	sess.stateDir = t.TempDir()
 	repairedCh := drainRepairedEvents(sess)

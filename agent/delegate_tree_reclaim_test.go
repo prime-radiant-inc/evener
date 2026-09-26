@@ -895,6 +895,7 @@ func TestDelegateIdleRelease_RefusesSharedTaskStoreOwner(t *testing.T) {
 // and once it finishes, the release settles the child with the member
 // instead of leaving the record to outlive the runtime that held it.
 func TestDelegateIdleRelease_RefusesWhileManagerChildRuns(t *testing.T) {
+	t.Parallel()
 	root, tree, _ := newRetirementDelegateController(t)
 	defer root.Close()
 	result := retirementIdleDelegate(t, root)
@@ -945,6 +946,7 @@ func TestDelegateIdleRelease_RefusesWhileManagerChildRuns(t *testing.T) {
 // once the residue settles. The fixture disables the scheduled release, so
 // the refusal here cannot re-arm a retry timer behind the test's back.
 func TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm(t *testing.T) {
+	t.Parallel()
 	root, tree, _ := newRetirementDelegateController(t)
 	defer root.Close()
 	result := retirementIdleDelegate(t, root)
@@ -1005,6 +1007,7 @@ func TestDelegateIdleRelease_PregateRefusalLeavesRuntimeWarm(t *testing.T) {
 // package's fake, so the grace timers fire only when the test advances
 // virtual time: the residue plant can never race the first timer.
 func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
@@ -1094,6 +1097,7 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 // release: once the residue settles, one advance releases the runtime
 // exactly once, and the success re-arms nothing.
 func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
@@ -1528,6 +1532,7 @@ func sandboxedChildScratchDir(t *testing.T, sess *Session) string {
 // work mid-flight. Each refusal re-arms the retry, so the settled runtime
 // still releases through the timer, never through a forced teardown.
 func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
@@ -1644,6 +1649,7 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 // and must release the hold at pass exit, declined or not, so a declined wake
 // leaves the restored runtime reapable instead of pinned warm forever.
 func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()

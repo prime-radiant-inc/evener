@@ -35,6 +35,7 @@ func restoreSkillCompactionSession(t *testing.T, stateDir, id string) *Session {
 // own instructions, so the next round tail dispatches the fold. Restart is not
 // cancellation: the operation itself stays pending.
 func TestSkillCompactionRestore_ForcedOperationReArmedBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	id := s.Meta().ID
@@ -61,6 +62,7 @@ func TestSkillCompactionRestore_ForcedOperationReArmedBeforeDispatch(t *testing.
 // the restored operation itself — no transient trigger is armed, no fold is
 // forced, and pressure alone must not re-elicit over it.
 func TestSkillCompactionRestore_AutomaticLatchRestoredWithoutForceFold(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	id := s.Meta().ID
@@ -110,6 +112,7 @@ func TestSkillCompactionRestore_AutomaticLatchRestoredWithoutForceFold(t *testin
 // fold is never re-armed, the elicitation latch is gone, and the cycle
 // reopens for a fresh generation.
 func TestSkillCompactionRestore_PublishedOperationCompletesAtRestore(t *testing.T) {
+	t.Parallel()
 	meta := schema.SessionMeta{
 		ID:        "resume-published-compaction",
 		ProfileID: "openai",
@@ -190,6 +193,7 @@ func TestSkillCompactionRestore_PublishedOperationCompletesAtRestore(t *testing.
 // compaction state — no operation is reconstructed from history, no trigger is
 // armed, and elicitation behaves as in a brand-new session.
 func TestSkillCompactionRestore_MissingLegacyMetadataResumesWithoutBackfill(t *testing.T) {
+	t.Parallel()
 	meta := schema.SessionMeta{
 		ID:        "resume-legacy-compaction",
 		ProfileID: "openai",
@@ -233,6 +237,7 @@ func TestSkillCompactionRestore_MissingLegacyMetadataResumesWithoutBackfill(t *t
 // second persisted copy to drift — so this asserts the operation the restart
 // rebuilt.
 func TestSkillCompactionRestore_ReloadSelectionRoundTrip(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	id := s.Meta().ID
@@ -266,6 +271,7 @@ func TestSkillCompactionRestore_ReloadSelectionRoundTrip(t *testing.T) {
 // occupied, and requestSkillCompaction refuses every new intent while a
 // published operation owns it.
 func TestSkillCompactionRestore_PublishedSlotWithoutReceiptStillDelivers(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_window_retry")

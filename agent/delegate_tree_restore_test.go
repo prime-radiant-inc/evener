@@ -18,6 +18,7 @@ import (
 )
 
 func TestDelegateAttentionSchemaStrictRoundTrip(t *testing.T) {
+	t.Parallel()
 	entries := [][]byte{
 		[]byte(`{"kind":"entry","seq":0,"turn":{"kind":"STEERING","message":{},"timestamp":"0001-01-01T00:00:00Z","usage":{},"attention_id":"shell:job-shell:terminal-1"}}`),
 		[]byte(`{"kind":"entry","seq":1,"turn":{"kind":"ATTENTION_RESOLUTION","message":{},"timestamp":"0001-01-01T00:00:00Z","usage":{},"attention_resolution":{"attention_id":"shell:job-shell:terminal-1","disposition":"discarded"}}}`),

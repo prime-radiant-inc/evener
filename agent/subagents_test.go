@@ -36,6 +36,7 @@ func newTestSession(t *testing.T) *Session {
 }
 
 func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
+	t.Parallel()
 	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
 	parent := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
@@ -55,6 +56,7 @@ func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
 }
 
 func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	register := func(name string, limit schema.ToolOutputLimit) {
 		t.Helper()
@@ -102,6 +104,7 @@ func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
 }
 
 func TestExplicitAllowedToolsInjectRecoveryReaderOnly(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		NoProjectPrompts: true,
 		spawn:            spawnConfig{allowedToolNames: []string{"grep"}},
@@ -119,6 +122,7 @@ func TestExplicitAllowedToolsInjectRecoveryReaderOnly(t *testing.T) {
 }
 
 func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.pluginAgents["task7-reader"] = plugin.Agent{
 		Name:         "task7-reader",
@@ -258,6 +262,7 @@ func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
 }
 
 func TestSubagentStatusExhaustedIsTerminal(t *testing.T) {
+	t.Parallel()
 	if !terminalStatus(SubagentExhausted) {
 		t.Fatal("exhausted subagent status must be terminal")
 	}

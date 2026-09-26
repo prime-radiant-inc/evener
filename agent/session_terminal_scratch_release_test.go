@@ -105,6 +105,7 @@ func TestTerminalCloseReleasesRetainedScratchPoolBeforeRetentionRelease(t *testi
 // daemon holds the leases. The seal makes the losing pass undo its own publish
 // and hand the leases back, so the tombstone release removes the pin.
 func TestTerminalReleaseSealDeclinesInFlightRefreshSeed(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -180,6 +181,7 @@ func TestTerminalReleaseSealDeclinesInFlightRefreshSeed(t *testing.T) {
 // daemon's life, marking the slots contended for future cold restores and
 // pinning the directories against the collector.
 func TestRetirementScratchSealDeclinesInFlightRefreshSeed(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -260,6 +262,7 @@ func TestRetirementScratchSealDeclinesInFlightRefreshSeed(t *testing.T) {
 // so a hold that ends between attempts still commits the tombstone and
 // removes the pin.
 func TestTerminalReleaseRetriesManifestLockContention(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -354,6 +357,7 @@ func TestTerminalReleaseRetriesManifestLockContention(t *testing.T) {
 // undo CAS decides ownership: only a pass that actually un-published its seed
 // still owns its leases.
 func TestTerminalDetachSweepOwnsSeededHandles(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {

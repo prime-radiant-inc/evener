@@ -989,6 +989,7 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 }
 
 func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "cold-resolution"
@@ -1022,6 +1023,7 @@ func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T
 }
 
 func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSourceAck(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "cold-notification-durability"
@@ -1060,6 +1062,7 @@ func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSou
 }
 
 func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopAck(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "cold-resolution-durability"
@@ -1257,6 +1260,7 @@ func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettl
 }
 
 func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *testing.T) {
+	t.Parallel()
 	const callID = "call-with-resolution"
 	for _, test := range []struct {
 		name           string
@@ -1544,6 +1548,7 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 }
 
 func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testing.T) {
+	t.Parallel()
 	const callID = "call-with-resolution"
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("delegate completed"))
 	attention.AttentionID = "delegate:delivery-1"
@@ -1577,6 +1582,7 @@ func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testin
 }
 
 func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const sessionID = "cold-attention"
 	path := transcriptPath(stateDir, sessionID)
@@ -2197,6 +2203,7 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 }
 
 func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
@@ -2872,6 +2879,7 @@ func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T
 }
 
 func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
@@ -2903,6 +2911,7 @@ func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t
 }
 
 func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_consume/delivery/1"
@@ -2948,6 +2957,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 // answers an already-answered context and the user sees the closing message
 // twice. The turn that already presented the item must consume it at finish.
 func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		firstID       = "delegate:dlg_midturn/delivery/1"
@@ -3261,6 +3271,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 // while attention armed after it counts the moment a built request presents
 // the steering turn.
 func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		preTurnID  = "delegate:dlg_boundary/delivery/1"
@@ -3338,6 +3349,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 // delta request stages nothing. The items keep their wake for a full-history
 // turn.
 func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_delta/delivery/1"
@@ -3384,6 +3396,7 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 // may fold the steering turn away — must leave the item unconsumed: staged
 // but never promoted, so finish skips it and its wake survives.
 func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_settled/delivery/1"
@@ -3455,6 +3468,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 // flagged for, finish arranges a paced retry even while the flag is set (the
 // drain skips the notification rung right after a notification turn).
 func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	const (
@@ -3525,6 +3539,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 // unwinding. The recover defer marks err before re-panicking, and the finish
 // defer — unwinding right after — reads it and skips the success path.
 func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_panic/delivery/1"
@@ -3566,6 +3581,7 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 // the optimization's error. The injected writer fails exactly one
 // ATTENTION_RESOLUTION sync: the covering turn's own attempt.
 func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_resfail/delivery/1"
@@ -3618,6 +3634,7 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 // snapshot already passes that gate; unioning it with the fold would read the
 // fold only to discard the result. Skip it.
 func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
@@ -3661,6 +3678,7 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 // turn, and only this gate arms the paced retry that eventually consumes the
 // item.
 func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
@@ -3702,6 +3720,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 // return strands the flag: the flag stays set precisely so the in-flight
 // kick's turn cannot be suppressed into redundancy.
 func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	const attentionID = "delegate:dlg_refire/delivery/1"
@@ -3772,6 +3791,7 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 }
 
 func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,

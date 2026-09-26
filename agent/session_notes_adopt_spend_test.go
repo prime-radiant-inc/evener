@@ -11,6 +11,7 @@ import (
 // A lost response after the atomic rename no longer leaves a metadata intent
 // to adopt: the original mutation already owns the note and its notification.
 func TestHumanNoteLostResponseSameValueSaveDoesNotAdopt(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
 	if _, err := s.SetHumanNote("first", "sentinel"); err == nil {
@@ -38,6 +39,7 @@ func TestHumanNoteLostResponseSameValueSaveDoesNotAdopt(t *testing.T) {
 }
 
 func TestHumanNoteNoOpFailureDoesNotSpendNotification(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if _, err := s.SetHumanNote("first", "sentinel"); err != nil {
 		t.Fatal(err)
@@ -56,6 +58,7 @@ func TestHumanNoteNoOpFailureDoesNotSpendNotification(t *testing.T) {
 }
 
 func TestHumanNoteNoOpUnderFencePreservesAcceptedNotification(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if _, err := s.SetHumanNote("first", "sentinel"); err != nil {
 		t.Fatal(err)

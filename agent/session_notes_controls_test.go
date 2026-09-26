@@ -13,6 +13,7 @@ import (
 // or CSI sequence in a note, label, or URL could retitle, recolor, or reposition
 // the terminal that displays it.
 func TestNormalizeNoteStripsTerminalControlSequences(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct{ in, want string }{
 		"CSI color":            {"safe \x1b[31mred\x1b[0m text", "safe [31mred[0m text"},
 		"OSC title with BEL":   {"\x1b]0;owned\x07after", "]0;ownedafter"},
@@ -39,6 +40,7 @@ func TestNormalizeNoteStripsTerminalControlSequences(t *testing.T) {
 // list's label and URL. A test that only checked normalizeNote would still pass
 // if a surface bypassed it.
 func TestStoredNoteSurfacesCarryNoTerminalControls(t *testing.T) {
+	t.Parallel()
 	const payload = "\x1b]0;owned\x07note\u009b31m\x7f"
 	assertNoControls := func(t *testing.T, surface, text string) {
 		t.Helper()
@@ -120,6 +122,7 @@ func TestStoredNoteSurfacesCarryNoTerminalControls(t *testing.T) {
 // renders RPC errors in the transcript, so the echo must not carry control
 // sequences either.
 func TestUnknownURLRemoveIDErrorCannotDriveATerminal(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	removed, err := s.RemoveSessionURL("outer-control-id", "\x1b]0;owned\x07")
@@ -143,6 +146,7 @@ func TestUnknownURLRemoveIDErrorCannotDriveATerminal(t *testing.T) {
 // the raw input has to be scanned before parsing rather than trusted to the
 // parser.
 func TestCanonicalSessionURLRejectsControlCharacters(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"C1 CSI in query": "https://x.test/y?q=\u009b31m",
 		"C1 CSI in path":  "https://x.test/\u009b31m",
@@ -186,6 +190,7 @@ func TestCanonicalSessionURLRejectsControlCharacters(t *testing.T) {
 // Stripping after the collapse (as this fix first did) turns "a \x1b b" into
 // "a  b", which is text the user never wrote.
 func TestNormalizeNoteKeepsSingleSpacesWhenStrippingControls(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"control between spaces":   "a \x1b b",
 		"controls between spaces":  "a \x1b\x07 b",

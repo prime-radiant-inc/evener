@@ -17,6 +17,7 @@ import (
 )
 
 func TestReadTranscriptReadsShellJobRef(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "printf hello"})
@@ -111,6 +112,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 }
 
 func TestReadTranscriptPublicSurfaceOmitsLegacyReaderAndPrivateOptions(t *testing.T) {
+	t.Parallel()
 	registered := readTranscriptTool(&toolDeps{stateDir: t.TempDir(), sessionID: "current"})
 	properties := registered.Definition.Parameters["properties"].(map[string]any)
 	for _, name := range []string{"source", "attempt_id", "body", "max_bytes"} {
@@ -145,6 +147,7 @@ func TestReadTranscriptPublicSurfaceOmitsLegacyReaderAndPrivateOptions(t *testin
 // read_transcript_description_test.go is the half that keys to the var, so an
 // ADDED rejection still cannot land unannounced.
 func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"range", "expand_turn", "offset_bytes"} {
 		t.Run(name, func(t *testing.T) {
 			value := any(float64(1))

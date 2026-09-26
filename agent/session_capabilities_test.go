@@ -183,6 +183,7 @@ func TestCapabilityPreambleResidualsAreRestrictedOnly(t *testing.T) {
 // environment nobody measured — the same guess the preamble forbids everywhere
 // else. Only the probe's measured lines survive.
 func TestCapabilityPreambleUnknownEnvMakesNoPathClaim(t *testing.T) {
+	t.Parallel()
 	facts := capabilityFactsFromEnv(nil, probedFacts())
 	if !facts.unknownEnv {
 		t.Fatalf("an uninspectable env must be marked unknown: %+v", facts)
@@ -228,6 +229,7 @@ func TestCapabilityPreambleUnsandboxed(t *testing.T) {
 // tools' only writable root. The preamble must keep naming both variables there:
 // only the UNCONFINED unsandboxed shape above changed (#495).
 func TestCapabilityPreambleWriteBlockedKeepsTmpDir(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{
 		scratchDir:       "/scratch/s1",
 		fileToolConfined: true,
@@ -290,6 +292,7 @@ func TestCapabilityPreambleGoAbsent(t *testing.T) {
 // TestCapabilityPreambleNoScratch: with no scratch dir provisioned, the scratch
 // line is omitted rather than rendered with an empty or guessed path.
 func TestCapabilityPreambleNoScratch(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{probe: probedFacts()}), "\n")
 	if strings.Contains(got, "Scratch") {
 		t.Errorf("no scratch dir must render no scratch line, got:\n%s", got)
@@ -300,6 +303,7 @@ func TestCapabilityPreambleNoScratch(t *testing.T) {
 // a reply missing any expected key is treated as unprobed rather than partially
 // believed.
 func TestParseCapabilityProbe(t *testing.T) {
+	t.Parallel()
 	if p := parseGitProbe("git=ok\n"); !p.gitProbed || !p.gitConfigReads {
 		t.Errorf("parsed git probe = %+v, want a successful config read", p)
 	}
@@ -408,6 +412,7 @@ func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 // PATH inside `go test`, which makes its measurement and its resolved GOCACHE
 // assertable facts rather than host assumptions.
 func TestProbeCapabilitiesLive(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	t.Cleanup(env.Cleanup)
@@ -427,6 +432,7 @@ func TestProbeCapabilitiesLive(t *testing.T) {
 // TestProbeCapabilitiesUnrunnable: a probe that cannot run yields the zero
 // value, which renders "unprobed" — never a guess.
 func TestProbeCapabilitiesUnrunnable(t *testing.T) {
+	t.Parallel()
 	if p := probeCapabilities(nil, ""); p.toolsProbed || p.gitProbed {
 		t.Errorf("a nil environment must leave the probe unprobed, got %+v", p)
 	}

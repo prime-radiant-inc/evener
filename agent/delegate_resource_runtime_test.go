@@ -1773,6 +1773,7 @@ func abortUnpersistedStableDelegateOutcome(t *testing.T, outcome stableDelegateS
 }
 
 func TestDelegateResourceRuntime_TerminalOutcomeSnapshotDoesNotAliasResumability(t *testing.T) {
+	t.Parallel()
 	resumable := true
 	aggregate := &delegatestore.Aggregate{
 		DelegateID: "dlg_target",
@@ -1815,6 +1816,7 @@ func TestDelegateResourceRuntime_TerminalPacketUsesProductionActivityBoundary(t 
 }
 
 func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testing.T) {
+	t.Parallel()
 	var captured any
 	deps := &toolDeps{
 		emit:            func(events.EventKind, events.EventData) {},
@@ -1869,6 +1871,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 }
 
 func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t *testing.T) {
+	t.Parallel()
 	structured := map[string]any{"wrong": true}
 	sess := &Session{comm: communicateResult{called: true, structured: structured}}
 	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
@@ -1936,6 +1939,7 @@ func TestDelegateResourceRuntime_TurnExhaustionClosesResumabilityAtomically(t *t
 }
 
 func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	endedAt := startedAt.Add(90 * time.Second)
 	activityAt := endedAt.Add(-2 * time.Second)
@@ -2012,6 +2016,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 // directory into the terminal packet metadata, the same way worktree evidence
 // already does regardless of outcome.
 func TestDelegateResourceRuntime_CancelledRunCapturesScratchPath(t *testing.T) {
+	t.Parallel()
 	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
 		runErr:      context.Canceled,
 		descriptor:  delegatestore.Descriptor{Task: "rebuild the search index"},
@@ -2078,6 +2083,7 @@ func selfReportedCancelledPacket(t *testing.T) delegatestore.TerminalPacket {
 // ("cancelled"). The durable outcome must win for Status the same way it
 // already does for Reason.
 func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) {
+	t.Parallel()
 	const delegateID = "dlg_target"
 	started := stoppedDelegateStartCommit(delegateID)
 	plans := delegateMutationPlans{

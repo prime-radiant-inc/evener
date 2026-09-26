@@ -20,6 +20,7 @@ import (
 // child that never launched must not leave the .meta.json.lock that
 // SaveSessionMeta created behind in the sessions directory.
 func TestRemoveSessionArtifactsRemovesLock(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	id, err := identifier.NewSessionID()
 	if err != nil {

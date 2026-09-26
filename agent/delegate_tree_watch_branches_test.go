@@ -13,6 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestDelegateWatchSourceBindingStruct(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	b := delegateWatchSourceBinding{lease: &lease, runtime: nil}
 	if b.lease == nil || b.lease.delegateID != "dlg_1" {
@@ -25,6 +26,7 @@ func TestDelegateWatchSourceBindingStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateWatchReceiptStruct(t *testing.T) {
+	t.Parallel()
 	r := delegateWatchReceipt{
 		token:              42,
 		sourceDelegateID:   "dlg_src",
@@ -46,6 +48,7 @@ func TestDelegateWatchReceiptStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateWatchReceiptLockedClosing(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{closing: true}
 	if err := c.validateWatchReceiptLocked("dlg_1", 1, "dlg_2", false); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("expected errDelegateTargetBusy for closing, got %v", err)
@@ -53,6 +56,7 @@ func TestValidateWatchReceiptLockedClosing(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedSourceNotFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
@@ -62,6 +66,7 @@ func TestValidateWatchReceiptLockedSourceNotFound(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedSourceGenerationMismatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 2},
@@ -73,6 +78,7 @@ func TestValidateWatchReceiptLockedSourceGenerationMismatch(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedSourceNotRunning(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: false},
@@ -84,6 +90,7 @@ func TestValidateWatchReceiptLockedSourceNotRunning(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedTerminalSource(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: false},
@@ -96,6 +103,7 @@ func TestValidateWatchReceiptLockedTerminalSource(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedReceiverNotFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: true},
@@ -107,6 +115,7 @@ func TestValidateWatchReceiptLockedReceiverNotFound(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedValid(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: true},
@@ -119,6 +128,7 @@ func TestValidateWatchReceiptLockedValid(t *testing.T) {
 }
 
 func TestValidateWatchReceiptLockedEmptySourceAndReceiver(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if err := c.validateWatchReceiptLocked("", 0, "", false); err != nil {
 		t.Fatalf("expected no error for empty source and receiver, got %v", err)
@@ -130,6 +140,7 @@ func TestValidateWatchReceiptLockedEmptySourceAndReceiver(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopIntersectsWatchLockedNoStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.stopIntersectsWatchLocked("dlg_1", "dlg_2") {
 		t.Fatalf("expected false with no stop")
@@ -137,6 +148,7 @@ func TestStopIntersectsWatchLockedNoStop(t *testing.T) {
 }
 
 func TestStopIntersectsWatchLockedSourceCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{
 			members: map[string]struct{}{"dlg_1": {}},
@@ -148,6 +160,7 @@ func TestStopIntersectsWatchLockedSourceCovered(t *testing.T) {
 }
 
 func TestStopIntersectsWatchLockedReceiverCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{
 			members: map[string]struct{}{"dlg_2": {}},
@@ -159,6 +172,7 @@ func TestStopIntersectsWatchLockedReceiverCovered(t *testing.T) {
 }
 
 func TestStopIntersectsWatchLockedNeitherCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{
 			members: map[string]struct{}{"dlg_other": {}},
@@ -174,6 +188,7 @@ func TestStopIntersectsWatchLockedNeitherCovered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompleteWatchDeliveryNilReceipt(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if err := c.CompleteWatchDelivery(nil); err != nil {
 		t.Fatalf("expected no error for nil receipt, got %v", err)
@@ -181,6 +196,7 @@ func TestCompleteWatchDeliveryNilReceipt(t *testing.T) {
 }
 
 func TestCompleteWatchDeliveryWrongController(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateWatchReceipt{controller: &delegateTreeController{}, token: 1}
 	if err := c.CompleteWatchDelivery(receipt); !errors.Is(err, errDelegateStaleLease) {
@@ -189,6 +205,7 @@ func TestCompleteWatchDeliveryWrongController(t *testing.T) {
 }
 
 func TestCompleteWatchDeliveryNotFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchDeliveries: map[uint64]*delegateWatchReceipt{},
 	}
@@ -199,6 +216,7 @@ func TestCompleteWatchDeliveryNotFound(t *testing.T) {
 }
 
 func TestCompleteWatchDeliveryFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchDeliveries: map[uint64]*delegateWatchReceipt{},
 	}
@@ -213,6 +231,7 @@ func TestCompleteWatchDeliveryFound(t *testing.T) {
 }
 
 func TestCompleteWatchDeliveryWithStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchDeliveries: map[uint64]*delegateWatchReceipt{},
 		stop: &delegateStopState{
@@ -234,11 +253,13 @@ func TestCompleteWatchDeliveryWithStop(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAbortWatchEnqueueNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	c.AbortWatchEnqueue(nil) // should be a no-op
 }
 
 func TestAbortWatchEnqueueWrongController(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchEnqueues: map[uint64]*delegateWatchReceipt{},
 	}
@@ -247,6 +268,7 @@ func TestAbortWatchEnqueueWrongController(t *testing.T) {
 }
 
 func TestAbortWatchEnqueueNotFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchEnqueues: map[uint64]*delegateWatchReceipt{},
 	}
@@ -255,6 +277,7 @@ func TestAbortWatchEnqueueNotFound(t *testing.T) {
 }
 
 func TestAbortWatchEnqueueFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchEnqueues: map[uint64]*delegateWatchReceipt{},
 	}
@@ -267,6 +290,7 @@ func TestAbortWatchEnqueueFound(t *testing.T) {
 }
 
 func TestAbortWatchEnqueueWithStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		watchEnqueues: map[uint64]*delegateWatchReceipt{},
 		stop: &delegateStopState{
@@ -286,6 +310,7 @@ func TestAbortWatchEnqueueWithStop(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchSourceSessionsEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	sessions := c.watchSourceSessions()
 	if len(sessions) != 0 {
@@ -294,6 +319,7 @@ func TestWatchSourceSessionsEmpty(t *testing.T) {
 }
 
 func TestWatchSourceSessionsWithRoot(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	sessions := c.watchSourceSessions()
 	if len(sessions) != 0 {
@@ -306,6 +332,7 @@ func TestWatchSourceSessionsWithRoot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableWatchDeliveryIdentityStruct(t *testing.T) {
+	t.Parallel()
 	id := stableWatchDeliveryIdentity{deliveryID: "del_1", updateSeq: 5}
 	if id.deliveryID != "del_1" || id.updateSeq != 5 {
 		t.Fatalf("struct wrong: %+v", id)
@@ -317,6 +344,7 @@ func TestStableWatchDeliveryIdentityStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableWatchBootstrapSnapshotStruct(t *testing.T) {
+	t.Parallel()
 	s := stableWatchBootstrapSnapshot{
 		stateDir:   "/state",
 		storePaths: []string{"/path1", "/path2"},
@@ -330,6 +358,7 @@ func TestStableWatchBootstrapSnapshotStruct(t *testing.T) {
 }
 
 func TestStableWatchReceiverSnapshotStruct(t *testing.T) {
+	t.Parallel()
 	s := stableWatchReceiverSnapshot{
 		sessionID:     "sess_1",
 		transcriptRef: "local:sess_1",
@@ -344,6 +373,7 @@ func TestStableWatchReceiverSnapshotStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExactUnacknowledgedStableWatchSendsEmpty(t *testing.T) {
+	t.Parallel()
 	result := exactUnacknowledgedStableWatchSends(nil)
 	if len(result) != 0 {
 		t.Fatalf("expected 0 results, got %d", len(result))
@@ -351,6 +381,7 @@ func TestExactUnacknowledgedStableWatchSendsEmpty(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsNoStableReceiver(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -368,6 +399,7 @@ func TestExactUnacknowledgedStableWatchSendsNoStableReceiver(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsPendingOnly(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -388,6 +420,7 @@ func TestExactUnacknowledgedStableWatchSendsPendingOnly(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsDelivered(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -413,6 +446,7 @@ func TestExactUnacknowledgedStableWatchSendsDelivered(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsDropped(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -437,6 +471,7 @@ func TestExactUnacknowledgedStableWatchSendsDropped(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsEvicted(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -461,6 +496,7 @@ func TestExactUnacknowledgedStableWatchSendsEvicted(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsMultiplePending(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -490,6 +526,7 @@ func TestExactUnacknowledgedStableWatchSendsMultiplePending(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsSkipEmptyDeliveryID(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{
 			Kind: jobstore.EventWatchSendPending,
@@ -507,6 +544,7 @@ func TestExactUnacknowledgedStableWatchSendsSkipEmptyDeliveryID(t *testing.T) {
 }
 
 func TestExactUnacknowledgedStableWatchSendsNilWatchSend(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{Kind: jobstore.EventWatchSendPending, WatchSend: nil},
 	}
@@ -521,6 +559,7 @@ func TestExactUnacknowledgedStableWatchSendsNilWatchSend(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRepairStableWatchDeliveriesForBootstrapNil(t *testing.T) {
+	t.Parallel()
 	if err := repairStableWatchDeliveriesForBootstrap(nil); err == nil {
 		t.Fatalf("expected error for nil controller")
 	}

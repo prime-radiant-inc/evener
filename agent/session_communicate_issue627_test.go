@@ -52,6 +52,7 @@ func registerCommunicateForIssue627(t *testing.T) (*tool.Registry, *tool.Registe
 // the schema's required list must not strand a call whose visible text rides
 // in the top-level message.
 func TestPrepareToolCall_CommunicateOutputEnvelopeHealed(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 
 	call := llm.ToolCallData{ID: "issue627", Name: "communicate", Arguments: json.RawMessage(issue627OutputArgs)}
@@ -82,6 +83,7 @@ func TestPrepareToolCall_CommunicateOutputEnvelopeHealed(t *testing.T) {
 // delegate-report scenario from the issue — an agent delivering its final
 // report with structured data — no longer fails four times in a row.
 func TestExecTool_CommunicateIssue627ShapeSucceeds(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 
@@ -105,6 +107,7 @@ func TestExecTool_CommunicateIssue627ShapeSucceeds(t *testing.T) {
 // show the full accepted output shape, not the generic `wrong type or value`
 // with an example that renders `output` as a bare `{}`.
 func TestPrepareToolCall_CommunicateOutputExampleShowsFullShape(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	def := tool.DefCommunicateNamed("communicate")
 	params := tool.CloneSchemaMap(def.Parameters)
@@ -141,6 +144,7 @@ func TestPrepareToolCall_CommunicateOutputExampleShowsFullShape(t *testing.T) {
 // WithCommunicateOutputSchema — that requires a key the model omitted must
 // fail loudly, never be healed into validity with invented content.
 func TestPrepareToolCall_CustomOutputSchemaNotSilentlyFilled(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	def := tool.DefCommunicateNamed("communicate")
 	params := tool.CloneSchemaMap(def.Parameters)
@@ -173,6 +177,7 @@ func TestPrepareToolCall_CustomOutputSchemaNotSilentlyFilled(t *testing.T) {
 // DefCommunicateNamed parameters (not a hand-mirrored schema) so drift in
 // definitions.go fails here.
 func TestExplainSchemaError_CommunicateOutputNamesMissingNestedKey(t *testing.T) {
+	t.Parallel()
 	params := tool.DefCommunicateNamed("communicate").Parameters
 	msg := repair.ExplainSchemaError("communicate", params, issue627ArgsMap(), "output", "required")
 	if strings.Contains(msg, "wrong type or value") {
@@ -196,6 +201,7 @@ func TestExplainSchemaError_CommunicateOutputNamesMissingNestedKey(t *testing.T)
 // t.Definition.Parameters for every later message (and across registry
 // clones that share it).
 func TestExplainSchemaError_ExampleShowsNestedOutputShape(t *testing.T) {
+	t.Parallel()
 	params := tool.DefCommunicateNamed("communicate").Parameters
 	outputSchema := params["properties"].(map[string]any)["output"].(map[string]any)
 	required, _ := outputSchema["required"].([]string)
@@ -217,6 +223,7 @@ func TestExplainSchemaError_ExampleShowsNestedOutputShape(t *testing.T) {
 // of the result tool's documented contract, not of any schema that happens to
 // share its shape (an MCP or plugin tool could plausibly look like this).
 func TestPrepareToolCall_SameShapeNonResultToolNotFilled(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	// submit_report: envelope-shaped schema on a differently-named tool.
 	if err := reg.Register(regTool(tool.DefCommunicateNamed("submit_report"))); err != nil {
@@ -242,6 +249,7 @@ func TestPrepareToolCall_SameShapeNonResultToolNotFilled(t *testing.T) {
 // enum-constrained decision), so those calls keep failing loudly on the key
 // the model was required to choose.
 func TestPrepareToolCall_SupersetEnvelopeNotFilled(t *testing.T) {
+	t.Parallel()
 	def := tool.DefCommunicateNamed("communicate")
 	params := tool.CloneSchemaMap(def.Parameters)
 	props := params["properties"].(map[string]any)
@@ -277,6 +285,7 @@ func TestPrepareToolCall_SupersetEnvelopeNotFilled(t *testing.T) {
 // zero changes, so no ToolCallRepaired event claims arguments bytes that were
 // never applied.
 func TestPrepareToolCall_FillNotRecordedWhenValidationStillFails(t *testing.T) {
+	t.Parallel()
 	_, rt := registerCommunicateForIssue627(t)
 
 	call := llm.ToolCallData{ID: "r2-phantom", Name: "communicate",
@@ -295,6 +304,7 @@ func TestPrepareToolCall_FillNotRecordedWhenValidationStillFails(t *testing.T) {
 // missing required keys, the Example must render that nested field's own
 // shape — never a same-named top-level property's.
 func TestExplainSchemaError_NestedFieldExampleUsesContainerSchema(t *testing.T) {
+	t.Parallel()
 	params := map[string]any{
 		"type": "object",
 		"properties": map[string]any{

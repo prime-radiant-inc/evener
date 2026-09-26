@@ -95,6 +95,7 @@ func task7ExecutedToolStarts(s *Session, toolName string) int {
 }
 
 func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
+	t.Parallel()
 	s, workspace := task7LocalSession(t)
 	const pattern = `RECOVER_[0-9]{3}`
 	const matchCount = 70
