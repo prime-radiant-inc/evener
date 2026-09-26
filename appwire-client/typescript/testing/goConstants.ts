@@ -15,12 +15,14 @@
  * `where` labels the source in that error.
  */
 export function goConstantValue(source: string, name: string, where: string): string {
-  // \b anchors the name to an identifier boundary: without it the pattern
-  // matches the name as a SUFFIX of a longer constant and returns that
-  // constant's value - appwire/errors.go's ErrorMutationOutcomeUnknown before
-  // MutationOutcomeUnknown is the live collision (goConstants.test.ts pins
-  // it).
-  const match = source.match(new RegExp(`\\b${name}(?:\\s+\\w+)?\\s*=\\s*"([^"]+)"`));
+  // The name must sit in declaration position - first token on a line, or
+  // right after the const keyword - so it can match neither a SUFFIX of a
+  // longer constant (appwire/errors.go's ErrorMutationOutcomeUnknown before
+  // MutationOutcomeUnknown is the live collision) nor another declaration's
+  // TYPE-token slot (searching for the MutationOutcome type must find no
+  // constant, not bind MutationOutcomeUnknown's value). goConstants.test.ts
+  // pins both.
+  const match = source.match(new RegExp(`(?:^|\\n)\\s*(?:const\\s+)?${name}(?:\\s+\\w+)?\\s*=\\s*"([^"]+)"`));
   const value = match?.[1];
   if (value === undefined) throw new Error(`${where} has no ${name} constant`);
   return value;

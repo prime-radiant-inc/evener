@@ -17,6 +17,16 @@ describe("goConstantValue", () => {
     expect(goConstantValue(COLLIDING_SOURCE, "MutationOutcomeUnknown", "fixture.go")).toBe("unknown");
   });
 
+  test("does not match the name in another declaration's type position", () => {
+    // "MutationOutcome" is a type, not a constant; the only line carrying it
+    // holds it in the type-token slot of MutationOutcomeUnknown. Binding that
+    // line would silently return the wrong constant's value instead of the
+    // loud no-such-constant error this helper exists to throw.
+    expect(() => goConstantValue(COLLIDING_SOURCE, "MutationOutcome", "fixture.go")).toThrow(
+      "fixture.go has no MutationOutcome constant",
+    );
+  });
+
   test("extracts the typed and untyped declaration forms", () => {
     expect(goConstantValue('const A ErrorInfo = "a"\n', "A", "f.go")).toBe("a");
     expect(goConstantValue('const B = "b"\n', "B", "f.go")).toBe("b");
