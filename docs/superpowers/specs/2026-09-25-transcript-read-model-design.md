@@ -1237,3 +1237,16 @@ rather than resolved in prose here:
   position, limit-aware truncation across the real/flushed boundary), which
   is unimplemented. Track it as a blocker before phase 3 wires this index
   into reads; it does not block phase 1 (the index is not read from yet).
+- **`CatchUpTo`'s truncate-first extension can leak in-place updates past
+  the requested length.** `extend`'s truncate loop assumes the following
+  scan re-applies every entry whose in-place update it just truncated away;
+  a `CatchUpTo(length)` call for a `length` that stops before re-scanning
+  such an entry loses that update-log record without redoing it, so
+  `Latest`/`Before` can return content beyond `Window.Length` and
+  `ChangedSince` can omit the change. Latent in phase 1: every current
+  caller only calls it (via `CatchUp`) with the transcript's current full
+  size, never a smaller recorded length, so the truncated records are
+  always re-scanned. Needs either a rebuild fallback when the requested
+  length would not reach the highest version already written, or
+  re-deriving the update log from surviving record versions, before a
+  caller passes it a client-recorded (not-necessarily-current) length.

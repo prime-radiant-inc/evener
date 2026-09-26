@@ -232,6 +232,9 @@ func (x *Index) adopt(m meta) error {
 	if m.Items > items || m.Turns > turns || m.Updates > updates {
 		return fmt.Errorf("%w: meta counts records the tables lack", errCorrupt)
 	}
+	if m.HeaderLength < 0 || m.HeaderOffset < 0 || m.HeaderOffset+m.HeaderLength > m.Length {
+		return fmt.Errorf("%w: header_offset/header_length outside the covered transcript", errCorrupt)
+	}
 	info, err := x.strings.file.Stat()
 	if err != nil {
 		return err

@@ -2,6 +2,7 @@ package transcriptindex
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,30 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// rewriteMetaField overwrites one field of the live build's meta.json with a
+// raw JSON value (a number, string literal, etc.), leaving every other field
+// as the builder wrote it.
+func rewriteMetaField(t *testing.T, dir, field, rawValue string) {
+	t.Helper()
+	path := filepath.Join(liveBuild(t, dir), metaFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields[field] = json.RawMessage(rawValue)
+	rewritten, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, rewritten, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func appendBytes(t testing.TB, path string, data []byte) {
 	t.Helper()
@@ -369,6 +394,15 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			if err := os.Remove(filepath.Join(liveBuild(t, dir), stringsFile)); err != nil {
 				t.Fatal(err)
 			}
+		}},
+		{"header length past the transcript", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "header_length", `999999999`)
+		}},
+		{"negative header length", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "header_length", `-1`)
+		}},
+		{"negative header offset", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "header_offset", `-1`)
 		}},
 	}
 	for _, tc := range cases {
