@@ -68,16 +68,12 @@ beforeAll(async () => {
   // Then RENDER the two panes whose Suspense reveal a test would otherwise
   // wait out. Importing a module is only half a React.lazy's cost: lazy keeps
   // a payload of its own that stays uninitialized until React first renders
-  // the component, so the first render still suspends, still commits its
-  // Suspense fallback, and then waits out react-dom's FALLBACK_THROTTLE_MS
-  // (300ms, react-dom 19.2) before it will commit the revealed content - a
-  // flicker guard that is pure wall clock and does not shrink on a fast
-  // machine. An already-resolved promise does not dodge it: the `doc` and
-  // `settings` fixtures above are lazy(() => Promise.resolve(...)) and still
-  // suspend once each. Measured here: the doc fixture's first render cost
-  // 337ms and welcome's 322ms, both inside a findBy budget that defaults to
-  // 1000ms. Paying it in a hook whose ceiling is a tripwire, rather than
-  // inside an assertion window. Same fix as App.test.tsx (commit c1a8616ea).
+  // the component, so the first render still suspends. An already-resolved
+  // promise does not dodge it: the `doc` and `settings` fixtures above are
+  // lazy(() => Promise.resolve(...)) and still suspend once each. A reveal
+  // that commits outside act waits out react-dom's FALLBACK_THROTTLE_MS
+  // (300ms, react-dom 19.2) on a real timer, so warmPane renders inside an
+  // awaited act, where the reveal commits as soon as the chunk resolves.
   // Only these two: the `settings` fixture and the real session pane are
   // never awaited through their own Suspense boundary anywhere in this file
   // (measured - every test that opens one settles in single-digit ms off the
@@ -109,7 +105,9 @@ afterAll(() => {
 // not enough.
 async function warmPane(open: () => void, findLandmark: () => Promise<unknown>): Promise<void> {
   open();
-  render(<DockHost />);
+  await act(async () => {
+    render(<DockHost />);
+  });
   await findLandmark();
   // Unmounting also clears DockHost's pending debounced layout save (its own
   // effect cleanup), so no warm render leaks a write into a later test.
@@ -210,7 +208,10 @@ test("shows a loading placeholder instead of a blank pane while a newly-opened p
   expect(await screen.findByTestId("empty-state")).toBeTruthy();
   expect(screen.queryByText(/doc pane: ref_slow/)).toBeNull();
 
-  resolveChunk();
+  await act(async () => {
+    resolveChunk();
+    await pendingChunk;
+  });
   expect(await screen.findByText(/doc pane: ref_slow \(focused=true\)/)).toBeTruthy();
 
   registerPane(originalDoc); // restore the fast fixture for every later test

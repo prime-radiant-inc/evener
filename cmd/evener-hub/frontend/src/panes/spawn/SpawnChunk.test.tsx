@@ -3,6 +3,7 @@ import { cleanup, type RenderOptions, render, screen } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { holdChunk } from "../../lazyChunkTestUtils";
 import { ClientProvider } from "../../shell/clientContext";
 import * as pageReload from "../../shell/pageReload";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -13,7 +14,7 @@ import { Toast } from "../../widgets";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetConnectDialogChunkForTests } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import * as connectDialogChunk from "./connectDialogChunk";
-import { resetConnectDialogLoaderForTests } from "./connectDialogChunk";
+import { type ConnectDialogModule, resetConnectDialogLoaderForTests } from "./connectDialogChunk";
 import Spawn from "./Spawn";
 import { resetSpawnDraftsForTests } from "./spawnDrafts";
 
@@ -128,15 +129,17 @@ afterEach(() => {
 test("a rejected dialog chunk shows the failure message with a Retry", async () => {
   const chunkError = new Error(CHUNK_ERROR);
   const onCaughtError = captureExpectedError(chunkError);
-  vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
+  const chunk = holdChunk<ConnectDialogModule>();
+  vi.mocked(loadConnectDialog).mockReturnValue(chunk.promise);
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
   renderSpawn(client, { onCaughtError });
 
   await openConnectDialog(user);
+  await chunk.reject(chunkError);
 
-  expect(await screen.findByText("Couldn't load the connect dialog")).toBeTruthy();
+  expect(screen.getByText("Couldn't load the connect dialog")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
@@ -146,23 +149,24 @@ test("a rejected dialog chunk shows the failure message with a Retry", async () 
 test("Retry fetches the chunk again and mounts the dialog on the second attempt", async () => {
   const chunkError = new Error(CHUNK_ERROR);
   const onCaughtError = captureExpectedError(chunkError);
-  vi.mocked(loadConnectDialog)
-    .mockRejectedValueOnce(chunkError)
-    .mockResolvedValueOnce({ ConnectProviderDialog: StubConnectDialog } as never);
+  const firstChunk = holdChunk<ConnectDialogModule>();
+  const retryChunk = holdChunk<ConnectDialogModule>();
+  vi.mocked(loadConnectDialog).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
   renderSpawn(client, { onCaughtError });
 
   await openConnectDialog(user);
-  await screen.findByText("Couldn't load the connect dialog");
+  await firstChunk.reject(chunkError);
   await user.click(screen.getByRole("button", { name: "Retry" }));
+  await retryChunk.resolve({ ConnectProviderDialog: StubConnectDialog } as never);
 
   // Both halves of a retry, in one assertion each: the dialog it returns
   // replaces the failure state, and the second attempt asks the loader for
   // the cache-busted path. A second same-URL import does not reach Chrome's
   // network stack - it replays the cached failure.
-  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  expect(screen.getByText("connect dialog mounted")).toBeTruthy();
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
@@ -172,7 +176,9 @@ test("Retry fetches the chunk again and mounts the dialog on the second attempt"
 test("a retry that fails again offers a page reload instead of stranding the provider flow", async () => {
   const chunkError = new Error(CHUNK_ERROR);
   const onCaughtError = captureExpectedError(chunkError);
-  vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
+  const firstChunk = holdChunk<ConnectDialogModule>();
+  const retryChunk = holdChunk<ConnectDialogModule>();
+  vi.mocked(loadConnectDialog).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
   const reload = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
   onTestFinished(() => reload.mockRestore());
   const user = userEvent.setup();
@@ -181,14 +187,16 @@ test("a retry that fails again offers a page reload instead of stranding the pro
   renderSpawn(client, { onCaughtError });
 
   await openConnectDialog(user);
-  await screen.findByText("Couldn't load the connect dialog");
+  await firstChunk.reject(chunkError);
+  expect(screen.getByText("Couldn't load the connect dialog")).toBeTruthy();
   // The first failure offers only the cache-busted retry: a deploy that
   // removed the hashed chunk is still only one hypothesis among transient
   // ones, so the reload is the second-strike path, not the first.
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
 
   await user.click(screen.getByRole("button", { name: "Retry" }));
-  await user.click(await screen.findByRole("button", { name: "Reload page" }));
+  await retryChunk.reject(chunkError);
+  await user.click(screen.getByRole("button", { name: "Reload page" }));
 
   expect(reload).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
@@ -205,7 +213,8 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   // Retry/Reload pair that could misreport it as a stale deploy.
   const chunkError = new Error("ConnectProviderDialog chunk request failed with 500");
   const onCaughtError = captureExpectedError(chunkError);
-  vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
+  const chunk = holdChunk<ConnectDialogModule>();
+  vi.mocked(loadConnectDialog).mockReturnValue(chunk.promise);
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
   const user = userEvent.setup();
@@ -220,10 +229,9 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   );
 
   await openConnectDialog(user);
+  await chunk.reject(chunkError);
 
-  expect(
-    await screen.findByText("outer boundary caught: ConnectProviderDialog chunk request failed with 500"),
-  ).toBeTruthy();
+  expect(screen.getByText("outer boundary caught: ConnectProviderDialog chunk request failed with 500")).toBeTruthy();
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
   expect(onCaughtError).toHaveBeenCalledTimes(1);
@@ -257,7 +265,8 @@ test("a logic bug in the resolved dialog keeps unwinding past the dialog boundar
   function BuggyDialog() {
     throw renderError;
   }
-  vi.mocked(loadConnectDialog).mockResolvedValue({ ConnectProviderDialog: BuggyDialog } as never);
+  const chunk = holdChunk<ConnectDialogModule>();
+  vi.mocked(loadConnectDialog).mockReturnValue(chunk.promise);
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
@@ -272,8 +281,9 @@ test("a logic bug in the resolved dialog keeps unwinding past the dialog boundar
   );
 
   await openConnectDialog(user);
+  await chunk.resolve({ ConnectProviderDialog: BuggyDialog } as never);
 
-  expect(await screen.findByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
+  expect(screen.getByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
   expect(caughtErrors).toEqual([renderError]);
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
   expect(onCaughtError).toHaveBeenCalledTimes(1);

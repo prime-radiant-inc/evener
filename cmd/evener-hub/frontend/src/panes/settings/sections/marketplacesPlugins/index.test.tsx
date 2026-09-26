@@ -58,6 +58,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("shows a loading state before both the marketplace and plugin lists resolve", () => {
@@ -201,6 +203,11 @@ test("keeps an applied removal guard across failed reconciliation and sheet remo
 });
 
 test("a later accepted notification publication clears a same-name applied removal guard", async () => {
+  // The notification's re-list waits out the store's 250ms refetch debounce.
+  // Fake timers own that clock, and the stubbed `jest` global lets Testing
+  // Library's findBy/waitFor polls advance it, so the wait costs no real time.
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const fake = connectFakeClient();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
@@ -213,7 +220,7 @@ test("a later accepted notification publication clears a same-name applied remov
     throw cloneLitterError(null);
   });
   render(<MarketplacesPluginsSection />);
-  const user = userEvent.setup();
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
