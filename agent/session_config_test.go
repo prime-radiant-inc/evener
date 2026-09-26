@@ -1938,6 +1938,7 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	wantLeading := sess.cachedSystemPrompt + "\n\n"
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
@@ -1974,9 +1975,10 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 
 	combined := msgs[0].Text()
 
-	// System prompt should be present (environment block is always included).
-	if !strings.Contains(combined, "<environment>") {
-		t.Fatal("combined message missing system prompt content")
+	// The rendered system prompt arrives unchanged as the first text part of
+	// the leading user message.
+	if len(msgs[0].Content) == 0 || msgs[0].Content[0].Kind != llm.ContentText || msgs[0].Content[0].Text != wantLeading {
+		t.Fatal("leading user message does not start with the rendered system prompt")
 	}
 
 	// Task input is a separate, later message — not folded into the combined one.
@@ -2007,6 +2009,7 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	wantLeading := sess.cachedSystemPrompt + "\n\n"
 	defer sess.Close()
 
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
@@ -2040,11 +2043,7 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 		t.Fatalf("second message role=%q, want user", taskMsg.Role)
 	}
 	var sawSystem, sawTask, sawImage bool
-	for _, part := range envMsg.Content {
-		if part.Kind == llm.ContentText && strings.Contains(part.Text, "<environment>") {
-			sawSystem = true
-		}
-	}
+	sawSystem = len(envMsg.Content) > 0 && envMsg.Content[0].Kind == llm.ContentText && envMsg.Content[0].Text == wantLeading
 	for _, part := range taskMsg.Content {
 		switch part.Kind {
 		case llm.ContentText:
