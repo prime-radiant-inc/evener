@@ -103,8 +103,7 @@ test("fixture answer is reflected once, clears attention, and publishes real not
       expect.objectContaining({ clientMutationId: "test-answer" }),
     ]),
   );
-  expect(notifications.filter((method) => method === "turn/started")).toHaveLength(1);
-  expect(notifications).toContain("turn/completed");
+  expect(notifications.filter((method) => method === "history/updated")).toHaveLength(1);
   const manifest = await client.request("evener/navigation/read", { resource: "manifest", representationVersion: 2 });
   expect(manifest.data).toMatchObject({ metadata: { attentionSummary: { needsYou: 0 } } });
   const section = await client.request("evener/navigation/read", {

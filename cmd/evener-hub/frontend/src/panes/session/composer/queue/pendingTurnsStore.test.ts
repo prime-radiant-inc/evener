@@ -874,13 +874,23 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   });
   act(() => {
     fake.emitNotification({
-      method: "evener/steering/injected",
+      method: "history/updated",
       params: {
         threadId: "thread_a",
         ref: "ref_a",
-        text: "patient steer",
-        source: "user",
-        clientMutationId: pending.result.current[0]?.id,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc_a", length: 1 },
+        items: [
+          {
+            type: "steering",
+            id: "item_steer_1",
+            turnId: "turn_a",
+            text: "patient steer",
+            source: "user",
+            clientMutationId: pending.result.current[0]?.id,
+          },
+        ],
       },
     });
   });

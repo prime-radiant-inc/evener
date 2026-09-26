@@ -146,19 +146,29 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
 // sequence from a source that state-gates nothing.
 function turnStartedFrame(turnId: string): AnyNotification {
   return {
-    method: "turn/started",
+    method: "history/updated",
     params: {
       threadId: `thr_${REF}`,
       ref: REF,
-      turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 }],
     },
   };
 }
 
 function turnCompletedFrame(turnId: string): AnyNotification {
   return {
-    method: "turn/completed",
-    params: { threadId: `thr_${REF}`, ref: REF, turn: { id: turnId, status: "completed", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${REF}`,
+      ref: REF,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "completed", itemsView: "" }],
+    },
   };
 }
 
@@ -173,12 +183,19 @@ function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCa
   act(() => {
     fake.emitNotification(turnStartedFrame(turnId));
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId,
-        item: { type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
+            turnId: "",
+          },
+        ],
       },
     });
     fake.emitNotification(statusActiveFrame(capabilities));
@@ -379,11 +396,14 @@ test("the turn ending puts the controls back to a plain send", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "completed", itemsView: "" }],
       },
     });
     fake.emitNotification({
@@ -437,11 +457,14 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "interrupted", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "interrupted", itemsView: "" }],
       },
     });
     fake.emitNotification({
@@ -544,11 +567,14 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } }],
       },
     });
   });

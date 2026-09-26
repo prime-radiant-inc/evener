@@ -308,16 +308,21 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
       turnId: newTurnId,
       projectionState: "reflected",
     };
-    // Emit turn/started + turn/completed after the response so the thread
-    // model gains the new turn through the real notification path.
+    // Emit history/updated (turn/started + turn/completed's read-model
+    // replacement) after the response so the thread model gains the new
+    // turn through the real notification path.
     queueMicrotask(() => {
       socket.emit({
-        method: "turn/started",
-        params: { threadId: THREAD_ID, ref: REF, turn: newTurn },
-      } as AnyNotification);
-      socket.emit({
-        method: "turn/completed",
-        params: { threadId: THREAD_ID, ref: REF, turn: newTurn },
+        method: "history/updated",
+        params: {
+          threadId: THREAD_ID,
+          ref: REF,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...newTurn, items: [] }],
+          items: newTurn.items,
+        },
       } as AnyNotification);
       settleTurnAttempt?.();
     });

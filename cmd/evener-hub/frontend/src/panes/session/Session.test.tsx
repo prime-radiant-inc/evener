@@ -714,27 +714,41 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+      },
     } as AnyNotification);
   });
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: {
-          id: "user_1",
-          turnId: "turn_1",
-          type: "userMessage",
-          text: "hello",
-          status: "completed",
-          clientMutationId,
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{
+              id: "user_1",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "hello",
+              status: "completed",
+              clientMutationId,
+            },
+            turnId: "turn_1",
+          },
+        ],
       },
     } as AnyNotification);
   });
@@ -747,12 +761,16 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
 
   act(() => {
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          { ...{ id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }, turnId: "turn_1" },
+        ],
       },
     } as AnyNotification);
   });
@@ -775,27 +793,41 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+      },
     } as AnyNotification);
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
     } as AnyNotification);
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: {
-          id: "user_1",
-          turnId: "turn_1",
-          type: "userMessage",
-          text: "hello",
-          status: "completed",
-          clientMutationId,
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{
+              id: "user_1",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "hello",
+              status: "completed",
+              clientMutationId,
+            },
+            turnId: "turn_1",
+          },
+        ],
       },
     } as AnyNotification);
   });
@@ -813,12 +845,16 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
 
   act(() => {
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          { ...{ id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }, turnId: "turn_1" },
+        ],
       },
     } as AnyNotification);
   });
@@ -839,15 +875,25 @@ test("cold-start skeleton clears when the first turn terminates without an autho
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+      },
     } as AnyNotification);
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } }],
       },
     } as AnyNotification);
   });
@@ -894,8 +940,15 @@ test.each(["failed", "error", "cancelled"])(
 
     act(() => {
       fake.emitNotification({
-        method: "turn/started",
-        params: { ref: "ref_a", turn: { id: "turn_1", status, itemsView: "full" } },
+        method: "history/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_1", status, itemsView: "full" }],
+        },
       } as AnyNotification);
     });
 
@@ -1271,8 +1324,15 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
 
   act(() => {
     fake.emitNotification({
-      method: "item/agentMessage/delta",
-      params: { ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "hello" },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "hello", status: "inProgress" }],
+      },
     } as AnyNotification);
   });
   await waitFor(() =>
@@ -1286,11 +1346,18 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
   // other still-open pane.
   act(() => {
     fake.emitNotification({
-      method: "item/agentMessage/delta",
-      params: { ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: " world" },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "hello world", status: "inProgress" }],
+      },
     } as AnyNotification);
   });
-  expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.pendingText).toEqual(["hello", " world"]);
+  expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.text).toBe("hello world");
 
   // Remount pane A - a fresh component instance (the live stream's rendered
   // markdown from before is gone; if the rendered content depended on
@@ -1429,15 +1496,23 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_2",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_2",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_2" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -1522,17 +1597,27 @@ test("scrolled away: a turn FAILING while unseen upgrades the real pill to the e
   // rendered pill through Session's wiring, not just the hook's return.
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_2", status: "inProgress", itemsView: "" }],
+      },
     } as AnyNotification);
   });
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } }],
       },
     } as AnyNotification);
   });
@@ -1567,15 +1652,23 @@ test("clicking the real NewContentPill clears it", async () => {
   fireEvent.scroll(root);
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_2",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_2",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_2" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -2062,15 +2155,23 @@ test("a dormant session's transcript follows new content the instant its first r
   // re-initialize useTranscriptScroll's mount effect.
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_1",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_1" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -2090,15 +2191,23 @@ test("a dormant session's transcript follows new content the instant its first r
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_2",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "second", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_2",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "second", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_2" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -2130,8 +2239,15 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
   // live pending question (deriveAskQuestions).
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+      },
     });
     const item = {
       type: "commandExecution",
@@ -2144,12 +2260,26 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
       }),
     };
     fake.emitNotification({
-      method: "item/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "inProgress" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "inProgress" }, turnId: "turn_1" }],
+      },
     });
     fake.emitNotification({
-      method: "item/completed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "completed" }, turnId: "turn_1" }],
+      },
     });
     fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
@@ -2202,8 +2332,15 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
 
     act(() => {
       fake.emitNotification({
-        method: "turn/started",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+        },
       });
       const item = {
         type: "commandExecution",
@@ -2216,12 +2353,26 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
         }),
       };
       fake.emitNotification({
-        method: "item/started",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "inProgress" } },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...{ ...item, status: "inProgress" }, turnId: "turn_1" }],
+        },
       });
       fake.emitNotification({
-        method: "item/completed",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...{ ...item, status: "completed" }, turnId: "turn_1" }],
+        },
       });
       fake.emitNotification(askPendingStatusChanged("ref_a"));
     });
@@ -2533,8 +2684,15 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
   // deriveAskQuestions), on its own turn so it never rewrites the hydrated one.
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_2", status: "inProgress", itemsView: "" }],
+      },
     });
     const item = {
       type: "commandExecution",
@@ -2547,12 +2705,26 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
       }),
     };
     fake.emitNotification({
-      method: "item/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "inProgress" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "inProgress" }, turnId: "turn_2" }],
+      },
     });
     fake.emitNotification({
-      method: "item/completed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "completed" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "completed" }, turnId: "turn_2" }],
+      },
     });
     fake.emitNotification(askPendingStatusChanged("ref_a"));
   });

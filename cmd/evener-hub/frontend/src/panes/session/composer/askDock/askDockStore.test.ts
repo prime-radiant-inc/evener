@@ -94,19 +94,28 @@ const MULTI_THEN_SINGLE = [
 // test must be started exactly once.
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref: "ref-1",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+    },
   });
 }
 
 function userMessageNotification(ref: string, turnId: string, itemId: string, text: string): AnyNotification {
   return {
-    method: "item/completed",
+    method: "history/updated",
     params: {
       threadId: `thr_${ref}`,
       ref,
-      turnId,
-      item: { type: "userMessage", id: itemId, turnId, text, status: "completed" },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [{ type: "userMessage", id: itemId, turnId, text, status: "completed" }],
     },
   };
 }
@@ -122,25 +131,26 @@ function ackAskUserCallWith(
   callId: string,
   questions: Array<Record<string, unknown>>,
 ): void {
-  for (const [method, status] of [
-    ["item/started", "inProgress"],
-    ["item/completed", "completed"],
-  ] as const) {
+  for (const status of ["inProgress", "completed"] as const) {
     fake.emitNotification({
-      method,
+      method: "history/updated",
       params: {
         threadId: `thr_${ref}`,
         ref,
-        turnId,
-        item: {
-          type: "commandExecution",
-          id: itemId,
-          turnId,
-          toolName: "ask_user",
-          callId,
-          status,
-          argumentsJson: askArgs(questions),
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            type: "commandExecution",
+            id: itemId,
+            turnId,
+            toolName: "ask_user",
+            callId,
+            status,
+            argumentsJson: askArgs(questions),
+          },
+        ],
       },
     });
   }

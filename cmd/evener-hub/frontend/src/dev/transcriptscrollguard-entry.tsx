@@ -359,9 +359,9 @@ async function scrollAwayAndWaitForPill(): Promise<TranscriptScrollMetrics> {
 }
 
 // Appends APPEND_TURN_COUNT large turns through the REAL notification path
-// (turn/started + turn/completed, the same frames the live wire sends) while
-// the reader is scrolled away. Resolves once the model and the DOM both
-// carry the appends.
+// (history/updated, the same frame the live wire sends now) while the reader
+// is scrolled away. Resolves once the model and the DOM both carry the
+// appends.
 async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
   const before = modelTurnCount;
   const beforeScrollHeight = scrollElement().scrollHeight;
@@ -373,12 +373,16 @@ async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
       paragraphs(APPEND_PARAGRAPHS, `appended turn ${k + 1}`),
     );
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: THREAD_ID, ref: REF, turn },
-    } as AnyNotification);
-    fake.emitNotification({
-      method: "turn/completed",
-      params: { threadId: THREAD_ID, ref: REF, turn: { id, itemsView: "", status: "completed" } },
+      method: "history/updated",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id, itemsView: "full", status: "completed" }],
+        items: turn.items?.map((item) => ({ ...item, turnId: id })) ?? [],
+      },
     } as AnyNotification);
   }
   const deadline = performance.now() + 8_000;

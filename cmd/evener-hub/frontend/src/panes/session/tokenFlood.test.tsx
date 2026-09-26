@@ -25,37 +25,38 @@ import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./tran
 const FLOOD_SIZE = 10_000;
 
 describe("token-flood: 10k-delta correctness", () => {
-  test("pendingText accumulates the exact concatenation of all 10,000 chunks, mid-stream, before settle", () => {
+  test("the live stream's text accumulates the exact concatenation of all 10,000 chunks, mid-stream, before settle", () => {
     const { notifications, expectedText, ref, itemId } = buildFloodStream(FLOOD_SIZE);
     let model = hydrateFloodModel(ref);
     let now = 1000;
     for (const n of notifications) {
       now += 1;
-      if (n.method === "item/completed" || n.method === "turn/completed") break;
+      // Stop right after the last overlay/delta, before overlay/end and the
+      // settling history/updated (item/completed + turn/completed's
+      // read-model replacement) — mid-stream, as the live wire has it.
+      if (n.method === "overlay/end") break;
       model = applyNotification(model, n, now);
     }
-    const item = model.turns[0]?.items.find((it) => it.id === itemId);
-    expect(item?.pendingText).toHaveLength(FLOOD_SIZE);
-    expect(item?.pendingText?.join("")).toBe(expectedText);
+    const item = model.turns.flatMap((turn) => turn.items).find((it) => it.id === itemId);
+    expect(item?.text).toBe(expectedText);
+    expect(item?.status).toBe("inProgress");
   });
 
-  test("item/completed settles the exact wire text with no drops or reorders", () => {
+  test("history/updated settles the exact wire text with no drops or reorders", () => {
     const { notifications, expectedText, ref, itemId } = buildFloodStream(FLOOD_SIZE);
     let model = hydrateFloodModel(ref);
     let now = 1000;
     for (const n of notifications) {
       now += 1;
-      if (n.method === "turn/completed") break;
       model = applyNotification(model, n, now);
     }
-    const item = model.turns[0]?.items.find((it) => it.id === itemId);
+    const item = model.turns.flatMap((turn) => turn.items).find((it) => it.id === itemId);
     expect(item?.text).toBe(expectedText);
     expect(item?.text.length).toBe(expectedText.length);
-    expect(item?.pendingText).toBeUndefined();
     expect(item?.status).toBe("completed");
   });
 
-  test("a bare turn/completed settle PRESERVES the streamed item (R1 settle-preserve semantics) - text, count, and status all survive", () => {
+  test("the settling history/updated PRESERVES the streamed item (R1 settle-preserve semantics' read-model analog) - text, count, and status all survive", () => {
     const { notifications, expectedText, ref, itemId } = buildFloodStream(FLOOD_SIZE);
     let model = hydrateFloodModel(ref);
     let now = 1000;
@@ -63,11 +64,13 @@ describe("token-flood: 10k-delta correctness", () => {
       now += 1;
       model = applyNotification(model, n, now);
     }
-    const turn = model.turns[0];
+    const turn = model.turns.find((t) => t.items.some((it) => it.id === itemId));
     expect(turn?.status).toBe("completed");
-    // The pre-R1 bug: a bare turn/completed stamp REPLACED the turn's items
-    // with the (wire-empty) stamp payload's own items, wiping the streamed
-    // text entirely. This is the exact regression this test pins.
+    // history/updated's mergeHistory is additive by construction — it never
+    // replaces a turn's item set wholesale the way a bare turn/completed
+    // stamp once could (R1's regression, now structurally impossible), but
+    // this still pins the observable outcome R1 protected: the streamed
+    // item survives its turn's settle with its full text intact.
     expect(turn?.items).toHaveLength(1);
     expect(turn?.items[0]?.id).toBe(itemId);
     expect(turn?.items[0]?.text).toBe(expectedText);
@@ -258,17 +261,63 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     expect(renderCountAfterMount).toBeGreaterThan(0);
 
     const chunks = buildFloodChunks(SESSION_FLOOD_SIZE, 2);
-    // Each delta emitted in its OWN act() call, not batched together -
-    // faithful to the real world, where each delta arrives as its own
-    // WebSocket frame producing its own separate store commit, rather than
-    // React's auto-batching collapsing many synchronous updates issued in
-    // one call stack into a single render pass (which would silently hide
-    // exactly the per-delta re-render cost this probe exists to measure).
-    for (const delta of chunks) {
+    // item/agentMessage/delta's read-model replacement, history/updated,
+    // merges by item identity into whatever the model's own versioned
+    // history already holds (reducer.ts's mergeHistory) — a turn/item this
+    // client's history has never seen gets synthesized fresh (status
+    // "inProgress", no other items), which would silently drop the settled
+    // sibling this probe depends on. Seeding both items into the FIRST
+    // history/updated (mirroring the settled-then-live shape thread/read
+    // handed this test before the migration) keeps the sibling in the
+    // model's tracked history so it survives every later merge, the same
+    // way it survived every earlier item/agentMessage/delta.
+    let text = "";
+    for (const [i, delta] of chunks.entries()) {
+      text += delta;
+      // Each delta emitted in its OWN act() call, not batched together -
+      // faithful to the real world, where each delta arrives as its own
+      // WebSocket frame producing its own separate store commit, rather than
+      // React's auto-batching collapsing many synchronous updates issued in
+      // one call stack into a single render pass (which would silently hide
+      // exactly the per-delta re-render cost this probe exists to measure).
       await act(async () => {
         fake.emitNotification({
-          method: "item/agentMessage/delta",
-          params: { ref, turnId: "turn_flood_settled", itemId: "item_flood_live", delta },
+          method: "history/updated",
+          params: {
+            ref,
+            threadId: `thr_${ref}`,
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc_flood", length: i + 1 },
+            turns: [{ id: "turn_flood_settled", status: "inProgress", itemsView: "" }],
+            items:
+              i === 0
+                ? [
+                    {
+                      id: "item_settled_sibling",
+                      turnId: "turn_flood_settled",
+                      type: "tokenflood-render-probe",
+                      text: "settled sibling content",
+                      status: "completed",
+                    },
+                    {
+                      id: "item_flood_live",
+                      turnId: "turn_flood_settled",
+                      type: "agentMessage",
+                      text,
+                      status: "inProgress",
+                    },
+                  ]
+                : [
+                    {
+                      id: "item_flood_live",
+                      turnId: "turn_flood_settled",
+                      type: "agentMessage",
+                      text,
+                      status: "inProgress",
+                    },
+                  ],
+          },
         } as AnyNotification);
       });
       // Notification subscribers also start durable projection reads. Await

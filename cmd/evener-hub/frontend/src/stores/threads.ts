@@ -1935,14 +1935,13 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
       ...validConsumedClientMutationIds(n.params.consumedClientMutationIds),
     ];
   }
-  if (n.method === "evener/steering/injected") {
-    return n.params.clientMutationId ? [n.params.clientMutationId] : [];
-  }
-  if (n.method === "item/started" || n.method === "item/completed") {
-    return n.params.item.clientMutationId ? [n.params.item.clientMutationId] : [];
-  }
-  if (n.method === "turn/started" || n.method === "turn/completed") {
-    return (n.params.turn.items ?? [])
+  // history/updated is the read-model replacement for evener/steering/injected,
+  // item/started, item/completed, turn/started and turn/completed alike: it
+  // carries the recorded form of every item a change affected (a steering
+  // item included), so one pass over its items covers what all five used to
+  // carry across their own separate shapes.
+  if (n.method === "history/updated") {
+    return (n.params.items ?? [])
       .map((item) => item.clientMutationId)
       .filter((clientMutationId): clientMutationId is string => Boolean(clientMutationId));
   }

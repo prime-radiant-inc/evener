@@ -222,12 +222,17 @@ export function createEditorialClient(): EditorialClient {
     const ref = snapshot.thread.evener.ref;
     const threadId = snapshot.thread.id;
     client.emitNotification({
-      method: "turn/started",
-      params: { ref, threadId, turn: { ...turn, status: "inProgress", items: [] } },
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ ...turn, items: [] }],
+        items: turn.items ?? [],
+      },
     });
-    for (const item of turn.items ?? [])
-      client.emitNotification({ method: "item/completed", params: { ref, threadId, turnId, item } });
-    client.emitNotification({ method: "turn/completed", params: { ref, threadId, turn } });
     const summary = summaries.find((row) => row.ref === ref);
     if (summary) summary.state = "idle";
     revision++;
