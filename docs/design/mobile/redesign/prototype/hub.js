@@ -107,7 +107,7 @@
   EV.sheets.signin = function ({ provider, sessionId, stacked }) {
     const S = EV.S;
     const p = S.providers.find((x) => x.id === provider);
-    const [phase, setPhase] = useState(p.status === "ok" ? "done" : "start");
+    const [phase, setPhase] = useState("start");
     const s = sessionId && EV.sess(sessionId);
     // The hub's device flow hands the app a page URL and a code, nothing
     // more, so the app copies the code on the way out instead of pretending

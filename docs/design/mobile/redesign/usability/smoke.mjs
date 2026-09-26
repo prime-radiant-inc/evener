@@ -398,6 +398,13 @@ async function runChecks(page, scheme) {
     const after = await ev(page, `(() => { const s = EV.sess('s-hier'); return { in: s.usage.in, used: s.ctx.used }; })()`);
     if (after.in !== before.in || after.used !== before.used) throw new Error(`forking and asiding s-hier then mutating the copies changed its own usage/ctx: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
   });
+  // Signing in again must run the code step again, not skip straight to
+  // "Signed in" because the provider is already ok.
+  await check(S('flow-sign-in-again-runs-the-code-step'), page, async () => {
+    await reset(page); await ev(page, `EV.openSheet('signin', { provider: 'vertex' })`); await sleep(300);
+    const n = await page.getByRole('button', { name: 'Open sign-in page' }).count();
+    if (!n) throw new Error('signing in again should open at the code step, not "Signed in"');
+  });
 }
 
 try {
