@@ -766,6 +766,8 @@ func fileHasContent(path string) bool {
 //
 // A block is the marker with the test's own output around it, and it runs from
 // the previous framework line to the next one, bounded by the two line counts.
+// If a nested owner separates a marker from its parent's diagnostics, the
+// owner-aware expansion below recovers the bounded parent context instead.
 // That keeps the indented t.Log/t.Error lines and the test's unindented direct
 // output (fmt.Println, log.Print, a child process) alike; only the toolchain's
 // own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
@@ -859,7 +861,7 @@ func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
 	}
 	for index := marker - 1; index >= emitted; index-- {
 		if owner := surveyPhaseOwner(lines[index]); owner != "" {
-			return owner != name && !strings.HasPrefix(owner, name+"/")
+			return owner != name
 		}
 	}
 	return false
@@ -902,6 +904,7 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		parentLevel bool
 	}
 	owner := name
+	parentDiagnostic := false
 	candidates := make([]candidate, 0, marker-run)
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
@@ -915,14 +918,18 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 			continue
 		}
 		diagnostic := surveyDiagnosticLine.MatchString(line)
+		parentLevel := owner == name
+		if diagnostic && parentLevel {
+			parentDiagnostic = true
+		}
 		candidates = append(candidates, candidate{
 			index:       index,
 			line:        line,
 			diagnostic:  diagnostic,
-			parentLevel: owner == name,
+			parentLevel: parentLevel,
 		})
 	}
-	if len(candidates) == 0 {
+	if len(candidates) == 0 || !parentDiagnostic {
 		return nil, false
 	}
 
