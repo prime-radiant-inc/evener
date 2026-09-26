@@ -1,0 +1,475 @@
+// The Board screen mounted with only its native edges mocked: the navigation
+// reads go through the real BoardController to a fake hub that answers by
+// params, and the device memory is the real SeenMarkers over an in-memory
+// kv-store.
+import type {
+	ConnectionState,
+	NavigationReadParams,
+	NavigationSessionSummary,
+} from "@evener/appwire-client";
+import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { render, renderedText, screenConnection } from "../renderNative.testkit";
+import { BoardScreen } from "./BoardScreen";
+import { PulseMeter } from "./PulseMeter";
+import { seenMarkers } from "./nativeBoardMemory";
+
+const harness = vi.hoisted(() => ({
+	connection: {} as Record<string, unknown>,
+	kv: new Map<string, string>(),
+	drafts: new Map<string, Set<string>>(),
+}));
+
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	Keyboard: { dismiss: () => {} },
+}));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-safe-area-context", () => ({
+	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
+}));
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return {
+		useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, []),
+		useIsFocused: () => true,
+	};
+});
+vi.mock("expo-sqlite/kv-store", () => ({
+	Storage: {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => harness.kv.set(key, value),
+		removeItemSync: (key: string) => harness.kv.delete(key),
+	},
+}));
+vi.mock("../nativeDrafts", () => ({
+	drafts: { refsWithDrafts: (hubId: string) => harness.drafts.get(hubId) ?? new Set<string>() },
+}));
+vi.mock("../ConnectionProvider", () => ({
+	useConnection: () => harness.connection,
+}));
+
+const NOW = Date.UTC(2026, 8, 26, 12, 0);
+const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+
+beforeEach(() => {
+	vi.useFakeTimers();
+	vi.setSystemTime(NOW);
+});
+afterEach(() => {
+	vi.useRealTimers();
+});
+
+// Each test uses its own hub, because nativeBoardMemory keeps one SeenMarkers
+// per hub for the life of the module.
+let hubCount = 0;
+function hubId() {
+	hubCount += 1;
+	return `hub-${hubCount}`;
+}
+/** A device that finished first run an hour ago, so rows updated since then
+ * are unseen. */
+function adoptedAnHourAgo(hub: string) {
+	harness.kv.set(`evener.native.seen.${hub}`, JSON.stringify({ adopted: true, epoch: minutesAgo(60), sessions: {} }));
+}
+
+const session = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
+	ref,
+	host_id: "local",
+	session_id: ref,
+	title: ref,
+	project: "evener",
+	state: "idle",
+	kind: "session",
+	live: true,
+	children: [],
+	updated_at: minutesAgo(5),
+	...over,
+});
+const failing = session("local:fail", { title: "Fix retry loop", state: "errored", updated_at: minutesAgo(2) });
+const asking = session("local:ask", { title: "Pick a name", state: "awaiting", ask_pending: true, updated_at: minutesAgo(3) });
+const working = session("local:work", { title: "Build docs", state: "active", updated_at: minutesAgo(1) });
+const finished = session("local:done", { title: "Ship it", updated_at: minutesAgo(4) });
+const idleOne = session("local:idle-1", { title: "Old chore", dormant: true, updated_at: minutesAgo(120) });
+const idleTwo = session("local:idle-2", { title: "Older chore", dormant: true, updated_at: minutesAgo(240) });
+
+interface Fleet {
+	live: NavigationSessionSummary[][];
+	needsYou: NavigationSessionSummary[];
+	pins: Array<{ id: string; name: string; count: number }>;
+	manifest: ReturnType<typeof manifest>;
+}
+const fleet: Fleet = {
+	// The ask is in the hub's needs_you section only: bands union it.
+	live: [[failing, working, finished, idleOne, idleTwo]],
+	needsYou: [failing, asking],
+	pins: [
+		{ id: "pins-1", name: "Mine", count: 3 },
+		{ id: "pins-2", name: "Empty", count: 0 },
+	],
+	manifest: manifest({
+		sources: [{ id: "local", label: "Laptop", kind: "local", online: true }],
+		sections: { live: { count: 5 }, needs_you: { count: 2 }, pin_sections: { count: 2 } },
+		catalogs: { projects: { count: 4 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+	}),
+};
+
+/** A hub that answers navigation reads by params; `hold` keeps a read
+ * unanswered until the test releases it. */
+function hub(shape: Fleet, hold: (params: NavigationReadParams) => boolean = () => false) {
+	const requests: NavigationReadParams[] = [];
+	const held: Array<() => void> = [];
+	const answer = (params: NavigationReadParams) => {
+		const offset = params.offset ?? 0;
+		if (params.resource === "manifest") return shape.manifest;
+		if (params.resource === "pin_catalog") return { pin_sections: shape.pins, remaining: 0 };
+		if (params.section === "needs_you") return { sessions: shape.needsYou, remaining: 0 };
+		// Live pages are consecutive: each page's offset is the rows before it.
+		let before = 0;
+		for (const [index, page] of shape.live.entries()) {
+			if (before === offset) {
+				const after = shape.live.slice(index + 1).reduce((sum, rest) => sum + rest.length, 0);
+				return { sessions: page, remaining: after };
+			}
+			before += page.length;
+		}
+		throw new Error(`no Live page at offset ${offset}`);
+	};
+	const client: ConversationClientLike = {
+		request: (method, params) =>
+			new Promise((resolve) => {
+				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
+				const read = params as NavigationReadParams;
+				requests.push(read);
+				const respond = () =>
+					resolve(
+						wireV2(
+							{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+							answer(read),
+							`etag-${read.resource}-${read.offset ?? 0}`,
+							1,
+							"generation-test",
+						),
+					);
+				if (hold(read)) held.push(respond);
+				else respond();
+			}),
+		onNotification: () => () => {},
+	};
+	return {
+		client,
+		requests,
+		release: () => {
+			for (const respond of held.splice(0)) respond();
+		},
+	};
+}
+
+function navigation() {
+	return { navigate: vi.fn(), setOptions: vi.fn() };
+}
+type Navigation = ReturnType<typeof navigation>;
+
+function connect(hub: string, client: unknown, state: ConnectionState, over: Record<string, unknown> = {}) {
+	harness.connection = {
+		...screenConnection(client, state),
+		activeProfile: { id: hub, name: "Work hub" },
+		...over,
+	};
+}
+function screen(nav: Navigation) {
+	return <BoardScreen navigation={nav as never} route={{ key: "Sessions", name: "Sessions" } as never} />;
+}
+async function settle() {
+	await act(async () => {
+		for (let step = 0; step < 30; step++) await Promise.resolve();
+	});
+}
+async function mount(nav: Navigation) {
+	const tree = render(screen(nav));
+	await settle();
+	return tree;
+}
+function rerender(tree: ReactTestRenderer, nav: Navigation) {
+	act(() => tree.update(screen(nav)));
+}
+
+/** Every string a Text renders on its own. */
+function texts(tree: ReactTestRenderer): string[] {
+	return tree.root
+		.findAll((node) => node.type === ("Text" as never))
+		.flatMap((node) => [node.props.children].flat().filter((child): child is string => typeof child === "string"));
+}
+function joinedText(node: ReactTestInstance): string {
+	return node.children.map((child) => (typeof child === "string" ? child : joinedText(child))).join("");
+}
+/** The band headers and the Idle fold, in screen order. */
+function bandHeaders(tree: ReactTestRenderer): string[] {
+	return tree.root.findAll((node) => node.props.testID === "band-header").map(joinedText);
+}
+/** A Board row, found by its title. */
+function rowTitled(tree: ReactTestRenderer, title: string) {
+	return tree.root.find(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith(`${title}, `),
+	);
+}
+function hasRow(tree: ReactTestRenderer, title: string) {
+	return (
+		tree.root.findAll(
+			(node) =>
+				node.type === ("Pressable" as never) &&
+				typeof node.props.accessibilityLabel === "string" &&
+				node.props.accessibilityLabel.startsWith(`${title}, `),
+		).length > 0
+	);
+}
+/** Presses the one control with this label, leaving out the chips, which
+ * share their labels with the section rows they scroll to. */
+function pressLabel(tree: ReactTestRenderer, label: string) {
+	const target = tree.root.find(
+		(node) =>
+			node.type === ("Pressable" as never) && node.props.accessibilityLabel === label && node.props.testID !== "chip",
+	);
+	act(() => target.props.onPress());
+}
+const chipLabels = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll((node) => node.type === ("Pressable" as never) && node.props.testID === "chip")
+		.map((node) => node.props.accessibilityLabel);
+const headerOptions = (nav: Navigation) => nav.setOptions.mock.calls.at(-1)?.[0];
+
+it("renders the fleet's bands in order with their counts, and Idle starts folded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	expect(renderedText(tree)).toContain("2 need you");
+	expect(texts(tree)).toEqual(expect.arrayContaining(["1 finished", "1 working", "2 idle"]));
+	for (const title of ["Fix retry loop", "Pick a name", "Ship it", "Build docs"]) expect(hasRow(tree, title)).toBe(true);
+	expect(hasRow(tree, "Old chore")).toBe(false);
+	pressLabel(tree, "Idle, 2 sessions");
+	expect(hasRow(tree, "Old chore")).toBe(true);
+	expect(hasRow(tree, "Older chore")).toBe(true);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toEqual({ idle: false });
+	// Folded again, the summary's idle count unfolds it.
+	pressLabel(tree, "Idle, 2 sessions");
+	expect(hasRow(tree, "Old chore")).toBe(false);
+	const idleCount = tree.root.find(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
+	);
+	act(() => idleCount.props.onPress());
+	expect(hasRow(tree, "Old chore")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("shows chips and section rows for the sections that have sessions, and opens today's screens", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions", "Projects, 4 projects"]);
+	expect(texts(tree)).not.toContain("Empty");
+	expect(texts(tree)).not.toContain("Archived");
+	pressLabel(tree, "Mine, 3 sessions");
+	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-1", title: "Mine" });
+	pressLabel(tree, "Projects, 4 projects");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Projects", { hubId: id, archived: false });
+	act(() => tree.unmount());
+});
+
+it("opens a session after marking it seen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	act(() => rowTitled(tree, "Ship it").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
+	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	// Seen, the session leaves Finished for the folded Idle band.
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	act(() => tree.unmount());
+});
+
+it("reads nothing while connecting, and reads the Board once the connection is ready", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "connecting");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(fake.requests).toHaveLength(0);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.requests.map((read) => read.section ?? read.resource).sort()).toEqual([
+		"live",
+		"manifest",
+		"needs_you",
+		"pin_catalog",
+	]);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	act(() => tree.unmount());
+});
+
+it("keeps its rows when the connection drops, grays the meters, and says Reconnecting… after 2 seconds", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(tree.root.findAllByType(PulseMeter).map((meter) => meter.props.tone ?? "alive")).not.toContain("gray");
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	expect(texts(tree)).not.toContain("Reconnecting…");
+	act(() => {
+		vi.advanceTimersByTime(2000);
+	});
+	expect(texts(tree)).toContain("Reconnecting…");
+	const tones = tree.root.findAllByType(PulseMeter).map((meter) => meter.props.tone);
+	expect(tones.length).toBeGreaterThan(0);
+	expect(new Set(tones)).toEqual(new Set(["gray"]));
+	act(() => tree.unmount());
+});
+
+it("offers no Reconnect or Refresh anywhere", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, null, "closed");
+	rerender(tree, nav);
+	act(() => {
+		vi.advanceTimersByTime(60_000);
+	});
+	const options = headerOptions(nav);
+	const headerLabels = [
+		...options.unstable_headerLeftItems({}),
+		...options.unstable_headerRightItems({}),
+	].flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
+		item.label,
+		...(item.menu?.items.map((entry) => entry.label) ?? []),
+	]);
+	const labels = tree.root
+		.findAll((node) => typeof node.props.accessibilityLabel === "string")
+		.map((node) => node.props.accessibilityLabel as string);
+	for (const text of [...texts(tree), ...labels, ...headerLabels]) expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
+	expect(renderedText(tree)).not.toMatch(/Reconnect\b|Refresh|pull/i);
+	act(() => tree.unmount());
+});
+
+it("says what to do on an empty Board, with a New session button", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, live: [[]], needsYou: [] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(texts(tree)).toContain("Nothing's running. Start a session to put an agent to work.");
+	expect(bandHeaders(tree)).toEqual([]);
+	const button = tree.root.find(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "New session").length > 0,
+	);
+	act(() => button.props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("NewSession", { hubId: id, hubName: "Work hub" });
+	act(() => tree.unmount());
+});
+
+it("shows three skeleton rows until the first read lands", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, () => true);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(tree.root.findAll((node) => node.props.testID === "skeleton-row")).toHaveLength(3);
+	fake.release();
+	await settle();
+	expect(tree.root.findAll((node) => node.props.testID === "skeleton-row")).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("says Update needed and why when no retry can fix the close", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, null, "closed", { fatal: true });
+	rerender(tree, nav);
+	expect(texts(tree)).toContain("Update needed");
+	expect(texts(tree)).toContain(
+		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
+	);
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("on a device's first run, reads every Live page before adopting, so nothing flashes Finished", async () => {
+	const id = hubId();
+	// Live is sorted by attention, so the newest session sits on page 2.
+	const newest = session("local:newest", { title: "Newest", updated_at: minutesAgo(1) });
+	const older = session("local:older", { title: "Older", updated_at: minutesAgo(30) });
+	const fake = hub({ ...fleet, live: [[failing, older], [newest]], needsYou: [failing] }, (read) => (read.offset ?? 0) > 0);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(fake.requests.filter((read) => read.section === "live").map((read) => read.offset)).toEqual([0, 2]);
+	expect(seenMarkers(id).adopted).toBe(false);
+	expect(bandHeaders(tree)).not.toContain("FINISHED · 1");
+	fake.release();
+	await settle();
+	expect(seenMarkers(id).adopted).toBe(true);
+	expect(seenMarkers(id).isSeen(newest)).toBe(true);
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 1", "Idle · 2"]);
+	act(() => tree.unmount());
+});
+
+it("shows the Draft tag on sessions with a saved draft", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.drafts.set(id, new Set(["local:work"]));
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const drafted = rowTitled(tree, "Build docs");
+	expect(drafted.findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft")).toHaveLength(1);
+	expect(
+		rowTitled(tree, "Ship it").findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft"),
+	).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("puts the hub's name and menu on the left and search on the right", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const options = headerOptions(nav);
+	expect(options.title).toBe("");
+	const [hubMenu] = options.unstable_headerLeftItems({});
+	expect(hubMenu).toMatchObject({ type: "menu", label: "Work hub", icon: { type: "sfSymbol", name: "chevron.down" } });
+	expect(hubMenu.menu.items.map((item: { label: string }) => item.label)).toEqual(["Hub settings", "Switch hub"]);
+	act(() => hubMenu.menu.items[0].onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	act(() => hubMenu.menu.items[1].onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+	const [search] = options.unstable_headerRightItems({});
+	expect(search).toMatchObject({ type: "button", icon: { type: "sfSymbol", name: "magnifyingglass" } });
+	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(0);
+	act(() => search.onPress());
+	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(1);
+	act(() => tree.unmount());
+});
