@@ -881,10 +881,6 @@ func surveyFailedChildNames(lines []string, marker int, parent string) map[strin
 			}
 			continue
 		}
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		break
 	}
 	return failed
 }
@@ -1041,7 +1037,11 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		selectNewest(descendantDiagnosticCandidates, descendantBudget)
 	}
 	if parentDiagnostic {
-		selectNewest(parentDiagnosticCandidates, maxExpandedLines)
+		parentBudget := maxExpandedLines
+		if len(failedChildDiagnosticCandidates) > 0 {
+			parentBudget--
+		}
+		selectNewest(parentDiagnosticCandidates, parentBudget)
 	}
 	selectNewest(failedChildDiagnosticCandidates, maxExpandedLines)
 	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)

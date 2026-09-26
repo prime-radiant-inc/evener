@@ -488,12 +488,14 @@ func TestReplaySurveyFailuresKeepsChildDiagnosticAcrossSiblingName(t *testing.T)
 // verdict. The earlier failed child's diagnostic must still reach the excerpt.
 func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
 	const (
-		parentDiagnostic = "    parent_test.go:3: using fixture x"
-		childDiagnostic  = "    child_test.go:5: child failure"
+		parentDiagnostic       = "    parent_test.go:3: using fixture x"
+		newestParentDiagnostic = "    parent_test.go:4: using fixture y"
+		childDiagnostic        = "    child_test.go:5: child failure"
 	)
 	var log strings.Builder
 	log.WriteString("=== RUN   TestParent\n")
 	log.WriteString(parentDiagnostic + "\n")
+	log.WriteString(newestParentDiagnostic + "\n")
 	log.WriteString("=== RUN   TestParent/child1\n")
 	log.WriteString(childDiagnostic + "\n")
 	log.WriteString("=== RUN   TestParent/child2\n")
@@ -505,8 +507,8 @@ func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
 	log.WriteString("    --- PASS: TestParent/child2 (0.00s)\n")
 
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
-	if !strings.Contains(got, parentDiagnostic) {
-		t.Fatalf("parent diagnostic was omitted behind later child output: %q", got)
+	if !strings.Contains(got, newestParentDiagnostic) {
+		t.Fatalf("newest parent diagnostic was omitted behind later child output: %q", got)
 	}
 	if !strings.Contains(got, childDiagnostic) {
 		t.Fatalf("earlier failed child diagnostic was omitted behind later child output: %q", got)
