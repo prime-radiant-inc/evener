@@ -108,8 +108,7 @@
       const x = EV.host("paradise-park");
       x.state = "offline";
       x.lastError = "ssh: connect to host paradise-park port 22: Operation timed out";
-      const n = EV.S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length;
-      EV.alert({ kind: "notice", title: "paradise-park is offline", why: n + " sessions can't be reached", focus: "hosts" });
+      EV.alert({ kind: "notice", title: "paradise-park is offline", why: EV.liveOnHost(x.id) + " sessions can't be reached", focus: "hosts" });
     },
     "host-online"() { const x = EV.host("paradise-park"); x.state = "connected"; x.lastError = null; },
     reconnecting() {

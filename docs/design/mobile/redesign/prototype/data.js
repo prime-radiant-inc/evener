@@ -450,7 +450,7 @@
   function generic(s) {
     return [
       { t: "time", label: "Today" },
-      { t: "user", text: s.title.replace(/^./, (c) => c) + "." },
+      { t: "user", text: s.title + "." },
       { t: "agent", md: "Starting on this now. I'll read the relevant code first and report back." },
       { t: "act", live: s.state === "working", steps: [
         { i: "Read the relevant files", g: s.project === "evener" ? "agent/…" : "src/…", s: "ok" },

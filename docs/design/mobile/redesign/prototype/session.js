@@ -5,9 +5,10 @@
 // notes, find, aside, rename, categories).
 (function () {
   const EV = window.EV;
-  const { html, h, useRef, useEffect, useLayoutEffect, useState } = EV;
+  const { html, h, useRef, useEffect, useLayoutEffect, useState, Done, Cancel } = EV;
   const I = EV.I;
-  const LEVELS = ["Chat", "Intent", "Tools", "Activity", "Full"];
+  // The transcript's detail levels, least to most.
+  EV.LEVELS = ["Chat", "Intent", "Tools", "Activity", "Full"];
   const mdCache = new Map();
   EV.md = function (src) {
     if (!mdCache.has(src)) mdCache.set(src, marked.parse(src, { gfm: true }));
@@ -25,7 +26,12 @@
     const m = d && /^#\s+(.+)$/m.exec(d.md);
     return m ? m[1].trim() : path.split("/").pop();
   };
-  const lvl = (id) => LEVELS.indexOf(EV.level(id));
+  // A document changed since you last read it: the dot on its chip and in Files.
+  EV.docChanged = function (path) {
+    const d = EV.S.docs[path];
+    return !!(d && d.changed.length && !EV.S.readDocs[path]);
+  };
+  const lvl = (id) => EV.LEVELS.indexOf(EV.level(id));
 
   // ---------- transcript items ----------
   function actSummary(steps) {
@@ -37,7 +43,6 @@
   }
 
   function Evidence({ st }) {
-    const S = EV.S;
     if (st.diff) {
       const d = st.diff;
       return html`<div class="diff"><div class="dh"><span style="font-family:var(--mono)">${d.file}</span><span><span style="color:var(--alive-ink)">+${d.add}</span> <span style="color:var(--danger-ink)">−${d.del}</span></span></div>
@@ -114,7 +119,7 @@
       }
       case "doc": {
         const d = S.docs[it.path] || { lines: 0, ago: 0, changed: [] };
-        const changed = d.changed && d.changed.length && !S.readDocs[it.path];
+        const changed = EV.docChanged(it.path);
         return html`<button class="doc-chip" onClick=${() => { EV.log("doc_open", { sessionId: s.id, path: it.path, from: "transcript" }); EV.push("reader", { path: it.path, sessionId: s.id }); }}>
           <span class="ic">${I.doc({ s: 20 })}</span>
           <span style="min-width:0"><span class="k">${it.kind}${changed ? html` · <span style="color:var(--accent-ink)">changed since you last read</span>` : null}</span><br /><span class="t">${EV.docTitle(it.path)}</span><br /><span class="m">${it.path.split("/").pop()} · ${d.lines} lines · ${EV.fmtAgo(d.ago * 1000)} ago</span></span>
@@ -230,7 +235,6 @@
     const imgs = (S.images[s.id] || []).length;
     S.images[s.id] = [];
     S.drafts[s.id] = "";
-    const st = EV.stateOf(s);
     if (S.conn !== "live") {
       (S.outbox = S.outbox || []).push({ sid: s.id, text, mode });
       EV.log("send", { sessionId: s.id, mode: "outbox", text });
@@ -243,7 +247,7 @@
       EV.resolveAsk(s, ask, [{ q: (S.asks[ask.id][0] || {}).q, a: text }], text, "typed");
       return;
     }
-    if (st === "working" || st === "stuck") {
+    if (EV.inTurn(s)) {
       if (mode === "queue") {
         (S.queue[s.id] = S.queue[s.id] || []).push({ id: "q" + Date.now(), text });
         EV.log("send", { sessionId: s.id, mode: "queue", text, images: imgs });
@@ -445,7 +449,6 @@
   // you're free to move on (this session isn't asking you anything), and it
   // says in words what it moves through. Touch and hold for the list.
   EV.NextCapsule = function NextCapsule({ exceptId }) {
-    const S = EV.S;
     const next = EV.nextQueue(exceptId)[0];
     const lp = EV.useLongPress(() => { EV.log("needs_list_open", { from: exceptId, how: "hold" }); EV.openSheet("needsList", { exceptId }); }, () => EV.goNext(exceptId));
     if (!next) return null;
@@ -458,7 +461,7 @@
     const S = EV.S;
     const heldIds = S.recent;
     const list = EV.nextQueue(exceptId);
-    return html`<${EV.Sheet} title="Needs you" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
+    return html`<${EV.Sheet} title="Needs you" right=${h(Done)} size="medium">
       ${list.map((x) => html`<button class="row" key=${x.id} style="text-align:left" onClick=${() => { EV.log("needs_list_pick", { sessionId: x.id }); S.held = S.held.filter((a) => a.sessionId !== x.id); EV.closeAllSheets(); EV.openSession(x.id, { from: "needs_list" }); }}>
         <div class="mark">${h(EV.Mark, { s: x })}</div>
         <div style="min-width:0"><div class="l1"><span class="title">${x.title}</span><span class="age">${heldIds.includes(x.id) ? html`<span class="draft" style="color:var(--attention-ink);border-color:var(--attention-edge)">New</span>` : null}${EV.fmtAgo(Date.now() - x.updatedAt)}</span></div>
@@ -472,8 +475,7 @@
     const S = EV.S;
     const ta = useRef(null);
     const text = S.drafts[s.id] || "";
-    const st = EV.stateOf(s);
-    const working = st === "working" || st === "stuck";
+    const working = EV.inTurn(s);
     const has = text.trim().length > 0 || (S.images[s.id] || []).length > 0;
     useEffect(() => {
       if (S.focusComposer === s.id && ta.current) { S.focusComposer = null; ta.current.focus(); }
@@ -502,7 +504,7 @@
             { label: "Camera", icon: I.camera({ s: 18 }), run: () => { imgs.push(1); S.images[s.id] = imgs; EV.log("attach", { sessionId: s.id, source: "camera" }); EV.update(); } },
             { label: "Commands and skills", icon: I.command({ s: 18 }), sep: true, run: () => EV.openSheet("commands", { sessionId: s.id }) },
           ] })}>${I.plus({ s: 20 })}</button>
-          ${asking ? null : html`<button class="cbtn model" aria-label=${"Model " + m.name + ", effort " + s.effort} onClick=${() => EV.openSheet("model", { target: "session", sessionId: s.id })}>${m.name} · ${EV.cap(s.effort)}</button>`}
+          ${asking ? null : html`<button class="cbtn model" aria-label=${"Model " + m.name + ", effort " + s.effort} onClick=${() => EV.openSheet("model", { target: "session", sessionId: s.id })}>${EV.modelLabel(s.model, s.effort)}</button>`}
           <span class="sp"></span>
           ${primary}
         </div>
@@ -522,7 +524,11 @@
   }
 
   // ---------- session screen ----------
-  function Session({ id, top, highlight, key }) {
+  // What each phone-facing state is called, under the session's title and in
+  // its info sheet.
+  const STATE_LABEL = { working: "Working", stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", warning: "Warning", restart: "Needs a restart", yourmove: "Finished", idle: "Idle", shutdown: "Shut down" };
+
+  function Session({ id, highlight }) {
     const S = EV.S;
     const s = EV.sess(id);
     const scrollRef = useRef(null);
@@ -566,11 +572,12 @@
     const needs = EV.needsCount(s.id);
     const st = EV.stateOf(s);
     const files = tr.filter((x) => x.t === "doc" || x.t === "art").length;
-    const fileNew = tr.some((x) => x.t === "doc" && S.docs[x.path] && S.docs[x.path].changed.length && !S.readDocs[x.path]);
+    const fileNew = tr.some((x) => x.t === "doc" && EV.docChanged(x.path));
     const q = S.queue[s.id] || [];
     const asking = s.state === "question" || s.state === "approval";
     const nextShown = !asking && needs > 0;
-    const subtitle = { working: "Working · " + EV.fmtAgo(Date.now() - s.startedAt), stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", warning: "Warning", restart: "Needs a restart", yourmove: "Finished · " + EV.fmtAgo(Date.now() - s.updatedAt) + " ago", idle: "Idle · " + EV.fmtAgo(Date.now() - s.updatedAt) + " ago", shutdown: "Shut down" }[st] || "";
+    const since = { working: EV.fmtAgo(Date.now() - s.startedAt), yourmove: EV.fmtAgo(Date.now() - s.updatedAt) + " ago", idle: EV.fmtAgo(Date.now() - s.updatedAt) + " ago" }[st];
+    const subtitle = (STATE_LABEL[st] || "") + (since ? " · " + since : "");
 
     const onTitleDown = (e) => { titleSw.current = { x: e.clientX, y: e.clientY }; };
     const onTitleUp = (e) => {
@@ -645,15 +652,12 @@
   EV.detailMenu = function (s) {
     EV.openMenu({ kind: "list", top: 110, right: true, title: "Detail level",
       header: "How much of the agent's work this session shows",
-      items: LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.toast(l + ": " + LEVEL_HELP[l].charAt(0).toLowerCase() + LEVEL_HELP[l].slice(1)); EV.update(); } })) });
+      items: EV.LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.toast(l + ": " + LEVEL_HELP[l].charAt(0).toLowerCase() + LEVEL_HELP[l].slice(1)); EV.update(); } })) });
   };
 
   EV.screens.session = Session;
 
   // ---------- sheets ----------
-  const Done = () => html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`;
-  const Cancel = () => html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`;
-
   EV.sheets.session = function ({ sessionId, stacked }) {
     const S = EV.S;
     const s = EV.sess(sessionId);
@@ -665,7 +669,7 @@
     const proj = S.projects.find((p) => p.id === s.project);
     return html`<${EV.Sheet} title="Session" right=${h(Done)} size=${stacked ? "stacked" : "large"}>
       <div style="padding:4px 20px 8px"><div style="font:600 20px/25px var(--sans)">${s.title}</div>
-      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;color:var(--ink-mid);font-size:14px">${h(EV.Mark, { s, size: 14 })}<span>${{ working: "Working", stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", restart: "Needs a restart", yourmove: "Finished", idle: "Idle", shutdown: "Shut down", warning: "Warning" }[EV.stateOf(s)]}</span></div></div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;color:var(--ink-mid);font-size:14px">${h(EV.Mark, { s, size: 14 })}<span>${STATE_LABEL[EV.stateOf(s)]}</span></div></div>
       <div class="glabel">Where</div>
       <div class="group">
         ${h(EV.Gi, { label: "Host", value: html`<span class=${"conn-dot" + (hst && hst.state === "offline" ? " offline" : "")}></span>${s.host}` })}
@@ -725,7 +729,7 @@
     const recentIds = [...new Set(S.sessions.filter((x) => x.live).map((x) => x.model))].slice(0, 5);
     const matches = (x) => !q || (x.name + " " + x.id + " " + x.provider).toLowerCase().includes(q.toLowerCase());
     const row = (x) => html`<button class="gi" key=${x.id} onClick=${() => setSel({ model: x.id, effort: x.efforts.includes(sel.effort) ? sel.effort : x.efforts[x.efforts.length - 1] })}>
-      <span style="width:22px;display:flex;color:var(--accent)">${sel.model === x.id ? I.check({ s: 18 }) : null}</span>
+      <span class="check">${sel.model === x.id ? I.check({ s: 18 }) : null}</span>
       <span class="gl">${x.name}<small>${x.provider} · ${x.ctx >= 1000 ? x.ctx / 1000 + "M" : x.ctx + "K"} context · ${x.pin ? "$" + x.pin + " / $" + x.pout + " per M" : "free, local"}${x.vision ? " · vision" : ""}</small></span><span></span></button>`;
     const provs = [...new Set(S.models.map((x) => x.provider))];
     const apply = () => {
@@ -742,7 +746,7 @@
     return html`<${EV.Sheet} title="Model" left=${h(Cancel)} right=${html`<button class="text-btn strong" onClick=${apply}>Done</button>`} size=${stacked ? "stacked" : "large"}>
       <div class="search-field">${I.search({ s: 16 })}<input placeholder="Search models" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Search models" /></div>
       ${L ? null : html`<div class="glabel" style="padding-top:8px">Effort</div>
-      ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: sel.effort, onChange: (e) => setSel({ model: sel.model, effort: e }), disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}
+      ${h(EV.EffortSeg, { model: m, value: sel.effort, onChange: (e) => setSel({ model: sel.model, effort: e }) })}
       <div class="gfoot">How long it thinks before acting. ${m.name} supports ${m.efforts.map(EV.cap).join(", ")}.</div>`}
       ${!q ? html`<div class="glabel">Recent</div><div class="group">${recentIds.map((id) => row(EV.model(id)))}</div>` : null}
       ${provs.map((p) => { const list = S.models.filter((x) => x.provider === p && matches(x)); return list.length ? html`<div class="glabel">${p}</div><div class="group">${list.map(row)}</div>` : null; })}
@@ -924,9 +928,9 @@
   // appears when there is something to show; "Notes & links" in the session
   // menu is always there.
   EV.NotesBar = function ({ s }) {
+    if (!EV.hasNotes(s)) return null;
     const n = EV.notesOf(s);
     const links = n.urls.length;
-    if (!hasText(n.human) && !hasText(n.agent) && !links) return null;
     const [icon, who, text] = hasText(n.human) ? [I.person({ s: 14 }), "Your note", n.human] : hasText(n.agent) ? [I.sparkle({ s: 14 }), "Agent's note", n.agent] : [I.link({ s: 14 }), null, links === 1 ? n.urls[0].label || n.urls[0].url : plural(links, "link")];
     const count = links && who ? links : 0;
     const open = () => { EV.log("notes_open", { sessionId: s.id, from: "bar" }); EV.openSheet("notes", { sessionId: s.id, focus: who === "Your note" && s.live }); };
@@ -967,8 +971,7 @@
       : state === "saved" && n.human === n.saved ? "Saved"
       : agentIdle(s) ? "Your note stays on this session. Saving it will wake the agent."
       : "Your note stays on this session. The agent is told when it changes.";
-    const hasAny = hasText(n.human) || hasText(n.agent) || n.urls.length;
-    return html`<${EV.Sheet} title="Notes & links" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="large">
+    return html`<${EV.Sheet} title="Notes & links" right=${h(Done)} size="large">
       ${s.live ? html`<div class="glabel">Your note</div>
         <div class="field"><textarea ref=${editor} class="note-editor" rows="4" placeholder="Make a note…" value=${n.human} aria-label="Your note"
           onFocus=${() => EV.focusNote(s)} onBlur=${() => EV.leaveNote(s)}
@@ -981,7 +984,7 @@
         ${n.urls.length ? html`<div class="group">${n.urls.map((u) => html`<${LinkRow} key=${u.id} s=${s} u=${u} />`)}</div>
           <div class="gfoot">${s.live ? "The agent adds links as it works. Swipe left on one to remove it." : "Links the agent saved in this session."}</div>`
         : html`<div class="group"><div class="gi static"><span class="gl dim">No links yet</span></div></div>`}` : null}
-      ${!s.live && !hasAny ? html`<div class="empty" style="padding-top:28px"><b>No shared notes</b>This session ended without any.</div>` : null}
+      ${!s.live && !EV.hasNotes(s) ? html`<div class="empty" style="padding-top:28px"><b>No shared notes</b>This session ended without any.</div>` : null}
     </${EV.Sheet}>`;
   };
 
@@ -989,7 +992,7 @@
   // opens over the app and Done comes straight back.
   EV.sheets.browser = function ({ url, label }) {
     const host = url.replace(/^https?:\/\//, "").split("/")[0];
-    return html`<${EV.Sheet} title=${host} left=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="large">
+    return html`<${EV.Sheet} title=${host} left=${h(Done)} size="large">
       <div class="browser-bar"><span class="mono">${url}</span></div>
       <div class="empty" style="padding-top:48px">${I.globe({ s: 34 })}<b style="margin-top:10px">${label || host}</b>The page loads here, inside the app. Done brings you back.</div>
       <div style="padding:8px 16px 0"><button class="btn big" onClick=${() => { EV.log("link_safari", { url }); EV.toast("Opens in Safari"); }}>Open in Safari</button></div>
@@ -1003,7 +1006,7 @@
     const res = q.length > 1 ? tr.map((it, i) => ({ it, i, text: it.t === "agent" ? it.md : it.t === "user" ? it.text : "" })).filter((x) => x.text.toLowerCase().includes(q.toLowerCase())) : [];
     return html`<${EV.Sheet} title="Find in session" right=${h(Done)} size="large">
       <div class="search-field">${I.search({ s: 16 })}<input placeholder="Find" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Find in session" /></div>
-      <div class="group">${res.map((r) => h(EV.Gi, { key: r.i, label: html`<span style="font-size:15px">${r.text.replace(/[*#`|]/g, "").slice(0, 120)}</span>`, sub: r.it.t === "user" ? "You" : "Agent", onClick: () => { EV.closeSheet(); EV.log("find_open", { sessionId, query: q }); const t = EV.top(); t.highlight = r.text.slice(0, 40); EV.replaceTop("session", { id: sessionId, highlight: r.text.slice(0, 40) }); } }))}</div>
+      <div class="group">${res.map((r) => h(EV.Gi, { key: r.i, label: html`<span style="font-size:15px">${r.text.replace(/[*#`|]/g, "").slice(0, 120)}</span>`, sub: r.it.t === "user" ? "You" : "Agent", onClick: () => { EV.closeSheet(); EV.log("find_open", { sessionId, query: q }); EV.replaceTop("session", { id: sessionId, highlight: r.text.slice(0, 40) }); } }))}</div>
       ${q.length > 1 && !res.length ? html`<div class="empty">No matches in this session.</div>` : null}
     </${EV.Sheet}>`;
   };

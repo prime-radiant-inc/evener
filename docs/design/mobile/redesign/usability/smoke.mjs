@@ -161,6 +161,13 @@ async function runChecks(page, scheme) {
   // Real UI flows, by tapping, asserted against the action log.
   const tapRole = async (role, name) => { const loc = page.getByRole(role, { name, exact: false }).first(); await loc.waitFor({ timeout: 4000 }); await loc.tap(); await sleep(250); };
   const tap = async (text) => { const loc = page.getByText(text, { exact: true }).first(); await loc.waitFor({ timeout: 4000 }); await loc.tap(); await sleep(250); };
+  // A finger held down long enough for a long-press, then lifted.
+  const holdAt = async (x, y) => {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await sleep(700);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
   await check(S('flow-answer-question'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-audit')`); await sleep(400);
     await tapRole('radio', 'Drop them'); await tapRole('button', 'Next question'); await tapRole('checkbox', 'Job tools'); await tapRole('button', 'Send answers');
@@ -201,10 +208,7 @@ async function runChecks(page, scheme) {
   await check(S('flow-hold-next-for-list'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-hier')`); await sleep(400);
     const box = await page.locator('.next-cap').boundingBox();
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
-    await sleep(700);
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await holdAt(box.x + box.width / 2, box.y + box.height / 2);
     await sleep(300);
     await logHas(page, 'needs_list_open', (e) => e.how === 'hold');
     const log = await ev(page, 'window.__proto.log');
@@ -255,10 +259,7 @@ async function runChecks(page, scheme) {
     const y = await ev(page, `(() => { const sc = document.querySelector('[data-screen="reader"] .scroll'); sc.scrollTop = sc.scrollHeight; const b = [...document.querySelectorAll('[data-screen="reader"] .rblock')].pop().getBoundingClientRect(); return Math.round((b.top + b.bottom) / 2); })()`);
     await sleep(200);
     // Hold like a finger, then lift: the lift must not close or trigger the menu.
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y }] });
-    await sleep(700);
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await holdAt(200, y);
     await sleep(100);
     const open = await ev(page, '!!EV.S.menu');
     if (!open) throw new Error('the long-press menu closed as soon as the finger lifted');

@@ -3,7 +3,7 @@
 // search, select mode and hub notices.
 (function () {
   const EV = window.EV;
-  const { html, h, useRef, useEffect, useState } = EV;
+  const { html, h, useRef, useEffect } = EV;
   const I = EV.I;
 
   let frozen = null; // order snapshot while a finger is on the list
@@ -13,13 +13,13 @@
     const out = [];
     for (const p of S.providers) {
       if (p.status === "expired") {
-        const n = S.sessions.filter((s) => s.live && !s.archived && EV.model(s.model).provider === p.id).length;
+        const n = EV.liveOnProvider(p.id);
         out.push({ id: "p:" + p.id, open: () => EV.openSheet("provider", { providerId: p.id }), text: html`<b>${p.id}</b> sign-in expired${n ? " · " + n + (n === 1 ? " session" : " sessions") : ""}`, act: "Sign in", run: () => { EV.log("notice_action", { notice: "signin", provider: p.id }); EV.openSheet("signin", { provider: p.id }); } });
       }
     }
     for (const x of S.hosts) {
       if (x.state === "offline") {
-        const n = S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length;
+        const n = EV.liveOnHost(x.id);
         out.push({ id: "h:" + x.id, open: () => EV.openSheet("host", { hostId: x.id }), text: html`<b>${x.id}</b> is offline${n ? " · " + n + " sessions can't be reached" : ""}`, act: "Reconnect", run: () => { EV.log("notice_action", { notice: "reconnect", host: x.id }); EV.reconnectHost(x.id); } });
       }
     }
@@ -80,12 +80,7 @@
   }
 
   EV.openFileFromBoard = function (s, a) {
-    const S = EV.S;
-    const file = a.kind === "Artifact" ? { name: "artifact", id: a.id, sessionId: s.id } : { name: "reader", path: a.path, sessionId: s.id };
-    S.nav = [S.nav[0], { name: "session", id: s.id, key: ++S.navSeq, from: "board" }, Object.assign(file, { key: ++S.navSeq })];
-    S.navAnim = { type: "push", key: S.navSeq, until: Date.now() + 330 };
-    EV.onScreenChange();
-    EV.update();
+    EV.openOverSession(s.id, "board", a.kind === "Artifact" ? { name: "artifact", id: a.id, sessionId: s.id } : { name: "reader", path: a.path, sessionId: s.id });
   };
 
   function Attachments({ s }) {
@@ -101,7 +96,7 @@
     const trail = [];
     if (s.archived) lead.push({ label: "Unarchive", cls: "sa-archive", icon: I.archive({ s: 20 }), run: () => EV.setArchived(s, false) });
     else lead.push({ label: "Archive", cls: "sa-archive", icon: I.archive({ s: 20 }), run: () => EV.setArchived(s, true) });
-    if (EV.stateOf(s) === "working" || EV.stateOf(s) === "stuck") trail.push({ label: "Stop", cls: "sa-stop", icon: I.stop({ s: 16 }), run: () => EV.stopTurn(s, "row_swipe") });
+    if (EV.inTurn(s)) trail.push({ label: "Stop", cls: "sa-stop", icon: I.stop({ s: 16 }), run: () => EV.stopTurn(s, "row_swipe") });
     if (!s.archived) trail.push({ label: s.category ? "Unpin" : "Pin", cls: "sa-pin", icon: I.pin({ s: 20 }), run: () => (s.category ? EV.unpin(s) : EV.pinMenu(s)) });
     trail.push({ label: "More", cls: "sa-more", icon: I.dots({ s: 20 }), run: () => EV.rowMenu(s) });
     return { lead, trail };
@@ -111,11 +106,10 @@
     const S = EV.S;
     const sel = S.board.selecting;
     const why = quiet ? null : whyFor(s);
-    const st = EV.stateOf(s);
     const flash = S.board.flash[s.id] && Date.now() - S.board.flash[s.id] < 1300;
     const acts = EV.rowActions(s);
     const draft = S.drafts[s.id] && S.drafts[s.id].trim();
-    const age = st === "working" || st === "stuck" ? EV.fmtAgo(Date.now() - s.startedAt) : EV.fmtAgo(Date.now() - s.updatedAt);
+    const age = EV.inTurn(s) ? EV.fmtAgo(Date.now() - s.startedAt) : EV.fmtAgo(Date.now() - s.updatedAt);
     const tap = () => {
       if (sel) { S.board.selected[s.id] = !S.board.selected[s.id]; EV.update(); return; }
       EV.log("row_tap", { sessionId: s.id, context: context || "live" });
@@ -146,7 +140,7 @@
     s.unseen = false;
     s.updatedAt = Date.now();
     s.pulse = [0, 0, 0, 0, 0, 0, 0];
-    (EV.S.transcripts[s.id] = EV.S.transcripts[s.id] || []).push({ t: "sys", text: "Stopped by you" });
+    EV.addItem(s.id, { t: "sys", text: "Stopped by you" });
     EV.log("stop", { sessionId: s.id, how });
     EV.toast("Stopped");
     EV.update();
@@ -181,7 +175,6 @@
     EV.openMenu({ kind: "list", title: "Pin to category", items, top: 220, preview: html`<div class="preview"><div class="pt">Pin to category</div><div class="pw">${s.title}</div></div>` });
   };
   EV.rowMenu = function (s) {
-    const st = EV.stateOf(s);
     const t = EV.tally(s);
     const tr = EV.S.transcripts[s.id] || [];
     const lastAgent = [...tr].reverse().find((x) => x.t === "agent");
@@ -191,7 +184,7 @@
       !s.archived ? { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) } : null,
       s.state === "yourmove" ? { label: s.unseen ? "Mark as read" : "Mark as unread", icon: I.check({ s: 18 }), run: () => { s.unseen = !s.unseen; EV.log(s.unseen ? "mark_unread" : "mark_read", { sessionId: s.id }); EV.update(); } } : null,
       s.state === "idle" ? { label: "Mark as unread", icon: I.check({ s: 18 }), run: () => { s.state = "yourmove"; s.unseen = true; EV.log("mark_unread", { sessionId: s.id }); EV.update(); } } : null,
-      st === "working" || st === "stuck" ? { label: "Stop this turn", icon: I.stop({ s: 14 }), run: () => EV.stopTurn(s, "menu") } : null,
+      EV.inTurn(s) ? { label: "Stop this turn", icon: I.stop({ s: 14 }), run: () => EV.stopTurn(s, "menu") } : null,
       { label: "Rename", icon: I.compose({ s: 18 }), run: () => EV.openSheet("rename", { sessionId: s.id }) },
       { label: "Copy link", icon: I.link({ s: 18 }), run: () => { EV.log("copy_link", { sessionId: s.id }); EV.toast("Link copied"); } },
       { label: s.archived ? "Unarchive" : "Archive", icon: I.archive({ s: 18 }), sep: true, run: () => EV.setArchived(s, !s.archived) },
@@ -457,7 +450,7 @@
   }
 
   // ---------- board screen ----------
-  function Board({ top }) {
+  function Board() {
     const S = EV.S;
     const scrollRef = useRef(null);
     useEffect(() => {
@@ -468,7 +461,6 @@
       if (el) scrollRef.current.scrollTo({ top: Math.max(0, el.offsetTop - 50), behavior: "smooth" });
     });
     if (S.board.searching) return h(Search);
-    const hub = EV.host("magic-kingdom");
     const needs = EV.needsCount();
     const live = S.sessions.filter((s) => s.live && !s.archived && !s.test).length;
     const projN = S.projects.filter((p) => projSessions(p.id).length).length;
@@ -494,10 +486,7 @@
         ${S.lastRead && Date.now() - S.lastRead.at < 2 * 3600e3 ? html`<button class="continue" onClick=${() => {
           const r = S.lastRead;
           EV.log("continue_reading", { path: r.path });
-          S.nav = [S.nav[0], { name: "session", id: r.sessionId, key: ++S.navSeq, from: "continue" }, { name: "reader", path: r.path, sessionId: r.sessionId, key: ++S.navSeq }];
-          S.navAnim = { type: "push", key: S.navSeq, until: Date.now() + 330 };
-          EV.onScreenChange();
-          EV.update();
+          EV.openOverSession(r.sessionId, "continue", { name: "reader", path: r.path, sessionId: r.sessionId });
         }}>
           <span style="display:flex;color:var(--accent)">${I.doc({ s: 18 })}</span>
           <span style="min-width:0"><span class="k">Continue reading · ${Math.round(S.lastRead.pct * 100)}%</span><span class="t">${S.lastRead.title}</span></span>

@@ -236,14 +236,12 @@ async function main() {
     const typeRes = phone(driverPort, ['type', 'hello']);
     check('type into the focused input succeeds', typeRes.status === 0, typeRes.stdout);
 
-    const typeFail = phone(driverPort, ['key', 'Escape']);
-    check('key Escape succeeds', typeFail.status === 0, typeFail.stdout);
+    const keyRes = phone(driverPort, ['key', 'Escape']);
+    check('key Escape succeeds', keyRes.status === 0, keyRes.stdout);
 
     const doneRes = phone(driverPort, ['done', 'sent a message and looked at the list']);
     check('done ends the task and does not print the log', doneRes.status === 0 && !doneRes.stdout.includes('"log"'), doneRes.stdout);
 
-    // "nothing focused" error path, exercised now (after done) so it does not
-    // interfere with the task log assertions below.
     const seeRes = phone(driverPort, ['see']);
     check('see lists on-screen elements', seeRes.status === 0 && seeRes.stdout.length > 0, seeRes.stdout);
 

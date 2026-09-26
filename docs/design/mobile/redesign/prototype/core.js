@@ -81,7 +81,9 @@
   // ---------- helpers ----------
   EV.sess = (id) => EV.S.sessions.find((s) => s.id === id);
   EV.host = (id) => EV.S.hosts.find((x) => x.id === id);
-  EV.model = (id) => EV.S.models.find((m) => m.id === id) || { id, name: id, provider: "", ctx: 0, efforts: ["low", "medium", "high", "xhigh", "max"] };
+  // Every effort level, lowest first; each model supports some of them.
+  EV.EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  EV.model = (id) => EV.S.models.find((m) => m.id === id) || { id, name: id, provider: "", ctx: 0, efforts: EV.EFFORTS };
   // A model is called by its display name wherever people read it, with
   // the effort after it: "GLM 5.3 Vision · XHigh", never the raw id.
   EV.modelLabel = (id, effort) => EV.model(id).name + (effort ? " · " + EV.cap(effort) : "");
@@ -91,6 +93,10 @@
     const live = EV.S.sessions.filter((s) => s.live && !s.archived);
     return { project: mode(live.map((s) => s.project)), host: mode(live.map((s) => s.host)) };
   };
+  // How many live sessions run on a host, or use a provider's models.
+  const liveCount = (pred) => EV.S.sessions.filter((s) => s.live && !s.archived && pred(s)).length;
+  EV.liveOnHost = (hostId) => liveCount((s) => s.host === hostId);
+  EV.liveOnProvider = (providerId) => liveCount((s) => EV.model(s.model).provider === providerId);
 
   EV.fmtAgo = function (ms) {
     const s = Math.max(0, Math.round(ms / 1000));
@@ -115,7 +121,6 @@
     if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
     return String(n);
   };
-  EV.short = (modelId) => modelId.replace(/-vision$/, "·v").replace(/^deepseek-/, "ds-");
 
   // Phone-facing state of a top-level session.
   EV.stateOf = function (s) {
@@ -126,6 +131,12 @@
       return "working";
     }
     return s.state;
+  };
+  // In a turn: working, or working but maybe stuck. Stop, Steer and Queue
+  // apply only then.
+  EV.inTurn = function (s) {
+    const st = EV.stateOf(s);
+    return st === "working" || st === "stuck";
   };
   const NEEDS = ["failed", "question", "approval", "warning", "restart"];
   EV.isNeeds = (s) => NEEDS.includes(s.state);
@@ -163,9 +174,9 @@
   EV.tallyTotal = (t) => (t ? t.run + t.fail + t.done : 0);
   EV.subTime = (g) => (g.state === "running" ? EV.fmtDur(g.elapsed * 1000) : EV.fmtAgo(g.ago * 1000));
 
+  // A working session's line: what it's doing, or how long it's been quiet.
+  // (A stuck one says so instead; see EV.whyParts.)
   EV.activityLine = function (s) {
-    const st = EV.stateOf(s);
-    if (st === "stuck") return { text: "May be stuck · no updates for " + EV.fmtAgo(Date.now() - s.updatedAt), cls: "attention" };
     const quiet = Date.now() - s.updatedAt;
     if (quiet > 3 * 60 * 1000) return { text: "Quiet " + EV.fmtAgo(quiet), cls: "activity" };
     return { text: s.activity || "Working", cls: "activity" };
@@ -210,6 +221,15 @@
     EV.onScreenChange();
     EV.update();
   };
+  // Opens a document or artifact from the Board with its session under it,
+  // so Back goes to the session rather than straight back to the Board.
+  EV.openOverSession = function (sessionId, from, screen) {
+    const S = EV.S;
+    S.nav = [S.nav[0], { name: "session", id: sessionId, key: ++S.navSeq, from }, Object.assign(screen, { key: ++S.navSeq })];
+    S.navAnim = { type: "push", key: S.navSeq, until: Date.now() + 330 };
+    EV.onScreenChange();
+    EV.update();
+  };
   EV.onScreenChange = function () {
     const t = EV.top();
     EV.S.reading = t && (t.name === "reader" || t.name === "artifact") ? t.name : null;
@@ -248,7 +268,7 @@
     if (t && t.name === "session" && t.id === a.sessionId) return;
     // Whatever alerted you last is what Next goes to first, shown or held.
     if (a.sessionId) S.recent = [a.sessionId].concat(S.recent.filter((id) => id !== a.sessionId));
-    if (S.reading && pref.hold || S.typing && pref.hold) {
+    if ((S.reading || S.typing) && pref.hold) {
       S.held.push(a);
       EV.log("banner_held", { kind: a.kind, sessionId: a.sessionId });
       EV.update();
@@ -410,6 +430,10 @@
   };
   const cap = (s) => (s === "xhigh" ? "XHigh" : s.charAt(0).toUpperCase() + s.slice(1));
   EV.cap = cap;
+  // Effort as a segmented control: the efforts this model can't do are off.
+  EV.EffortSeg = function ({ model, value, onChange }) {
+    return h(EV.Seg, { options: EV.EFFORTS, value, onChange, disabled: EV.EFFORTS.filter((e) => !model.efforts.includes(e)) });
+  };
 
   EV.Gi = function ({ icon, label, sub, value, chev, onClick, cls, right }) {
     return html`<button class=${"gi" + (icon ? " icon" : "") + (cls ? " " + cls : "") + (onClick ? "" : " static")} onClick=${onClick}>
@@ -433,6 +457,9 @@
       <div class="sheet-b">${children}</div>
     </div>`;
   };
+  // The standard sheet-header buttons; both just close the sheet.
+  EV.Done = () => html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`;
+  EV.Cancel = () => html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`;
 
   // ---------- gestures ----------
   // Swipeable, long-pressable row wrapper.
@@ -588,11 +615,11 @@
       let style = "";
       if (!isTop && !(anim && anim.type === "push" && i === n - 2)) style = "visibility:hidden;pointer-events:none";
       const Comp = EV.screens[sc.name];
-      out.push(html`<div class=${cls} style=${style} key=${sc.key} data-screen=${sc.name} aria-hidden=${isTop ? "false" : "true"}>${Comp ? h(Comp, Object.assign({ top: isTop }, sc)) : null}</div>`);
+      out.push(html`<div class=${cls} style=${style} key=${sc.key} data-screen=${sc.name} aria-hidden=${isTop ? "false" : "true"}>${Comp ? h(Comp, sc) : null}</div>`);
     });
     if (anim && anim.type === "pop" && anim.popped) {
       const Comp = EV.screens[anim.popped.name];
-      out.push(html`<div class="screen pop-out" key=${anim.popped.key} data-screen=${anim.popped.name}>${Comp ? h(Comp, Object.assign({ top: false }, anim.popped)) : null}</div>`);
+      out.push(html`<div class="screen pop-out" key=${anim.popped.key} data-screen=${anim.popped.name}>${Comp ? h(Comp, anim.popped) : null}</div>`);
     }
     return out;
   }

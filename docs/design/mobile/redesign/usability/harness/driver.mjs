@@ -111,8 +111,6 @@ function installHarnessHelpers() {
     return rect.width > 0 && rect.height > 0;
   }
 
-  // True when the element (or something inside it) is what a finger at its
-  // center would actually touch, i.e. it isn't covered by a sheet, scrim or menu.
   // Returns the point a finger would use to touch the element: somewhere in
   // its visible part (clipped to the screen) that isn't covered by a sheet,
   // scrim, menu or bar. Null when no such point exists.
@@ -130,6 +128,7 @@ function installHarnessHelpers() {
     }
     return null;
   }
+  // True when a finger can touch the element (or something inside it).
   function reachable(el, rect) {
     return touchPoint(el, rect) != null;
   }
@@ -242,6 +241,8 @@ function installHarnessHelpers() {
   // rule and the "prefer the smallest match" rule.
   function findByText(text, { climb }) {
     const wanted = text.trim().toLowerCase();
+    // Trailing dots and ellipses don't count: "Other answer" matches "Other answer…".
+    const wantedBare = wanted.replace(/[.…]+$/, '');
     const all = Array.from(document.querySelectorAll(TEXT_SELECTOR));
     const scored = [];
     for (const el of all) {
@@ -250,8 +251,8 @@ function installHarnessHelpers() {
       if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.placeholder) names.push(el.placeholder.trim());
       const lowers = names.filter(Boolean).map((n) => n.toLowerCase());
       if (!lowers.length) continue;
-      const isExact = lowers.some((l) => l === wanted || l.replace(/[.…]+$/, '') === wanted.replace(/[.…]+$/, ''));
-      const isSub = lowers.some((l) => l.includes(wanted.replace(/[.…]+$/, '')));
+      const isExact = lowers.some((l) => l === wanted || l.replace(/[.…]+$/, '') === wantedBare);
+      const isSub = lowers.some((l) => l.includes(wantedBare));
       if (!isExact && !isSub) continue;
       const target = climb ? findTappable(el) : el;
       const rect = target.getBoundingClientRect();

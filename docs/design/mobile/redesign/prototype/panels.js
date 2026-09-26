@@ -2,7 +2,7 @@
 // documents with comments and review), and the artifact viewer with proposals.
 (function () {
   const EV = window.EV;
-  const { html, h, useRef, useEffect, useLayoutEffect, useState } = EV;
+  const { html, h, useRef, useEffect, useLayoutEffect, useState, Done, Cancel } = EV;
   const I = EV.I;
 
   // Back for the quiet screens (the Reader, the artifact viewer): alerts that
@@ -104,7 +104,7 @@
       </div></div>
       <div class="scroll">
         <div class="ro-banner">Subagent of <b>${s.title}</b>. Subagents take direction from their coordinator, so you talk to it through the coordinator.</div>
-        <div class="tx">${tr.map((it, i) => h(SubItem, { key: i, it, s, idx: i, g }))}</div>
+        <div class="tx">${tr.map((it, i) => h(SubItem, { key: i, it }))}</div>
       </div>
       <div class="bottom"><div class="readonly-bar">
         ${canStop ? html`<button class="btn" onClick=${() => { EV.log("subagent_stop_sheet", { sessionId, subagentId: subId }); EV.openSheet("stopSub", { sessionId, subId }); }}>${I.stop({ s: 12 })} ${g.state === "running" ? "Ask coordinator to stop it" : "Ask coordinator to stop retrying it"}</button>` : S.stopRequests[subId] ? html`<span class="btn" style="flex:1;border-color:transparent;color:var(--ink-mid)">Stop requested</span>` : null}
@@ -112,7 +112,7 @@
       </div></div>
     </div>`;
   }
-  function SubItem({ it, s, idx, g }) {
+  function SubItem({ it }) {
     // Reuse the session renderer's look without session-specific behavior.
     if (it.t === "user") return html`<div class="u-msg"><div class="u-bubble">${it.text}</div><div class="u-cap">From the coordinator</div></div>`;
     if (it.t === "agent") return html`<div class="a-msg" dangerouslySetInnerHTML=${{ __html: EV.md(it.md) }}></div>`;
@@ -131,7 +131,7 @@
     const s = EV.sess(sessionId);
     const g = EV.findSub(sessionId, subId);
     const [txt, setTxt] = useState("Stop subagent “" + g.title + "”" + (g.state === "failed" ? ": it has failed three times. Tell me what you'll do instead." : ": it's no longer needed."));
-    const working = EV.stateOf(s) === "working" || EV.stateOf(s) === "stuck";
+    const working = EV.inTurn(s);
     const go = (mode) => {
       EV.sendMessage(s, txt, mode);
       S.stopRequests[subId] = true;
@@ -140,7 +140,7 @@
       EV.toast("Asked the coordinator to stop it");
       setTimeout(() => { if (EV.S !== S) return; g.state = "stopped"; g.line = "Stopped at your request"; EV.log("subagent_stopped", { sessionId, subagentId: subId }); EV.toast("“" + g.title + "” stopped"); EV.update(); }, 3000);
     };
-    return html`<${EV.Sheet} title="Stop subagent" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} size="medium">
+    return html`<${EV.Sheet} title="Stop subagent" left=${h(Cancel)} size="medium">
       <div class="gfoot" style="padding:4px 32px 10px">Subagents take direction from their coordinator. This sends the coordinator a message asking it to stop “${g.title}”.</div>
       <div class="field"><textarea rows="4" value=${txt} onInput=${(e) => setTxt(e.currentTarget.value)} aria-label="Message to the coordinator"></textarea></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;padding:14px 16px">
@@ -166,15 +166,14 @@
       if (it.kind === "Artifact") EV.push("artifact", { id: it.id, sessionId });
       else EV.push("reader", { path: it.path, sessionId });
     };
-    return html`<${EV.Sheet} title="Files & artifacts" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
+    return html`<${EV.Sheet} title="Files & artifacts" right=${h(Done)} size="medium">
       <div class="group">${items.map((it) => {
         if (it.kind === "Artifact") {
           const a = S.artifacts[it.id];
           return h(EV.Gi, { key: it.id, icon: I.artifact({ s: 17 }), label: a.title, sub: "Artifact · v" + a.version + " · updated " + EV.fmtAgo(a.ago * 1000) + " ago", chev: true, onClick: () => open(it) });
         }
         const d = S.docs[it.path] || { lines: 0, ago: 0, changed: [] };
-        const ch = d.changed.length && !S.readDocs[it.path];
-        return h(EV.Gi, { key: it.path, icon: I.doc({ s: 17 }), label: EV.docTitle(it.path), sub: it.kind + " · " + it.path.split("/").pop() + " · " + EV.fmtAgo(d.ago * 1000) + " ago", value: ch ? html`<span class="dot"></span>` : null, chev: true, onClick: () => open(it) });
+        return h(EV.Gi, { key: it.path, icon: I.doc({ s: 17 }), label: EV.docTitle(it.path), sub: it.kind + " · " + it.path.split("/").pop() + " · " + EV.fmtAgo(d.ago * 1000) + " ago", value: EV.docChanged(it.path) ? html`<span class="dot"></span>` : null, chev: true, onClick: () => open(it) });
       })}</div>
       ${!items.length ? html`<div class="empty">This session hasn't written or linked any files yet.</div>` : null}
     </${EV.Sheet}>`;
@@ -192,6 +191,10 @@
     });
     return out;
   }
+  // A block's text as a comment quotes it: a heading without its #s.
+  const blockText = (b) => b.text.replace(/^#+\s*/, "");
+  // What a comment quotes: the text it was left on, else its whole block.
+  const quoteOf = (blocks, c) => c.quote || blockText(blocks[c.block]);
 
   function RBlock({ b, i, path, sessionId, changed, comments, onComment }) {
     const count = comments.filter((c) => c.item == null).length;
@@ -223,7 +226,7 @@
       const li = t ? t.closest("li") : null;
       const blk = t ? t.closest(".rblock") : null;
       let item = null;
-      let quote = b.text.replace(/^#+\s*/, "");
+      let quote = blockText(b);
       if (li && blk) { item = [...blk.querySelectorAll("li")].indexOf(li); quote = li.textContent.trim(); li.classList.add("li-sel"); }
       EV.log("block_menu", { path, block: i, item });
       EV.openMenu({ kind: "list", top: 280, title: item != null ? "List item" : "Paragraph", block: i, path, liEl: item != null ? li : null, preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${quote.replace(/[#*`>|]/g, "").slice(0, 220)}</div></div>`, items: [
@@ -250,6 +253,7 @@
     // only once that heading has scrolled out of view.
     const [pastTitle, setPastTitle] = useState(false);
     const blocks = EV.useMemoBlocks(path, doc.md);
+    const title = EV.docTitle(path);
     const comments = S.comments[path] || [];
     const changed = firstRead.current ? doc.changed : [];
     useEffect(() => { S.readDocs[path] = true; EV.log("doc_read", { path }); }, []);
@@ -277,14 +281,14 @@
         if (!el) return;
         const pct = el.scrollHeight <= el.clientHeight ? 1 : (el.scrollTop + el.clientHeight) / el.scrollHeight;
         S.readerPos[path] = el.scrollTop;
-        S.lastRead = pct < 0.97 ? { path, sessionId, title: (blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop(), pct, at: Date.now() } : null;
+        S.lastRead = pct < 0.97 ? { path, sessionId, title, pct, at: Date.now() } : null;
       };
     }, [path]);
     const hint = !comments.length && !S.readerHintDismissed;
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row">
         <div class="lead">${h(EV.HeldBack)}</div>
-        <div class="nav-title" style="cursor:default">${pastTitle ? html`<div class="t">${(blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop()}</div><div class="s"><span style="overflow:hidden;text-overflow:ellipsis;min-width:0">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago</span></div>` : null}</div>
+        <div class="nav-title" style="cursor:default">${pastTitle ? html`<div class="t">${title}</div><div class="s"><span style="overflow:hidden;text-overflow:ellipsis;min-width:0">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago</span></div>` : null}</div>
         <div class="trail">
           <button class="icon-btn" aria-label="Outline" onClick=${() => EV.openSheet("outline", { path })}>${I.outline()}</button>
           <button class="icon-btn" aria-label="Document menu" onClick=${() => EV.openMenu({ kind: "list", top: 96, right: true, title: "Document", items: [
@@ -316,7 +320,7 @@
   EV.sheets.outline = function ({ path }) {
     const S = EV.S;
     const blocks = EV.useMemoBlocks(path, S.docs[path].md);
-    return html`<${EV.Sheet} title="Outline" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
+    return html`<${EV.Sheet} title="Outline" right=${h(Done)} size="medium">
       <div class="group outline-list">${blocks.map((b, i) => (b.type === "heading" ? h(EV.Gi, { key: i, cls: b.depth > 2 ? "l2" : "", label: b.title, onClick: () => { S.jumpBlock = i; EV.log("outline_jump", { path, block: i }); EV.closeSheet(); } }) : null))}</div>
     </${EV.Sheet}>`;
   };
@@ -334,8 +338,8 @@
       EV.closeSheet();
       EV.toast("Comment added");
     };
-    return html`<${EV.Sheet} title="Comment" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} right=${html`<button class="text-btn strong" disabled=${!txt.trim()} onClick=${save}>Add</button>`} size="medium">
-      <div class="comment-q">${(quote || blocks[block].text.replace(/^#+\s*/, "")).slice(0, 280)}</div>
+    return html`<${EV.Sheet} title="Comment" left=${h(Cancel)} right=${html`<button class="text-btn strong" disabled=${!txt.trim()} onClick=${save}>Add</button>`} size="medium">
+      <div class="comment-q">${(quote || blockText(blocks[block])).slice(0, 280)}</div>
       <div class="field"><textarea ref=${ref} rows="4" placeholder="What should change?" value=${txt} onInput=${(e) => setTxt(e.currentTarget.value)} aria-label="Comment"></textarea></div>
       <div class="gfoot">Comments stay with this document until you send your review.</div>
     </${EV.Sheet}>`;
@@ -345,9 +349,9 @@
     const S = EV.S;
     const blocks = EV.useMemoBlocks(path, S.docs[path].md);
     const list = S.comments[path] || [];
-    return html`<${EV.Sheet} title=${"Comments · " + list.length} right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
+    return html`<${EV.Sheet} title=${"Comments · " + list.length} right=${h(Done)} size="medium">
       ${!list.length ? html`<div class="empty"><b>No comments yet</b>Touch and hold a paragraph to comment on it.</div>` : html`<div class="group">${list.map((c, i) => html`<div class="gi static" key=${i} style="display:block">
-        <div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${(c.quote || blocks[c.block].text.replace(/^#+\s*/, "")).slice(0, 140)}</div>
+        <div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${quoteOf(blocks, c).slice(0, 140)}</div>
         <div style="margin-top:6px">${c.text}</div>
         <div style="display:flex;gap:8px;margin-top:6px"><button class="mini-btn" onClick=${() => { S.jumpBlock = c.block; EV.closeSheet(); }}>Show</button><button class="mini-btn danger" onClick=${() => { list.splice(i, 1); EV.log("comment_delete", { path }); EV.update(); }}>Delete</button></div>
       </div>`)}</div>`}
@@ -362,10 +366,10 @@
     const list = S.comments[path] || [];
     const [verdict, setVerdict] = useState(null);
     const [note, setNote] = useState("");
-    const working = EV.stateOf(s) === "working" || EV.stateOf(s) === "stuck";
+    const working = EV.inTurn(s);
     const build = () => {
       let m = "Review of " + path + ": " + (verdict === "Comment" ? "comments" : verdict.toLowerCase()) + ".";
-      list.forEach((c) => { m += "\n\n> " + (c.quote || blocks[c.block].text.replace(/^#+\s*/, "")).split("\n")[0].slice(0, 160) + "\n" + c.text; });
+      list.forEach((c) => { m += "\n\n> " + quoteOf(blocks, c).split("\n")[0].slice(0, 160) + "\n" + c.text; });
       if (note.trim()) m += "\n\nOverall: " + note.trim();
       return m;
     };
@@ -379,14 +383,14 @@
       const t = EV.top();
       if (t.name === "reader") EV.pop();
     };
-    return html`<${EV.Sheet} title="Review" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} size="large">
+    return html`<${EV.Sheet} title="Review" left=${h(Cancel)} size="large">
       <div class="gfoot" style="padding:4px 32px 10px">To “${s.title}” · ${path.split("/").pop()}</div>
       ${h(EV.Seg, { options: ["Approve", "Request changes", "Comment"], value: verdict, onChange: setVerdict })}
       ${verdict ? null : html`<div class="gfoot" style="padding-top:6px">Choose one to send your review.</div>`}
       <div class="glabel">Overall note</div>
       <div class="field"><textarea rows="3" placeholder=${verdict === "Approve" ? "Optional: anything to keep in mind" : "Optional: the gist of what to change"} value=${note} onInput=${(e) => setNote(e.currentTarget.value)} aria-label="Overall note"></textarea></div>
       <div class="glabel">Comments · ${list.length}</div>
-      ${list.length ? html`<div class="group">${list.map((c, i) => html`<div class="gi static" key=${i} style="display:block"><div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${(c.quote || blocks[c.block].text.replace(/^#+\s*/, "")).slice(0, 120)}</div><div style="margin-top:5px">${c.text}</div></div>`)}</div>`
+      ${list.length ? html`<div class="group">${list.map((c, i) => html`<div class="gi static" key=${i} style="display:block"><div style="font:14px/19px var(--read-font);color:var(--ink-mid);border-left:2px solid var(--edge-strong);padding-left:8px">${quoteOf(blocks, c).slice(0, 120)}</div><div style="margin-top:5px">${c.text}</div></div>`)}</div>`
         : html`<div class="gfoot">No comments. Touch and hold a paragraph in the document to add one.</div>`}
       <div style="display:flex;gap:8px;justify-content:flex-end;padding:18px 16px 8px">
         ${working ? html`<button class="btn" disabled=${!verdict} onClick=${() => send("queue")}>Queue</button><button class="btn primary" disabled=${!verdict} onClick=${() => send("steer")}>Steer now</button>` : html`<button class="btn primary big" disabled=${!verdict} onClick=${() => send("send")}>Send review</button>`}
@@ -435,7 +439,7 @@
 
   EV.sheets.aboutArtifact = function ({ id }) {
     const a = EV.S.artifacts[id];
-    return html`<${EV.Sheet} title="About this artifact" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
+    return html`<${EV.Sheet} title="About this artifact" right=${h(Done)} size="medium">
       <div class="group">${h(EV.Gi, { label: a.title, sub: a.summary })}${h(EV.Gi, { label: "Version", value: "v" + a.version })}${h(EV.Gi, { label: "Updated", value: EV.fmtAgo(a.ago * 1000) + " ago" })}${h(EV.Gi, { label: "Diagnostics", value: "None" })}</div>
       <div class="gfoot">Artifacts run in a sandbox with no network access. They can save their own state and propose messages, but nothing is sent until you choose.</div>
     </${EV.Sheet}>`;
@@ -445,7 +449,7 @@
     const S = EV.S;
     const s = EV.sess(sessionId);
     const [txt, setTxt] = useState(text);
-    const working = EV.stateOf(s) === "working" || EV.stateOf(s) === "stuck";
+    const working = EV.inTurn(s);
     const act = (mode) => {
       EV.log("artifact_proposal", { id: artifactId, action: mode, text: txt });
       if (mode === "discard") { EV.closeSheet(); EV.toast("Discarded"); return; }

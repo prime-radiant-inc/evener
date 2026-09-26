@@ -18,21 +18,26 @@ const PLAN = 'docs/superpowers/plans/2026-09-25-host-project-hierarchy.md';
 const has = (L, type, pred) => L.some((e) => e.type === type && (!pred || pred(e)));
 const find = (L, type, pred) => L.find((e) => e.type === type && (!pred || pred(e)));
 
+// A task answered by reviewing the plan: success when a review of it carries
+// the answer (inReview matches a comment or the overall note), partial when
+// the review lacks it (`without`) or the answer went as a plain message
+// (inMessage matches a sent message; `plain`).
+const reviewCriterion = ({ inReview, inMessage, without, plain }) => (L) => {
+  const rev = find(L, 'review_sent', (e) => e.path === PLAN);
+  const texts = L.filter((e) => e.type === 'comment_add' && e.path === PLAN).map((e) => e.text).concat(rev ? [rev.note || ''] : []);
+  if (rev && texts.some((t) => inReview.test(t))) return ['success', `review ${rev.verdict}, ${rev.comments} comments, ${rev.mode}`];
+  if (rev) return ['partial', `review ${rev.verdict} ${without}`];
+  if (has(L, 'send', (e) => inMessage.test(e.text || ''))) return ['partial', plain];
+  return ['fail', has(L, 'doc_read', (e) => e.path === PLAN) ? 'read the plan, sent nothing' : 'never opened the plan'];
+};
+
 // Each takes the task's action log and the participant's claim, and returns
 // [verdict, evidence]. Most judge the log alone; T16, whose answer is a
 // report, also reads the claim.
 const CRITERIA = {
   T1: (L) => has(L, 'answer', (e) => e.sessionId === 's-audit') ? ['success', 'answered s-audit via ' + find(L, 'answer', (e) => e.sessionId === 's-audit').how]
     : has(L, 'open', (e) => e.id === 's-audit') ? ['partial', 'opened s-audit, no answer'] : ['fail', 'never opened s-audit'],
-  T2: (L) => {
-    const rev = find(L, 'review_sent', (e) => e.path === PLAN);
-    const texts = L.filter((e) => e.type === 'comment_add' && e.path === PLAN).map((e) => e.text).concat(rev ? [rev.note || ''] : []);
-    const oneHost = texts.some((t) => /(one|single|1|only)\s+host/i.test(t));
-    if (rev && oneHost) return ['success', `review ${rev.verdict}, ${rev.comments} comments, ${rev.mode}`];
-    if (rev) return ['partial', `review ${rev.verdict} without the one-host change`];
-    if (has(L, 'send', (e) => /(one|single|only)\s+host/i.test(e.text || ''))) return ['partial', 'sent the change as a plain message'];
-    return ['fail', has(L, 'doc_read', (e) => e.path === PLAN) ? 'read the plan, sent nothing' : 'never opened the plan'];
-  },
+  T2: reviewCriterion({ inReview: /(one|single|1|only)\s+host/i, inMessage: /(one|single|only)\s+host/i, without: 'without the one-host change', plain: 'sent the change as a plain message' }),
   T3: (L) => {
     const p = find(L, 'artifact_proposal', (e) => e.action !== 'discard' && /layout C/i.test(e.text || ''));
     if (p) return ['success', 'proposal ' + p.action];
@@ -79,15 +84,7 @@ const CRITERIA = {
     if (returned || stayed) return ['success', (answered ? 'answered it' : 'did not answer') + ', ' + (stayed ? 'never left the document' : 'came back to the document')];
     return ['partial', (answered ? 'answered it' : 'did not answer') + ', never came back to the document'];
   },
-  T2b: (L) => {
-    const rev = find(L, 'review_sent', (e) => e.path === PLAN);
-    const texts = L.filter((e) => e.type === 'comment_add' && e.path === PLAN).map((e) => e.text).concat(rev ? [rev.note || ''] : []);
-    const answered = texts.some((t) => /archiv/i.test(t));
-    if (rev && answered) return ['success', `review ${rev.verdict}, ${rev.comments} comments, ${rev.mode}`];
-    if (rev) return ['partial', `review ${rev.verdict} without answering the archived question`];
-    if (has(L, 'send', (e) => /archiv/i.test(e.text || ''))) return ['partial', 'answered it as a plain message'];
-    return ['fail', has(L, 'doc_read', (e) => e.path === PLAN) ? 'read the plan, sent nothing' : 'never opened the plan'];
-  },
+  T2b: reviewCriterion({ inReview: /archiv/i, inMessage: /archiv/i, without: 'without answering the archived question', plain: 'answered it as a plain message' }),
   T11: (L) => has(L, 'approval', (e) => e.sessionId === 's-mirror' && (e.decision === 'allow' || e.decision === 'allow_scope')) ? ['success', find(L, 'approval', (e) => e.decision !== 'deny').decision]
     : has(L, 'approval', (e) => e.sessionId === 's-mirror') ? ['partial', 'denied instead'] : has(L, 'open', (e) => e.id === 's-mirror') ? ['partial', 'opened, did not decide'] : ['fail', 'never found it'],
   T12: (L) => has(L, 'detail_level', (e) => ['Tools', 'Activity', 'Full'].includes(e.level)) ? ['success', 'detail ' + find(L, 'detail_level', (e) => ['Tools', 'Activity', 'Full'].includes(e.level)).level]
@@ -132,10 +129,9 @@ for (const p of parts) {
     const id = f.replace(/^task-|-log\.json$/g, '');
     const L = JSON.parse(fs.readFileSync(path.join(pdir, f), 'utf8'));
     const crit = CRITERIA[id];
-    const claimOf = summary && (summary.tasks || summary.taskResults || []).find((x) => x.id === id || x.task === id);
-    const [verdict, evidence] = crit ? crit(L, claimOf && claimOf.claim) : ['unscored', 'no criteria'];
-    if (totals[verdict] != null) totals[verdict]++;
     const t = summary && (summary.tasks || summary.taskResults || []).find((x) => x.id === id || x.task === id);
+    const [verdict, evidence] = crit ? crit(L, t && t.claim) : ['unscored', 'no criteria'];
+    if (totals[verdict] != null) totals[verdict]++;
     const actions = t ? (t.actions ?? t.actionCount ?? '?') : '?';
     console.log(`  ${id.padEnd(4)} ${verdict.padEnd(8)} ${String(actions).padStart(3)} actions${detail ? '  · ' + evidence : ''}`);
     if (detail && t && t.claim) console.log(`       claim: ${t.claim.slice(0, 220)}`);

@@ -2,9 +2,8 @@
 // marketplaces, recipes, display, in-app alerts, hubs, about.
 (function () {
   const EV = window.EV;
-  const { html, h, useState, useEffect } = EV;
+  const { html, h, useState, Done, Cancel } = EV;
   const I = EV.I;
-  const Done = () => html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`;
   const Back = (label) => html`<button class="text-btn" onClick=${EV.closeSheet}>${I.chevL({ s: 18 })}${label || "Back"}</button>`;
 
   EV.sheets.hub = function ({ stacked }) {
@@ -45,7 +44,7 @@
     const hubV = EV.host("magic-kingdom").version;
     return html`<${EV.Sheet} title="Hosts" left=${Back("Hub")} size="stacked">
       <div class="group">${S.hosts.map((x) => h(EV.Gi, { key: x.id, icon: I.host({ s: 17 }),
-        label: x.id, sub: (x.state === "offline" ? "Offline" : x.state === "connecting" ? "Connecting…" : "Connected") + " · " + x.os + " · " + S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length + " live",
+        label: x.id, sub: (x.state === "offline" ? "Offline" : x.state === "connecting" ? "Connecting…" : "Connected") + " · " + x.os + " · " + EV.liveOnHost(x.id) + " live",
         value: x.version !== hubV ? html`<span class="tag amber">${x.version}</span>` : x.state === "offline" ? html`<span class="tag red">Offline</span>` : null, chev: true,
         onClick: () => { EV.log("host_open", { host: x.id }); EV.openSheet("host", { hostId: x.id }); } }))}</div>
       <div class="gfoot">Hosts come from hub.toml or were added in the app. Add hosts from the web app; they need an SSH address and a key.</div>
@@ -53,7 +52,6 @@
   };
 
   EV.sheets.host = function ({ hostId }) {
-    const S = EV.S;
     const x = EV.host(hostId);
     const hubV = EV.host("magic-kingdom").version;
     return html`<${EV.Sheet} title=${x.id} left=${Back("Hosts")} size="stacked">
@@ -62,7 +60,7 @@
         ${h(EV.Gi, { label: "Version", value: x.version !== hubV ? html`${x.version} <span class="tag gray">Hub runs ${hubV}</span>` : x.version })}
         ${h(EV.Gi, { label: "System", value: x.os })}
         ${h(EV.Gi, { label: "Resources", value: x.cpus + " CPUs · " + x.memGB + " GB" })}
-        ${h(EV.Gi, { label: "Sessions", value: S.sessions.filter((s) => s.live && !s.archived && s.host === x.id).length + (x.state === "offline" ? " live, out of reach" : " live") })}
+        ${h(EV.Gi, { label: "Sessions", value: EV.liveOnHost(x.id) + (x.state === "offline" ? " live, out of reach" : " live") })}
         ${h(EV.Gi, { label: "Project roots", value: html`<span class="mono">${x.roots.join(", ")}</span>` })}
         ${h(EV.Gi, { label: "Defined in", value: x.origin })}
       </div>
@@ -88,7 +86,7 @@
   EV.sheets.provider = function ({ providerId }) {
     const S = EV.S;
     const p = S.providers.find((x) => x.id === providerId);
-    const n = S.sessions.filter((s) => s.live && !s.archived && EV.model(s.model).provider === p.id).length;
+    const n = EV.liveOnProvider(p.id);
     return html`<${EV.Sheet} title=${p.id} left=${Back("Providers")} size="stacked">
       <div class="group">
         ${h(EV.Gi, { label: "Status", value: p.statusText })}
@@ -143,7 +141,7 @@
 
   EV.sheets.replaceKey = function ({ provider }) {
     const [v, setV] = useState("");
-    return html`<${EV.Sheet} title="Replace key" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} right=${html`<button class="text-btn strong" disabled=${!v.trim()} onClick=${() => { EV.log("key_replace", { provider }); EV.closeSheet(); EV.toast("Key saved"); }}>Save</button>`} size="medium">
+    return html`<${EV.Sheet} title="Replace key" left=${h(Cancel)} right=${html`<button class="text-btn strong" disabled=${!v.trim()} onClick=${() => { EV.log("key_replace", { provider }); EV.closeSheet(); EV.toast("Key saved"); }}>Save</button>`} size="medium">
       <div class="field" style="margin-top:8px"><input type="password" placeholder="Paste the API key" value=${v} onInput=${(e) => setV(e.currentTarget.value)} aria-label="API key" /></div>
       <div class="gfoot">The key is stored on the hub, not on this phone.</div>
     </${EV.Sheet}>`;
@@ -182,7 +180,7 @@
       <div class="glabel">Appearance</div>${h(EV.Seg, { options: ["System", "Light", "Dark"], value: p.theme, onChange: (v) => { p.theme = v; p.themeTouched = true; EV.applyTheme(); EV.log("pref", { theme: v }); EV.update(); } })}
       <div class="glabel">Reading font</div>${h(EV.Seg, { options: ["Serif", "Sans"], value: p.readFont, onChange: (v) => { p.readFont = v; EV.applyTheme(); EV.log("pref", { readFont: v }); EV.update(); } })}
       <div class="gfoot">For what agents write: messages, plans and documents.</div>
-      <div class="glabel">Default detail level</div>${h(EV.Seg, { options: ["Chat", "Intent", "Tools", "Activity", "Full"], value: p.defaultDetail, onChange: (v) => { p.defaultDetail = v; EV.log("pref", { defaultDetail: v }); EV.update(); } })}
+      <div class="glabel">Default detail level</div>${h(EV.Seg, { options: EV.LEVELS, value: p.defaultDetail, onChange: (v) => { p.defaultDetail = v; EV.log("pref", { defaultDetail: v }); EV.update(); } })}
       <div class="gfoot">Each session can override this from its menu.</div>
       <div class="group" style="margin-top:18px"><div class="gi static"><span></span><span class="gl">Show model on Board rows</span><span class="gv">${h(EV.Switch, { on: p.showModel, label: "Show model on Board rows", onChange: (v) => { p.showModel = v; EV.log("pref", { showModel: v }); EV.update(); } })}</span></div></div>
     </${EV.Sheet}>`;
@@ -201,7 +199,7 @@
 
   EV.sheets.hubs = function () {
     return html`<${EV.Sheet} title="Hubs" left=${Back("Hub")} size="stacked">
-      <div class="group"><button class="gi"><span style="width:22px;display:flex;color:var(--accent)">${I.check({ s: 18 })}</span><span class="gl">magic-kingdom<small>100.113.28.18:9180 · connected</small></span><span></span></button></div>
+      <div class="group"><button class="gi"><span class="check">${I.check({ s: 18 })}</span><span class="gl">magic-kingdom<small>100.113.28.18:9180 · connected</small></span><span></span></button></div>
       <div class="glabel">Add a hub</div>
       <div class="group">${h(EV.Gi, { icon: I.camera({ s: 17 }), label: "Scan pairing code", onClick: () => EV.toast("Opens the camera in the app") })}${h(EV.Gi, { icon: I.doc({ s: 17 }), label: "Paste pairing link", onClick: () => EV.toast("Paste the link from Settings → Mobile app") })}</div>
       <div class="gfoot">In Evener on your computer, open Settings, then Mobile app, to show a pairing code.</div>
