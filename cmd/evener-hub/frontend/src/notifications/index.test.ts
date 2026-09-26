@@ -104,6 +104,7 @@ function attentionFromNodes(nodes: NavigationSessionSummary[]) {
       project: n.project ?? "",
       level: n.state === "errored" ? "error" : "needs_you",
       askPending: n.ask_pending === true,
+      approvalPending: n.approval_pending === true,
       prevLevel: "idle",
     })),
     summary: { needsYou, error, working: 0 },
@@ -497,6 +498,17 @@ describe("loudScope", () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
     navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  // The hub promotes a session blocked on an approval to needs_you while it
+  // still reports "active"; approvalPending is what makes it loud.
+  test("asks: an approval fires like a question", async () => {
+    armPrefs("asks");
+    await boot(attentionFromNodes([]));
+    navigationStore.setState({
+      attention: attentionFromNodes([{ ...node("local:a", "active"), approval_pending: true }]),
+    });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 });
