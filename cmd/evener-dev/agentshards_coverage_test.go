@@ -451,6 +451,34 @@ func TestReplaySurveyFailuresKeepsNestedMultilineContinuation(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict covers a
+// buffered nested sibling verdict before the parent failure. The verdict must
+// restore ownership to its sibling parent; otherwise later sibling diagnostics
+// are incorrectly preferred over the parent's earlier assertion.
+func TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict(t *testing.T) {
+	const (
+		assertion    = "    parent_test.go:110: parent assertion before sibling output"
+		firstSibling = "    sibling_test.go:1: later sibling diagnostic"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("    --- PASS: TestSibling/sub (0.00s)\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    sibling_test.go:%d: later sibling diagnostic\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted after nested sibling verdict: %q", got)
+	}
+	if strings.Contains(got, firstSibling) {
+		t.Fatalf("sibling diagnostics were preferred after nested verdict: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework

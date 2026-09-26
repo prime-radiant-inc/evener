@@ -872,13 +872,13 @@ func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
 var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.go:[0-9]+:`)
 
 // expandSurveyFailure recovers a bounded set of a parent's output when the
-// nearby excerpt contains only its verdict. It intentionally runs only for
-// that empty-proximity shape: ordinary blocks retain their established
-// context (including nested failure markers). Source diagnostics are associated
-// with the most recent go test RUN/CONT/NAME frame; a completed child or sibling
-// returns ownership to the parent. Parent-owned diagnostics are preferred over
-// nested or sibling diagnostics. The result is still no larger than one
-// block's existing before bound plus its marker.
+// nearby excerpt contains only its verdict or a different test owns the
+// nearest context. Ordinary blocks retain their established context (including
+// nested failure markers). Source diagnostics are associated with the most
+// recent go test RUN/CONT/NAME frame; a completed child or sibling returns
+// ownership to its parent. Parent-owned diagnostics are preferred over nested
+// or sibling diagnostics. The result is still no larger than one block's
+// existing before bound plus its marker.
 func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
@@ -907,10 +907,16 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
 			owner = frameOwner
 		}
-		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
-			owner = name
+		trimmed := strings.TrimSpace(line)
+		if surveyTestVerdictLine.MatchString(trimmed) {
+			verdictName := surveyVerdictName(trimmed)
+			if slash := strings.LastIndex(verdictName, "/"); slash >= 0 {
+				owner = verdictName[:slash]
+			} else {
+				owner = name
+			}
 		}
-		if surveyFrameworkLine(line) || strings.TrimSpace(line) == "" {
+		if surveyFrameworkLine(line) || trimmed == "" {
 			continue
 		}
 		diagnostic := surveyDiagnosticLine.MatchString(line)
@@ -977,6 +983,22 @@ func surveyPhaseOwner(line string) string {
 		return ""
 	}
 	return strings.Join(fields[2:], " ")
+}
+
+// surveyVerdictName extracts the test name from a PASS, FAIL, or SKIP frame.
+// A nested verdict's name can restore ownership to its immediate parent while
+// a top-level verdict remains associated with the failing parent block.
+func surveyVerdictName(line string) string {
+	line = strings.TrimSpace(strings.TrimPrefix(line, "--- "))
+	colon := strings.IndexByte(line, ':')
+	if colon < 0 {
+		return ""
+	}
+	name := strings.TrimSpace(line[colon+1:])
+	if end := strings.Index(name, " ("); end >= 0 {
+		name = name[:end]
+	}
+	return strings.TrimSpace(name)
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
