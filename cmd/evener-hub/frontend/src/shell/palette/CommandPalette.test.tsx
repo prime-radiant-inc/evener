@@ -766,7 +766,6 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
 test("selecting a plugin catalog entry's handoff row inserts the raw typed text into the composer instead of sending", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });
@@ -791,7 +790,6 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
 test("Enter on a plugin command with arguments hands off the FULL typed text, args included", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });

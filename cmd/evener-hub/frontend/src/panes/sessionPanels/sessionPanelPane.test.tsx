@@ -44,16 +44,6 @@ afterEach(() => {
   // waitFor() polling - silently never fires for the rest of this file.
   vi.restoreAllMocks();
   vi.useRealTimers();
-  // The beforeEach above only resets threadsStore BEFORE each test. Several
-  // tests here render SessionPanelPane against a real connected FakeClient,
-  // which calls ensureThread()/the mutation runtime for real - without this,
-  // the LAST test's tracked refs, pinned mutation refs, and open
-  // MutationOutboxIndexedDB connection stay live after this file finishes,
-  // and under isolate:false a later file's own beforeEach (e.g.
-  // stores/threads.test.ts's deleteMutationDatabase()) can find that
-  // connection still open, or a later file's own connectionStore.connect()
-  // re-triggers rewireClient against state this file never tore down.
-  resetThreadsStoreForTests();
 });
 
 const CAPABILITIES: ThreadCapabilities = {

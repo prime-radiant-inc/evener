@@ -3,7 +3,7 @@ import { AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
@@ -22,40 +22,27 @@ import { resetToastStoreForTests } from "./widgets/toast/store";
 // beforeAll's own warmRoute calls, which mount <App/> multiple times with
 // no close() in between) constructs its own such client; connectionStore
 // only ever mirrors the MOST RECENT one, so closing just "whatever's
-// current" leaves every earlier route's client orphaned with a still-armed
-// reconnect timer for the rest of the worker's life under isolate:false.
-// This subscription records every distinct real client this file ever
-// sees, so allCreatedClients (closed in the afterAll below) can close them
-// all, not just the last.
+// current" leaves every earlier route's client redialing through the
+// file's later tests. This subscription records every distinct real client
+// this file ever sees, so closeAllCreatedClients can close them all, not
+// just the last.
 const allCreatedClients = new Set<AppwireClient>();
-const unsubscribeClientTracker = connectionStore.subscribe((state) => {
+connectionStore.subscribe((state) => {
   if (state.client instanceof AppwireClient) allCreatedClients.add(state.client);
 });
 
-// closeStaleClient closes whatever's currently wired into connectionStore -
-// for the one call below that runs before this file's own client tracker
-// (allCreatedClients) has seen anything, i.e. a client left over from an
-// earlier file in the shared isolate:false worker. Nulls connectionStore's
-// own reference to it FIRST: connection.ts's client->store state mirror
-// only republishes while `connectionStore.getState().client === client`
-// still holds (its own guard), and close() synchronously fires that
-// client's "closed" state change. Closing while the reference is still
-// current lets that mirror republish state through it, re-triggering
-// threads.ts's connectionStore.subscribe -> rewireClient(client) and
-// re-wiring notification/ready handlers onto a client this store is about
-// to discard - clearing the reference first makes the mirror's own guard
-// skip republishing, so close() cannot re-arm rewireClient.
-function closeStaleClient(): void {
-  const client = connectionStore.getState().client;
-  if (!(client instanceof AppwireClient)) return;
-  connectionStore.setState({ client: null });
-  client.close();
-}
-
 // closeAllCreatedClients closes every real client THIS file's own routes
 // ever constructed (see allCreatedClients above), not just whichever one
-// connectionStore currently mirrors - same null-before-close ordering as
-// closeStaleClient, for the same reason.
+// connectionStore currently mirrors. It nulls connectionStore's own
+// reference FIRST: connection.ts's client->store state mirror only
+// republishes while `connectionStore.getState().client === client` still
+// holds (its own guard), and close() synchronously fires that client's
+// "closed" state change. Closing while the reference is still current lets
+// that mirror republish state through it, re-triggering threads.ts's
+// connectionStore.subscribe -> rewireClient(client) and re-wiring
+// notification/ready handlers onto a client this store is about to
+// discard - clearing the reference first makes the mirror's own guard skip
+// republishing, so close() cannot re-arm rewireClient.
 function closeAllCreatedClients(): void {
   if (connectionStore.getState().client instanceof AppwireClient) {
     connectionStore.setState({ client: null });
@@ -148,21 +135,11 @@ async function warmRoute(path: string, text: string | RegExp): Promise<void> {
 // deadline. A genuinely broken module fails this await with its real error
 // instead of a timeout.
 beforeAll(async () => {
-  resetWorkspaceStoreForTests();
-  resetNavigationStoreForTests();
   // The default route mounts AppShell -> DockHost -> real dockview-react, which
   // needs a ResizeObserver (jsdom has none, verified via a live probe) and
   // localStorage (storageTestUtils' MemoryStorage).
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
-  // connectionStore has no resetXForTests helper (see this file's other
-  // stores) - every other file that touches it resets it inline in its own
-  // beforeEach/beforeAll instead. This warm-up render is this file's first
-  // lifecycle boundary, before beforeEach, so workspace/tree were reset above
-  // for the same reason: no shared isolate:false state may decide what the
-  // welcome route renders.
-  closeStaleClient();
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
@@ -187,20 +164,24 @@ beforeEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
+  // The dev widget gallery route pushes real toasts through the
+  // module-singleton toast store (widgets/toast/store.ts), and unmounting
+  // cancels their timers without removing them; reset so no test starts
+  // with another test's toasts queued.
+  resetToastStoreForTests();
+  // notifications/index.ts keeps module state (its init guard, the
+  // "reconnect" detector's sawReady, the attention baseline) for every test
+  // in this file, and a test that connects a client straight to "ready" arms
+  // that detector. Reset and re-init before each test's own fresh connect so
+  // every test starts from the state a fresh module evaluation leaves:
+  // engine started, seeded from the idle connection and reset navigation
+  // store above, with nothing carried over from the previous test.
+  resetNotificationsForTests();
+  initNotifications();
 });
 
 afterEach(() => {
   cleanup();
-  // "renders the dev widget gallery" below mounts the real ToastGallerySection,
-  // whose mount effect pushes real toasts through the module-singleton toast
-  // store (widgets/toast/store.ts) - the same store /dev/widgets' warmRoute
-  // render in beforeAll above already pushed into once. cleanup()'s unmount
-  // cancels each toast's auto-dismiss timer without dismissing it, so those
-  // pushes outlive both cleanup() and this file, leaking into whichever later
-  // file in this isolate:false worker next mounts <Toast/> without its own
-  // reset (see resetToastStoreForTests's own comment; GoalControl.test.tsx's
-  // identical reset for the fuller writeup).
-  resetToastStoreForTests();
   resetNavigationStoreForTests();
   // Each test above renders <App/> with no test client injected, so every
   // one constructs a fresh real AppwireClient and wires it into
@@ -215,39 +196,8 @@ afterEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
-  // AppShell.tsx calls initNotifications() at MODULE SCOPE (guarded by its
-  // own `if (initialized) return`), so the FIRST render anywhere in this
-  // worker that imports AppShell - unavoidably, every test in this file -
-  // installs notifications/index.ts's own connectionStore.subscribe (its
-  // "reconnect" detector, `sawReady`) for the rest of the worker's life.
-  // Left un-reset, a LATER file's own client connecting straight to "ready"
-  // (e.g. `new FakeClient("ready")`) reads as a "reconnect" against this
-  // leftover `sawReady=true`, firing an extra, unexpected
-  // navigationStore.loadManifest() into that file's own navigation-call assertions.
-  //
-  // AppShell.tsx's module-scope initNotifications() call only ever fires
-  // once per worker (its own "only once" guard), so leaving it reset would
-  // leave the engine permanently uninitialized for the rest of this
-  // isolate:false worker - so it is re-run immediately below, restoring the
-  // same state a fresh module evaluation would have left (kata p5w9's
-  // identical pattern in AppShell.test.tsx; see notifications/index.ts's own
-  // reset comment). This pair runs LAST, after connectionStore and navigationStore
-  // are already back to idle/null above: initNotifications() seeds its
-  // `sawReady`/baseline snapshot from whatever those stores hold AT THIS
-  // MOMENT, and seeding from a still-"ready" connectionStore (as this test's
-  // own render left it moments ago) would wrongly arm the very "reconnect"
-  // detector this reset exists to neutralize - reading the NEXT file's first
-  // real connect as a reconnect and firing a spurious navigationStore.loadManifest()
-  // into ITS fetch-call assertions instead.
-  resetNotificationsForTests();
-  initNotifications();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
-});
-
-afterAll(() => {
-  closeAllCreatedClients();
-  unsubscribeClientTracker();
 });
 
 test("renders the app shell (welcome pane) at the default route", async () => {
