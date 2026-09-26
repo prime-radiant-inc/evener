@@ -164,6 +164,11 @@ func (*resolvingUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader)
 	case strings.Contains(joined, " evener launch-check"):
 		// The host's non-interactive PATH does not carry the binary.
 		return []byte("sh: 1: evener: not found\n"), evenerMissingExitStatus()
+	case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+		// The dedicated executable probe: the binary is absent from the
+		// non-interactive PATH. Only this probe's own 1 is the verified absent
+		// answer; the launch-check's 127 and its text are not the recognizer.
+		return nil, executableProbeAbsentExitStatus()
 	case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 		return []byte("/home/dev/.local/bin/evener\n"), nil
 	default:
@@ -172,10 +177,17 @@ func (*resolvingUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader)
 }
 
 // evenerMissingExitStatus builds the real *exec.ExitError a shell reports for a
-// command that cannot be found (status 127), the fixture preflight's
-// errExecutableMissing classifier requires.
+// command that cannot be found (status 127). The launch-check still fails this
+// way on a host with no evener on the PATH, but the missing-executable result is
+// recognized from executableProbeAbsentExitStatus below, not from this status.
 func evenerMissingExitStatus() error {
 	return exec.Command("sh", "-c", "exit 127").Run()
+}
+
+// executableProbeAbsentExitStatus builds the real *exec.ExitError the dedicated
+// executable probe reports for an absent target (status 1).
+func executableProbeAbsentExitStatus() error {
+	return exec.Command("sh", "-c", "exit 1").Run()
 }
 
 // TestHostRowRendersAttachedWhenTheManagerResolvedTheTarget pins the roborev
