@@ -566,7 +566,7 @@ func driveServe(ctx context.Context, addr string, turns int, exited <-chan error
 					var params appwire.HistoryUpdatedParams
 					if json.Unmarshal(n.Params, &params) == nil {
 						for _, turn := range params.Turns {
-							if turn.ID == started.Turn.ID && turn.Status != appwire.TurnStatusInProgress {
+							if turn.ID == started.Turn.ID && appwire.IsTerminalTurnStatus(turn.Status) {
 								completed = true
 							}
 						}
