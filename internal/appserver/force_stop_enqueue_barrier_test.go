@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,9 +165,9 @@ func TestRecoverPanicLogsAndContainsAnyPanic(t *testing.T) {
 // TestClearRecoveryOnPanicRollsBackBusyFlagBeforeRepanicking pins a second
 // roborev finding: markRecoveryClear runs before enqueueDispatched, so if
 // enqueueDispatched panics before the response ever reaches the send
-// channel, beforeSend — the only thing that clears recoveryRunning and
-// recoveryClearID — never runs for it, and the connection would be stuck
-// refusing every future force stop.
+// channel, beforeSend and afterSend — the only things that clear
+// recoveryRunning and recoveryClearID, respectively — never run for it, and
+// the connection would be stuck refusing every future force stop.
 //
 // clearRecoveryOnPanic wraps the force-stop dispatch's enqueue step: on a
 // panic, it rolls the busy flag back itself (best effort, since nothing else
@@ -321,13 +322,15 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 // underlying recovery side effect running before the client has any
 // confirmation the first one finished.
 //
-// recoverySendPending is a second, narrower gate: beforeSend sets it in the
-// same moment it clears recoveryRunning, and only afterSend (wired through
-// the same send-loop callback as responseWritten, so it runs right after
-// Send returns) clears it. Admission checks both flags, so a force stop is
-// refused for the whole span from claim through actual transport delivery,
-// while the client-visible guarantee (recoveryRunning already false before
-// any byte reaches the wire) is untouched.
+// recoveryClearID is the narrower gate that closes this: markRecoveryClear
+// sets it before enqueue, and beforeSend, unlike its handling of
+// recoveryRunning, leaves it set rather than clearing it — only afterSend
+// (wired alongside responseWritten in the send loop's per-frame callback, so
+// it runs right after Send returns) clears it. Admission checks
+// recoveryRunning || recoveryClearID != "", so a force stop is refused for
+// the whole span from claim through actual transport delivery, while the
+// client-visible guarantee (recoveryRunning already false before any byte
+// reaches the wire) is untouched.
 func TestServeWebSocketForceStopBackpressureHoldsAcrossTransportSend(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	gate := &gatedSendTransport{blocked: make(chan struct{}, 1), release: make(chan struct{})}
@@ -404,5 +407,94 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossTransportSend(t *testing.
 		case <-deadline:
 			t.Fatal("timed out waiting for the third force stop to succeed once the send-pending gate cleared")
 		}
+	}
+}
+
+// TestServeWebSocketForceStopClearsBeforeSlowAfterResponseWrittenCallback
+// pins a roborev finding: the send loop's per-frame callback ran
+// responseWritten (which invokes an arbitrary caller-registered
+// AfterResponseWritten callback) before afterSend. A slow callback would
+// delay afterSend — and a panicking one would prevent it running at all —
+// wedging force-stop admission on a connection for a reason that has nothing
+// to do with force stop.
+//
+// afterSend now runs first: it is fixed, fast, lock-only bookkeeping, so it
+// completes (clearing recoveryClearID) regardless of what an
+// AfterResponseWritten callback registered by this same handler does
+// afterward. This test registers a callback that blocks until released and
+// asserts recoveryClearID has already cleared — and a second force stop is
+// admitted rather than refused — while that callback is still blocked.
+//
+// The second force stop's response is asserted directly off the outbound
+// channel rather than by waiting for the client to receive it: the send
+// loop is a single goroutine, and the blocked callback (running inside the
+// same per-frame callback afterSend shares) is itself blocking that loop
+// from ever dequeuing and transmitting a third message — the second
+// response can only sit enqueued, not delivered, until the callback is
+// released. That serialization is a pre-existing, independent property of
+// the send loop, not something this fix changes; asserting on the enqueued
+// message (something the test can safely read directly, since the send
+// loop is not touching the channel while it is stuck in the callback) is
+// what actually distinguishes "admitted" from "refused" here.
+func TestServeWebSocketForceStopClearsBeforeSlowAfterResponseWrittenCallback(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	callbackStarted := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	var registeredOnce sync.Once
+	HandleTyped(server.Router(), appwire.MethodEvenerThreadForceStop, func(ctx context.Context, _ appwire.ThreadForceStopParams) (appwire.EmptyResponse, error) {
+		// Only the first force stop's response gets a blocking callback; the
+		// second, sent later to prove admission already succeeded, must not
+		// register a second one that closes the same channel again.
+		registeredOnce.Do(func() {
+			AfterResponseWritten(ctx, func() {
+				close(callbackStarted)
+				<-releaseCallback
+			})
+		})
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	transport := dialRawAppWire(t, httpServer)
+	initializeRaw(t, transport)
+	conn := registeredConnection(t, server)
+	frames := collectFrames(transport)
+
+	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
+	deadline := time.After(5 * time.Second)
+	for {
+		gotResponse := false
+		select {
+		case msg := <-frames:
+			if msg.Response != nil && msg.Response.ID.Int64() == 2 {
+				gotResponse = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the first force stop's response")
+		}
+		if gotResponse {
+			break
+		}
+	}
+	waitFor(t, "the after-write callback to start (blocking)", callbackStarted)
+	defer close(releaseCallback)
+
+	conn.mu.RLock()
+	clearID := conn.recoveryClearID
+	conn.mu.RUnlock()
+	if clearID != "" {
+		t.Fatal("recoveryClearID was still set while only an unrelated after-write callback was blocked: afterSend was delayed behind responseWritten")
+	}
+
+	sendRaw(t, transport, rawRequest(t, 3, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
+	select {
+	case msg := <-conn.send:
+		if msg.Error != nil && msg.Error.ID.Int64() == 3 {
+			t.Fatalf("second force stop was refused while only an unrelated after-write callback was blocked: %+v", msg.Error)
+		}
+		if msg.Response == nil || msg.Response.ID.Int64() != 3 {
+			t.Fatalf("unexpected message enqueued for the second force stop: %+v", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the second force stop's response to be enqueued")
 	}
 }

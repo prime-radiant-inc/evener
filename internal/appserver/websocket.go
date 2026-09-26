@@ -169,8 +169,16 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 		// callback still waiting on its response runs now.
 		defer conn.runPendingAfterWrite()
 		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout, func(msg appwire.Message) {
-			conn.responseWritten(msg)
+			// afterSend first: it is fixed, fast, lock-only bookkeeping,
+			// unlike responseWritten, which runs an arbitrary caller-registered
+			// callback (AfterResponseWritten) that can be slow or, if it
+			// panics, never return control here at all. Running afterSend
+			// after responseWritten would let a slow or panicking callback
+			// delay or altogether prevent clearing recoveryClearID, wedging
+			// force-stop admission on a connection that has nothing to do with
+			// that callback.
 			conn.afterSend(msg)
+			conn.responseWritten(msg)
 		}, conn.beforeSend)
 	})
 	go conn.runWorker(ctx)
