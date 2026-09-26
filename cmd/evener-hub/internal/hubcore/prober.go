@@ -151,6 +151,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:            root.Evener.AskPending,
 		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
+		PendingEscalations:    root.Evener.PendingEscalations,
 		Capabilities:          root.Evener.Capabilities,
 		CapabilitiesKnown:     true,
 		RunningSubagentIDs:    runningSubagentIDs,
