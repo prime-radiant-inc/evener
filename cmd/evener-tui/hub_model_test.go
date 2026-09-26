@@ -2504,7 +2504,7 @@ func TestHubModelStatusRefreshDoesNotRegressTheQueueRevision(t *testing.T) {
 // A failed turn is followed by its own status frame: the agent's failure exit
 // (agent/session_lifecycle.go endInputAtTurnFailure) emits EventSessionEnd with
 // Reason "turn_failed", which the projector announces as thread/status/changed
-// (idle), capabilities riding inline. The frame owns the transition: the
+// (systemError), capabilities riding inline. The frame owns the transition: the
 // failed turn/completed leaves the status alone, so the frame is seen as a
 // change (the capability refresh fires) and its inline set is applied at once.
 func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
@@ -2529,15 +2529,15 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
 	m.applyHubNotification(*failed.Notification)
 
-	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+	failedFrame := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     "01SEND",
 		Ref:          "local:01SEND",
-		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
 		Capabilities: &appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: false},
 	})
-	cmd := m.applyHubNotification(*idle.Notification)
-	if m.detail.State != appwire.ThreadStatusIdle || m.session.processing {
-		t.Fatalf("after the failed turn's status frame: state=%q processing=%v, want idle and not processing", m.detail.State, m.session.processing)
+	cmd := m.applyHubNotification(*failedFrame.Notification)
+	if m.detail.State != appwire.ThreadStatusSystemError || m.session.processing {
+		t.Fatalf("after the failed turn's status frame: state=%q processing=%v, want systemError and not processing", m.detail.State, m.session.processing)
 	}
 	if c := m.sessionControls(); !c.send || c.stop {
 		t.Fatalf("controls after the failed turn's status frame = %+v, want send offered and stop withdrawn from the frame's inline capabilities", c)
@@ -2553,6 +2553,36 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m.applyHubNotification(*late.Notification)
 	if m.detail.State != appwire.ThreadStatusActive || m.detail.ActiveTurnID != "turn_2" {
 		t.Fatalf("a failed completion for a superseded turn changed the session: state=%q active=%q", m.detail.State, m.detail.ActiveTurnID)
+	}
+}
+
+// A failed turn leaves the session resting like an idle one: the daemon
+// reports systemError until the next turn starts. The resting affordances
+// keyed on idle hold for it too (appwire.IsRestingThreadStatus).
+func TestHubModelSessionRestingOnAFailedTurnKeepsRestedControls(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{
+		Ref:          "local:th_1",
+		SessionID:    "sess_1",
+		Live:         true,
+		State:        appwire.ThreadStatusSystemError,
+		Capabilities: hubSessionCapabilities{Send: true, Steer: true, Queue: true},
+	}
+	if c := m.sessionControls(); !c.send || c.stop || c.drain {
+		t.Fatalf("controls on a failed session with nothing queued = %+v, want send only", c)
+	}
+	if !hubNotesIdleWake(m.detail) {
+		t.Fatal("a live session resting on a failed turn must warn that saving a note wakes the agent")
+	}
+	before := len(m.session.messages)
+	updated, _ := m.handleSessionForceSteer()
+	if got := updated.(hubModel); len(got.session.messages) != before {
+		t.Fatalf("force-steer on a resting failed session with nothing queued added %+v, want the quiet no-op an idle session gets", got.session.messages[before:])
+	}
+	m.detail.Queue.Depth = 1
+	if c := m.sessionControls(); !c.drain {
+		t.Fatalf("controls with a parked queue on a failed session = %+v, want drain offered", c)
 	}
 }
 

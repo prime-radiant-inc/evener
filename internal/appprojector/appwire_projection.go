@@ -297,16 +297,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if data.Restored {
 			p.SeedPersistedTurns(data.TranscriptEntries)
 		}
-		// A restored session carries its re-derived state on the event (spec
-		// §5.4's "two touchpoints"); a fresh session's State is empty and
-		// defaults to idle, same as an unrecognized value.
-		status := appwire.ThreadStatusIdle
-		switch data.State {
-		case appwire.ThreadStatusAwaiting:
-			status = appwire.ThreadStatusAwaiting
-		case appwire.ThreadStatusIdle:
-			status = appwire.ThreadStatusIdle
-		}
+		// A restored session carries its re-derived effective state (agent
+		// WireState) on the event (spec §5.4's "two touchpoints"); a fresh
+		// session's State is empty and defaults to idle, same as an
+		// unrecognized value.
+		status := openThreadStatus(data.State)
 		var tasks *appwire.TaskAggregate
 		var goal *appwire.GoalState
 		if data.CurrentWork != nil {
@@ -1339,13 +1334,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventSessionEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.SessionEndData](event.Data)
-		state := appwire.ThreadStatusClosed
-		switch data.State {
-		case appwire.ThreadStatusIdle:
-			state = appwire.ThreadStatusIdle
-		case appwire.ThreadStatusAwaiting:
-			state = appwire.ThreadStatusAwaiting
-		case appwire.ThreadStatusClosed:
+		// Only a real close ends the thread: an end with no state, or
+		// closed, the states on which server/bridge.go's
+		// sessionEventClosesSession closes the stored status. Any other value
+		// leaves the session open for the next message and maps as a
+		// SessionStart state does (openThreadStatus): an unrecognized value
+		// reads idle.
+		state := openThreadStatus(data.State)
+		if data.State == "" || data.State == appwire.ThreadStatusClosed {
 			state = appwire.ThreadStatusClosed
 		}
 		turnStatus := appwire.TurnStatusCompleted
@@ -1668,6 +1664,19 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 
 func isContextCanceledError(message string) bool {
 	return strings.TrimSpace(message) == context.Canceled.Error()
+}
+
+// openThreadStatus is the thread status for a state a session reports on
+// SessionStart or SessionEnd while it stays open. Each value the agent's
+// WireState publishes for an open session maps to itself: idle, awaiting,
+// systemError (resting on a failed turn, agent RestingWireState) and active
+// (claimable work pending, agent WireState). Any other value reads idle.
+func openThreadStatus(state string) string {
+	switch state {
+	case appwire.ThreadStatusIdle, appwire.ThreadStatusAwaiting, appwire.ThreadStatusSystemError, appwire.ThreadStatusActive:
+		return state
+	}
+	return appwire.ThreadStatusIdle
 }
 
 func (p *AppEventProjector) threadStatus(status string) AppNotification {
