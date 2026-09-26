@@ -174,8 +174,30 @@ async function runChecks(page, scheme) {
   await check(S('flow-row-tap-and-next'), page, async () => {
     await reset(page); await tap('Audit Tool Descriptions for Implied Options');
     await logHas(page, 'row_tap', (e) => e.sessionId === 's-audit');
-    const pill = page.locator('.next-pill').first(); await pill.tap(); await sleep(400);
+    const bar = page.getByRole('button', { name: /other sessions need you/ }).first(); await bar.tap(); await sleep(400);
     await logHas(page, 'next', (e) => e.from === 's-audit' && !!e.to);
+  });
+  await check(S('flow-edge-swipe-never-archives'), page, async () => {
+    await reset(page);
+    const cdp = await page.context().newCDPSession(page);
+    const pts = (x) => [{ x, y: 430 }];
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(3) });
+    for (let x = 20; x <= 300; x += 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(x) });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await sleep(400);
+    const log = await ev(page, 'window.__proto.log');
+    if (log.some((e) => e.type === 'archive')) throw new Error('an edge swipe on the Board archived a row');
+  });
+  await check(S('flow-scoped-approval'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-mirror')`); await sleep(400);
+    await tapRole('button', 'Allow all writes');
+    await logHas(page, 'approval', (e) => e.decision === 'allow_scope');
+  });
+  await check(S('flow-continue-reading'), page, async () => {
+    await reset(page, 'reading'); await sleep(300);
+    await ev(page, `EV.popToBoard()`); await sleep(500);
+    await tapRole('button', 'Continue reading');
+    await logHas(page, 'continue_reading');
   });
   await check(S('flow-launch'), page, async () => {
     await reset(page); await page.locator('button[aria-label="New session"]').tap(); await sleep(400);

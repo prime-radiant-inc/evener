@@ -72,8 +72,12 @@
       </div>
       ${x.lastError ? html`<div class="glabel">Last error</div><div class="group"><div class="gi static"><span class="gl" style="grid-column:1/4;font-family:var(--mono);font-size:13px;color:var(--danger-ink)">${x.lastError}</span></div></div>` : null}
       <div class="group" style="margin-top:16px">
-        ${h(EV.Gi, { label: x.state === "offline" ? "Reconnect" : "Reconnect now", cls: "accent", onClick: () => { EV.log("host_reconnect", { host: x.id }); EV.reconnectHost(x.id); } })}
-        ${x.version !== hubV ? h(EV.Gi, { label: updating ? "Updating…" : "Update host to " + hubV, cls: "accent", onClick: updating ? null : upd }) : null}
+        ${x.state === "connecting"
+          ? h(EV.Gi, { label: "Connecting…", sub: "Trying ssh " + x.id, value: h(EV.Pulse, { values: [0.3, 0.6, 0.9, 0.6, 0.3, 0.6, 0.9] }) })
+          : h(EV.Gi, { label: x.state === "offline" ? "Reconnect" : "Reconnect now", cls: "accent", onClick: () => { EV.log("host_reconnect", { host: x.id }); EV.reconnectHost(x.id); } })}
+        ${x.version !== hubV ? (x.state === "connected"
+          ? h(EV.Gi, { label: updating ? "Updating…" : "Update host to " + hubV, cls: "accent", onClick: updating ? null : upd })
+          : h(EV.Gi, { label: "Update host to " + hubV, sub: "Reconnect first; the update runs over the same connection", cls: "disabled" })) : null}
       </div>
       <div class="gfoot">${x.origin === "hub.toml" ? "This host is defined in hub.toml, so it can only be edited there." : "Hosts added in the app can be edited or removed here."}</div>
     </${EV.Sheet}>`;
@@ -192,7 +196,7 @@
     const row = (k, label, sub) => html`<div class="gi static"><span></span><span class="gl">${label}${sub ? html`<small>${sub}</small>` : null}</span><span class="gv">${h(EV.Switch, { on: a[k], label, onChange: (v) => { a[k] = v; EV.log("pref", { alert: k, on: v }); EV.update(); } })}</span></div>`;
     return html`<${EV.Sheet} title="In-app alerts" left=${Back("Hub")} size="stacked">
       <div class="glabel">Show a banner when</div>
-      <div class="group">${row("failures", "A session fails")}${row("questions", "A session asks a question or needs approval")}${row("finished", "A session finishes", "Finished results always land in Your move")}</div>
+      <div class="group">${row("failures", "A session fails")}${row("questions", "A session asks a question or needs approval")}${row("finished", "A session finishes", "Finished results always land in Finished on the Board")}</div>
       <div class="group" style="margin-top:16px">${row("hold", "Hold alerts while reading or typing", "They show when you leave the document or send")}${row("haptics", "Haptics")}</div>
       <div class="gfoot">Lock-screen notifications are coming later. Until then, alerts show while Evener is open.</div>
     </${EV.Sheet}>`;

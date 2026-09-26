@@ -14,6 +14,17 @@
     return mdCache.get(src);
   };
   EV.level = (id) => EV.S.prefs.detail[id] || EV.S.prefs.defaultDetail;
+  // Plain prose from markdown for previews: drop tables, code and markup.
+  EV.plain = function (md, max) {
+    const text = md.split(/\n{2,}/).filter((p) => !/^\s*(\||```|    )/.test(p)).map((p) => p.replace(/^#+\s*/, "").replace(/[*_`>]/g, "").replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
+    return max && text.length > max ? text.slice(0, max).replace(/\s+\S*$/, "") + "…" : text;
+  };
+  // A document's own title (its first heading), falling back to the file name.
+  EV.docTitle = function (path) {
+    const d = EV.S.docs[path];
+    const m = d && /^#\s+(.+)$/m.exec(d.md);
+    return m ? m[1].trim() : path.split("/").pop();
+  };
   const lvl = (id) => LEVELS.indexOf(EV.level(id));
 
   // ---------- transcript items ----------
@@ -74,7 +85,7 @@
   }
 
   function AgentMsg({ it, s }) {
-    const lp = EV.useLongPress(() => EV.openMenu({ kind: "list", top: 250, title: "Message", preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${it.md.replace(/[*#`|]/g, "").slice(0, 260)}</div></div>`, items: [
+    const lp = EV.useLongPress(() => EV.openMenu({ kind: "list", top: 250, title: "Message", preview: html`<div class="preview"><div class="px" style="border:0;margin:0;padding:0">${EV.plain(it.md, 260)}</div></div>`, items: [
       { label: "Copy", icon: I.doc({ s: 18 }), run: () => EV.toast("Copied") },
       { label: "Quote in reply", icon: I.quote({ s: 18 }), run: () => EV.quoteIntoDraft(s.id, it.md.replace(/[*#`]/g, "").split("\n")[0]) },
     ] }));
@@ -105,7 +116,7 @@
         const changed = d.changed && d.changed.length && !S.readDocs[it.path];
         return html`<button class="doc-chip" onClick=${() => { EV.log("doc_open", { sessionId: s.id, path: it.path, from: "transcript" }); EV.push("reader", { path: it.path, sessionId: s.id }); }}>
           <span class="ic">${I.doc({ s: 20 })}</span>
-          <span style="min-width:0"><span class="k">${it.kind}</span><br /><span class="p">${it.path}</span><br /><span class="m">${d.lines} lines · updated ${EV.fmtAgo(d.ago * 1000)} ago${changed ? " · changed since you last read" : ""}</span></span>
+          <span style="min-width:0"><span class="k">${it.kind}${changed ? html` · <span style="color:var(--accent-ink)">changed since you last read</span>` : null}</span><br /><span class="t">${EV.docTitle(it.path)}</span><br /><span class="m">${it.path.split("/").pop()} · ${d.lines} lines · ${EV.fmtAgo(d.ago * 1000)} ago</span></span>
           <span style="display:flex;gap:6px;align-items:center">${changed ? html`<span class="dot"></span>` : null}<span style="color:var(--ink-low);display:flex">${I.chevR()}</span></span>
         </button>`;
       }
@@ -114,7 +125,7 @@
         if (!a) return null;
         const st = S.artifactState[a.id];
         return html`<button class="art-card" onClick=${() => { EV.log("artifact_open", { sessionId: s.id, id: a.id, from: "transcript" }); EV.push("artifact", { id: a.id, sessionId: s.id }); }}>
-          <div class="pv">${h(ArtPreview)}</div>
+          <div class="pv">${h(ArtPreview, { pick: (st && (st.sent || st.selected)) || "B" })}</div>
           <div class="bd"><div class="nm">${a.title}</div><div class="sm">${a.summary}</div>
           <div class="ft"><span>Artifact · v${a.version}${st && st.sent ? " · you chose " + st.sent : ""}</span><span class="open">Open</span></div></div>
         </button>`;
@@ -137,9 +148,9 @@
     }
   }
 
-  function ArtPreview() {
+  function ArtPreview({ pick }) {
     return html`<div style="position:absolute;inset:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
-      ${["A", "B", "C"].map((k) => html`<div style=${"border-radius:8px;background:var(--surface);border:1px solid " + (k === "B" ? "var(--accent-edge)" : "var(--edge)") + ";padding:6px;display:flex;flex-direction:column;gap:4px"}>
+      ${["A", "B", "C"].map((k) => html`<div style=${"border-radius:8px;background:var(--surface);border:" + (k === pick ? "2px solid var(--accent)" : "1px solid var(--edge)") + ";padding:6px;display:flex;flex-direction:column;gap:4px"}>
         <div style="font:600 11px var(--sans);color:var(--ink-mid)">${k}</div>
         ${[0, 1, 2, 3].map((i) => html`<div style=${"height:5px;border-radius:3px;background:var(--edge);margin-left:" + (k === "A" ? (i % 2) * 8 : k === "C" ? (i ? 8 : 0) : 0) + "px;width:" + (70 - i * 8) + "%"}></div>`)}
       </div>`)}
@@ -288,17 +299,36 @@
     EV.update();
   };
 
-  EV.decideApproval = function (s, allow) {
+  // decision: true (this one action), "scope" (everything under the folder,
+  // for this session) or false. "Allow once" really is one action, so a batch
+  // job asks again for its next file; the scoped choice ends the prompts.
+  EV.decideApproval = function (s, decision) {
     const S = EV.S;
     const tr = S.transcripts[s.id];
     const i = tr.findIndex((x) => x.t === "appr");
     const a = S.approvals[tr[i].id];
-    tr[i] = { t: "sys", text: (allow ? "Allowed once: " : "Denied: ") + a.tool + " " + a.target };
-    EV.setWorking(s, allow ? "Writing 214 pages to ~/sites/docs" : "Thinking");
+    const label = decision === "scope" ? "Allowed all writes in " + a.scope + " for this session" : decision ? "Allowed once: " + a.tool + " " + a.target : "Denied: " + a.tool + " " + a.target;
+    tr[i] = { t: "sys", text: label };
     s.why = "";
-    EV.log("approval", { sessionId: s.id, decision: allow ? "allow" : "deny" });
-    EV.toast(allow ? "Allowed once" : "Denied");
-    if (!allow) setTimeout(() => { EV.addItem(s.id, { t: "agent", md: "Understood. I'll write the mirror inside the workspace at `./mirror` instead." }); EV.update(); }, 2500);
+    EV.log("approval", { sessionId: s.id, decision: decision === "scope" ? "allow_scope" : decision ? "allow" : "deny" });
+    EV.toast(decision === "scope" ? "Allowed for " + a.scope : decision ? "Allowed once" : "Denied");
+    if (decision === "scope" || !a.next) EV.setWorking(s, decision ? (a.after || "Continuing") : "Thinking");
+    else {
+      EV.setWorking(s, "Writing " + a.target);
+      setTimeout(() => {
+        if (s.state !== "working") return;
+        const id = tr[i] && a.next ? a.next.id : null;
+        if (!id) return;
+        S.approvals[id] = Object.assign({}, a, a.next, { next: null });
+        s.state = "approval";
+        s.why = "Wants to write outside the workspace: " + a.scope;
+        s.updatedAt = Date.now();
+        EV.addItem(s.id, { t: "appr", id });
+        EV.alert({ kind: "approval", sessionId: s.id, why: s.why });
+        EV.update();
+      }, 5000);
+    }
+    if (!decision) setTimeout(() => { EV.addItem(s.id, { t: "agent", md: "Understood. I'll write the mirror inside the workspace at `./mirror` instead." }); EV.update(); }, 2500);
     EV.update();
   };
 
@@ -321,20 +351,19 @@
   function AskDock({ s }) {
     const S = EV.S;
     const tr = S.transcripts[s.id] || [];
-    const others = EV.needsCount(s.id);
-    const nextPill = others ? html`<button class="next-pill" onClick=${() => EV.goNext(s.id)} aria-label=${others + " other sessions need you. Go to the next one."}>${others} more ${I.chevR({ s: 12 })}</button>` : null;
     if (s.state === "approval") {
       const it = tr.find((x) => x.t === "appr");
       if (!it) return null;
       const a = S.approvals[it.id];
       return html`<div class="dock appr" role="region" aria-label="Approval needed">
-        <div class="dock-h"><span>Approval needed</span>${nextPill}</div>
+        <div class="dock-h"><span>Approval needed</span></div>
         <div class="dock-b">
           <div class="what">${a.what}</div>
           <div class="tgt">${a.tool}  ${a.target}</div>
-          <div class="md">${a.mode}</div>
+          <div class="md">${a.explain || a.mode}</div>
         </div>
         <div class="dock-f"><span></span><span style="display:flex;gap:8px"><button class="btn" onClick=${() => EV.decideApproval(s, false)}>Deny</button><button class="btn primary" onClick=${() => EV.decideApproval(s, true)}>Allow once</button></span></div>
+        ${a.scope ? html`<button class="dock-scope" onClick=${() => EV.decideApproval(s, "scope")}>Allow all writes in <span class="mono">${a.scope}</span> for this session</button>` : null}
       </div>`;
     }
     const ask = tr.find((x) => x.t === "ask");
@@ -361,7 +390,7 @@
       EV.resolveAsk(s, ask, qa, text, "dock");
     };
     return html`<div class="dock" role="region" aria-label="Question from the agent">
-      <div class="dock-h"><span>${qs.length > 1 ? "Question " + (st.i + 1) + " of " + qs.length : "Question"}</span><span style="display:flex;gap:4px;align-items:center">${nextPill}<button class="icon-btn" style="height:30px;min-width:30px;color:var(--ink-mid)" aria-label="Collapse question" onClick=${() => { S.dockMin[s.id] = true; EV.update(); }}>${I.chevD({ s: 14 })}</button></span></div>
+      <div class="dock-h"><span>${qs.length > 1 ? "Question " + (st.i + 1) + " of " + qs.length : "Question"}</span><button class="icon-btn" style="height:30px;min-width:30px;color:var(--ink-mid)" aria-label="Collapse question" onClick=${() => { S.dockMin[s.id] = true; EV.update(); }}>${I.chevD({ s: 14 })}</button></div>
       <div class="dock-b">
         <div class="q">${q.q}</div>
         ${q.why ? html`<div class="why">${q.why}</div>` : null}
@@ -395,7 +424,17 @@
     else if (st === "shutdown") left = html`<span class="live"><span class="t">Shut down · sending a message resumes it</span></span>`;
     else if (st === "restart") left = html`<span class="live amber"><span class="t">Needs a restart · see above</span></span>`;
     else left = html`<span class="live"><span class="t">Finished ${EV.fmtAgo(Date.now() - s.updatedAt)} ago</span></span>`;
-    return html`<div class="tray">${left}${others ? html`<button class="next-pill" onClick=${() => EV.goNext(s.id)} aria-label=${others + " other sessions need you. Go to the next one."}>${others} need you ${I.chevR({ s: 12 })}</button>` : null}</div>`;
+    return html`<div class="tray">${left}</div>`;
+  }
+
+  // Other sessions that need you, and a way to go to the next one. Sits above
+  // the tray or ask dock so it can't be mistaken for part of this session.
+  function NextBar({ s }) {
+    const others = EV.needsCount(s.id);
+    if (!others) return null;
+    return html`<button class="next-bar" onClick=${() => EV.goNext(s.id)} aria-label=${others + " other sessions need you. Go to the next one."}>
+      <span>${others} other session${others === 1 ? " needs" : "s need"} you</span><b>Next ${I.chevR({ s: 12 })}</b>
+    </button>`;
   }
 
   // ---------- composer ----------
@@ -410,7 +449,7 @@
       if (S.focusComposer === s.id && ta.current) { S.focusComposer = null; ta.current.focus(); }
       if (ta.current) { ta.current.style.height = "auto"; ta.current.style.height = Math.min(140, ta.current.scrollHeight) + "px"; }
     });
-    const ph = s.state === "question" ? "Answer or ask…" : working ? "Steer or queue…" : s.state === "shutdown" ? "Message to resume" : "Message";
+    const ph = s.state === "question" ? "Answer or ask…" : working ? "Tell the agent something…" : s.state === "shutdown" ? "Message to resume" : "Message";
     const m = EV.model(s.model);
     const offline = S.conn !== "live";
     let primary;
@@ -498,7 +537,7 @@
     const files = tr.filter((x) => x.t === "doc" || x.t === "art").length;
     const fileNew = tr.some((x) => x.t === "doc" && S.docs[x.path] && S.docs[x.path].changed.length && !S.readDocs[x.path]);
     const q = S.queue[s.id] || [];
-    const subtitle = { working: "Working · " + EV.fmtAgo(Date.now() - s.startedAt), stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", warning: "Warning", restart: "Needs a restart", yourmove: "Your move", idle: "Idle", shutdown: "Shut down" }[st] || "";
+    const subtitle = { working: "Working · " + EV.fmtAgo(Date.now() - s.startedAt), stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", warning: "Warning", restart: "Needs a restart", yourmove: "Finished", idle: "Idle", shutdown: "Shut down" }[st] || "";
 
     const onTitleDown = (e) => { titleSw.current = { x: e.clientX, y: e.clientY }; };
     const onTitleUp = (e) => {
@@ -533,7 +572,7 @@
           <div class="lead"><button class="icon-btn back-btn" onClick=${EV.pop} aria-label=${"Back to Board" + (needs ? ", " + needs + " need you" : "")}>${I.chevL({ s: 22 })}${needs ? html`<span class="badge">${needs}</span>` : null}</button></div>
           <div class="nav-title" role="button" tabindex="0" aria-label=${s.title + ". " + subtitle + ". Session info"} onPointerDown=${onTitleDown} onPointerUp=${onTitleUp} onKeyDown=${(e) => { if (e.key === "Enter") EV.openSheet("session", { sessionId: s.id }); }} style="touch-action:pan-y">
             <div class="t">${s.title}</div>
-            <div class="s">${st === "working" ? h(EV.Pulse, { values: s.pulse, off: S.conn !== "live" }) : h(EV.Mark, { s, size: 13 })}<span>${subtitle}</span></div>
+            <div class="s">${st === "working" ? h(EV.Pulse, { values: s.pulse, off: S.conn !== "live" }) : h(EV.Mark, { s, size: 13 })}<span>${subtitle}</span><span style="color:var(--ink-low);display:flex" aria-hidden="true">${I.chevR({ s: 10 })}</span></div>
           </div>
           <div class="trail"><button class="icon-btn" aria-label="Session menu" onClick=${menu}>${I.dots()}</button></div>
         </div>
@@ -545,7 +584,7 @@
           ${s.goal ? html`<button class=${"cchip" + (s.goal.status === "blocked" ? " amber" : "")} onClick=${() => EV.openSheet("goal", { sessionId: s.id })}>${I.target({ s: 15 })} Goal</button>` : null}
           ${s.notes ? html`<button class="cchip" onClick=${() => EV.openSheet("notes", { sessionId: s.id })}>${I.note({ s: 15 })} Notes</button>` : null}
           ${q.length ? html`<button class="cchip" onClick=${() => EV.openSheet("queue", { sessionId: s.id })}>Queue <span class="n">${q.length}</span></button>` : null}
-          <button class="cchip" onClick=${() => EV.detailMenu(s)} aria-label=${"Detail level " + EV.level(s.id)}>${I.outline({ s: 15 })} ${EV.level(s.id)}</button>
+          <button class="cchip" onClick=${() => EV.detailMenu(s)} aria-label=${"Detail level " + EV.level(s.id)}>${I.outline({ s: 15 })} Detail: ${EV.level(s.id)}</button>
         </div>
       </div>
       <div class="scroll" ref=${scrollRef} onScroll=${onScroll}>
@@ -556,16 +595,24 @@
         ${newCount ? html`<button class="new-pill" style="position:sticky;bottom:10px" onClick=${() => { scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); setNewCount(0); }}>${I.down({ s: 14 })} ${newCount} new</button>` : null}
       </div>
       <div class="bottom">
+        ${h(NextBar, { s })}
         ${s.state === "question" || s.state === "approval" ? h(AskDock, { s }) : h(Tray, { s })}
         ${h(Composer, { s })}
       </div>
     </div>`;
   }
 
+  const LEVEL_HELP = {
+    Chat: "Just the conversation",
+    Intent: "Plus one line for each step the agent took",
+    Tools: "Plus every command it ran; tap one for its output",
+    Activity: "Plus system events, like compaction and model changes",
+    Full: "Everything, with command output shown",
+  };
   EV.detailMenu = function (s) {
-    EV.openMenu({ kind: "list", top: 150, right: true, title: "Detail level",
-      preview: html`<div class="preview"><div class="pt">Detail level</div><div class="pw">How much of the agent's work this session shows</div></div>`,
-      items: LEVELS.map((l) => ({ label: l, checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.update(); } })) });
+    EV.openMenu({ kind: "list", top: 110, right: true, title: "Detail level",
+      preview: html`<div class="preview"><div class="pt">Detail level</div><div class="pw">How much of the agent's work this conversation shows</div></div>`,
+      items: LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.update(); } })) });
   };
 
   EV.screens.session = Session;
@@ -585,7 +632,7 @@
     const proj = S.projects.find((p) => p.id === s.project);
     return html`<${EV.Sheet} title="Session" right=${h(Done)} size=${stacked ? "stacked" : "large"}>
       <div style="padding:4px 20px 8px"><div style="font:600 20px/25px var(--sans)">${s.title}</div>
-      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;color:var(--ink-mid);font-size:14px">${h(EV.Mark, { s, size: 14 })}<span>${{ working: "Working", stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", restart: "Needs a restart", yourmove: "Your move", idle: "Idle", shutdown: "Shut down", warning: "Warning" }[EV.stateOf(s)]}</span></div></div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;color:var(--ink-mid);font-size:14px">${h(EV.Mark, { s, size: 14 })}<span>${{ working: "Working", stuck: "May be stuck", failed: "Failed", question: "Asks a question", approval: "Needs approval", restart: "Needs a restart", yourmove: "Finished", idle: "Idle", shutdown: "Shut down", warning: "Warning" }[EV.stateOf(s)]}</span></div></div>
       <div class="glabel">Where</div>
       <div class="group">
         ${h(EV.Gi, { label: "Host", value: html`<span class=${"conn-dot" + (hst && hst.state === "offline" ? " offline" : "")}></span>${s.host}` })}
@@ -661,9 +708,9 @@
     };
     return html`<${EV.Sheet} title="Model" left=${h(Cancel)} right=${html`<button class="text-btn strong" onClick=${apply}>Done</button>`} size=${stacked ? "stacked" : "large"}>
       <div class="search-field">${I.search({ s: 16 })}<input placeholder="Search models" value=${q} onInput=${(e) => setQ(e.currentTarget.value)} aria-label="Search models" /></div>
-      <div class="glabel" style="padding-top:8px">Effort</div>
+      ${L ? null : html`<div class="glabel" style="padding-top:8px">Effort</div>
       ${h(EV.Seg, { options: ["low", "medium", "high", "xhigh", "max"], value: sel.effort, onChange: (e) => setSel({ model: sel.model, effort: e }), disabled: ["low", "medium", "high", "xhigh", "max"].filter((e) => !m.efforts.includes(e)) })}
-      <div class="gfoot">${m.name} supports ${m.efforts.map(EV.cap).join(", ")}.</div>
+      <div class="gfoot">${m.name} supports ${m.efforts.map(EV.cap).join(", ")}.</div>`}
       ${!q ? html`<div class="glabel">Recent</div><div class="group">${recentIds.map((id) => row(EV.model(id)))}</div>` : null}
       ${provs.map((p) => { const list = S.models.filter((x) => x.provider === p && matches(x)); return list.length ? html`<div class="glabel">${p}</div><div class="group">${list.map(row)}</div>` : null; })}
     </${EV.Sheet}>`;

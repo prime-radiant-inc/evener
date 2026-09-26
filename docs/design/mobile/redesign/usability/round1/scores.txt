@@ -1,0 +1,46 @@
+
+p1
+  T1   success    5 actions
+  T4   success   20 actions
+  T5   success   10 actions
+  T6   success    3 actions
+  T8   success    6 actions
+  T14  success    6 actions
+  !! 1 console errors, 0 page errors
+
+p2
+  T1   success    5 actions
+  T4   success   21 actions
+  T6   success    3 actions
+  T9   success    5 actions
+  T11  success    3 actions
+  T12  success    5 actions
+  !! 1 console errors, 0 page errors
+
+p3
+  T1   success    6 actions
+  T2   success   10 actions
+  T3   success   10 actions
+  T6   success    3 actions
+  T10  success   19 actions
+  T11  success    7 actions
+  !! 1 console errors, 0 page errors
+
+p4
+  T1   success   19 actions
+  T2   success   18 actions
+  T3   success    5 actions
+  T9   success    5 actions
+  T10  partial   11 actions
+  !! 1 console errors, 0 page errors
+
+p5
+  T5   success   13 actions
+  T7   success    5 actions
+  T8   success    7 actions
+  T12  success    7 actions
+  T13  partial    9 actions
+  T14  success    6 actions
+  !! 1 console errors, 0 page errors
+
+total: 27 success, 2 partial, 0 fail

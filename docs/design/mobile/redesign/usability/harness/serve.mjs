@@ -136,6 +136,14 @@ const server = http.createServer((req, res) => {
       console.error(`${req.method} ${req.url} -> ${res.statusCode} (${Date.now() - start}ms)`);
     });
   }
+  // Browsers ask for a favicon on their own; the published page gets one from
+  // its host, so answer "no content" here rather than logging a 404 into every
+  // participant's console-error list.
+  if (req.url === '/favicon.ico') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   try {
     handleRequest(req, res);
   } catch (err) {

@@ -116,7 +116,7 @@
     base({ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", model: "glm-5.3-flash", effort: "medium", ago: 47 * M, started: 2 * H,
       why: "Needs a restart to finish updating", cost: "~$0.20", usage: { in: 0.9e6, out: 0.04e6, cache: 0.6e6 }, ctx: { used: 18, window: 128 } }),
 
-    // Your move (finished, unseen)
+    // Finished, not yet seen
     base({ id: "s-hier", title: "Host Project Hierarchy UI Mockups", state: "yourmove", unseen: true, model: "glm-5.3-vision", ago: 62 * M, started: 3 * H,
       why: "Three layouts are ready for review. I recommend B: hosts as badges inside projects…",
       attachments: [{ kind: "Plan", path: "docs/superpowers/plans/2026-09-25-host-project-hierarchy.md" }, { kind: "Artifact", id: "a-hier", title: "Hierarchy layouts" }],
@@ -366,7 +366,9 @@
     { t: "appr", id: "ap-mirror" },
   ];
   const APPROVALS = {
-    "ap-mirror": { what: "Wants to write outside the workspace", tool: "write_file", target: "~/sites/docs/index.html", mode: "Sandbox: workspace write" },
+    "ap-mirror": { what: "Wants to write outside the workspace", tool: "write_file", target: "~/sites/docs/index.html", mode: "Sandbox: workspace write",
+      explain: "This session can only write inside its project folder. It's about to write the first of 214 pages.", scope: "~/sites/docs", after: "Writing 214 pages to ~/sites/docs",
+      next: { id: "ap-mirror-2", target: "~/sites/docs/guide/getting-started.html", explain: "Allowing once covers one file. This is page 2 of 214." } },
   };
 
   T["s-namer"] = [

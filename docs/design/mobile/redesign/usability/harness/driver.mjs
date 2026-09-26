@@ -111,6 +111,29 @@ function installHarnessHelpers() {
     return rect.width > 0 && rect.height > 0;
   }
 
+  // True when the element (or something inside it) is what a finger at its
+  // center would actually touch, i.e. it isn't covered by a sheet, scrim or menu.
+  // Returns the point a finger would use to touch the element: somewhere in
+  // its visible part (clipped to the screen) that isn't covered by a sheet,
+  // scrim, menu or bar. Null when no such point exists.
+  function touchPoint(el, rect) {
+    const left = Math.max(rect.left, 0), right = Math.min(rect.right, window.innerWidth);
+    const top = Math.max(rect.top, 0), bottom = Math.min(rect.bottom, window.innerHeight);
+    if (right - left < 2 || bottom - top < 2) return null;
+    const xs = [(left + right) / 2, left + (right - left) * 0.25, left + (right - left) * 0.75];
+    const ys = [(top + bottom) / 2, top + (bottom - top) * 0.25, top + (bottom - top) * 0.75];
+    for (const y of ys) {
+      for (const x of xs) {
+        const hit = document.elementFromPoint(x, y);
+        if (hit && (hit === el || el.contains(hit))) return { x: Math.round(x), y: Math.round(y) };
+      }
+    }
+    return null;
+  }
+  function reachable(el, rect) {
+    return touchPoint(el, rect) != null;
+  }
+
   function inViewport(rect) {
     return rect.right > 0 && rect.bottom > 0 && rect.left < window.innerWidth && rect.top < window.innerHeight;
   }
@@ -223,15 +246,18 @@ function installHarnessHelpers() {
     const scored = [];
     for (const el of all) {
       if (!isVisible(el)) continue;
-      const name = accessibleName(el);
-      if (!name) continue;
-      const lower = name.toLowerCase();
-      const isExact = lower === wanted;
-      const isSub = lower.includes(wanted);
+      const names = [accessibleName(el)];
+      if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.placeholder) names.push(el.placeholder.trim());
+      const lowers = names.filter(Boolean).map((n) => n.toLowerCase());
+      if (!lowers.length) continue;
+      const isExact = lowers.some((l) => l === wanted || l.replace(/[.…]+$/, '') === wanted.replace(/[.…]+$/, ''));
+      const isSub = lowers.some((l) => l.includes(wanted.replace(/[.…]+$/, '')));
       if (!isExact && !isSub) continue;
       const target = climb ? findTappable(el) : el;
       const rect = target.getBoundingClientRect();
-      scored.push({ el: target, exact: isExact, rect, onScreen: inViewport(rect), area: rect.width * rect.height });
+      const inView = inViewport(rect);
+      const point = inView ? touchPoint(target, rect) : null;
+      scored.push({ el: target, exact: isExact, rect, point, onScreen: !!point, covered: inView && !point, area: rect.width * rect.height });
     }
     const byEl = new Map();
     for (const c of scored) {
@@ -245,10 +271,11 @@ function installHarnessHelpers() {
       tag: c.el.tagName.toLowerCase(),
       role: roleOf(c.el),
       name: accessibleName(c.el).slice(0, 60),
-      cx: Math.round(c.rect.left + c.rect.width / 2),
-      cy: Math.round(c.rect.top + c.rect.height / 2),
+      cx: c.point ? c.point.x : Math.round(c.rect.left + c.rect.width / 2),
+      cy: c.point ? c.point.y : Math.round(c.rect.top + c.rect.height / 2),
       area: c.area,
       onScreen: c.onScreen,
+      covered: c.covered,
     }));
   }
 
@@ -259,7 +286,7 @@ function installHarnessHelpers() {
     for (const el of document.querySelectorAll(SEL)) {
       if (!isVisible(el)) continue;
       const rect = el.getBoundingClientRect();
-      if (!inViewport(rect)) continue;
+      if (!inViewport(rect) || !reachable(el, rect)) continue;
       rows.push({
         role: roleOf(el),
         name: accessibleName(el).slice(0, 60),
@@ -352,7 +379,10 @@ async function main() {
       if (!text) return { ok: false, text: 'tap needs a label, e.g. tap "Send"' };
       const { all, onScreen } = await locate(text, { climb: true });
       if (all.length === 0) return { ok: false, text: `no visible element matching '${text}'` };
-      if (onScreen.length === 0) return { ok: false, text: `'${text}' is not on screen; scroll first` };
+      if (onScreen.length === 0) {
+        if (all.some((c) => c.covered)) return { ok: false, text: `'${text}' is behind something else on screen (a sheet, menu or banner); close that or tap what's in front` };
+        return { ok: false, text: `'${text}' is not on screen; scroll first` };
+      }
       let target;
       if (nth != null) {
         target = onScreen[nth - 1];

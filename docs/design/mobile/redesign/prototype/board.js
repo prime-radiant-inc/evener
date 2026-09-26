@@ -1,4 +1,4 @@
-// The Board: home. Live bands (needs you, your move, working, idle),
+// The Board: home. Live bands (needs you, finished, working, idle),
 // pinned categories, the Projects/Hosts tree, test runs, archived,
 // search, select mode and hub notices.
 (function () {
@@ -170,7 +170,7 @@
       <div style="display:flex;gap:8px;align-items:center">${h(EV.Mark, { s })}<div class="pt">${s.title}</div></div>
       ${why ? html`<div class=${"pw" + (why.cls ? " why " + why.cls : "")}>${why.text}</div>` : null}
       <div class="pm">${t ? h(EV.Strip, { t }) : null}${t ? html`<span>${EV.tallyTotal(t)} subagents</span><span>·</span>` : null}<span>${s.project}</span><span>·</span><span>${s.host}</span><span>·</span><span style="font-family:var(--mono);font-size:12px">${s.model} · ${s.effort}</span></div>
-      ${lastAgent ? html`<div class="px">${lastAgent.md.replace(/[*#`|]/g, "").slice(0, 240)}</div>` : null}
+      ${lastAgent ? html`<div class="px">${EV.plain(lastAgent.md, 240)}</div>` : null}
     </div>`;
     EV.openMenu({ kind: "list", items, preview, top: 90, title: "Session actions" });
   };
@@ -217,7 +217,7 @@
     return html`<section aria-label="Live">
       <div id="sec-live"></div>
       ${needs.length ? html`<${SectionHead} id="band-needs" label="Needs you" n=${needs.length} />${needs.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="needs" />`)}` : null}
-      ${your.length ? html`<${SectionHead} id="band-your" label="Your move" n=${your.length} />${your.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="yourmove" />`)}` : null}
+      ${your.length ? html`<${SectionHead} id="band-your" label="Finished" n=${your.length} />${your.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="yourmove" />`)}` : null}
       ${work.length ? html`<${SectionHead} id="band-work" label="Working" n=${work.length} />${work.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} context="working" />`)}` : null}
       ${idle.length ? html`<div style="margin-top:8px"><${Fold} id="idle" label="Idle" n=${idle.length}>${idle.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} quiet=${true} context="idle" />`)}</${Fold}></div>` : null}
       ${!all.length ? html`<div class="empty"><b>Nothing's running</b>Start a session to put an agent to work.<div style="margin-top:14px"><button class="btn primary" onClick=${() => EV.openNew("empty")}>New session</button></div></div>` : null}
@@ -449,6 +449,18 @@
           <button class="chip" onClick=${() => { S.board.collapsed.archived = false; jump("archived"); }}>Archived <span class="n">${archN}</span></button>
         </div>
         ${ns.map((n) => html`<div class="notice" key=${n.id}><span class="ic">${I.warn({ s: 18 })}</span><span class="txt">${n.text}</span><button class="act" onClick=${n.run}>${n.act}</button></div>`)}
+        ${S.lastRead && Date.now() - S.lastRead.at < 2 * 3600e3 ? html`<button class="continue" onClick=${() => {
+          const r = S.lastRead;
+          EV.log("continue_reading", { path: r.path });
+          S.nav = [S.nav[0], { name: "session", id: r.sessionId, key: ++S.navSeq, from: "continue" }, { name: "reader", path: r.path, sessionId: r.sessionId, key: ++S.navSeq }];
+          S.navAnim = { type: "push", key: S.navSeq, until: Date.now() + 330 };
+          EV.onScreenChange();
+          EV.update();
+        }}>
+          <span style="display:flex;color:var(--accent)">${I.doc({ s: 18 })}</span>
+          <span style="min-width:0"><span class="k">Continue reading · ${Math.round(S.lastRead.pct * 100)}%</span><span class="t">${S.lastRead.title}</span></span>
+          <span style="display:flex;color:var(--ink-low)">${I.chevR()}</span>
+        </button>` : null}
         ${h(LiveSection)}
         ${h(PinnedSection)}
         ${h(ProjectsSection)}

@@ -51,6 +51,8 @@
       answers: {},
       comments: {},
       readDocs: {},
+      readerPos: {},
+      lastRead: null,
       openDocChanges: {},
       stopRequests: {},
       artifactState: {},
@@ -217,7 +219,7 @@
   EV.toast = function (text, undo) {
     EV.S.toast = { text, undo, key: Date.now() };
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { EV.S.toast = null; EV.update(); }, undo ? 5000 : 2600);
+    toastTimer = setTimeout(() => { EV.S.toast = null; EV.update(); }, undo ? 8000 : 2600);
     EV.update();
   };
 
@@ -247,9 +249,13 @@
       S.banner = Object.assign({ at: Date.now(), key: Date.now() }, a);
     }
     EV.log("banner_shown", { kind: S.banner.kind, sessionId: S.banner.sessionId || null });
-    clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => { S.banner = null; EV.update(); }, 5200);
+    armBannerTimer();
     EV.update();
+  }
+  // Alerts stay 8 seconds, and never go away while a finger is on them.
+  function armBannerTimer() {
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => { if (EV.S.bannerHeld) { armBannerTimer(); return; } EV.S.banner = null; EV.update(); }, 8000);
   }
   EV.releaseHeld = function () {
     const S = EV.S;
@@ -257,7 +263,7 @@
     const list = S.held;
     S.held = [];
     if (list.length === 1) showBanner(list[0]);
-    else { S.banner = { kind: "many", count: list.length, at: Date.now(), key: Date.now() }; EV.log("banner_shown", { kind: "many", count: list.length }); clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { S.banner = null; EV.update(); }, 5200); }
+    else { S.banner = { kind: "many", count: list.length, at: Date.now(), key: Date.now() }; EV.log("banner_shown", { kind: "many", count: list.length }); armBannerTimer(); }
   };
   EV.dismissBanner = function () { EV.S.banner = null; EV.update(); };
 
@@ -342,7 +348,7 @@
     if (st === "restart") return html`<span class="mk attention" title="Restart needed">${I.restart({ s: size })}</span>`;
     if (st === "stuck") return html`<span class="mk" title="May be stuck"><span class="hollow"></span></span>`;
     if (st === "working") return html`<span class="mk" title="Working">${h(EV.Pulse, { values: s.pulse, off: offline })}</span>`;
-    if (st === "yourmove" && s.unseen) return html`<span class="mk" title="Your move"><span class="dot"></span></span>`;
+    if (st === "yourmove" && s.unseen) return html`<span class="mk" title="Finished, not yet seen"><span class="dot"></span></span>`;
     return html`<span class="mk"></span>`;
   };
 
@@ -396,7 +402,10 @@
     const reset = () => { setDx(0); st.current.open = 0; };
     const down = (e) => {
       if (disabled) return;
-      st.current = { x: e.clientX, y: e.clientY, dx0: dx, moved: false, horiz: null, long: false, id: e.pointerId };
+      // A swipe that starts in the screen's edge zone is the system back
+      // gesture, never a row action: an edge swipe must not archive anything.
+      const appLeft = document.getElementById("app").getBoundingClientRect().left;
+      st.current = { x: e.clientX, y: e.clientY, dx0: dx, moved: false, horiz: null, long: false, id: e.pointerId, edge: e.clientX - appLeft < 24 };
       clearTimeout(st.current.lt);
       st.current.lt = setTimeout(() => {
         if (!st.current.moved && onLong) { st.current.long = true; EV.S.interacting = false; onLong(); }
@@ -407,7 +416,7 @@
       const c = st.current;
       if (c.x == null || c.id !== e.pointerId) return;
       const mx = e.clientX - c.x, my = e.clientY - c.y;
-      if (!c.moved && Math.hypot(mx, my) > 8) { c.moved = true; clearTimeout(c.lt); c.horiz = Math.abs(mx) > Math.abs(my); if (c.horiz) { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {} } }
+      if (!c.moved && Math.hypot(mx, my) > 8) { c.moved = true; clearTimeout(c.lt); c.horiz = Math.abs(mx) > Math.abs(my) && !c.edge; if (c.horiz) { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {} } }
       if (c.moved && c.horiz) {
         let nx = c.dx0 + mx;
         if (!lead || !lead.length) nx = Math.min(0, nx);
@@ -482,8 +491,12 @@
     if (b.kind === "many") { title = b.count + " sessions need you"; why = "Tap to see them on the Board."; mark = html`<span class="mk attention">${I.question()}</span>`; }
     else if (b.kind === "notice") { title = b.title; why = b.why; mark = html`<span class="mk attention">${I.warn()}</span>`; }
     else if (s) { title = s.title; why = b.why || s.why; mark = h(EV.Mark, { s }); }
+    // In-app alerts drop in just below the nav bar, so they never cover the
+    // Back button, the title or the ask dock. Swipe up to dismiss.
     return html`<button class="banner" key=${b.key} onClick=${tap}
-      onPointerDown=${(e) => { startY.current = e.clientY; }} onPointerUp=${(e) => { if (startY.current != null && startY.current - e.clientY > 30) { e.preventDefault(); EV.dismissBanner(); } startY.current = null; }}
+      onPointerDown=${(e) => { startY.current = e.clientY; EV.S.bannerHeld = true; }}
+      onPointerUp=${(e) => { EV.S.bannerHeld = false; if (startY.current != null && startY.current - e.clientY > 30) { e.preventDefault(); EV.log("banner_dismiss", {}); EV.dismissBanner(); } startY.current = null; }}
+      onPointerCancel=${() => { EV.S.bannerHeld = false; }}
       aria-live="polite">
       ${mark}
       <span><span class="bt"><span>${title}</span><span class="w">now</span></span><span class=${"bw" + (b.kind === "failed" ? " why danger" : "")}>${why}</span></span>
@@ -507,8 +520,8 @@
     return html`<div class="menu-wrap" style=${"top:" + (top || 140) + "px"}>
       ${preview || null}
       <div class=${"menu" + (right ? " right" : "")} role="menu" aria-label=${title || "Menu"}>
-        ${items.filter(Boolean).map((it) => html`<button role="menuitem" class=${"mi" + (it.danger ? " danger" : "") + (it.sep ? " sepd" : "")} onClick=${() => { if (!it.keep) EV.closeMenu(); it.run(); }}>
-          <span>${it.label}</span>${it.checked ? html`<span class="chk">${I.check({ s: 18 })}</span>` : it.icon ? html`<span class="ic">${it.icon}</span>` : null}
+        ${items.filter(Boolean).map((it) => html`<button role="menuitem" class=${"mi" + (it.danger ? " danger" : "") + (it.sep ? " sepd" : "") + (it.sub ? " two" : "")} onClick=${() => { if (!it.keep) EV.closeMenu(); it.run(); }}>
+          <span>${it.label}${it.sub ? html`<small>${it.sub}</small>` : null}</span>${it.checked ? html`<span class="chk">${I.check({ s: 18 })}</span>` : it.icon ? html`<span class="ic">${it.icon}</span>` : null}
         </button>`)}
       </div>
     </div>`;

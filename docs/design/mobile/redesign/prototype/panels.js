@@ -21,7 +21,7 @@
       <div style="min-width:0">
         <div class="l1"><span class="title" style="font-size:16px">${g.title}</span><span class="age">${EV.fmtAgo(g.ago * 1000)}</span></div>
         <div class=${"why" + (g.state === "failed" ? " danger" : "")}>${stopping && g.state !== "stopped" ? "Stop requested from the coordinator" : g.line}</div>
-        <div class="meta"><span class="mono">${g.model}</span>${g.lane ? html`<span class="sep"></span><span>lane <span class="mono">${g.lane}</span></span>` : null}<span class="sep"></span><span>${EV.fmtDur(g.elapsed * 1000)}</span><span class="sep"></span><span>${g.tokens} tokens</span></div>
+        <div class="meta"><span class="mono">${g.model}</span>${g.lane ? html`<span class="sep"></span><span>own branch <span class="mono">${g.lane}</span></span>` : null}<span class="sep"></span><span>${EV.fmtDur(g.elapsed * 1000)}</span><span class="sep"></span><span>${g.tokens} tokens</span></div>
       </div>
     </div>`;
     return html`${h(EV.SwipeRow, { onTap: tap }, body)}${(g.children || []).map((c) => html`<${SubRow} key=${c.id} g=${c} sessionId=${sessionId} depth=${(depth || 0) + 1} />`)}`;
@@ -164,7 +164,7 @@
         }
         const d = S.docs[it.path] || { lines: 0, ago: 0, changed: [] };
         const ch = d.changed.length && !S.readDocs[it.path];
-        return h(EV.Gi, { key: it.path, icon: I.doc({ s: 17 }), iconBg: "var(--ink-mid)", label: it.path.split("/").pop(), sub: it.kind + " · " + d.lines + " lines · updated " + EV.fmtAgo(d.ago * 1000) + " ago", value: ch ? html`<span class="dot"></span>` : null, chev: true, onClick: () => open(it) });
+        return h(EV.Gi, { key: it.path, icon: I.doc({ s: 17 }), iconBg: "var(--ink-mid)", label: EV.docTitle(it.path), sub: it.kind + " · " + it.path.split("/").pop() + " · " + EV.fmtAgo(d.ago * 1000) + " ago", value: ch ? html`<span class="dot"></span>` : null, chev: true, onClick: () => open(it) });
       })}</div>
       ${!items.length ? html`<div class="empty">This session hasn't written or linked any files yet.</div>` : null}
     </${EV.Sheet}>`;
@@ -225,6 +225,18 @@
       EV.log("next_change", { path, index: n });
       EV.update();
     };
+    // Remember the reading position, and leave a "Continue reading" trail on
+    // the Board when you leave a document before the end.
+    useLayoutEffect(() => {
+      const el = scrollRef.current;
+      if (el && S.readerPos[path]) el.scrollTop = S.readerPos[path];
+      return () => {
+        if (!el) return;
+        const pct = el.scrollHeight <= el.clientHeight ? 1 : (el.scrollTop + el.clientHeight) / el.scrollHeight;
+        S.readerPos[path] = el.scrollTop;
+        S.lastRead = pct < 0.97 ? { path, sessionId, title: (blocks.find((b) => b.type === "heading") || {}).title || path.split("/").pop(), pct, at: Date.now() } : null;
+      };
+    }, [path]);
     const hint = !comments.length && !S.readerHintDismissed;
     return html`<div style="display:flex;flex-direction:column;height:100%">
       <div class="nav"><div class="nav-row">
@@ -325,7 +337,7 @@
       const t = EV.top();
       if (t.name === "reader") EV.pop();
     };
-    return html`<${EV.Sheet} title="Send review" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} size="large">
+    return html`<${EV.Sheet} title="Review" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} size="large">
       <div class="gfoot" style="padding:4px 32px 10px">To “${s.title}” · ${path.split("/").pop()}</div>
       ${h(EV.Seg, { options: ["Approve", "Request changes", "Comment"], value: verdict, onChange: setVerdict })}
       <div class="glabel">Overall note</div>
