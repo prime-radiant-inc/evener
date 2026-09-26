@@ -303,6 +303,7 @@ var signalNames = map[syscall.Signal]string{
 
 // runShards runs the module's tests as cost-balanced shards.
 func runShards(cfg shardsConfig) int {
+	expTrace("runner start " + cfg.label)
 	if info, err := os.Stat(cfg.pkgDir); err != nil || !info.IsDir() {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: no %s dir\n", cfg.label, cfg.pkgDir)
 		return 2
@@ -386,7 +387,10 @@ func runShards(cfg shardsConfig) int {
 		return 1
 	}
 	buildArgs = append(buildArgs, "-o", build, buildTarget)
-	if err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...); err != nil {
+	expTrace("build start")
+	err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...)
+	expTrace("build end " + expLastUsage)
+	if err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
@@ -405,6 +409,7 @@ func runShards(cfg shardsConfig) int {
 		return code
 	}
 	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
+	expTrace("list end")
 
 	var costs []testCost
 	if !cfg.noSurvey {
@@ -530,6 +535,9 @@ func runShards(cfg shardsConfig) int {
 			args = append(args, "-test.skip", cfg.skip)
 		}
 		args = append(args, extraFlags...)
+		if os.Getenv("EVENER_EXP_TRACE_DIR") != "" {
+			args = append(args, "-test.v")
+		}
 		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
 		if err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
@@ -540,6 +548,7 @@ func runShards(cfg shardsConfig) int {
 		cmd.Stdout, cmd.Stderr = log, log
 		cmd.Env = append(os.Environ(), "EVENER_SHARD_RUN_FILE="+runFile)
 		started := time.Now()
+		expTrace(fmt.Sprintf("shard %d start tests=%d", i, len(bin)))
 		err = procgroup.Start(cmd)
 		_ = log.Close()
 		if err != nil {
@@ -553,6 +562,7 @@ func runShards(cfg shardsConfig) int {
 		results[i] = result
 		go func() {
 			err := cmd.Wait()
+			expTrace(fmt.Sprintf("shard %d end wall=%.2f %s", i, time.Since(started).Seconds(), usageOf(cmd)))
 			<-slots
 			result <- shardResult{err: err, seconds: time.Since(started).Seconds()}
 		}()
@@ -572,6 +582,13 @@ func runShards(cfg shardsConfig) int {
 		}
 	}
 	fail := launchFailed || len(failed) > 0
+	if d := os.Getenv("EVENER_EXP_TRACE_DIR"); d != "" {
+		for i := range bins {
+			if b, err := os.ReadFile(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))); err == nil {
+				_ = os.WriteFile(filepath.Join(d, fmt.Sprintf("%s-shard%d.log", cfg.label, i)), b, 0o644)
+			}
+		}
+	}
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
@@ -733,7 +750,41 @@ func (cfg shardsConfig) runToLog(in *interrupter, logPath, dir, name string, arg
 		return err
 	}
 	in.add(cmd.Process.Pid)
-	return cmd.Wait()
+	err = cmd.Wait()
+	expLastUsage = usageOf(cmd)
+	return err
+}
+
+// EXPERIMENT (do not merge): timeline + rusage trace for the race hub lane.
+var (
+	expMu        sync.Mutex
+	expLastUsage string
+)
+
+func expTrace(msg string) {
+	d := os.Getenv("EVENER_EXP_TRACE_DIR")
+	if d == "" {
+		return
+	}
+	expMu.Lock()
+	defer expMu.Unlock()
+	f, err := os.OpenFile(filepath.Join(d, "timeline.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintf(f, "%.3f %s\n", float64(time.Now().UnixNano())/1e9, msg)
+}
+
+func usageOf(cmd *exec.Cmd) string {
+	if cmd.ProcessState == nil {
+		return ""
+	}
+	ru, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("user=%.2f sys=%.2f maxrss_mb=%d", cmd.ProcessState.UserTime().Seconds(), cmd.ProcessState.SystemTime().Seconds(), ru.Maxrss/1024)
 }
 
 // captureChild runs a child in its own process group and returns its stdout,

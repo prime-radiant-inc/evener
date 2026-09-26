@@ -324,7 +324,22 @@ jobs:
           HUB_SHARD_PARALLEL: 2
           CLI_SHARD_CONCURRENCY: 4
           CLI_SHARD_PARALLEL: 2
-        run: make test-race RACE_SCOPE=root RACE_ROOT_PART=${{ matrix.part }}
+          EVENER_EXP_TRACE_DIR: ${{ runner.temp }}/exptrace
+        run: |
+          mkdir -p "$EVENER_EXP_TRACE_DIR"
+          nproc; free -m
+          (vmstat -n -t 2 > "$EVENER_EXP_TRACE_DIR/vmstat.txt" 2>&1 &)
+          echo "$(date +%s.%N) make start" >> "$EVENER_EXP_TRACE_DIR/timeline.txt"
+          make test-race RACE_SCOPE=root RACE_ROOT_PART=${{ matrix.part }}
+          echo "$(date +%s.%N) make end" >> "$EVENER_EXP_TRACE_DIR/timeline.txt"
+          cat "$EVENER_EXP_TRACE_DIR/timeline.txt"
+
+      - name: EXPERIMENT upload trace
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: exptrace-${{ matrix.part }}
+          path: ${{ runner.temp }}/exptrace
 
       - uses: ./.github/actions/go-cache-save
 
