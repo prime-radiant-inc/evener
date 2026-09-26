@@ -1598,7 +1598,7 @@ export function createBoardController(): BoardController;
    - Live: `new NavigationPages<NavigationSessionSummary>(client, { resource: "section", section: "live" }, "sessions", (row) => row.ref, 50)`.
    - Needs you: the same with `section: "needs_you"`. Keep reading its pages with `more()` until `remaining` is 0: the spec's Needs you must be complete, and the hub caps a page at 50.
    - The pin catalog: `{ resource: "pin_catalog" }`, field `"pin_sections"`, key `(row) => row.id`, limit 100.
-   - The manifest: read with `evener/navigation/read { resource: "manifest", representationVersion: 2 }`, decoded and materialized as in `navigationReadback.ts`. It is re-read on any `evener/navigation/invalidated` whose targets include `{ kind: "manifest" }`, coalesced with `singleFlight` from `src/singleFlight.ts`.
+   - The manifest: read with `evener/navigation/read { resource: "manifest", representationVersion: 2 }`, decoded and materialized as in `navigationReadback.ts`. It is re-read on any `evener/navigation/invalidated` whose targets include `{ kind: "manifest" }`, coalesced with `singleFlight` from `src/singleFlight.ts`. The reader remembers the highest revision announced. An invalidation that arrives while a read is in flight schedules one follow-up read, unless the in-flight answer already reaches that revision. An invalidation with no revision always reads again. So no announced change is lost, and two announcements during one read cost one follow-up, not two.
 
    Each paged reader is `watch()`ed so invalidations re-read it (`NavigationPages` does the work).
 2. `setClient(null)` cancels the readers (`cancel()`) and keeps the last snapshot's rows with `retained: true`. A later `setClient(next)` builds fresh readers on `next`. Until each fresh reader's first read lands, the snapshot keeps that reader's retained rows. When it lands, its rows replace the retained ones and `retained` turns false once all four readers (Live, Needs you, the pin catalog and the manifest) have landed. No snapshot emitted after `loaded` first turns true may have an empty Live whose retained copy had rows, unless the fresh read itself returned no rows.
@@ -1760,7 +1760,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 
    Read the route params in `screens.tsx`'s param list before wiring them.
 6. **Bottom toolbar** (`BoardToolbar`):
-   - Center: `connectionStatus(...)` in `inkMid`, or nothing when live.
+   - Center: `connectionStatus(...)` in `inkMid`, or nothing when live. The status depends on elapsed time, so while the connection isn't live the toolbar re-renders at the 2-second and 30-second marks and then once a minute (for "updated 3m ago"). The timers are cleared when the connection is live again, so a live Board runs no clock.
    - Trailing: New session (`square.and.pencil` in `accentInk`), opening today's `NewSession` route the way the old header did.
    - Select arrives in PR 4.
 7. **States:**
@@ -1775,6 +1775,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 10. **Drafts:** `drafts.refsWithDrafts(hubId)` is read on focus. Rows whose ref is in it show the Draft tag.
 
 - [ ] **Step 1: Write the failing tests.**
+  - `BoardToolbar` under fake timers: disconnected with nothing else changing, it shows nothing at 1 second, "Reconnecting…" at 2 seconds and "Offline · updated …" at 30 seconds, and it schedules no timer once live.
   - `connectionStatus.test.ts` is a table: live → null; down 1s → null; down 2s → "Reconnecting…"; down 31s with `lastLiveAt` 3 minutes ago → "Offline · updated 3m ago"; down 31s with no `lastLiveAt` → "Offline"; closed → the same timeline.
   - `draftRepository.test.ts`: `refsWithDrafts` returns refs with non-empty or unconfirmed drafts for that hub only.
   - `BoardScreen.test.tsx`: mock `react-native`, `expo-symbols`, `@react-navigation/native` (`useFocusEffect`, `useIsFocused`, `useNavigation`) and `../ConnectionProvider` (a `useConnection` returning `screenConnection(...)` from `renderNative.testkit`). Drive the hub through `scriptedClient` from `renderNative.testkit` answering navigation reads with `wireV2`. Cover:
