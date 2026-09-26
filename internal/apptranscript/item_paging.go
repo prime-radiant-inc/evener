@@ -124,7 +124,7 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 		return appitempaging.TranscriptItemWindow{}, identity, appwire.TranscriptItemCursorStale()
 	}
 
-	ranges, total, err := indexedItemRanges(index)
+	ranges, zeroItemGroups, total, err := indexedItemRanges(index)
 	if err != nil {
 		return appitempaging.TranscriptItemWindow{}, identity, err
 	}
@@ -150,7 +150,7 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 
 	selectedRanges := intersectItemRanges(ranges, start, end)
 	tail := end == total && !previous
-	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project, tail)
+	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, zeroItemGroups, project, tail)
 	if err != nil {
 		if !isContextError(err) {
 			c.invalidate(path)
@@ -175,14 +175,15 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 	return window, identity, nil
 }
 
-func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) {
+func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, []indexedGroup, uint64, error) {
 	ranges := make([]indexedItemRange, 0, index.VisibleRecords+1)
+	var zeroItemGroups []indexedGroup
 	var total uint64
 	hasPrelude := false
 	if prelude := PreludeTurn(index.Header); prelude != nil {
 		count := uint64(len(prelude.Items))
 		if count > uint64(math.MaxUint32) {
-			return nil, 0, errors.New("prelude item count exceeds uint32")
+			return nil, nil, 0, errors.New("prelude item count exceeds uint32")
 		}
 		ranges = append(ranges, indexedItemRange{start: 0, count: count, prelude: true})
 		total = count
@@ -201,15 +202,16 @@ func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) 
 		groupEntry := entry
 		entry++
 		if group.items == 0 {
+			zeroItemGroups = append(zeroItemGroups, *group)
 			continue
 		}
 		if ^uint64(0)-total < group.items {
-			return nil, 0, errors.New("projected item count overflows uint64")
+			return nil, nil, 0, errors.New("projected item count overflows uint64")
 		}
 		ranges = append(ranges, indexedItemRange{group: group, record: index.recordAt(group.start), entry: groupEntry, start: total, count: group.items})
 		total += group.items
 	}
-	return ranges, total, nil
+	return ranges, zeroItemGroups, total, nil
 }
 
 func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosition) (uint64, error) {
@@ -257,24 +259,7 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 	return selected
 }
 
-// trailingZeroItemGroups returns zero-item logical groups whose records start
-// at or after startRecord, in record order. Only trailing zero-item groups
-// feed the tail flush: a middle zero-item group's communicate may be paired by
-// a later in-window result that the bounded read skipped, so projecting it at
-// flush time would mis-attribute the communicate. The item-window path drops
-// zero-item groups from its ranges (they carry no items), so their unpaired
-// communicates must be projected separately before the flush.
-func trailingZeroItemGroups(index turnIndexDisk, startRecord int) []indexedGroup {
-	var trailing []indexedGroup
-	for _, g := range index.indexedGroups() {
-		if g.items == 0 && g.start >= startRecord {
-			trailing = append(trailing, g)
-		}
-	}
-	return trailing
-}
-
-func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector, tail bool) ([]appitempaging.TranscriptItemCandidate, int, error) {
+func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, zeroItemGroups []indexedGroup, project BoundedEntryProjector, tail bool) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0
 	var file *os.File
@@ -301,6 +286,43 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 	if firstGroupStart >= 0 {
 		seedRegistryFromRecord(reg, index.recordAt(firstGroupStart))
 	}
+	// zeroItemGroups are in record order (indexedItemRanges walks
+	// indexedGroups forward). Skip those before the first selected
+	// item-bearing group: their CommRawArgs are carried by the snapshot
+	// seed. The remaining zero-item groups are interleaved between selected
+	// ranges (via projectZeroItemGroupsBefore) and at the tail.
+	zgi := 0
+	if firstGroupStart >= 0 {
+		for zgi < len(zeroItemGroups) && zeroItemGroups[zgi].start < firstGroupStart {
+			zgi++
+		}
+	}
+	// projectZeroItemGroupsBefore projects all not-yet-projected zero-item
+	// groups with start < upToStart, in record order. Their deferred
+	// communicate calls seed reg before a later selected group's result
+	// turns consume them — parity with the full read's single-registry
+	// threading. The snapshot seed from the first selected group carries
+	// groups before it; this interleave carries the rest.
+	projectZeroItemGroupsBefore := func(upToStart int) error {
+		for zgi < len(zeroItemGroups) && zeroItemGroups[zgi].start < upToStart {
+			if file == nil {
+				var openErr error
+				file, openErr = os.Open(path)
+				if openErr != nil {
+					return fmt.Errorf("open transcript: %w", openErr)
+				}
+			}
+			zg := &zeroItemGroups[zgi]
+			_, n, perr := projectIndexedGroup(ctx, file, index, zg, 0, project, reg)
+			if perr != nil {
+				_ = file.Close()
+				return perr
+			}
+			projectedRecords += n
+			zgi++
+		}
+		return nil
+	}
 	for ri, itemRange := range ranges {
 		if err := ctx.Err(); err != nil {
 			if file != nil {
@@ -326,14 +348,15 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			// item-bearing group (tail=true, all groups are zero-item),
 			// so this does not affect middle or previous windows.
 			if tail && ri == len(ranges)-1 {
-				for _, zg := range trailingZeroItemGroups(index, 0) {
+				for ; zgi < len(zeroItemGroups); zgi++ {
 					if file == nil {
 						file, err = os.Open(path)
 						if err != nil {
 							return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
 						}
 					}
-					_, n, perr := projectIndexedGroup(ctx, file, index, &zg, 0, project, reg)
+					zg := &zeroItemGroups[zgi]
+					_, n, perr := projectIndexedGroup(ctx, file, index, zg, 0, project, reg)
 					if perr != nil {
 						_ = file.Close()
 						return nil, projectedRecords, perr
@@ -390,6 +413,15 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			_ = file.Close()
 			return nil, projectedRecords, err
 		}
+		// Project mid-window zero-item groups between the previous selected
+		// item-bearing group and this one, in record order. Their deferred
+		// communicate calls seed reg before this group's result turns
+		// consume them — parity with the full read's single-registry
+		// threading. The snapshot seed from the first selected group carries
+		// groups before it; this interleave carries the rest.
+		if perr := projectZeroItemGroupsBefore(group.start); perr != nil {
+			return nil, projectedRecords, perr
+		}
 		// Read and project every record of the group's span, then merge by
 		// call id — the same shape the full grouped read produces.
 		var items []appwire.ThreadItem
@@ -435,8 +467,9 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			// projected separately. Only trailing groups feed the
 			// flush: a middle group's communicate may be paired by a
 			// later in-window result.
-			for _, zg := range trailingZeroItemGroups(index, group.end) {
-				_, n, err := projectIndexedGroup(ctx, file, index, &zg, 0, project, reg)
+			for ; zgi < len(zeroItemGroups); zgi++ {
+				zg := &zeroItemGroups[zgi]
+				_, n, err := projectIndexedGroup(ctx, file, index, zg, 0, project, reg)
 				if err != nil {
 					_ = file.Close()
 					return nil, projectedRecords, err
