@@ -37,7 +37,7 @@
   --alive-bg: color-mix(in oklab, var(--alive) 15%, var(--surface));
   --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface));
   --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
-  --accent-bg: color-mix(in oklab, var(--accent) 12%, var(--surface));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
   --prose: var(--ink-hi);
   --bubble: var(--accent-bg);
@@ -60,7 +60,6 @@
     --edge-strong: #51514A;
     --ink-hi: #F2F1EB;
     --prose: #E0DED6;
-    --bubble: color-mix(in oklab, var(--accent) 15%, var(--surface));
     --ink-mid: #B0AFA6;
     --ink-low: #99998F;
     --attention: #F68F3C;
@@ -72,7 +71,7 @@
     --accent: #3D9AFF;
     --accent-ink: #459EFF;
     --diff-add: #19251A;
-    --diff-del: #2A1720;
+    --diff-del: #170B17;
     --glass: rgba(25, 25, 24, 0.78);
     --scrim: rgba(0, 0, 0, 0.5);
     --shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
@@ -91,7 +90,6 @@
   --edge-strong: #51514A;
   --ink-hi: #F2F1EB;
   --prose: #E0DED6;
-  --bubble: color-mix(in oklab, var(--accent) 15%, var(--surface));
   --ink-mid: #B0AFA6;
   --ink-low: #99998F;
   --attention: #F68F3C;
@@ -103,7 +101,7 @@
   --accent: #3D9AFF;
   --accent-ink: #459EFF;
   --diff-add: #19251A;
-  --diff-del: #2A1720;
+  --diff-del: #170B17;
   --glass: rgba(25, 25, 24, 0.78);
   --scrim: rgba(0, 0, 0, 0.5);
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
