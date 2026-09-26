@@ -2098,6 +2098,11 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 	return matches, excluded, nil
 }
 
+// DefaultGrepMaxResults is the result cap Grep applies when the caller's
+// maxResults is <= 0. The grep tool's schema advertises this same default
+// and its pin test asserts the advertised number against this constant.
+const DefaultGrepMaxResults = 100
+
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep
 // when available and falling back to a native Go regex search otherwise.
 // globFilter restricts which files are searched, caseInsensitive enables
@@ -2196,7 +2201,7 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)
 
 	if maxResults <= 0 {
-		maxResults = 100
+		maxResults = DefaultGrepMaxResults
 	}
 	// ExecArgv, not ExecCommand: ripgrep gets a real argument vector, so no
 	// shell ever parses the pattern, directory, or glob filter. The old
