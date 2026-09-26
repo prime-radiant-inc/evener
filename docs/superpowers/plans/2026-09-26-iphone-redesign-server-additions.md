@@ -1037,6 +1037,8 @@ In the `EventSessionEnd` switch:
 			state = appwire.ThreadStatusSystemError
 ```
 
+The switch must name every value `WireState` can publish, not just `systemError`. A turn that fails while a message waits in the queue ends with `State: "active"`: the failure path returns before the drain ladder (`agent/session_lifecycle.go` about `:1440-1443`), and `endInputAtTurnFailure` (about `:1700-1716`) publishes the effective state, which is `active` while that queued turn is about to run. Mapping it to `closed` would announce a closed session. Only a real close (`""` or `closed`) projects `thread/closed`. Add a projector test for a failed-turn end with pending work (`State: "active"`) that asserts no `thread/closed`, and the matching `cmd/evener-tui` case.
+
 `server/bridge.go` needs nothing: `sessionEventClosesSession` treats only `""` and `closed` as closing (`:177-183`), and `sessionEventStatusEffect` stores the state it is given (`:199-231`).
 
 - [ ] **Step 4: Run them to verify they pass, then the packages**
@@ -1468,7 +1470,7 @@ func historyEndsInTurnFailure(history []schema.Turn) bool {
 
 In `agent/session_init.go`, the restored `SessionStart` carries the effective wire state: `State: s.WireState(),` in place of `State: string(restoredState),` (`:1580`). The restore path takes and releases `s.mu` (about `:1568-1571`) before `emitSessionStartEnvelope` runs (about `:1573-1580`), so the locking `WireState` is the right read there. A lock-free read would race, and holding the lock across the emit won't work because the emit takes session locks itself. The test must observe the `SessionStart` emitted during restore: subscribe before restoring if the API allows it, otherwise verify it through the daemon-level startup test. `recomputeRestoredState` may later upgrade idle to awaiting; `RestingWireState` gives `systemError` for both when the history ends in a failure, so the published value cannot go stale.
 
-In `cmd/evener/serve.go:1672`: `srv.SetState(sess.WireState())` in place of `srv.SetState(string(sess.State()))`. The restored `SessionStart` carries the same `WireState`, so the synchronous startup write and the bridge's event write agree whichever lands last (#251). A restored failed session whose restored queue already holds claimable work publishes `active` in both. Check where the restored work queues become known relative to these writes. If they arrive later, make sure the state is published again when they do. Add a test for a restored failed session with pending work.
+In `cmd/evener/serve.go:1672`: `srv.SetState(sess.WireState())` in place of `srv.SetState(string(sess.State()))`. The restored `SessionStart` carries the same `WireState`, so the synchronous startup write and the bridge's event write agree whichever lands last (#251). A restored failed session whose restored queue already holds claimable work publishes `active` in both. Find where the restored work queues become known relative to these writes. If they arrive later, publish the state again when they do, so a restored failed session with claimable work reads `active` once its queue is known, never `systemError` for good. Add a restart test for a restored failed session with pending work that asserts the final published state is `active`.
 
 - [ ] **Step 4: Run them to verify they pass, then the packages**
 
