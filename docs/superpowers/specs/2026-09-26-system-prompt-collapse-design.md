@@ -181,19 +181,23 @@ The setting goes from:
 - `cmd/evener-tui/internal/launchconfig`: `launch_schema.go` and
   `launch_settings_panel.go`.
 - `tools/tool-fluency/cmd/evener-fluency/main.go`: two call sites.
-- Docs: the row in `docs/developing-evener/conventions/naming.md`, the command
-  in `test/scenarios/reasoning-effort-providers.md`, and the section path in
-  `docs/tools/transcripts.md`.
+- Docs: the row in `docs/developing-evener/conventions/naming.md` and the
+  command in `test/scenarios/reasoning-effort-providers.md`.
 - Tests: frontend tests that use `noProjectPrompts` as a sample boolean
   (`appwire-client/typescript/spawnSchema.test.ts`, `AdvancedOptions.test.tsx`,
   `Spawn.test.tsx`) switch to another launch boolean. Go tests that set
-  `NoProjectPrompts: true` drop the line.
+  `NoProjectPrompts: true` drop the line; the end-to-end tests that start a
+  real `evener serve` drop `--no-project-prompts` from its arguments.
 
 ### Deleted files
 
 - `agent/prompts/sections/` (24 files) and `agent/prompts/templates/` (2 files)
 - `agent/section_resolver.go` and `agent/prompt_assets.go`
 - `agent/internal/promptpath/`, including its tests
+
+With them, `docs/tools/transcripts.md` points at the new template instead of
+the transcripts section file, and the `/.evener/prompts/` line leaves
+`.gitignore`.
 
 ### Accepted consequences
 
@@ -226,7 +230,7 @@ Every other configuration renders byte for byte as it does today.
 ### Machinery tests
 
 These run in the default suite against real sessions built with the test kit
-(`newSession`, plus `prepareSubagentRun` for delegates), in seven
+(`newSession`, plus `prepareSubagentRun` for delegates), in eight
 configurations:
 
 1. Root, interactive, anthropic surface.
@@ -237,6 +241,8 @@ configurations:
 5. Leaf delegate (allowance 0).
 6. Explorer delegate, whose read-only tool set turns the `HasTool` gates off.
 7. Implementer delegate, whose role arrives as the plugin's role override.
+8. A delegate built directly with a role override and preloaded skill bodies,
+   the only configuration that renders activated skills.
 
 text/template evaluates only the branches it takes, so a bad field reference
 in an untaken branch goes unnoticed. The configurations therefore also vary
@@ -293,7 +299,7 @@ the prompt and pins the missing-file behavior that #2353 may change.
 ### Proving the collapse changes nothing
 
 This check runs once in the implementation lane and is not committed. A scratch
-test renders the seven configurations into a directory. The lane runs it on the
+test renders the eight configurations into a directory. The lane runs it on the
 commit before the change and on the change, then diffs the two directories. The
 PR description includes the scratch test's source, the commands, and the diff:
 
