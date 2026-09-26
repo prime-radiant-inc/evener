@@ -67,18 +67,15 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 	awaitLiveHubSubscriptions(t, appServer, 3)
 
-	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
+	params, err := json.Marshal(appwire.OverlayDeltaParams{
 		ThreadID:     "root-thread",
 		Ref:          rootRef,
-		TurnID:       "turn-alias",
-		ItemID:       "item-alias",
-		SummaryIndex: 0,
 		Delta:        "one logical delta",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: params})
 	// Every subscription is live, so each alias fanout has acknowledged and
 	// enqueued the delta on its connection before emit returns. This
 	// connection-wide marker is therefore an ordered drain barrier.
@@ -91,18 +88,15 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 		t.Fatalf("fresh root-only client received delta %d times, want once", got)
 	}
 
-	params, err = json.Marshal(appwire.ReasoningSummaryDeltaParams{
+	params, err = json.Marshal(appwire.OverlayDeltaParams{
 		ThreadID:     "child-thread",
 		Ref:          childRef,
-		TurnID:       "turn-alias",
-		ItemID:       "item-alias-child",
-		SummaryIndex: 0,
 		Delta:        "one child delta",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: params})
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 	if got := aliasDeltaCountUntilBarrier(t, longLived, "one child delta"); got != 1 {
 		t.Fatalf("long-lived root+child client received child delta %d times, want once", got)
@@ -354,18 +348,15 @@ func TestHubRelayThreadIDReadUsesAuthoritativeResponseRef(t *testing.T) {
 		t.Fatalf("subscribe by thread id: %v", err)
 	}
 	awaitLiveHubSubscriptions(t, appServer, 1)
-	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
+	params, err := json.Marshal(appwire.OverlayDeltaParams{
 		ThreadID:     "lookup-thread",
 		Ref:          "local:workspace-thread",
-		TurnID:       "turn-workspace",
-		ItemID:       "item-workspace",
-		SummaryIndex: 0,
 		Delta:        "authoritative workspace delta",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: params})
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 	if got := aliasDeltaCountUntilBarrier(t, client, "authoritative workspace delta"); got != 1 {
 		t.Fatalf("thread-id subscriber received authoritative-ref delta %d times, want once", got)
@@ -605,8 +596,8 @@ func aliasDeltaCountUntilBarrier(t *testing.T, client *appwire.Client, delta str
 			if notification.Method == "test/alias-barrier" {
 				return count
 			}
-			if notification.Method == appwire.NotifyReasoningSummaryDelta {
-				var params appwire.ReasoningSummaryDeltaParams
+			if notification.Method == appwire.NotifyOverlayDelta {
+				var params appwire.OverlayDeltaParams
 				if json.Unmarshal(notification.Params, &params) == nil && params.Delta == delta {
 					count++
 				}

@@ -250,22 +250,22 @@ func covOutputImagesSeed(t *testing.T) {
 	_ = enrichOutputImageNotification("s", "", map[string]string{}, base)
 	for _, n := range []appwire.Notification{
 		base,
-		{Method: appwire.NotifyItemStarted},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`x`)},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`{}`)},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`{"item":null}`)},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`{"item":{"type":"text"}}`)},
+		{Method: appwire.NotifyOverlayUpserted},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`x`)},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`{}`)},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`{"item":null}`)},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`{"item":{"type":"text"}}`)},
 	} {
 		_ = enrichOutputImageNotification("s", cwd, map[string]string{}, n)
 	}
-	start := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", CallID: "c", ArgumentsJSON: `{"file_path":"x.png"}`}}).Notification
+	start := appwire.NotificationMessage(appwire.NotifyOverlayUpserted, map[string]any{"item": appwire.OverlayItem{Item: appwire.ThreadItem{Type: "commandExecution", CallID: "c", ArgumentsJSON: `{"file_path":"x.png"}`}}}).Notification
 	args := map[string]string{}
 	_ = enrichOutputImageNotification("s", cwd, args, *start)
-	done := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "write_file", CallID: "c"}}).Notification
+	done := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "write_file", CallID: "c"}}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *done)
-	direct := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "write_file", CallID: "d", ArgumentsJSON: `{"file_path":"x.png"}`}}).Notification
+	direct := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "write_file", CallID: "d", ArgumentsJSON: `{"file_path":"x.png"}`}}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *direct)
-	noImage := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "shell", CallID: "none", Output: "nothing"}}).Notification
+	noImage := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "shell", CallID: "none", Output: "nothing"}}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *noImage)
 }
 

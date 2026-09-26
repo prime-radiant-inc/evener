@@ -399,23 +399,23 @@ func TestHubRPCRealLocalItemReadUsesOneReadAndPreservesHandoff(t *testing.T) {
 		t.Fatalf("production Local turns/list calls = %d, want 0", got)
 	}
 
-	daemon.Broadcast(sessionID, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-		ThreadID: sessionID, Ref: "local:" + sessionID, TurnID: "turn_live",
-		Item: appwire.ThreadItem{ID: "item_after_snapshot", TurnID: "turn_live", Status: appwire.TurnStatusCompleted},
+	daemon.Broadcast(sessionID, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: sessionID, Ref: "local:" + sessionID,
+		Items: []appwire.ThreadItem{{ID: "item_after_snapshot", TurnID: "turn_live", Status: appwire.TurnStatusCompleted}},
 	})
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case notification := <-client.Notifications():
-			if notification.Method != appwire.NotifyItemCompleted {
+			if notification.Method != appwire.NotifyHistoryUpdated {
 				continue
 			}
-			var params appwire.ItemLifecycleParams
+			var params appwire.HistoryUpdatedParams
 			if err := json.Unmarshal(notification.Params, &params); err != nil {
 				t.Fatalf("unmarshal relayed item: %v", err)
 			}
-			if params.Item.ID != "item_after_snapshot" {
-				t.Fatalf("relayed item ID = %q, want item_after_snapshot", params.Item.ID)
+			if len(params.Items) != 1 || params.Items[0].ID != "item_after_snapshot" {
+				t.Fatalf("relayed items = %+v, want item_after_snapshot", params.Items)
 			}
 			return
 		case <-deadline:

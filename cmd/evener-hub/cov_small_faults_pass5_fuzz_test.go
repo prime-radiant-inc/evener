@@ -175,19 +175,20 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 
 		args := map[string]string{}
 		item := appwire.ThreadItem{Type: "commandExecution", CallID: "c", ToolName: "write_file", ArgumentsJSON: `{"file_path":"out.png"}`, Output: "out.png"}
-		params, _ := json.Marshal(map[string]any{"item": item})
-		for _, n := range []appwire.Notification{{}, {Method: appwire.NotifyItemStarted}, {Method: appwire.NotifyItemStarted, Params: []byte("{")}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"other":{}}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"item":[]}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"item":{"type":"other"}}`)}, {Method: appwire.NotifyItemStarted, Params: params}, {Method: appwire.NotifyItemCompleted, Params: params}} {
+		itemsParams, _ := json.Marshal(map[string]any{"items": []appwire.ThreadItem{item}})
+		upsertedParams, _ := json.Marshal(map[string]any{"item": appwire.OverlayItem{Item: item}})
+		for _, n := range []appwire.Notification{{}, {Method: appwire.NotifyHistoryUpdated}, {Method: appwire.NotifyHistoryUpdated, Params: []byte("{")}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"other":{}}`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":{}}`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":[{"type":"other"}]}`)}, {Method: appwire.NotifyHistoryUpdated, Params: itemsParams}, {Method: appwire.NotifyOverlayUpserted, Params: upsertedParams}} {
 			_ = enrichOutputImageNotification("01PASS5", cwd, args, n)
 		}
 		lookupItem := appwire.ThreadItem{Type: "commandExecution", CallID: "lookup", ToolName: "write_file"}
-		lookupParams, _ := json.Marshal(map[string]any{"item": lookupItem})
+		lookupParams, _ := json.Marshal(map[string]any{"items": []appwire.ThreadItem{lookupItem}})
 		args["lookup"] = `{"file_path":"out.png"}`
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: lookupParams})
-		noFileParams, _ := json.Marshal(map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "shell", Output: "nothing"}})
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: noFileParams})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: lookupParams})
+		noFileParams, _ := json.Marshal(map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "shell", Output: "nothing"}}})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: noFileParams})
 		_ = enrichOutputImageNotification("", cwd, args, appwire.Notification{})
 		outputImageMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal") }
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: params})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: itemsParams})
 		outputImageMarshal = oldMarshal
 		marshalCalls := 0
 		outputImageMarshal = func(v any) ([]byte, error) {
@@ -197,7 +198,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 			}
 			return json.Marshal(v)
 		}
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: params})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: itemsParams})
 		outputImageMarshal = oldMarshal
 		outputImageStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
 		_, _, _ = readOutputImageFile("x")
