@@ -16,12 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
@@ -397,23 +399,23 @@ func TestHubRPCRealLocalItemReadUsesOneReadAndPreservesHandoff(t *testing.T) {
 		t.Fatalf("production Local turns/list calls = %d, want 0", got)
 	}
 
-	daemon.Broadcast(sessionID, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-		ThreadID: sessionID, Ref: "local:" + sessionID, TurnID: "turn_live",
-		Item: appwire.ThreadItem{ID: "item_after_snapshot", TurnID: "turn_live", Status: appwire.TurnStatusCompleted},
+	daemon.Broadcast(sessionID, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: sessionID, Ref: "local:" + sessionID,
+		Items: []appwire.ThreadItem{{ID: "item_after_snapshot", TurnID: "turn_live", Status: appwire.TurnStatusCompleted}},
 	})
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case notification := <-client.Notifications():
-			if notification.Method != appwire.NotifyItemCompleted {
+			if notification.Method != appwire.NotifyHistoryUpdated {
 				continue
 			}
-			var params appwire.ItemLifecycleParams
+			var params appwire.HistoryUpdatedParams
 			if err := json.Unmarshal(notification.Params, &params); err != nil {
 				t.Fatalf("unmarshal relayed item: %v", err)
 			}
-			if params.Item.ID != "item_after_snapshot" {
-				t.Fatalf("relayed item ID = %q, want item_after_snapshot", params.Item.ID)
+			if len(params.Items) != 1 || params.Items[0].ID != "item_after_snapshot" {
+				t.Fatalf("relayed items = %+v, want item_after_snapshot", params.Items)
 			}
 			return
 		case <-deadline:
@@ -426,14 +428,11 @@ func TestHubRPCRealLocalBoundedItemReadContinuesNativeCursor(t *testing.T) {
 	const sessionID = "bounded-native-cursor"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	var inputs []string
 	for i := range 45 {
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: sessionID,
-			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d", i)},
-		})
+		inputs = append(inputs, fmt.Sprintf("item-%02d", i))
 	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), inputs)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 
@@ -488,20 +487,18 @@ func TestHubRPCRealLocalFreshReadRecoversHiddenNativeReset(t *testing.T) {
 	const sessionID = "hidden-native-reset"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	transcriptPath := filepath.Join(t.TempDir(), sessionID+".transcript.jsonl")
 	recordGeneration := func(prefix string) {
+		var texts []string
 		for i := range 45 {
 			text := fmt.Sprintf("shared-suffix-%02d", i)
 			if i < 5 {
 				text = fmt.Sprintf("%s-%02d", prefix, i)
 			}
-			daemon.RecordAppEvent(events.SessionEvent{
-				Kind:      events.EventUserInput,
-				SessionID: sessionID,
-				Data:      events.UserInputData{Text: text},
-			})
+			texts = append(texts, text)
 		}
+		serveDaemonTranscript(t, daemon, sessionID, transcriptPath, texts)
 	}
-	daemon.SetAppIdentity("local", sessionID)
 	recordGeneration("generation-one")
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
@@ -536,7 +533,6 @@ func TestHubRPCRealLocalFreshReadRecoversHiddenNativeReset(t *testing.T) {
 
 	// Resetting the real daemon rotates its native cursor identity, while the
 	// newest 40 visible items remain byte-identical to the first generation.
-	daemon.SetAppIdentity("local", sessionID)
 	recordGeneration("generation-two")
 	fresh := read(true)
 
@@ -580,14 +576,11 @@ func TestHubRPCRealLocalBoundedItemReadRebasesByteFitBoundary(t *testing.T) {
 	const sessionID = "bounded-byte-fit-cursor"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	var texts []string
 	for i := range 45 {
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: sessionID,
-			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", 30000))},
-		})
+		texts = append(texts, fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", 30000)))
 	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), texts)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -646,14 +639,11 @@ func TestHubRPCRealLocalExhaustedNativePageSplitsByteFit(t *testing.T) {
 	const itemBytes = 30000
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	var texts []string
 	for i := range itemCount {
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: sessionID,
-			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", itemBytes))},
-		})
+		texts = append(texts, fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", itemBytes)))
 	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), texts)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -1271,4 +1261,85 @@ func hasCrossBoundaryEntry(candidates []appitempaging.TranscriptItemCandidate, i
 		return false
 	}
 	return containsItem(flattenTestItems(initial), right.Item.ID) && containsItem(all, left.Item.ID)
+}
+
+// serveDaemonTranscript makes daemon serve sessionID from a transcript at path
+// holding texts as user inputs, replacing whatever the file held: a rewritten
+// transcript is a new history incarnation.
+func serveDaemonTranscript(t *testing.T, daemon *daemonserver.Server, sessionID, path string, texts []string) {
+	t.Helper()
+	_ = os.Remove(path)
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	for _, text := range texts {
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := daemonserver.PrepareAppIdentity("local", sessionID, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+	t.Cleanup(daemon.Close)
+}
+
+// TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity pins what the hub
+// passes through from a v6 daemon's history reads: the boot generation,
+// epoch and snapshot identity the client merges or replaces by, on the
+// latest window and on every backfill page, and the read's request
+// generation.
+func TestHubRPCRealLocalReadCarriesTheDaemonHistoryIdentity(t *testing.T) {
+	const sessionID = "daemon-history-identity"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	var inputs []string
+	for i := range 45 {
+		inputs = append(inputs, fmt.Sprintf("item-%02d", i))
+	}
+	serveDaemonTranscript(t, daemon, sessionID, filepath.Join(t.TempDir(), sessionID+".transcript.jsonl"), inputs)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, Subscribe: true, ItemLimit: 40, RequestGeneration: 5,
+	})
+	if err != nil {
+		t.Fatalf("initial read: %v", err)
+	}
+	if initial.RequestGeneration != 5 {
+		t.Fatalf("requestGeneration = %d, want the request's 5", initial.RequestGeneration)
+	}
+	if initial.BootGeneration == "" || initial.BootGeneration == appwire.DaemonlessBootGeneration || initial.Snapshot == nil || initial.Authoritative {
+		t.Fatalf("live read identity = boot %q snapshot %+v authoritative %v, want the daemon's numeric generation and snapshot, not authoritative",
+			initial.BootGeneration, initial.Snapshot, initial.Authoritative)
+	}
+	page, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 40, Cursor: initial.OlderCursor})
+	if err != nil {
+		t.Fatalf("backfill page: %v", err)
+	}
+	if page.BootGeneration != initial.BootGeneration || page.Epoch != initial.Epoch || page.Snapshot == nil || page.Snapshot.Incarnation != initial.Snapshot.Incarnation {
+		t.Fatalf("backfill page identity = boot %q epoch %d snapshot %+v, want the daemon's %q %d %+v",
+			page.BootGeneration, page.Epoch, page.Snapshot, initial.BootGeneration, initial.Epoch, *initial.Snapshot)
+	}
 }

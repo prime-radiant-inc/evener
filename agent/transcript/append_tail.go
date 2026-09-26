@@ -202,3 +202,34 @@ func (t *appendTail) release() {
 		_ = t.pin.Close() // read-only handle; nothing to flush
 	}
 }
+
+// AtRecordedBoundary runs fn under the append lock of the transcript at path,
+// with its recorded length and the ordinal the next recorded entry takes,
+// when a writer in this process has the file open; it reports whether one
+// does. No append records while fn runs, so a caller
+// that also takes the lock its recorded-entry hook takes (a projection
+// queue's mutex) sees the recorded length and what the hook has handed it as
+// one snapshot: every entry up to the length already reached the hook, and
+// every later one reaches it afterwards.
+//
+// The append lock comes first in that order: fn may take only locks the
+// recorded-entry hook may take, and AtRecordedBoundary must never be called
+// from a recorded-entry hook or while holding any lock an appender or a hook
+// takes. It does no I/O under the lock; the stat that finds the file's tail
+// happens before.
+func AtRecordedBoundary(path string, fn func(recordedLength int64, nextOrdinal uint64)) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, fmt.Errorf("stat transcript: %w", err)
+	}
+	openTails.mu.Lock()
+	tail := findTailLocked(info)
+	openTails.mu.Unlock()
+	if tail == nil {
+		return false, nil
+	}
+	tail.mu.Lock()
+	defer tail.mu.Unlock()
+	fn(tail.recordedLength, tail.nextOrdinal)
+	return true, nil
+}

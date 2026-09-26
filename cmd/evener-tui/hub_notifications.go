@@ -70,13 +70,6 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		return nil
 	}
 
-	// Streaming deltas dominate the hot path (one frame per chunk); fold each
-	// with a single params decode via the fast path below. The escalation
-	// frame above stays synchronous and untouched.
-	if m.applyHubStreamDeltaFast(notification) {
-		return nil
-	}
-
 	if m.mode != hubModeSession {
 		return nil
 	}
@@ -91,11 +84,6 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	m.markModelRetryInProgress(notification)
 	var cmd tea.Cmd
 	switch notification.Method {
-	case appwire.NotifyTurnStarted:
-		var params appwire.TurnStartedParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			m.setActiveTurnID(params.Turn.ID)
-		}
 	case appwire.NotifyThreadStatusChanged:
 		var params appwire.ThreadStatusChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
@@ -127,30 +115,46 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 					cmd = fetchHubSessionExpectingStateToken(m.client, ref, params.Status.Type, m.statusRefreshToken)
 				}
 			}
+			// The running-turn display rule (spec "Turn status"): an open
+			// turn shows as running only while this names it, and as
+			// interrupted otherwise — the sole source of truth for it under
+			// the read model, never inferred from an item's or turn's own
+			// recorded status.
+			m.setActiveTurnID(params.ActiveTurnID)
 		}
-	case appwire.NotifyItemStarted:
-		var params appwire.ItemLifecycleParams
+	case appwire.NotifyHistoryUpdated:
+		var params appwire.HistoryUpdatedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			m.applyThreadItem(params.Item, false)
+			m.applyHistoryUpdated(params)
 		}
-	case appwire.NotifyItemCompleted:
-		var params appwire.ItemLifecycleParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			m.applyThreadItem(params.Item, true)
-		}
-	case appwire.NotifyAgentMessageDelta:
-		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
-	case appwire.NotifyReasoningSummaryDelta:
-		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
-	case appwire.NotifyAgentMessageReset:
-		var params appwire.AgentMessageResetParams
+	case appwire.NotifyOverlayUpserted:
+		var params appwire.OverlayUpsertedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			reducer := m.sessionTranscriptReducer()
-			reducer.ResetAgentMessage(params.TurnID, params.ItemID)
+			reducer.ApplyOverlayItem(params.Item)
 			m.applySessionTranscriptReducer(reducer)
 		}
-	case appwire.NotifyToolOutputDelta:
-		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
+	case appwire.NotifyOverlayDelta:
+		var params appwire.OverlayDeltaParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayDelta(params.Key, params.Field, params.Delta)
+			m.applySessionTranscriptReducer(reducer)
+		}
+	case appwire.NotifyOverlayReset:
+		var params appwire.OverlayResetParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayReset(params.StreamID)
+			m.applySessionTranscriptReducer(reducer)
+		}
+	case appwire.NotifyOverlayEnd:
+		var params appwire.OverlayEndParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplyOverlayEnd(params.RoundID)
+			m.applySessionTranscriptReducer(reducer)
+		}
 	case appwire.NotifyEvenerThreadResync:
 		// The hub is saying the model this session holds belongs to a daemon
 		// that has been replaced. A relaunched daemon seeds its live "turn_%d"
@@ -203,44 +207,6 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// without waiting for any activation-job notification.
 			cmd = m.subscribeNewChildren()
 		}
-	case appwire.NotifyTurnCompleted:
-		var params appwire.TurnCompletedParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			turnID := params.Turn.ID
-			for _, item := range params.Turn.Items {
-				if item.TurnID == "" {
-					item.TurnID = turnID
-				}
-				m.applyThreadItem(item, true)
-			}
-			// A completed turn never leaves a thought streaming open.
-			reducer := m.sessionTranscriptReducer()
-			reducer.FinalizeReasoning()
-			m.applySessionTranscriptReducer(reducer)
-			completedActive := turnID != "" && turnID == m.detail.ActiveTurnID
-			if completedActive {
-				m.detail.ActiveTurnID = ""
-			}
-			// The session's status follows the wire's thread/status/changed, not
-			// the closing turn/completed: when the daemon runs the next turn
-			// inline behind this one, turn/started and thread/status/changed(active)
-			// ride right behind it as separate messages and the status never
-			// leaves active, so flipping idle here took Stop, Steer and Ctrl+S
-			// away at every inline turn boundary (the TUI's #1330). A failed turn
-			// gets its frame too: the agent's failure exit
-			// (agent/session_lifecycle.go endInputAtTurnFailure) emits
-			// EventSessionEnd with Reason "turn_failed", announced as
-			// thread/status/changed(idle) with the capabilities inline. Settling
-			// idle here ahead of it made that frame read as no transition, so the
-			// capability refresh above never fired and Send stayed withheld; the
-			// frame owns the status and the processing flag.
-			if params.Turn.Status == appwire.TurnStatusFailed {
-				m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(params.Turn.Error, "Session error"))
-			}
-			// Queue head pop is now driven by thread/queueChanged from
-			// the daemon (kata r80p); we no longer mirror locally on turn
-			// completion.
-		}
 	case appwire.NotifyThreadModelChanged:
 		var params appwire.ThreadModelChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
@@ -267,38 +233,6 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				ref = strings.TrimSpace(m.detail.Ref)
 			}
 			m.applyQueueState(ref, params.Queue)
-		}
-	case appwire.NotifyEvenerSteeringInjected:
-		var params appwire.EvenerSteeringInjectedParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			text := strings.TrimSpace(params.Text)
-			if text == "" {
-				text = transcript.ImageItemsPlaceholder(params.Images)
-			}
-			if text != "" {
-				m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgSteering, Text: text})
-				// Tie every job notification in this steering event to its rail
-				// row: pull each one's result headline onto the matching run
-				// (keeps both — the notification stays in the flow, the rail
-				// shows the result). One steering event can name several jobs —
-				// the daemon joins one poll tick's blocks with "\n" — so every
-				// tie must be applied, not just the first (issue #49).
-				if ties := transcript.ParseJobNotificationHeadlines(text); len(ties) > 0 {
-					reducer := m.sessionTranscriptReducer()
-					applied := false
-					for _, tie := range ties {
-						if tie.JobID == "" {
-							continue
-						}
-						if reducer.ApplyTieHeadline(tie.JobID, tie.Headline, tie.IsError) {
-							applied = true
-						}
-					}
-					if applied {
-						m.applySessionTranscriptReducer(reducer)
-					}
-				}
-			}
 		}
 	case appwire.NotifyEvenerNotesUpdated:
 		var params appwire.NotesUpdatedParams
@@ -355,51 +289,64 @@ func (m *hubModel) refreshPluginsPanel() tea.Cmd {
 
 // reconcilePendingFromNotification translates an inbound daemon
 // notification into the wire-method name(s) the pending coordinator
-// registered under, then calls TryReconcile. Some notifications
-// match multiple methods (evener/steering/injected reconciles both
-// turn/steer with matching text AND any in-flight turn/drainAsSteer).
+// registered under, then reconciles. Some notifications match multiple
+// methods (evener/steering/injected reconciles both turn/steer AND any
+// in-flight turn/drainAsSteer).
+//
+// A steering or history userMessage item that carries the server's
+// authoritative ClientMutationID reconciles by that identity
+// (PendingCoordinator.Reconcile's preferred path) rather than by matching
+// text: the daemon can substitute an image placeholder or, for a drain,
+// join several queued texts into one, so a client-side text match is only
+// ever a fallback for an older daemon that sends no mutation id.
 //
 // Drain-special: turn/drainAsSteer matches first-come-first-served
 // regardless of text, because the daemon collapses queued entries
 // into one STEERING and the placeholder doesn't know the joined text.
 func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n appwire.Notification) {
-	ref := notificationPendingRef(n)
-	switch n.Method {
-	case appwire.NotifyEvenerSteeringInjected:
-		var p appwire.EvenerSteeringInjectedParams
-		_ = json.Unmarshal(n.Params, &p)
-		pending.TryReconcile(appwire.MethodTurnSteer, p.Text, ref)
-		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)
-	case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
-		// userMessage item carries the user's text. Match against
-		// any turn/start pending entry.
-		var p appwire.ItemLifecycleParams
-		if err := json.Unmarshal(n.Params, &p); err != nil {
-			return
-		}
-		if p.Item.Type == "userMessage" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
-			text := p.Item.Text
-			if text == "" {
-				text = transcript.ImageItemsPlaceholder(p.Item.Images)
-			}
-			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
-		}
-	case appwire.NotifyTurnCompleted:
-		var p appwire.TurnCompletedParams
-		if err := json.Unmarshal(n.Params, &p); err != nil {
-			return
-		}
-		for _, item := range p.Turn.Items {
-			if item.Type != "userMessage" || (item.Text == "" && len(item.Images) == 0) {
-				continue
-			}
-			text := item.Text
-			if text == "" {
-				text = transcript.ImageItemsPlaceholder(item.Images)
-			}
-			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
-		}
+	// history/updated carries the recorded form of every affected item,
+	// including a steering echo (both a human's Ctrl+S and a
+	// daemon-injected job/delegate result) or the turn-opening user message.
+	if n.Method != appwire.NotifyHistoryUpdated {
+		return
 	}
+	var p appwire.HistoryUpdatedParams
+	if err := json.Unmarshal(n.Params, &p); err != nil {
+		return
+	}
+	ref := notificationPendingRef(n)
+	for _, item := range p.Items {
+		if item.Type == "steering" {
+			reconcileSteeringItem(pending, item, ref)
+			continue
+		}
+		reconcileUserMessageItem(pending, item, ref)
+	}
+}
+
+// reconcileUserMessageItem reconciles a pending turn/start entry against one
+// thread item, if it is a non-empty userMessage.
+func reconcileUserMessageItem(pending *pendingpkg.PendingCoordinator, item appwire.ThreadItem, ref string) {
+	if item.Type != "userMessage" || (item.Text == "" && len(item.Images) == 0) {
+		return
+	}
+	text := item.Text
+	if text == "" {
+		text = transcript.ImageItemsPlaceholder(item.Images)
+	}
+	pending.Reconcile(appwire.MethodTurnStart, item.ClientMutationID, text, ref)
+}
+
+// reconcileSteeringItem reconciles a pending turn/steer entry (and, first-come-
+// first-served regardless of text, any in-flight turn/drainAsSteer — the
+// daemon collapses queued entries into one steering write and the placeholder
+// doesn't know the joined text) against one recorded "steering" item.
+func reconcileSteeringItem(pending *pendingpkg.PendingCoordinator, item appwire.ThreadItem, ref string) {
+	if strings.TrimSpace(item.Text) == "" {
+		return
+	}
+	pending.Reconcile(appwire.MethodTurnSteer, item.ClientMutationID, item.Text, ref)
+	pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)
 }
 
 func notificationPendingRef(n appwire.Notification) string {
@@ -590,7 +537,7 @@ func (m *hubModel) handleChildActivityFrame(notification appwire.Notification) (
 	if len(m.watchedChildRefs) == 0 {
 		return nil, false
 	}
-	if notification.Method != appwire.NotifyItemStarted && notification.Method != appwire.NotifyItemCompleted {
+	if notification.Method != appwire.NotifyHistoryUpdated {
 		return nil, false
 	}
 	var ref appwire.NotificationRef
@@ -601,15 +548,19 @@ func (m *hubModel) handleChildActivityFrame(notification appwire.Notification) (
 	if childRef == "" || !m.watchedChildRefs[childRef] {
 		return nil, false
 	}
-	var params appwire.ItemLifecycleParams
+	var params appwire.HistoryUpdatedParams
 	if json.Unmarshal(notification.Params, &params) != nil {
 		return nil, true
 	}
-	if activity := childActivityFromItem(params.Item); activity != "" {
-		reducer := m.sessionTranscriptReducer()
-		if reducer.ApplyChildActivity(childRef, activity) {
-			m.applySessionTranscriptReducer(reducer)
+	reducer := m.sessionTranscriptReducer()
+	applied := false
+	for _, item := range params.Items {
+		if activity := childActivityFromItem(item); activity != "" && reducer.ApplyChildActivity(childRef, activity) {
+			applied = true
 		}
+	}
+	if applied {
+		m.applySessionTranscriptReducer(reducer)
 	}
 	return nil, true
 }
@@ -671,147 +622,24 @@ func runStillRunning(status string) bool {
 	return true
 }
 
-func (m *hubModel) applyAgentMessageDelta(turnID, itemID, delta string) {
+// applyHistoryUpdated folds one history/updated notification — the full
+// current, recorded form and version of every item and turn a just-appended
+// entry affected — into the transcript. Items merge by version through
+// ApplyHistoryItem; turns carry no items (the spec: "the reducer merges them
+// against items it already holds by key") and exist here only to surface a
+// turn's failure, the same system line turn/completed used to append.
+func (m *hubModel) applyHistoryUpdated(params appwire.HistoryUpdatedParams) {
 	reducer := m.sessionTranscriptReducer()
-	reducer.ApplyAgentMessageDelta(turnID, itemID, delta)
+	for _, item := range params.Items {
+		reducer.ApplyHistoryItem(item, transcript.TurnIndexFromID(item.TurnID))
+	}
+	reducer.FinalizeReasoning()
 	m.applySessionTranscriptReducer(reducer)
-}
-
-// streamDeltaKind classifies one streaming-delta frame for the batch decoder:
-// every delta kind shares the same envelope (ref/threadId routing plus one
-// chunk of text), so one RawMessage probe extracts both without paying the
-// full typed unmarshal's throwaway allocation per frame.
-type streamDeltaKind int
-
-const (
-	streamDeltaNone streamDeltaKind = iota
-	streamDeltaAgentMessage
-	streamDeltaReasoningSummary
-	streamDeltaToolOutput
-)
-
-// streamDeltaForMethod maps a wire method to its delta kind. Anything else is
-// not a streaming delta and returns streamDeltaNone.
-func streamDeltaForMethod(method string) streamDeltaKind {
-	switch method {
-	case appwire.NotifyAgentMessageDelta:
-		return streamDeltaAgentMessage
-	case appwire.NotifyReasoningSummaryDelta:
-		return streamDeltaReasoningSummary
-	case appwire.NotifyToolOutputDelta:
-		return streamDeltaToolOutput
+	for _, turn := range params.Turns {
+		if turn.Status == appwire.TurnStatusFailed && turn.Error != nil {
+			m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(turn.Error, "Session error"))
+		}
 	}
-	return streamDeltaNone
-}
-
-// The three delta notifications share one params shape once the fields each
-// one omits are ignored, and appwire.ToolOutputDeltaParams is that shape: it
-// carries the routing fields plus the chunk, and its CallID is simply absent
-// from the other two. Decoding every kind into it keeps the wire contract in
-// the package that owns it, so N chunks in one frame still pay one unmarshal
-// each with no per-kind typed struct.
-
-// decodeStreamDeltaChunk extracts the shared delta envelope from raw params.
-// It reports false for malformed frames, mirroring the old per-kind behavior
-// of dropping a frame whose params fail to decode.
-func decodeStreamDeltaChunk(raw json.RawMessage) (appwire.ToolOutputDeltaParams, bool) {
-	var chunk appwire.ToolOutputDeltaParams
-	if len(raw) == 0 || json.Unmarshal(raw, &chunk) != nil {
-		return appwire.ToolOutputDeltaParams{}, false
-	}
-	return chunk, true
-}
-
-// applyHubStreamDeltaFast folds one streaming-delta frame with a single params
-// decode into the shared delta envelope, then applies the reducer directly —
-// one unmarshal + one reducer build + one apply per frame, instead of the
-// route-decode (notificationMatchesCurrentSession) plus second typed decode
-// the generic path paid per delta. It reports whether it handled the frame.
-//
-// Ordering and filtering match the generic path exactly: the child-activity
-// check runs first (deltas never match it — it only handles item
-// started/completed — but the order is preserved so a future delta kind can
-// never slip past a rail frame), then the current-session filter on the same
-// ref/threadId fields, then the model-retry progress mark, then the viewport
-// refresh and pending reconciliation the generic tail performs. A malformed
-// frame is dropped after the same filters, as before. Non-delta methods
-// return false untouched.
-func (m *hubModel) applyHubStreamDeltaFast(notification appwire.Notification) bool {
-	kind := streamDeltaForMethod(notification.Method)
-	if kind == streamDeltaNone {
-		return false
-	}
-	if m.mode != hubModeSession {
-		return true
-	}
-	if cmd, handled := m.handleChildActivityFrame(notification); handled {
-		_ = cmd
-		return true
-	}
-	chunk, ok := decodeStreamDeltaChunk(notification.Params)
-	if !ok {
-		return true
-	}
-	if !m.streamChunkMatchesCurrentSession(chunk) {
-		return true
-	}
-	m.markModelRetryInProgress(notification)
-	switch kind {
-	case streamDeltaAgentMessage:
-		m.applyAgentMessageDelta(chunk.TurnID, chunk.ItemID, chunk.Delta)
-	case streamDeltaReasoningSummary:
-		m.applyReasoningSummaryDelta(chunk.TurnID, chunk.ItemID, chunk.Delta)
-	case streamDeltaToolOutput:
-		m.applyToolOutputDelta(chunk.ItemID, chunk.CallID, chunk.Delta)
-	}
-	m.session.refreshViewport()
-	if m.pending != nil {
-		reconcilePendingFromNotification(m.pending, notification)
-	}
-	return true
-}
-
-// streamChunkMatchesCurrentSession is notificationMatchesCurrentSession over
-// an already-decoded delta envelope: same comparisons, no second unmarshal.
-func (m *hubModel) streamChunkMatchesCurrentSession(chunk appwire.ToolOutputDeltaParams) bool {
-	detailRef := strings.TrimSpace(m.detail.Ref)
-	if chunk.Ref != "" && detailRef != "" {
-		return chunk.Ref == detailRef
-	}
-	threadID := strings.TrimSpace(chunk.ThreadID)
-	if threadID == "" {
-		return true
-	}
-	if threadID == strings.TrimSpace(m.detail.SessionID) {
-		return true
-	}
-	if ref, err := appwire.ParseRef(detailRef); err == nil && ref.ThreadID != "" {
-		return threadID == ref.ThreadID
-	}
-	return false
-}
-
-func (m *hubModel) applyToolOutputDelta(itemID, callID, delta string) {
-	// CallID is the legacy alias for ItemID: prefer a non-empty ItemID, fall
-	// back to CallID so legacy frames still land on the right tool call.
-	if itemID == "" {
-		itemID = callID
-	}
-	reducer := m.sessionTranscriptReducer()
-	reducer.ApplyToolOutputDelta(itemID, delta)
-	m.applySessionTranscriptReducer(reducer)
-}
-
-func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {
-	reducer := m.sessionTranscriptReducer()
-	reducer.ApplyThreadItem(item, transcript.TurnIndexFromID(item.TurnID), completed)
-	m.applySessionTranscriptReducer(reducer)
-}
-
-func (m *hubModel) applyReasoningSummaryDelta(turnID, itemID, delta string) {
-	reducer := m.sessionTranscriptReducer()
-	reducer.ApplyReasoningSummaryDelta(turnID, itemID, delta)
-	m.applySessionTranscriptReducer(reducer)
 }
 
 func (m *hubModel) sessionTranscriptReducer() transcript.TranscriptReducer {
@@ -852,8 +680,10 @@ func (m *hubModel) markModelRetryInProgress(notification appwire.Notification) {
 	if m.modelRetry == nil {
 		return
 	}
-	switch notification.Method {
-	case appwire.NotifyAgentMessageDelta, appwire.NotifyReasoningSummaryDelta, appwire.NotifyToolOutputDelta:
+	// overlay/delta is the read model's single replacement for the three
+	// legacy per-kind delta notifications (agentMessage, reasoning summary,
+	// tool output): any of them producing output again ends the wait.
+	if notification.Method == appwire.NotifyOverlayDelta {
 		m.modelRetryInProgress = true
 	}
 }
@@ -920,13 +750,22 @@ func (m *hubModel) clearModelRetryOnProgress(notification appwire.Notification) 
 	if m.modelRetry == nil {
 		return
 	}
-	switch notification.Method {
-	case appwire.NotifyTurnCompleted, appwire.NotifyTurnStarted:
-		m.modelRetry = nil
-	case appwire.NotifyItemCompleted:
-		var params appwire.ItemLifecycleParams
-		if json.Unmarshal(notification.Params, &params) == nil && isModelOutputItemType(params.Item.Type) {
+	if notification.Method != appwire.NotifyHistoryUpdated {
+		return
+	}
+	// history/updated is the read model's replacement for item/completed
+	// (and, since a turn boundary no longer has its own notification, the
+	// shared appwire-client reducer's own port of this rule relies on the
+	// same signal alone): the recorded completion of a model-output item is
+	// what actually proves the retried call finished.
+	var params appwire.HistoryUpdatedParams
+	if json.Unmarshal(notification.Params, &params) != nil {
+		return
+	}
+	for _, item := range params.Items {
+		if isModelOutputItemType(item.Type) {
 			m.modelRetry = nil
+			return
 		}
 	}
 }

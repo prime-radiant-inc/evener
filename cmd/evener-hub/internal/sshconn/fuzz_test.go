@@ -15,8 +15,8 @@ import (
 // unlaunchable host through).
 func FuzzParseLaunchCheck(f *testing.F) {
 	for _, seed := range []string{
-		`{"protocol":"evener-appwire-v5","version":"1.2.3","launch_flags":["api-log"]}`,
-		`{"protocol":"evener-appwire-v5","launch_flags":["api-log","api-log"]}`,
+		`{"protocol":"evener-appwire-v6","version":"1.2.3","launch_flags":["api-log"]}`,
+		`{"protocol":"evener-appwire-v6","launch_flags":["api-log","api-log"]}`,
 		`{"protocol":"","version":"1.2.3","launch_flags":[]}`,
 		`{}`,
 		`null`,

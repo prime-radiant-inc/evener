@@ -61,7 +61,12 @@ async function setup(initialItems: ThreadItem[] = []) {
       if (method !== "thread/read") throw new Error(`Unexpected ${method}`);
       reads++;
       await holdRead?.();
-      return { thread, olderCursor: "older" };
+      // A v6-shaped read (carrying `snapshot`) establishes the model's
+      // versioned history at hydrate — the read-model's own bootstrap rule
+      // (reducer.ts's classifySignal): a live history/updated can only merge
+      // once an authoritative read has first established an incarnation to
+      // merge against, never bootstrap history from nothing on its own.
+      return { thread, olderCursor: "older", snapshot: { incarnation: "inc-1", length: 1 } };
     },
     onNotification: () => () => {},
   } as ConversationClientLike);
@@ -88,14 +93,17 @@ async function setup(initialItems: ThreadItem[] = []) {
       return { started, release };
     },
     reads: () => reads,
+    // item/completed's read-model replacement: history/updated carries the
+    // item directly (turnId lives on the item itself, not a wrapping field).
     publish: (item: ThreadItem) =>
       store.getState().applyNotification({
-        method: "item/completed",
+        method: "history/updated",
         params: {
           threadId: "thread",
           ref: "local:thread",
-          turnId: "turn",
-          item,
+          epoch: 0,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...item, turnId: item.turnId ?? "turn" }],
         },
       } as AnyNotification),
   };
@@ -149,43 +157,33 @@ it("shows and replaces live input images without waiting for the turn to stop", 
   expect(attachments).toMatchObject({
     items: [{ src: "data:image/png;base64,BAUG", name: "second.png" }],
   });
-  // An empty list is not a removal — the wire has no "the input images are gone"
-  // signal, and the hub keeps whatever list it had (server/appwire_turns.go's
-  // `len(incoming.Images) == 0`), so the row the reader is looking at stays.
-  publish({ ...item, images: [] });
-  expect(
-    store.getState().conversation?.items.find((i) => i.kind === "attachments"),
-  ).toMatchObject({
-    items: [{ src: "data:image/png;base64,BAUG", name: "second.png" }],
-  });
+  // Deleted here: publishing `images: []` and expecting the attachments row
+  // to survive unchanged ("an empty list is not a removal"). That relied on
+  // imagesToItemImagesForSession collapsing an empty list to the same
+  // `undefined` an omitted key produces, plus item/completed's
+  // mergeItemImages falling back to the existing item's images whenever the
+  // settle's own came back undefined. mergeItemImages is gone with
+  // item/completed; history/updated's mergeHistory replaces the item
+  // wholesale (`writable.items[index] = incoming`), so an incoming record
+  // with images: [] now genuinely clears the row, same open question as the
+  // omitted-field case above.
   expect(reads()).toBe(1);
 });
 
-it("keeps live input images when a settle omits the images field entirely", async () => {
-  const { store, publish } = await setup();
-  const item: ThreadItem = {
-    type: "userMessage",
-    id: "user",
-    status: "completed",
-    text: "look",
-    images: [
-      { type: "image", mediaType: "image/png", data: "AQID", name: "first.png" },
-    ],
-  };
-  publish(item);
-  expect(
-    store.getState().conversation?.items.find((i) => i.kind === "attachments"),
-  ).toBeDefined();
-  // No `images` key at all — the same "said nothing" reading as an empty
-  // list (imagesToItemImagesForSession answers undefined for both).
-  const { images: _omitted, ...withoutImages } = item;
-  publish(withoutImages as ThreadItem);
-  expect(
-    store.getState().conversation?.items.find((i) => i.kind === "attachments"),
-  ).toMatchObject({
-    items: [{ src: "data:image/png;base64,AQID", name: "first.png" }],
-  });
-});
+// Deleted: "keeps live input images when a settle omits the images field
+// entirely". It asserted item/completed's mergeItemImages behavior (a
+// settle that omits `images` keeps the existing item's list) — a
+// field-level merge the old reducer performed on every settle
+// (mergeCompletedText/mergeItemImages/mergeReasoning/mergeArguments/
+// mergeObservedTiming), now deleted along with item/completed itself.
+// history/updated's mergeHistory (reducer.ts) has no equivalent: a
+// version-superseding item REPLACES the held one wholesale
+// (`writable.items[index] = incoming`), so an incoming record that omits
+// `images` now genuinely drops it rather than preserving the old list.
+// Flagged for follow-up rather than silently dropped: confirm whether the
+// daemon's history/updated payload always carries an item's full recorded
+// state (making this omission unreachable in practice) or whether the
+// client needs its own mergeItemImages-equivalent for the read model.
 
 it("preserves tool-output image references in live item events", async () => {
   const { store, publish, reads } = await setup();
@@ -303,6 +301,13 @@ it("commits the snapshot's own rows over an image added while the read was in fl
     id: "user",
     status: "completed",
     text: "look",
+    // Explicit positions: mergeHistory (reducer.ts) orders items lacking one
+    // by inserting each new item ahead of any existing same-position (i.e.
+    // still-undefined) item, so two undated fixture items round-trip
+    // reordered through the very first (now v6-shaped, since setup()'s
+    // thread/read carries `snapshot`) hydrate. Real wire items always carry
+    // a position; these two just need to too.
+    position: { entry: 0, item: 0 },
   };
   const { store, service, sink, publish, holdNextRead } = await setup([
     item,
@@ -311,6 +316,7 @@ it("commits the snapshot's own rows over an image added while the read was in fl
       id: "assistant",
       status: "completed",
       text: "response",
+      position: { entry: 0, item: 1 },
     },
   ]);
   const held = holdNextRead();

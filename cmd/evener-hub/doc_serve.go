@@ -122,7 +122,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Cache-Control", "private, max-age=60")
-	w.Header().Set("ETag", `"`+outputImageSHA(data)+`"`)
+	w.Header().Set("ETag", `"`+imageSha(data)+`"`)
 	_, _ = w.Write(data)
 }
 

@@ -160,7 +160,7 @@ func (*resolvingUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader)
 	joined := strings.Join(argv, " ")
 	switch {
 	case strings.Contains(joined, "/home/dev/.local/bin/evener launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+		return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 	case strings.Contains(joined, " evener launch-check"):
 		// The host's non-interactive PATH does not carry the binary.
 		return []byte("sh: 1: evener: not found\n"), evenerMissingExitStatus()

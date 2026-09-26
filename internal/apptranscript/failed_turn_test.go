@@ -1,7 +1,6 @@
 package apptranscript
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -158,34 +157,5 @@ func TestItemTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
 	}
 	if failed.Error.Cause.Kind != "provider" || failed.Error.Cause.Provider != "openai" || failed.Error.Cause.Status != 403 {
 		t.Errorf("Error.Cause = %+v", failed.Error.Cause)
-	}
-}
-
-// The bounded/indexed read path is what a reloading web client actually uses,
-// so it must agree with the whole-file read.
-func TestIndexedReadStampsFailedTurnStatus(t *testing.T) {
-	path := writeFailureTranscript(t)
-	page, err := pageFromFileForTest(NewTurnCache(), path, 1<<20, "", 50, func(turn schema.Turn, turnID string, entryIndex int, _ map[string]string) []appwire.ThreadItem {
-		return failureProjector(turn, turnID, entryIndex)
-	})
-	if err != nil {
-		t.Fatalf("PageFromFile: %v", err)
-	}
-	found := false
-	for _, turn := range page.Turns {
-		if turn.Status == appwire.TurnStatusFailed {
-			found = true
-			if turn.Error == nil || turn.Error.Message != "provider error: access denied" {
-				t.Errorf("failed turn Error = %+v", turn.Error)
-			}
-		}
-	}
-	if !found {
-		t.Fatalf("indexed read produced no failed turn: %+v", page.Turns)
-	}
-	// The index sidecar the read just wrote must not be mistaken for the
-	// transcript itself by a later assertion.
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("stat transcript: %v", err)
 	}
 }

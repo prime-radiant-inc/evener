@@ -200,7 +200,7 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 				case strings.Contains(joined, "XDG_STATE_HOME"):
 					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 				case strings.Contains(joined, "launch-check"):
-					return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
 				case strings.Contains(joined, "api/health"):
 					if !launched {
 						return nil, errors.New("curl: (7) Failed to connect")

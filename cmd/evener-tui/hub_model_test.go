@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // collapseViewWhitespace flattens a rendered Overlay/popup view (box-drawing
@@ -2383,8 +2384,8 @@ func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
 		name         string
 		notification appwire.Notification
 	}{
-		{"turn/completed of the previous turn", *appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted}}).Notification},
-		{"turn/started of the next turn", *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress}}).Notification},
+		{"history/updated recording the previous turn's completion", *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted}}}).Notification},
+		{"thread/status/changed naming the next turn active", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, ActiveTurnID: "turn_2"}).Notification},
 		{"the status frame", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}).Notification},
 	}
 	for _, frame := range frames {
@@ -2526,7 +2527,7 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Interrupt = true
 	m.session.processing = true
-	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
+	failed := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}}})
 	m.applyHubNotification(*failed.Notification)
 
 	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
@@ -2549,7 +2550,7 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m = newSessionHubModel(nil)
 	m.detail.State = appwire.ThreadStatusActive
 	m.detail.ActiveTurnID = "turn_2"
-	late := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}})
+	late := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}}})
 	m.applyHubNotification(*late.Notification)
 	if m.detail.State != appwire.ThreadStatusActive || m.detail.ActiveTurnID != "turn_2" {
 		t.Fatalf("a failed completion for a superseded turn changed the session: state=%q active=%q", m.detail.State, m.detail.ActiveTurnID)
@@ -3508,18 +3509,22 @@ func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	got.detail.ActiveTurnID = ""
 	got.detail.Capabilities.Interrupt = false
 	got.detail.Capabilities.Steer = false
-	params, err := json.Marshal(map[string]any{
-		"turn": appwire.Turn{ID: "turn_notified", Status: appwire.TurnStatusInProgress},
+	// The read model's turn/started replacement: an open turn's id rides
+	// thread/status/changed's own ActiveTurnID field (the spec's "Turn
+	// status" display rule), not a dedicated turn-boundary notification.
+	params, err := json.Marshal(appwire.ThreadStatusChangedParams{
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		ActiveTurnID: "turn_notified",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyTurnStarted, Params: params})
+	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: params})
 	if got.detail.ActiveTurnID != "turn_notified" {
 		t.Fatalf("notified active turn id=%q", got.detail.ActiveTurnID)
 	}
 	if got.detail.Capabilities.Interrupt || got.detail.Capabilities.Steer {
-		t.Fatalf("turn/started mutated unsupported turn actions: %+v", got.detail.Capabilities)
+		t.Fatalf("thread/status/changed mutated unsupported turn actions: %+v", got.detail.Capabilities)
 	}
 }
 
@@ -3614,7 +3619,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
 	// A live turn whose id and transcript entry index have diverged: the fork
-	// request must carry the ENTRY index, which is what sourceTurnId means.
+	// request must carry a sourceItemKey naming the ENTRY index.
 	m.session.messages = []transcript.ChatMessage{
 		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 2, TranscriptEntryIndex: 3},
 		{Kind: transcript.MsgAssistant, Text: "answer"},
@@ -3651,7 +3656,8 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	if got.detail.SessionID != "02CHILD" {
 		t.Fatalf("detail=%+v", got.detail)
 	}
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -3744,7 +3750,8 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	if !strings.Contains(view, "Fork failed:") || !strings.Contains(view, "fork failed from test") {
 		t.Fatalf("missing fork failure notice:\n%s", view)
 	}
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -4552,19 +4559,25 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 		session: newModel(nil),
 	}
 
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: "other",
 		Ref:      "local:other",
-		Delta:    "wrong",
+		Item: appwire.OverlayItem{
+			Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "wrong"},
+		},
 	}).Notification)
 	if len(m.session.messages) != 0 {
 		t.Fatalf("messages=%+v, want no mutation from other session", m.session.messages)
 	}
 
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: "current",
 		Ref:      "local:current",
-		Delta:    "right",
+		Item: appwire.OverlayItem{
+			Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "right"},
+		},
 	}).Notification)
 	if len(m.session.messages) != 1 || m.session.messages[0].Text != "right" {
 		t.Fatalf("messages=%+v", m.session.messages)

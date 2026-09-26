@@ -47,7 +47,7 @@ func TestSendHubAsideForksAtTip(t *testing.T) {
 	if !got.Aside {
 		t.Fatalf("params.Aside=%v, want true", got.Aside)
 	}
-	if got.SourceTurnID != "" || got.EditedInput != "" || got.Label != "" {
+	if got.SourceItemKey != "" || got.EditedInput != "" || got.Label != "" {
 		t.Fatalf("aside must not carry divergent-fork fields: %+v", got)
 	}
 	if forkMsg.resp.Ref != "local:child1" {

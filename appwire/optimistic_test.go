@@ -16,19 +16,20 @@ type fakeCoordinator struct {
 }
 
 type fakeHandle struct {
-	method string
-	text   string
-	ref    string
-	failed bool
-	reason string
+	method           string
+	text             string
+	ref              string
+	clientMutationID string
+	failed           bool
+	reason           string
 }
 
 func (h *fakeHandle) Fail(reason string) { h.failed = true; h.reason = reason }
 
-func (f *fakeCoordinator) Register(method, text, ref string) appwire.PendingHandle {
+func (f *fakeCoordinator) Register(method, text, ref, clientMutationID string) appwire.PendingHandle {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	h := &fakeHandle{method: method, text: text, ref: ref}
+	h := &fakeHandle{method: method, text: text, ref: ref, clientMutationID: clientMutationID}
 	f.entries = append(f.entries, h)
 	return h
 }

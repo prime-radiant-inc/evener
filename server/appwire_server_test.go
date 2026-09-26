@@ -3,8 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -24,15 +21,6 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
-
-func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
-	t.Helper()
-	turns, _, err := appTurnsFromTranscriptFile(path)
-	if err != nil {
-		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
-	}
-	return turns
-}
 
 func dialServerAppWire(t *testing.T, srv *Server) *appwire.Client {
 	t.Helper()
@@ -95,37 +83,40 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	}
 }
 
-// TestServerAppWireSetProcessingPublishesActiveTurnID proves generic processing
-// paths atomically publish an active identity even before a SessionStart event
-// reaches the projector. Durable client-mutation turns use SetProcessingTurn
-// to publish their already-authoritative stable identity instead.
+// TestServerAppWireSetProcessingPublishesActiveTurnID pins how a processing
+// input reaches clients: SetProcessing(true) publishes nothing (the session has
+// not named the execution yet, and a read already answers active), and
+// SetProcessingTurn publishes the execution's TurnID with the active status in
+// one frame before any entry of it is recorded.
 func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
+	cursor := srv.appNotifier.CurrentSequence()
 
-	// Mirrors nextTurnCtx (cmd/evener/serve.go): RecordAppEvent has not yet
-	// populated appActiveTurnID from the next turn's SessionStart event.
 	srv.SetProcessing(true)
+	if published := srv.AppNotificationsAfter(cursor, "th_1"); len(published) != 0 {
+		t.Fatalf("SetProcessing(true) published %+v, want nothing", published)
+	}
+	if status := srv.appThread().Status.Type; status != appwire.ThreadStatusActive {
+		t.Fatalf("read status=%q while processing, want active", status)
+	}
 
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
+	srv.SetProcessingTurn("t_1")
+	statuses := statusNotifications(t, srv, "th_1")
+	if len(statuses) != 1 || statuses[0].Status.Type != appwire.ThreadStatusActive || statuses[0].ActiveTurnID != "t_1" {
+		t.Fatalf("statuses after SetProcessingTurn = %+v, want one active status naming t_1", statuses)
 	}
-	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
-	if !ok {
-		t.Fatalf("result=%T", resp.Response.Result)
+	if got := srv.appThread().Evener.ActiveTurnID; got != "t_1" {
+		t.Fatalf("read activeTurnId = %q, want t_1", got)
 	}
-	if data.Thread.Status.Type != appwire.ThreadStatusActive {
-		t.Fatalf("status=%q, want active", data.Thread.Status.Type)
+
+	srv.SetProcessing(false)
+	statuses = statusNotifications(t, srv, "th_1")
+	if last := statuses[len(statuses)-1]; last.Status.Type != appwire.ThreadStatusIdle || last.ActiveTurnID != "" {
+		t.Fatalf("status after processing ended = %+v, want idle naming no turn", last)
 	}
-	// The fix (kata c2ty): going processing now reserves an id in the same
-	// lock hold, so the two fields can no longer disagree. Asserting a
-	// non-empty id rather than a specific one - the value is the projector's
-	// to choose, and pinning it here would just restate ReserveTurnID.
-	if data.Thread.Evener.ActiveTurnID == "" {
-		t.Fatal("activeTurnId is empty while status reads active: the composer gates on the status alone (isTurnActive) and names the transcript row by this id, so a working session must publish one")
+	if got := srv.appThread().Evener.ActiveTurnID; got != "" {
+		t.Fatalf("read activeTurnId = %q after processing ended, want none", got)
 	}
 }
 
@@ -330,94 +321,12 @@ func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	}
 }
 
-func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "earlier"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextEnd,
-		SessionID: "th_1",
-		Data:      events.AssistantTextEndData{Text: "done"},
-	})
-	installProjectedMutationCallbacksForTest(srv)
-	history := srv.AppNotificationsAfter(0, "th_1")
-	cursor := history[len(history)-1].Seq
-
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_1",
-		Ref:   "local:th_1",
-		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
-	}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
-	}
-	startResp, ok := resp.Response.Result.(appwire.TurnStartResponse)
-	if !ok {
-		t.Fatalf("response result=%T", resp.Response.Result)
-	}
-
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "hello"},
-	})
-
-	notifications := srv.AppNotificationsAfter(cursor, "th_1")
-	var startedID string
-	var itemTurnID string
-	for _, item := range notifications {
-		switch item.Notification.Method {
-		case appwire.NotifyTurnStarted:
-			var params struct {
-				Turn appwire.Turn `json:"turn"`
-			}
-			if err := json.Unmarshal(item.Notification.Params, &params); err != nil {
-				t.Fatalf("turn started params: %v", err)
-			}
-			startedID = params.Turn.ID
-		case appwire.NotifyItemCompleted:
-			var params struct {
-				Item appwire.ThreadItem `json:"item"`
-			}
-			if err := json.Unmarshal(item.Notification.Params, &params); err != nil {
-				t.Fatalf("item completed params: %v", err)
-			}
-			if params.Item.Type == "userMessage" && params.Item.Text == "hello" {
-				itemTurnID = params.Item.TurnID
-			}
-		}
-	}
-	if startedID != startResp.Turn.ID {
-		t.Fatalf("turn/start id=%q, turn/started id=%q", startResp.Turn.ID, startedID)
-	}
-	if itemTurnID != startResp.Turn.ID {
-		t.Fatalf("turn/start id=%q, user item turn id=%q", startResp.Turn.ID, itemTurnID)
-	}
-}
-
-func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "hello"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextEnd,
-		SessionID: "th_1",
-		Data:      events.AssistantTextEndData{Text: "hi there"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventSessionEnd,
-		SessionID: "th_1",
-		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
-	})
+func TestServerAppWireThreadReadIncludesRecordedTurns(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1",
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi there")),
+	)
+	srv := st.srv
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -445,63 +354,29 @@ func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 	if turn.Items[1].Type != "agentMessage" || turn.Items[1].Text != "hi there" {
 		t.Fatalf("agent item=%+v", turn.Items[1])
 	}
+	if data.Snapshot == nil || data.Snapshot.Length != st.writer.RecordedLength() || data.Snapshot.Incarnation == "" {
+		t.Fatalf("snapshot=%+v, want the index incarnation at the recorded length %d", data.Snapshot, st.writer.RecordedLength())
+	}
 }
 
-func TestServerAppWireThreadReadIncludesInProgressDeltas(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "run"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextStart,
-		SessionID: "th_1",
-		Data:      events.AssistantTextStartData{},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextDelta,
-		SessionID: "th_1",
-		Data:      events.AssistantTextDeltaData{Delta: "partial "},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextDelta,
-		SessionID: "th_1",
-		Data:      events.AssistantTextDeltaData{Delta: "answer"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallStart,
-		SessionID: "th_1",
-		Data:      events.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallOutputDelta,
-		SessionID: "th_1",
-		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallOutputDelta,
-		SessionID: "th_1",
-		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
-	})
+func TestServerAppWireThreadReadIncludesInProgressOverlay(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("run")))
+	srv := st.srv
+	for _, data := range []events.EventData{
+		events.RoundStartedData{RoundID: "r_1"},
+		events.AssistantTextDeltaData{Delta: "partial "},
+		events.AssistantTextDeltaData{Delta: "answer"},
+		events.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
+		events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
+		events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
+	} {
+		srv.RecordAppEvent(threadEvent("th_1", data))
+	}
 
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
-	}
-	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
-	if !ok {
-		t.Fatalf("result=%T", resp.Response.Result)
-	}
-	if len(data.Thread.Turns) != 1 {
-		t.Fatalf("turns=%+v", data.Thread.Turns)
-	}
+	data := st.read(t)
 	var agentItem, toolItem *appwire.ThreadItem
-	for i := range data.Thread.Turns[0].Items {
-		item := &data.Thread.Turns[0].Items[i]
+	for i := range data.Overlay {
+		item := &data.Overlay[i].Item
 		switch item.Type {
 		case "agentMessage":
 			agentItem = item
@@ -510,72 +385,27 @@ func TestServerAppWireThreadReadIncludesInProgressDeltas(t *testing.T) {
 		}
 	}
 	if agentItem == nil || agentItem.Text != "partial answer" || agentItem.Status != appwire.TurnStatusInProgress {
-		t.Fatalf("agent item=%+v", agentItem)
+		t.Fatalf("agent overlay item=%+v", agentItem)
 	}
 	if toolItem == nil || toolItem.Output != "ok done" || toolItem.Status != appwire.TurnStatusInProgress {
-		t.Fatalf("tool item=%+v", toolItem)
+		t.Fatalf("tool overlay item=%+v", toolItem)
+	}
+	if texts := readTexts(data); len(texts) != 1 || texts[0] != "run" {
+		t.Fatalf("history items %q, want only the recorded input", texts)
 	}
 }
 
-func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "run"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextStart,
-		SessionID: "th_1",
-		Data:      events.AssistantTextStartData{},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextDelta,
-		SessionID: "th_1",
-		Data:      events.AssistantTextDeltaData{Delta: "partial "},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextDelta,
-		SessionID: "th_1",
-		Data:      events.AssistantTextDeltaData{Delta: "answer"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventAssistantTextEnd,
-		SessionID: "th_1",
-		Data:      events.AssistantTextEndData{},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallStart,
-		SessionID: "th_1",
-		Data:      events.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallOutputDelta,
-		SessionID: "th_1",
-		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallOutputDelta,
-		SessionID: "th_1",
-		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventToolCallEnd,
-		SessionID: "th_1",
-		Data:      events.ToolCallEndData{ToolName: "shell", CallID: "call_1"},
-	})
-
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
-	}
-	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
-	if !ok {
-		t.Fatalf("result=%T", resp.Response.Result)
-	}
+func TestServerAppWireThreadReadShowsRecordedCompletionsInHistory(t *testing.T) {
+	call := llm.ToolCallData{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"cmd":"go test"}`)}
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1",
+		schema.NewTurn(schema.TurnUserInput, llm.User("run")),
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "partial answer"},
+			{Kind: llm.ContentToolCall, ToolCall: &call},
+		}}},
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_1", "shell", "ok done", false)),
+	)
+	data := st.read(t)
 	if len(data.Thread.Turns) != 1 {
 		t.Fatalf("turns=%+v", data.Thread.Turns)
 	}
@@ -595,44 +425,19 @@ func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
 	if toolItem == nil || toolItem.Output != "ok done" || toolItem.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("tool item=%+v", toolItem)
 	}
+	if len(data.Overlay) != 0 {
+		t.Fatalf("overlay=%+v, want nothing unrecorded", data.Overlay)
+	}
 }
 
 func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	for _, ev := range []events.SessionEvent{
-		{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}},
-		{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
-			ToolName:      "communicate",
-			CallID:        "call_1",
-			ArgumentsJSON: `{"message":"done","end_turn":true}`,
-		}},
-		{Kind: events.EventCommunicate, SessionID: "th_1", Data: events.CommunicateData{Message: "done"}},
-		{Kind: events.EventToolCallOutputDelta, SessionID: "th_1", Data: events.ToolCallOutputDeltaData{
-			ToolName: "communicate",
-			CallID:   "call_1",
-			Delta:    `{"accepted":true}`,
-		}},
-		{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
-			ToolName: "communicate",
-			CallID:   "call_1",
-			Output:   `{"accepted":true}`,
-		}},
-		{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}},
-	} {
-		srv.RecordAppEvent(ev)
-	}
-
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
-	}
-	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
-	if !ok {
-		t.Fatalf("result=%T", resp.Response.Result)
-	}
+	call := llm.ToolCallData{ID: "call_1", Name: "communicate", Arguments: json.RawMessage(`{"message":"done","end_turn":true}`)}
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1",
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}},
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_1", "communicate", `{"accepted":true}`, false)),
+	)
+	data := st.read(t)
 	if len(data.Thread.Turns) != 1 {
 		t.Fatalf("turns=%+v", data.Thread.Turns)
 	}
@@ -848,78 +653,48 @@ func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 }
 
 func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-
-	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
-	defer httpServer.Close()
-	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):], httpServer.Client())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer transport.Close()
-	client := appwire.NewClient(transport)
-	client.Start(context.Background())
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
+	srv := st.srv
+	client := dialServerAppWire(t, srv)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "hello"},
-	})
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventError,
-		SessionID: "th_1",
-		Data:      events.ErrorData{Error: "provider unavailable"},
-	})
+	// A recorded failure is a TURN_FAILURE entry history already shows: no
+	// notice.
+	srv.RecordAppEvent(threadEvent("th_1", events.ErrorData{Error: "recorded failure", Recorded: true}))
+	// An error that was not recorded is surfaced exactly once, as an error
+	// notice carrying the diagnostic -- never also as a warning, which made the
+	// same error render twice in clients showing both channels.
+	srv.RecordAppEvent(threadEvent("th_1", events.ErrorData{Error: "provider unavailable"}))
+	marker := "marker"
+	srv.RecordAppEvent(threadEvent("th_1", events.NotesUpdatedData{HumanNote: marker}))
 
-	// A genuine provider failure is surfaced exactly once — as a failed turn
-	// carrying the diagnostic. It must NOT also emit a redundant NotifyWarning
-	// (that made the same error render twice in clients showing both channels).
-	var sawFailedTurn bool
-	deadline := time.After(time.Second)
-	for !sawFailedTurn {
-		select {
-		case got := <-client.Notifications():
-			switch got.Method {
-			case appwire.NotifyWarning:
-				t.Fatalf("non-cancelled provider error emitted a redundant NotifyWarning: %s", got.Params)
-			case appwire.NotifyTurnCompleted:
-				var params struct {
-					Turn appwire.Turn `json:"turn"`
-				}
-				if err := json.Unmarshal(got.Params, &params); err != nil {
-					t.Fatalf("turn params: %v", err)
-				}
-				if params.Turn.Status == appwire.TurnStatusFailed && params.Turn.Error != nil && params.Turn.Error.Message == "provider unavailable" && params.Turn.Error.Source == string(diagnostic.SourceProvider) {
-					sawFailedTurn = true
-				}
+	notices := 0
+	for {
+		got := <-client.Notifications()
+		if got.Method == appwire.NotifyEvenerNotesUpdated {
+			break
+		}
+		switch got.Method {
+		case appwire.NotifyWarning:
+			t.Fatalf("an error emitted a warning notification: %s", got.Params)
+		case appwire.NotifyOverlayUpserted:
+			var params appwire.OverlayUpsertedParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("overlay params: %v", err)
 			}
-		case <-deadline:
-			t.Fatalf("missing failed-turn notification")
+			if params.Item.Kind != appwire.OverlayNotice {
+				t.Fatalf("an error produced overlay %s, want a notice", params.Item.Kind)
+			}
+			if params.Item.Item.EventKind != appwire.ThreadItemEventKindError || params.Item.Item.Text != "provider unavailable" {
+				t.Fatalf("error notice = %+v, want the unrecorded error", params.Item.Item)
+			}
+			notices++
 		}
 	}
-
-	// Drain for a short window after seeing the failed turn to catch any
-	// NotifyWarning that arrives after the completed notification. Without this
-	// drain a late warning is left unread in the channel and the test passes
-	// even when the invariant is broken.
-	drainDeadline := time.After(100 * time.Millisecond)
-	for {
-		select {
-		case got := <-client.Notifications():
-			if got.Method == appwire.NotifyWarning {
-				t.Fatalf("non-cancelled provider error emitted a redundant NotifyWarning after the failed turn: %s", got.Params)
-			}
-		case <-drainDeadline:
-			return
-		}
+	if notices != 1 {
+		t.Fatalf("errors produced %d notices, want exactly 1 (for the unrecorded one)", notices)
 	}
 }
 
@@ -1874,152 +1649,32 @@ func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
 	}
 }
 
-func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
-		Role: llm.RoleAssistant,
-		Content: []llm.ContentPart{{
-			Kind: llm.ContentToolCall,
-			ToolCall: &llm.ToolCallData{
-				ID:        "call_read",
-				Name:      "read_file",
-				Arguments: json.RawMessage(`{"file_path":"/tmp/example.txt"}`),
-			},
-		}},
-	})); err != nil {
-		t.Fatalf("append tool call: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
-		t.Fatalf("append tool result: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
+func TestServerAppWireThreadReadKeepsResumedHistoryAheadOfNewTurns(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{AppReplaySize: 2}), "th_1",
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("second")),
+	)
+	st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("tail")))
+	st.record(t, schema.NewTurn(schema.TurnAssistant, llm.Assistant("only tail")))
 
-	turns := requireTranscriptFileTurns(t, path)
-	// The assistant call and its tool result are one logical turn with one
-	// merged command-execution item carrying the call and result fields.
-	if len(turns) != 1 || len(turns[0].Items) != 1 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	merged := turns[0].Items[0]
-	if merged.CallID != "call_read" || merged.ArgumentsJSON == "" || !strings.Contains(merged.ArgumentsJSON, "/tmp/example.txt") {
-		t.Fatalf("merged item=%+v", merged)
-	}
-	if merged.Output != "line 1\nline 2\n" {
-		t.Fatalf("merged item=%+v", merged)
-	}
-}
-
-func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID:    "th_1",
-		SystemPrompt: "You are Evener.",
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("append user: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 2 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	prelude := turns[0]
-	if prelude.ID != "turn_system" || len(prelude.Items) != 1 {
-		t.Fatalf("prelude=%+v", prelude)
-	}
-	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Evener." {
-		t.Fatalf("system item=%+v", got)
-	}
-	if got := turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {
-		t.Fatalf("first user item=%+v", got)
-	}
-}
-
-func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
-		t.Fatalf("append checkpoint: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
-		t.Fatalf("append summary: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 2 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	if got := turns[0].Items[0]; got.Type != "systemMessage" || got.Description != "Context checkpoint" || !strings.Contains(got.Text, "first compacted state") {
-		t.Fatalf("checkpoint item=%+v", got)
-	}
-	if got := turns[1].Items[0]; got.Type != "systemMessage" || got.Description != "Context summary" || !strings.Contains(got.Text, "second compacted state") {
-		t.Fatalf("summary item=%+v", got)
-	}
-}
-
-// TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns pins that the
-// seed and the live stream compose into one ordered thread: seeded transcript
-// turns stay at the head, live turns append after them, and a replay buffer far
-// too small to hold the whole session changes neither.
-func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
-		t.Fatalf("append first: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
-		t.Fatalf("append second: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	srv := NewServer(ServerConfig{AppReplaySize: 2})
-	installTranscriptIdentity(t, srv, "th_1", path)
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{Restored: true, TranscriptEntries: 2}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "tail"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "only tail"}})
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{State: appwire.ThreadStatusIdle}})
-
-	resp, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
+	resp, err := st.srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	// The seeded user+assistant pair is one logical turn; the live turn
+	// The resumed user+assistant pair is one logical turn; the new turn
 	// (user input + assistant reply) is another, so the thread has 2 turns.
 	if len(resp.Thread.Turns) != 2 {
-		t.Fatalf("turns=%v, want the seeded logical turn plus the live one", turnIDs(resp.Thread.Turns))
+		t.Fatalf("turns=%v, want the resumed logical turn plus the new one", turnIDs(resp.Thread.Turns))
 	}
 	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
-		t.Fatalf("seeded turn head text=%q, want the user input", got)
+		t.Fatalf("resumed turn head text=%q, want the user input", got)
 	}
 	if len(resp.Thread.Turns[0].Items) < 2 || resp.Thread.Turns[0].Items[1].Text != "second" {
-		t.Fatalf("seeded turn items=%+v, want user input then assistant reply", resp.Thread.Turns[0].Items)
+		t.Fatalf("resumed turn items=%+v, want user input then assistant reply", resp.Thread.Turns[0].Items)
 	}
 	live := resp.Thread.Turns[1]
 	if len(live.Items) == 0 || live.Items[0].Text != "tail" {
-		t.Fatalf("live turn items=%+v, want the live user input", live.Items)
+		t.Fatalf("new turn items=%+v, want the new user input", live.Items)
 	}
 }
 
@@ -2137,8 +1792,8 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 		t.Fatalf("child subscriber count = %d, want 1", got)
 	}
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "root", Data: events.AssistantTextDeltaData{Delta: "root"}})
-	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "child", Data: events.AssistantTextDeltaData{Delta: "child"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: "root", Data: events.NotesUpdatedData{HumanNote: "root"}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: "child", Data: events.NotesUpdatedData{HumanNote: "child"}})
 	if got := srv.AppNotificationsAfter(0, "root"); len(got) == 0 {
 		t.Fatal("root event produced no root notification")
 	}
@@ -2149,18 +1804,18 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 	for wantRefs["local:root"] == false || wantRefs["local:child"] == false {
 		select {
 		case notification := <-client.Notifications():
-			if notification.Method != appwire.NotifyAgentMessageDelta {
+			if notification.Method != appwire.NotifyEvenerNotesUpdated {
 				continue
 			}
-			var params appwire.AgentMessageDeltaParams
+			var params appwire.NotesUpdatedParams
 			if err := json.Unmarshal(notification.Params, &params); err != nil {
-				t.Fatalf("decode delta: %v", err)
+				t.Fatalf("decode notes: %v", err)
 			}
 			if _, ok := wantRefs[params.Ref]; ok {
 				wantRefs[params.Ref] = true
 			}
 		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for root and child deltas; received %v", wantRefs)
+			t.Fatalf("timed out waiting for root and child notes; received %v", wantRefs)
 		}
 	}
 }
@@ -2227,7 +1882,7 @@ func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T)
 	if err != nil {
 		t.Fatalf("prepare replacement identity: %v", err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	defer httpServer.Close()
@@ -2699,52 +2354,6 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	}
 }
 
-// TestAppTurnsFromTranscriptFileProjectsToolResultImages covers the daemon's
-// only cold read of its own history (kata 2fxm). The seed it installs is the
-// sole turn authority for the rest of the session, so an image it drops here
-// stays missing from every later read of that thread — including the reload a
-// reader does mid-session.
-func TestAppTurnsFromTranscriptFileProjectsToolResultImages(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 's', 'e', 'e', 'd'}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
-		Role: llm.RoleTool,
-		Content: []llm.ContentPart{{
-			Kind: llm.ContentToolResult,
-			ToolResult: &llm.ToolResultData{
-				ToolCallID: "call_shot", Name: "screenshot", Content: "captured",
-				ImageData: png, ImageMediaType: "image/png",
-			},
-		}},
-	})); err != nil {
-		t.Fatalf("append tool result: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
-	}
-
-	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 1 || len(turns[0].Items) != 1 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	images := turns[0].Items[0].OutputImages
-	if len(images) != 1 {
-		t.Fatalf("OutputImages=%+v, want the tool result's own image described", images)
-	}
-	sum := sha256.Sum256(png)
-	want := appwire.OutputImage{
-		Source: "tool-result", Name: "screenshot", MediaType: "image/png",
-		Size: int64(len(png)), SHA: hex.EncodeToString(sum[:]),
-	}
-	if images[0] != want {
-		t.Fatalf("OutputImages[0]=%+v, want %+v", images[0], want)
-	}
-}
-
 // TestServerAppWireThreadReadRejectsMalformedOrForeignRef guards ledger
 // #110/#111: a present-but-unparseable ref, or a ref naming a foreign
 // source, must never fall through to the ROOT thread's own content.
@@ -2790,7 +2399,7 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	serveRootWithoutHistory(t, srv, "root")
 	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
 		if threadID == "child" {
 			return path
@@ -2838,26 +2447,15 @@ func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
 	}
 }
 
-// TestServerAppWireEnvironmentEventKeepsTheProcessingReservation covers the gap
-// between SetProcessing(true) and the user-input event that consumes its
-// reservation. A standalone environment event lands in that gap, and projecting
-// one opens and closes a turn of its own -- so the projector's activeTurnID is
-// empty when RecordAppEvent reads it back and writes it over the server's
-// published identity. The published identity must survive that: a client
-// polling thread/read in the gap would otherwise see a session reading active
-// with no active turn: the composer gates on the status alone (isTurnActive)
-// and would name a transcript row the wire had not published.
-func TestServerAppWireEnvironmentEventKeepsTheProcessingReservation(t *testing.T) {
+// TestServerAppWireEnvironmentEventKeepsThePublishedExecution covers an
+// environment event projected while an execution SetProcessingTurn published
+// is running: the event has its own recorded identity and must not consume or
+// clear the running one, or a client polling thread/read would see a session
+// reading active with no active turn.
+func TestServerAppWireEnvironmentEventKeepsThePublishedExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetProcessing(true)
-
-	srv.mu.RLock()
-	reserved := srv.appActiveTurnID
-	srv.mu.RUnlock()
-	if reserved == "" {
-		t.Fatal("SetProcessing published no active turn id; this test is not in the state it means to be")
-	}
+	startExecution(srv, "th_1", "t_running")
 
 	srv.RecordAppEvent(events.SessionEvent{
 		Kind:      events.EventEnvironment,
@@ -2865,24 +2463,7 @@ func TestServerAppWireEnvironmentEventKeepsTheProcessingReservation(t *testing.T
 		Data:      events.EnvironmentData{TurnID: "turn_environment_1", Text: "environment"},
 	})
 
-	srv.mu.RLock()
-	got := srv.appActiveTurnID
-	srv.mu.RUnlock()
-	if got != reserved {
-		t.Fatalf("appActiveTurnID = %q after the environment event, want the %q SetProcessing published: the environment has its own durable identity and must not consume or clear the runnable one", got, reserved)
-	}
-
-	// The reservation is still the one the following user input consumes, so
-	// the identity the client was advertised is the identity that runs.
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "prompt"},
-	})
-	srv.mu.RLock()
-	ran := srv.appActiveTurnID
-	srv.mu.RUnlock()
-	if ran != reserved {
-		t.Fatalf("user input ran as turn %q, want the advertised %q", ran, reserved)
+	if got := srv.appThread().Evener.ActiveTurnID; got != "t_running" {
+		t.Fatalf("activeTurnId = %q after the environment event, want the running t_running", got)
 	}
 }

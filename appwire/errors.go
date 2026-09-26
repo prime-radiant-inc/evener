@@ -1,5 +1,7 @@
 package appwire
 
+import "fmt"
+
 const (
 	CodeParseError     = -32700
 	CodeInvalidRequest = -32600
@@ -31,6 +33,18 @@ const (
 	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
 	ErrorInternal                  ErrorInfo = "internal"
+	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
+	// entered its failed state: its projection or rebuild failed for a reason
+	// outside the entries (I/O, a corrupt index) three times in a row, and a
+	// rebuild the read attempted failed too. The message names the last entry
+	// the history had recorded when it failed. An entry that does not decode
+	// is not a failure: the index shows it as one unreadable-entry item. Its
+	// data is HistoryReadErrorData.
+	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
+	// ErrorUpgradeRequired marks initialize refusing a client that announced
+	// an older AppWire protocol than the server speaks; the message names both
+	// versions.
+	ErrorUpgradeRequired ErrorInfo = "upgradeRequired"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -199,6 +213,60 @@ func InternalError(message string) WireError {
 		Code:    CodeInternalError,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInternal},
+	}
+}
+
+// TranscriptHistoryFailed reports a read of a thread whose history failed,
+// naming ordinal, the last entry it had recorded (see
+// ErrorTranscriptHistoryFailed). The history read stamps it with
+// WithHistoryReadIdentity.
+func TranscriptHistoryFailed(ordinal uint64) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
+		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
+	}
+}
+
+// HistoryReadErrorData is the data of a thread/read or thread/turns/list
+// error: the error's own data plus the boot generation the read ran under,
+// and its resync epoch when the read had reached the thread's history. It
+// carries no snapshot identity and no items, so a client never adopts a
+// generation or epoch from it, and never replaces anything with it.
+type HistoryReadErrorData struct {
+	ErrorData
+	BootGeneration string  `json:"bootGeneration"`
+	Epoch          *uint64 `json:"epoch,omitempty"`
+}
+
+// WithHistoryReadIdentity stamps a history read's error with the boot
+// generation and epoch it ran under. An error whose data is not ErrorData
+// keeps its own data unchanged.
+func WithHistoryReadIdentity(err WireError, bootGeneration string, epoch uint64) WireError {
+	return withReadIdentity(err, bootGeneration, &epoch)
+}
+
+// WithReadBootGeneration stamps a read's error raised before the read reached
+// a thread's history (invalid params, an unknown thread, an unavailable
+// subscription) with the boot generation alone.
+func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
+	return withReadIdentity(err, bootGeneration, nil)
+}
+
+func withReadIdentity(err WireError, bootGeneration string, epoch *uint64) WireError {
+	if data, ok := err.Data.(ErrorData); ok {
+		err.Data = HistoryReadErrorData{ErrorData: data, BootGeneration: bootGeneration, Epoch: epoch}
+	}
+	return err
+}
+
+// UpgradeRequired refuses a client that announced clientVersion, an AppWire
+// protocol older than serverVersion.
+func UpgradeRequired(clientVersion, serverVersion string) WireError {
+	return WireError{
+		Code:    CodeInvalidRequest,
+		Message: fmt.Sprintf("protocol version %q is older than this server's %q: upgrade required", clientVersion, serverVersion),
+		Data:    ErrorData{EvenerErrorInfo: ErrorUpgradeRequired},
 	}
 }
 

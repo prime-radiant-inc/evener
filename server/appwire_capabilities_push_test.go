@@ -22,7 +22,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	wireRetrySafeCapabilities(srv)
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 
 	statuses := statusNotifications(t, srv, "th_1")
 	if len(statuses) != 1 {
@@ -84,7 +84,7 @@ func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	wireRetrySafeCapabilities(srv)
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "shutdown", State: "closed"}})
 
 	statuses := statusNotifications(t, srv, "th_1")
@@ -104,7 +104,7 @@ func TestStatusChangeCapabilitiesRespectAnUnwiredHarness(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 
 	statuses := statusNotifications(t, srv, "th_1")
 	if len(statuses) == 0 {

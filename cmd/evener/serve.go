@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -27,7 +28,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
@@ -137,11 +137,18 @@ type serveServer interface {
 	// returns.
 	SetRetirementAdmission(func(context.Context, string) (func(), error))
 	SetProcessing(bool)
+	// SetProcessingTurn publishes a running execution's TurnID; serve
+	// installs it as each session's execution-started func.
 	SetProcessingTurn(string)
 	SetState(string)
 	SetCancelFunc(context.CancelFunc)
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
 	RecordDescendantAppEvent(string, events.SessionEvent)
+	// WireTranscriptHistory installs a session's recorded-entry hooks into
+	// the daemon's thread histories.
+	WireTranscriptHistory(*agent.Session)
+	// Close stops the daemon's thread histories.
+	Close()
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
 	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
 	InputCh() <-chan server.InputMessage
@@ -203,20 +210,13 @@ type serveDeps struct {
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
 	newClearSession  func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
-	// prepareAppIdentity projects a session's transcript into an installable
+	// prepareAppIdentity validates a session's transcript into an installable
 	// AppWire identity. It is the one fallible step of an identity swap, so it
 	// is injectable: a test needs a deterministic preparation failure to prove
 	// thread/clear abandons a half-built session instead of publishing it.
 	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
-	// prepareAppIdentityFromEntries is the resume-path form of
-	// prepareAppIdentity: same projection from the entries restore already
-	// decoded, with the transcript path available to reuse the persisted item
-	// index incarnation. Injectable for the same reason — the resume branch
-	// below bypasses prepareAppIdentity, so without this seam no test can
-	// observe which form ran.
-	prepareAppIdentityFromEntries func(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
-	updateSessionID               func(*rvreg.Registration, string) error
-	observeCallbacks              func(serveCallbackObserver)
+	updateSessionID    func(*rvreg.Registration, string) error
+	observeCallbacks   func(serveCallbackObserver)
 	// reclaimScratch removes the session scratch that daemons now gone
 	// retained, for a serve working in the directory it is handed — the one
 	// resolved from --dir, so the reclaim reads the workspace the daemon
@@ -276,15 +276,14 @@ func defaultServeDeps() serveDeps {
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		startLivePprof:                cmdutil.StartLivePprof,
-		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
-		rendezvousRetryPause:          func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
-		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
-		provisionSandbox:              provisionSandbox,
-		newClearSession:               agent.NewSession,
-		prepareAppIdentity:            server.PrepareAppIdentityForRef,
-		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntriesForPath,
-		updateSessionID:               func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
+		startLivePprof:       cmdutil.StartLivePprof,
+		register:             func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		rendezvousRetryPause: func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
+		serveHTTP:            func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+		provisionSandbox:     provisionSandbox,
+		newClearSession:      agent.NewSession,
+		prepareAppIdentity:   server.PrepareAppIdentityForRef,
+		updateSessionID:      func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
 
@@ -684,18 +683,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	var sess *agent.Session
-	// restored is the transcript a resume already strict-decoded, handed over
-	// for the app-identity projection below.
-	var restored struct {
-		header  transcript.Header
-		entries []transcript.Entry
-		opened  bool
-	}
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
-			OnRestoredTranscript: func(header transcript.Header, entries []transcript.Entry, opened bool) {
-				restored.header, restored.entries, restored.opened = header, entries, opened
-			},
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
@@ -746,6 +735,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess.Close()
 		return err
 	}
+	// This start's boot generation: the session is owned by now (created
+	// under its ownership lock, or reserved before the resume), and the
+	// counter is durable before the daemon listens, so no read or
+	// notification of this boot can go out under an earlier generation.
+	startGeneration, err := schema.NextBootGeneration(sd, sess.ID(), 0)
+	if err != nil {
+		sess.Close()
+		return fmt.Errorf("boot generation: %w", err)
+	}
+	// servedBootGeneration is the generation of the served identity; a
+	// thread/clear replacement serves above it (see the clear func).
+	var servedBootGeneration atomic.Uint64
+	servedBootGeneration.Store(startGeneration)
 	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()
@@ -759,31 +761,25 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		AllowedHost:   listener.Addr().String(),
 		StateDir:      sd,
 	})
-	// Seed the daemon's turn snapshot from this session's transcript BEFORE the
-	// event bridge starts, so the first read answers from the same memory every
-	// later notification advances. Preparation is the only fallible half; a
-	// transcript that cannot be projected is a session this daemon must not
-	// serve, because every read after it would silently start mid-conversation.
+	// The daemon's thread histories stop with it, after every deferred
+	// teardown below has drained the bridges that feed them.
+	defer srv.Close()
+	// Install the session's identity and its history BEFORE the event bridge
+	// starts, so the first read answers from the transcript every later
+	// history/updated extends. Preparation is the only fallible half; a
+	// transcript that belongs to another session is one this daemon must not
+	// serve.
 	workspaceRef := appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
-	var prepared server.PreparedAppIdentity
-	if restored.opened {
-		// Resume already strict-decoded this transcript once (restore's
-		// OpenWriterForSession pass) and validated its header against the
-		// session id; projecting from those entries keeps the daemon's
-		// startup from re-reading and re-decoding the whole append-only file.
-		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, sess.TranscriptPath(), restored.header, restored.entries)
-		// Only the projection outlives startup; the decoded entries must not
-		// stay reachable from this function's frame for the daemon's life.
-		restored.entries = nil
-	} else {
-		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
-	}
+	prepared, err := deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	if err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // returning the preparation failure; the close error is not actionable
 		return fmt.Errorf("prepare app identity: %w", err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	// The hooks first, then the recorded length: an entry recorded between the
+	// two is covered by the length or reaches the history through its hook.
+	srv.WireTranscriptHistory(sess)
+	srv.ReplaceAppIdentity(prepared.WithRecordedLength(sess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(startGeneration)), nil)
 	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
@@ -1273,6 +1269,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// into the serve loop so the parent drains it on the next turn.
 		notifyCallback = func() { srv.SubmitNotification() }
 		s.SetNotifyFunc(notifyCallback)
+		// Each execution the session starts publishes its TurnID, with the
+		// thread active, before its first entry is recorded, so clients hold
+		// the running turn before any of its history arrives.
+		s.SetExecutionStartedFunc(srv.SetProcessingTurn)
 		s.SetClientMutationStartWakeFunc(func() {
 			srv.SubmitClientMutationStart(s.ID())
 		})
@@ -1288,9 +1288,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		})
 		// A descendant's transcript lives alongside its owner's, under the same
 		// state dir convention every other session/transcript lookup in this
-		// codebase uses. RecordDescendantAppEvent consults this on a
-		// descendant's first observation to seed its persisted history before
-		// applying the event that triggered the lookup (ledger #110/#111).
+		// codebase uses. A descendant's history is projected from it, from
+		// its first observation on (ledger #110/#111).
 		stateDir := s.StateDir()
 		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
 			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
@@ -1578,6 +1577,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("prepare app identity: %w", err)
 		}
+		// The replacement serves the same workspace ref, so it serves above
+		// the generation its clients hold, or they would ignore it.
+		clearGeneration, err := schema.NextBootGeneration(sd, newSess.ID(), servedBootGeneration.Load())
+		if err != nil {
+			newSess.Close() // disposes clearEnv
+			return fmt.Errorf("boot generation: %w", err)
+		}
 		// The rendezvous is the last fallible step and the daemon's public
 		// address for this thread. Moving it before the replacement means a
 		// client that discovers the new session id can always reach a daemon
@@ -1599,9 +1605,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
 		// One projection commit swaps the live session, the daemon's identity,
-		// and the turn snapshot. The stable workspace ref remains subscribed while
-		// a resync tells every client to hydrate the new instance.
-		srv.ReplaceAppIdentity(prepared, func() { setSession(newSess, clearEnv) })
+		// and the thread's history. The stable workspace ref remains subscribed
+		// while a resync tells every client to hydrate the new instance.
+		srv.WireTranscriptHistory(newSess)
+		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)), func() { setSession(newSess, clearEnv) })
+		servedBootGeneration.Store(clearGeneration)
 		// Re-root the retirement controller at the replacement. The lease held
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
@@ -1748,8 +1756,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 						func() { setMutationRunner(cancelTurn, runnerDone) },
 						func() { srv.SetCancelFunc(cancelTurn) },
 					)
+					// The execution the claim admits publishes its own TurnID
+					// through SetProcessingTurn (WireTranscriptHistory) before
+					// its first entry is recorded.
 					if phase == agent.ClientMutationStartClaimed {
-						srv.SetProcessingTurn(turnID)
 						srv.SetState(string(agent.SessionProcessing))
 					}
 				})
@@ -1771,8 +1781,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					func() { setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
-				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
-					srv.SetProcessingTurn(turnID)
+				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
 					srv.SetState(string(agent.SessionProcessing))
 				})
 				if !processed {

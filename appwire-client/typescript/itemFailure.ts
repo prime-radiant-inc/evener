@@ -63,3 +63,19 @@ export function isInProgressStatus(status: string | undefined): boolean {
 export function isActiveItem(item: ItemFailureSignals, turnStatus: string | undefined): boolean {
   return isInProgressStatus(item.status) || (isInProgressStatus(turnStatus) && item.status === undefined);
 }
+
+/**
+ * The status to show for a turn (spec "Turn status": running state lives in
+ * the overlay). A recorded open turn (`inProgress`) shows as running only while
+ * it is the thread's running turn, and as `interrupted` otherwise: a daemonless
+ * read of a turn a crash left open, or a turn whose execution stood down, never
+ * shows as running forever. Every other status shows as recorded. A display
+ * rule only: the result is never stored or merged back into the model.
+ */
+export function displayTurnStatus(
+  turn: { readonly id: string; readonly status: string },
+  thread: { readonly runningTurnId?: string },
+): string {
+  if (!isInProgressStatus(turn.status) || turn.id === thread.runningTurnId) return turn.status;
+  return "interrupted";
+}

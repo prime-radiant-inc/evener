@@ -103,12 +103,12 @@ func TestHubModelThreadResyncRereadsInsteadOfKeepingDeadGenerationState(t *testi
 
 	// The replacement daemon's first live turn reuses turn_5. With the dead
 	// generation's turn_5 row gone, its frames own that turn outright.
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-		ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_5"},
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, ActiveTurnID: "turn_5",
 	}).Notification)
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-		ThreadID: "01SEND", Ref: "local:01SEND", TurnID: "turn_5",
-		Item: appwire.ThreadItem{Type: "userMessage", ID: "item_user_9", TurnID: "turn_5", Text: "redeploy now"},
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "01SEND", Ref: "local:01SEND",
+		Items: []appwire.ThreadItem{{Type: "userMessage", ID: "item_user_9", TurnID: "turn_5", Text: "redeploy now"}},
 	}).Notification)
 
 	var turn5 []transcript.ChatMessage

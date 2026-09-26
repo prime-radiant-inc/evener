@@ -603,7 +603,7 @@ func TestHubSpawnResumePassDaemonIdleTimeout(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v6","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

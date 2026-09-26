@@ -21,11 +21,6 @@ type stubThreadEnvelopeSource struct {
 	tasks            *appwire.TaskAggregate
 	taskCalls        int
 	metaCalls        int
-	// Retained only for older fuzz fixtures that mutate the historical fields.
-	// Goal projection reads meta.Goal exclusively.
-	goalStatus       string
-	goalIterations   int
-	goalSet          bool
 	workMillis       int64
 	usage            *appwire.EvenerUsage
 	turnStartedAt    int64

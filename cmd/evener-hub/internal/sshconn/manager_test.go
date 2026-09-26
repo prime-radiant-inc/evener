@@ -425,7 +425,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 				if call == 0 {
 					return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -457,7 +457,7 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		fr := &fakeRunner{
 			runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				if containsToken(argv, "launch-check") {
-					return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+					return []byte(`unsupported appwire protocol "evener-appwire-v6" (supported "evener-appwire-v4")`), errors.New("exit status 1")
 				}
 				return cannedRun(nil)(context.Background(), argv, nil)
 			},
@@ -482,9 +482,9 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+					return []byte(`unsupported appwire protocol "evener-appwire-v6" (supported "evener-appwire-v4")`), errors.New("exit status 1")
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -515,7 +515,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		built := false
 		fr := deployRunner(t,
 			func(int) ([]byte, error) {
-				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":[]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// A real hub always reports started_at (cmd/evener-hub/web_api.go
@@ -551,9 +551,9 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
+					return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":[]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// As above: the hub reports a start time, and the restarted process
@@ -1971,7 +1971,7 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// A mismatching on-disk build puts a deploy on the table, which is the
 			// only path that runs the hub-presence probe.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"oldsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			return nil, errors.New("curl: (7) Failed to connect")
 		case strings.Contains(joined, "list-units"):

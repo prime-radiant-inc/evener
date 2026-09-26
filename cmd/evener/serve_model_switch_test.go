@@ -13,16 +13,25 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func waitServeMilestone(ctx context.Context, milestones <-chan string, want string) error {
-	select {
-	case got := <-milestones:
-		if got != want {
-			return fmt.Errorf("structured milestone = %q, want %q", got, want)
-		}
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("waiting for structured milestone %q: %w", want, ctx.Err())
+// waitServeMilestonesInAnyOrder waits for every milestone in wants, in
+// whatever order they arrive.
+func waitServeMilestonesInAnyOrder(ctx context.Context, milestones <-chan string, wants ...string) error {
+	pending := map[string]bool{}
+	for _, want := range wants {
+		pending[want] = true
 	}
+	for len(pending) > 0 {
+		select {
+		case got := <-milestones:
+			if !pending[got] {
+				return fmt.Errorf("unexpected structured milestone %q while waiting for %v", got, wants)
+			}
+			delete(pending, got)
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for structured milestones %v: %w", wants, ctx.Err())
+		}
+	}
+	return nil
 }
 
 func waitServeTurn(ctx context.Context, turns <-chan string, want string) error {
@@ -239,28 +248,28 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		}
 	}
 	go func() {
+		completed := map[string]bool{}
+		ranTurn := false
 		for notification := range client.Notifications() {
 			switch notification.Method {
-			case appwire.NotifyTurnCompleted:
-				var params appwire.TurnCompletedParams
+			case appwire.NotifyHistoryUpdated:
+				var params appwire.HistoryUpdatedParams
 				if json.Unmarshal(notification.Params, &params) != nil || params.Ref != ref {
 					continue
 				}
-				switch params.Turn.Status {
-				case appwire.TurnStatusFailed:
-					record("failed turn")
-				case appwire.TurnStatusCompleted:
-					// Boot announcements ("Loaded prompt ...") each re-emit the
-					// whole system prelude turn as turn/completed with status
-					// "completed". On a starved runner the subscribe cut lands
-					// while the daemon's bridge is still draining those boot
-					// events, so 20+ turn_system completions arrive live; pushing
-					// them here filled this 8-slot channel (which nothing drains
-					// until the recovery phase) and permanently wedged this
-					// goroutine before the "failed turn" milestone was ever read.
-					// Only real turns belong on completedTurns.
-					if params.Turn.ID != appwire.SystemPreludeTurnID {
-						completedTurns <- params.Turn.ID
+				for _, turn := range params.Turns {
+					switch turn.Status {
+					case appwire.TurnStatusFailed:
+						record("failed turn")
+					case appwire.TurnStatusCompleted:
+						// The prelude and a turn published again at a higher
+						// version are not new completions; only each real
+						// turn's first completion belongs on completedTurns,
+						// which nothing drains until the recovery phase.
+						if turn.ID != appwire.SystemPreludeTurnID && !completed[turn.ID] {
+							completed[turn.ID] = true
+							completedTurns <- turn.ID
+						}
 					}
 				}
 			case appwire.NotifyThreadStatusChanged:
@@ -268,21 +277,20 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 				if json.Unmarshal(notification.Params, &params) != nil || params.Ref != ref {
 					continue
 				}
+				if params.Status.Type == appwire.ThreadStatusActive {
+					ranTurn = true
+				}
 				if params.Status.Type == appwire.ThreadStatusIdle &&
-					params.Capabilities != nil && params.Capabilities.ChangeModel {
+					params.Capabilities != nil && params.Capabilities.ChangeModel && ranTurn {
 					// Boot parks the thread idle with ChangeModel too, and on a
 					// starved runner that status notification is still draining
-					// when the subscribe cut lands — the same drain the
-					// SystemPreludeTurnID filter above absorbs for
-					// turn/completed. An idle recorded before the failed turn
-					// proves nothing about restoration, so only one seen
-					// afterwards counts as the milestone.
-					onceMu.Lock()
-					afterFailure := seen["failed turn"]
-					onceMu.Unlock()
-					if afterFailure {
-						record("idle with model capability")
-					}
+					// when the subscribe cut lands. An idle published before
+					// the failing turn ran proves nothing about restoration, so
+					// only one after the turn went active counts. Its history
+					// (the failed turn) is published from the recorded entries
+					// on its own schedule, so the two milestones are awaited in
+					// either order.
+					record("idle with model capability")
 				}
 			}
 		}
@@ -298,11 +306,8 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatalf("TurnStart (failed provider): %v", err)
 	}
 
-	if err := waitServeMilestone(ctx, milestones, "failed turn"); err != nil {
-		t.Fatalf("wait failed turn: %v", err)
-	}
-	if err := waitServeMilestone(ctx, milestones, "idle with model capability"); err != nil {
-		t.Fatalf("wait idle capability: %v", err)
+	if err := waitServeMilestonesInAnyOrder(ctx, milestones, "failed turn", "idle with model capability"); err != nil {
+		t.Fatalf("wait failed turn and idle capability: %v", err)
 	}
 
 	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})

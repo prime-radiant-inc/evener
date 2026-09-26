@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,10 +13,7 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/appitempaging"
-	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
@@ -614,59 +609,6 @@ func TestThreadListStatusOnlyCarriesProbeDiagnosticsOnly(t *testing.T) {
 	}
 }
 
-func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
-	records := []appserver.SequencedNotification{
-		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress"}}`)}},
-		{Notification: appwire.Notification{Method: "item/started", Params: []byte(`{"turnId":"turn_1","item":{"type":"reasoning","id":"item_reasoning_1","turnId":"turn_1","status":"inProgress"}}`)}},
-		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":"Let me think"}`)}},
-		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":" about this."}`)}},
-		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turn":{"id":"turn_1","status":"completed"}}`)}},
-	}
-	turns := appTurnsFromNotifications(records)
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn, got %d", len(turns))
-	}
-	items := turns[0].Items
-	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d: %+v", len(items), items)
-	}
-	if items[0].Type != "reasoning" || items[0].Text != "Let me think about this." {
-		t.Fatalf("reasoning item=%+v", items[0])
-	}
-	// The settle stamp names its turn the way the wire does, in turn.id, which
-	// is the only name appTurnsFromNotifications reads: a frame naming it
-	// anywhere else is dropped and leaves the turn open.
-	if turns[0].Status != appwire.TurnStatusCompleted {
-		t.Fatalf("turn status = %q, want %q", turns[0].Status, appwire.TurnStatusCompleted)
-	}
-}
-
-// TestAppTurnsFromNotificationsCarriesTurnTiming verifies that replaying a
-// turn/started carrying Turn.StartedAt and a turn/completed carrying
-// Turn.CompletedAt/Turn.DurationMS reconstructs a Turn with those three
-// timing fields set — today appTurnsFromNotifications only copies
-// ItemsView/Status off the wire Turn and silently drops the timing fields.
-func TestAppTurnsFromNotificationsCarriesTurnTiming(t *testing.T) {
-	records := []appserver.SequencedNotification{
-		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress","startedAt":1700000000}}`)}},
-		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turn":{"id":"turn_1","status":"completed","completedAt":1700000042,"durationMs":4200}}`)}},
-	}
-	turns := appTurnsFromNotifications(records)
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn, got %d", len(turns))
-	}
-	turn := turns[0]
-	if turn.StartedAt == nil || *turn.StartedAt != 1700000000 {
-		t.Fatalf("turn StartedAt=%v, want 1700000000", turn.StartedAt)
-	}
-	if turn.CompletedAt == nil || *turn.CompletedAt != 1700000042 {
-		t.Fatalf("turn CompletedAt=%v, want 1700000042", turn.CompletedAt)
-	}
-	if turn.DurationMS == nil || *turn.DurationMS != 4200 {
-		t.Fatalf("turn DurationMS=%v, want 4200", turn.DurationMS)
-	}
-}
-
 func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
@@ -727,379 +669,9 @@ func TestAppThread_UsesGeneratedSessionNameFromMeta(t *testing.T) {
 	}
 }
 
-// appTurnSnapshotRecord marshals one notification into a sequenced record for
-// the reducer tests below.
-func appTurnSnapshotRecord(t *testing.T, seq uint64, method string, params any) appserver.SequencedNotification {
-	t.Helper()
-	raw, err := json.Marshal(params)
-	if err != nil {
-		t.Fatalf("marshal %s params: %v", method, err)
-	}
-	return appserver.SequencedNotification{
-		Seq:          seq,
-		Notification: appwire.Notification{Method: method, Params: raw},
-	}
-}
-
-// TestAppTurnSnapshotReducesAssistantMessageReset covers item/agentMessage/reset,
-// which a retried model call emits so its replacement output supersedes the
-// partial already streamed. A reducer that ignores it leaves the abandoned
-// partial in authoritative state, and the retry's text appends to it -- the
-// user sees the first attempt's fragment welded onto the second attempt.
-func TestAppTurnSnapshotReducesAssistantMessageReset(t *testing.T) {
-	snapshot := &appTurnSnapshot{
-		threadID: "th_1",
-		turns: []appwire.Turn{{
-			ID:        "turn_1",
-			ItemsView: "full",
-			Status:    appwire.TurnStatusInProgress,
-			Items: []appwire.ThreadItem{{
-				Type:   "agentMessage",
-				ID:     "item_partial",
-				TurnID: "turn_1",
-				Text:   "abandoned partial",
-				Status: appwire.TurnStatusInProgress,
-			}},
-		}},
-		turnIndex: map[string]int{"turn_1": 0},
-	}
-
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-			ThreadID: "th_1",
-			TurnID:   "turn_1",
-			ItemID:   "item_partial",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("turns = %d, want 1", len(turns))
-	}
-	for _, item := range turns[0].Items {
-		if item.ID == "item_partial" {
-			t.Fatalf("reset left the abandoned partial in authoritative state: %+v", turns[0].Items)
-		}
-	}
-}
-
-// TestAppTurnSnapshotReducesSteeringIntoActiveTurn covers evener/steering/injected.
-// Steering is the only item the daemon adds to a turn it did not itself start,
-// and it carries identity (client mutation ID) the pane needs to retire its
-// optimistic copy. A reducer that drops it loses the user's own message from
-// authoritative state.
-//
-// The item shape must match the frontend reducer exactly
-// (appwire-client/typescript/reducer.ts:777-790), including the
-// per-turn steering index in the ID, so a rejoin projects what the live pane
-// already rendered.
-func TestAppTurnSnapshotReducesSteeringIntoActiveTurn(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			ThreadID: "th_1",
-			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
-		}),
-		appTurnSnapshotRecord(t, 2, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID:         "th_1",
-			Text:             "first steer",
-			Source:           "user",
-			ClientMutationID: "mutation-a",
-		}),
-		appTurnSnapshotRecord(t, 3, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1",
-			Text:     "second steer",
-			Images:   []appwire.InputItem{{Type: "image", MediaType: "image/png", Data: []byte("steer-image"), Name: "steer.png"}},
-			Kind:     "budget",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("turns = %d, want 1", len(turns))
-	}
-	var steering []appwire.ThreadItem
-	for _, item := range turns[0].Items {
-		if item.Type == "steering" {
-			steering = append(steering, item)
-		}
-	}
-	if len(steering) != 2 {
-		t.Fatalf("steering items = %d, want 2 (items=%+v)", len(steering), turns[0].Items)
-	}
-	if steering[0].ID != "item_steering_live_turn_1_0" || steering[1].ID != "item_steering_live_turn_1_1" {
-		t.Fatalf("steering ids = %q, %q, want item_steering_live_turn_1_0 and _1", steering[0].ID, steering[1].ID)
-	}
-	for i, item := range steering {
-		if item.TurnID != "turn_1" {
-			t.Fatalf("steering[%d] turn = %q, want turn_1", i, item.TurnID)
-		}
-		if item.Status != appwire.TurnStatusCompleted {
-			t.Fatalf("steering[%d] status = %q, want completed", i, item.Status)
-		}
-	}
-	if steering[0].Text != "first steer" || steering[0].Source != "user" || steering[0].ClientMutationID != "mutation-a" {
-		t.Fatalf("first steering item = %+v, want text/source/clientMutationId preserved", steering[0])
-	}
-	if steering[1].Text != "second steer" || steering[1].SteeringKind != "budget" {
-		t.Fatalf("second steering item = %+v, want text and steering kind preserved", steering[1])
-	}
-	if len(steering[1].Images) != 1 ||
-		steering[1].Images[0].Name != "steer.png" ||
-		string(steering[1].Images[0].Data) != "steer-image" {
-		t.Fatalf("second steering images = %+v, want the injected image preserved", steering[1].Images)
-	}
-}
-
-// TestAppTurnSnapshotSeedIsDeepDefensiveCopy proves Seed does not alias the
-// caller's projection. Production seeds from a transcript projection the caller
-// still holds; if any nested pointer or slice were shared, later work on that
-// projection would silently rewrite authoritative state that clients have
-// already read.
-func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
-	started := int64(1700000000)
-	duration := int64(4200)
-	exitCode := int64(0)
-	cause := appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 500}
-	position := appwire.ThreadItemPosition{Entry: 4, Item: 2}
-	wantPosition := position
-	seed := []appwire.Turn{{
-		ID:        "turn_1",
-		ItemsView: "full",
-		Status:    appwire.TurnStatusCompleted,
-		StartedAt: &started,
-		Error:     &appwire.TurnError{Message: "original", Cause: &cause},
-		Items: []appwire.ThreadItem{{
-			Type: "agentMessage",
-			ID:   "item_1",
-			// DurationMS and ExitCode are pointers the transcript projector
-			// populates on tool-call items, and they were the two fields the
-			// clone helper missed.
-			TurnID:        "turn_1",
-			Text:          "original text",
-			DurationMS:    &duration,
-			ExitCode:      &exitCode,
-			Position:      &position,
-			TranscriptKey: appitempaging.TranscriptItemKey("turn_1", position),
-			Raw:           json.RawMessage(`{"k":"original"}`),
-			Images: []appwire.InputItem{{
-				Type:      "image",
-				MediaType: "image/png",
-				Data:      []byte("original-bytes"),
-				Name:      "original.png",
-				Metadata:  map[string]string{"source": "original"},
-			}},
-		}},
-	}}
-
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-	snapshot.Seed(seed)
-	before := snapshot.Snapshot()
-
-	// Mutate every level the caller still owns.
-	seed[0].ID = "mutated"
-	seed[0].Status = appwire.TurnStatusInProgress
-	*seed[0].StartedAt = 1
-	seed[0].Error.Message = "mutated"
-	seed[0].Error.Cause.Provider = "mutated"
-	seed[0].Items[0].Text = "mutated text"
-	seed[0].Items[0].Raw[6] = 'X'
-	seed[0].Items[0].Images[0].Data[0] = 'X'
-	seed[0].Items[0].Images[0].Metadata["source"] = "mutated"
-	seed[0].Items[0].Images[0].Name = "mutated.png"
-	*seed[0].Items[0].DurationMS = 9999
-	*seed[0].Items[0].ExitCode = 137
-	*seed[0].Items[0].Position = appwire.ThreadItemPosition{Entry: 99, Item: 99}
-
-	after := snapshot.Snapshot()
-	if !reflect.DeepEqual(before, after) {
-		t.Fatalf("Seed aliased caller state:\nbefore=%+v\nafter=%+v", before, after)
-	}
-	if got := after[0].Items[0].Position; got == nil || *got != wantPosition {
-		t.Fatalf("Seed position = %+v, want unchanged position %+v", got, wantPosition)
-	}
-
-	// Two reads must not hand back the same pointers either, or one caller
-	// mutating its copy would rewrite another's.
-	a, b := snapshot.Snapshot(), snapshot.Snapshot()
-	if a[0].Items[0].DurationMS == b[0].Items[0].DurationMS {
-		t.Fatal("Snapshot shares one *DurationMS across reads")
-	}
-	if a[0].Items[0].ExitCode == b[0].Items[0].ExitCode {
-		t.Fatal("Snapshot shares one *ExitCode across reads")
-	}
-	if a[0].Items[0].Position == b[0].Items[0].Position {
-		t.Fatal("Snapshot shares one *Position across reads")
-	}
-}
-
-// TestAppTurnSnapshotSteeringIndexIsPerTurn pins the per-turn steering counter.
-// A global counter satisfies every single-turn assertion, so without a second
-// turn nothing distinguishes the two -- and a global one would produce IDs that
-// disagree with both the frontend reducer and the transcript reload shape.
-func TestAppTurnSnapshotSteeringIndexIsPerTurn(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
-		}),
-		appTurnSnapshotRecord(t, 2, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1", Text: "steer turn 1",
-		}),
-		appTurnSnapshotRecord(t, 3, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted},
-		}),
-		appTurnSnapshotRecord(t, 4, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress},
-		}),
-		appTurnSnapshotRecord(t, 5, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1", Text: "steer turn 2",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 2 {
-		t.Fatalf("turns = %d, want 2", len(turns))
-	}
-	if len(turns[0].Items) != 1 || turns[0].Items[0].ID != "item_steering_live_turn_1_0" {
-		t.Fatalf("turn_1 items = %+v, want item_steering_live_turn_1_0", turns[0].Items)
-	}
-	// The second turn's first steer restarts at index 0. A counter shared
-	// across turns would name this one _1.
-	if len(turns[1].Items) != 1 || turns[1].Items[0].ID != "item_steering_live_turn_2_0" {
-		t.Fatalf("turn_2 items = %+v, want item_steering_live_turn_2_0", turns[1].Items)
-	}
-}
-
-// TestAppTurnSnapshotSeedReplacesPriorReducedState pins that a seed is a
-// replacement, not a merge: whatever the snapshot had already reduced is gone,
-// and activeTurnID is re-derived from the seed rather than left naming a turn
-// no longer in the index (after which every steer would be silently dropped).
-func TestAppTurnSnapshotSeedReplacesPriorReducedState(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-	// Reduce state from a previous identity.
-	for seq := uint64(1); seq <= 3; seq++ {
-		snapshot.Apply([]appserver.SequencedNotification{
-			appTurnSnapshotRecord(t, seq, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-				ThreadID: "th_1",
-				Turn:     appwire.Turn{ID: fmt.Sprintf("old_turn_%d", seq), Status: appwire.TurnStatusCompleted},
-			}),
-		})
-	}
-
-	snapshot.Seed([]appwire.Turn{{ID: "seeded_turn", Status: appwire.TurnStatusInProgress}})
-
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 9, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1", Text: "after seed",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 1 || turns[0].ID != "seeded_turn" {
-		t.Fatalf("turns = %v, want only the seeded turn", turnIDs(turns))
-	}
-	if len(turns[0].Items) != 1 || turns[0].Items[0].ID != "item_steering_live_seeded_turn_0" {
-		t.Fatalf("seeded turn items = %+v, want steering to still reach the seeded active turn", turns[0].Items)
-	}
-}
-
-// TestAppTurnSnapshotSeedWithoutLiveTurnClearsSteeringTarget pins the other
-// half of Seed's replacement contract: a seed that names no in-progress turn
-// leaves no steering target at all. Turn ids are projector-local and restart
-// at turn_1 for a new identity, so an activeTurnID carried across a seed can
-// name a live id that now belongs to a completed turn from a different
-// conversation, and steering would be welded onto it.
-func TestAppTurnSnapshotSeedWithoutLiveTurnClearsSteeringTarget(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			ThreadID: "th_1",
-			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
-		}),
-	})
-
-	snapshot.Seed([]appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted}})
-
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 2, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1", Text: "steer nothing",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("turns = %d, want 1", len(turns))
-	}
-	if len(turns[0].Items) != 0 {
-		t.Fatalf("seeded completed turn items = %+v, want steering dropped with no live turn", turns[0].Items)
-	}
-}
-
-// TestAppTurnSnapshotSeedFindsLastInProgressTurn pins which turn steering
-// attaches to after a seed. A transcript can hold an earlier turn that never
-// completed because the daemon died mid-turn, so "the first in-progress turn"
-// would aim steering at a turn that ended long ago.
-func TestAppTurnSnapshotSeedFindsLastInProgressTurn(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-	snapshot.Seed([]appwire.Turn{
-		{ID: "turn_1", Status: appwire.TurnStatusInProgress},
-		{ID: "turn_2", Status: appwire.TurnStatusCompleted},
-		{ID: "turn_3", Status: appwire.TurnStatusInProgress},
-	})
-
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1", Text: "steer the live turn",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 3 {
-		t.Fatalf("turns = %d, want 3", len(turns))
-	}
-	if len(turns[0].Items) != 0 || len(turns[1].Items) != 0 {
-		t.Fatalf("steering landed on a stale turn: %+v", turns)
-	}
-	if len(turns[2].Items) != 1 || turns[2].Items[0].ID != "item_steering_live_turn_3_0" {
-		t.Fatalf("turn_3 items = %+v, want one steering item", turns[2].Items)
-	}
-}
-
-// TestAppTurnSnapshotCompletedTurnClearsActiveSteeringTarget proves a settled
-// turn stops absorbing steering. Without this, steering that races a turn's own
-// completion would be welded onto the finished turn instead of being left for
-// the next authoritative snapshot to place.
-func TestAppTurnSnapshotCompletedTurnClearsActiveSteeringTarget(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1"}
-	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			ThreadID: "th_1",
-			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
-		}),
-		appTurnSnapshotRecord(t, 2, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-			ThreadID: "th_1",
-			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted},
-		}),
-		appTurnSnapshotRecord(t, 3, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-			ThreadID: "th_1", Text: "steer after completion",
-		}),
-	})
-
-	turns := snapshot.Snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("turns = %d, want 1 (no fabricated turn)", len(turns))
-	}
-	if len(turns[0].Items) != 0 {
-		t.Fatalf("steering attached to a completed turn: %+v", turns[0].Items)
-	}
-}
-
 func TestAppWireItemPagingSubscriptionCut(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "prompt"}})
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("prompt")))
+	srv := st.srv
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	t.Cleanup(httpServer.Close)
 	ctx := context.Background()
@@ -1132,7 +704,7 @@ func TestAppWireItemPagingSubscriptionCut(t *testing.T) {
 		t.Fatalf("item metadata = %+v, want transcript key and position", item)
 	}
 	if reads != 0 {
-		t.Fatalf("subscribed item read performed %d transcript read(s)", reads)
+		t.Fatalf("subscribed item read went through the legacy transcript reader %d time(s); history comes from the transcript index", reads)
 	}
 }
 
@@ -1170,574 +742,94 @@ func TestHandleAppThreadReadUnknownThreadRemainsEmpty(t *testing.T) {
 	}
 }
 
-func TestSubscribedThreadReadWithoutConnectionPreservesSnapshotTarget(t *testing.T) {
-	srv := seedTranscriptServer(t, 1)
-	srv.mu.Lock()
-	childTurns := &appTurnSnapshot{threadID: "child"}
-	childTurns.Seed(srv.appTurns.Snapshot())
-	childThread := srv.appThreadLocked()
-	childThread.ID, childThread.SessionID = "child", "child"
-	childThread.Evener.Ref = "local:child"
-	srv.appDescendants["child"] = &appDescendantProjection{turns: childTurns, thread: childThread}
-	srv.mu.Unlock()
-	for _, ref := range []string{"local:th_1", "local:child"} {
+func TestSubscribedThreadReadWithoutConnectionPreservesTheTarget(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("root history")))
+	srv := st.srv
+	childPath := writeDelegateTranscript(t, "child", "child history")
+	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
+		if threadID == "child" {
+			return childPath
+		}
+		return ""
+	})
+	srv.RecordDescendantAppEvent("th_1", threadEvent("child", events.SessionStartData{}))
+	for ref, want := range map[string]string{"local:th_1": "root history", "local:child": "child history"} {
 		response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, Subscribe: true, IncludeTurns: true})
 		if err != nil {
 			t.Fatalf("subscribed thread/read without connection (%s): %v", ref, err)
 		}
-		if len(response.Thread.Turns) == 0 {
-			t.Fatalf("subscribed no-connection response (%s) = %+v, want seeded snapshot", ref, response)
+		if texts := readTexts(response); len(texts) != 1 || texts[0] != want {
+			t.Fatalf("subscribed no-connection response (%s) items = %q, want %q", ref, texts, want)
 		}
 	}
 }
 
-func TestPrepareAppIdentityUsesPersistedItemIndexIncarnation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_index"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+func TestHistoryUpdatedItemCarriesItsIdentity(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_identity")
+	cursor := st.srv.appNotifier.CurrentSequence()
+	st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("identity")))
+	st.settle(t)
 
-	prepared, err := PrepareAppIdentityForRef("local", "th_index", "local:th_index", path)
-	if err != nil {
-		t.Fatalf("PrepareAppIdentityForRef: %v", err)
+	for _, record := range st.srv.AppNotificationsAfter(cursor, "th_identity") {
+		if record.Notification.Method != appwire.NotifyHistoryUpdated {
+			continue
+		}
+		update := notificationParams[appwire.HistoryUpdatedParams](t, record)
+		if len(update.Items) != 1 || update.Items[0].TranscriptKey == "" || update.Items[0].Position == nil || update.Items[0].Version == 0 {
+			t.Fatalf("history/updated items = %+v, want one item with transcriptKey, position and version", update.Items)
+		}
+		return
 	}
-	_, preparedIdentity, err := prepared.turns.LatestItemCandidates(40)
-	if err != nil {
-		t.Fatalf("prepared LatestItemCandidates: %v", err)
-	}
-	_, indexedIdentity, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
-		ThreadRef: "local:th_index",
-		Limit:     40,
-	}, preparedItemProjector)
-	if err != nil {
-		t.Fatalf("indexed item window: %v", err)
-	}
-	if preparedIdentity.Incarnation == "" || preparedIdentity.Incarnation != indexedIdentity.Incarnation {
-		t.Fatalf("prepared incarnation=%q, indexed=%q; want persisted item-index identity", preparedIdentity.Incarnation, indexedIdentity.Incarnation)
-	}
+	t.Fatal("the recorded entry produced no history/updated notification")
 }
 
-func TestPrepareAppIdentityFromEntriesForPathUsesPersistedItemIndexIncarnation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_restore_index"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+func TestResumedThreadPublishesItsNextEntryWithTheReadsIdentity(t *testing.T) {
+	st := newServedTranscript(t, NewServer(ServerConfig{}), "resume", schema.NewTurn(schema.TurnUserInput, llm.User("historical")))
+	cursor := st.srv.appNotifier.CurrentSequence()
+	st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User("live")))
+	st.settle(t)
 
-	_, indexedIdentity, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
-		ThreadRef: "local:th_restore_index",
-		Limit:     40,
-	}, preparedItemProjector)
-	if err != nil {
-		t.Fatalf("indexed item window: %v", err)
-	}
-	writer, entries, err := transcript.OpenWriterForSession(path, "th_restore_index")
-	if err != nil {
-		t.Fatalf("OpenWriterForSession: %v", err)
-	}
-	defer writer.Close()
-	prepared, err := PrepareAppIdentityFromEntriesForPath("local", "th_restore_index", "local:th_restore_index", path, writer.Header(), entries)
-	if err != nil {
-		t.Fatalf("PrepareAppIdentityFromEntriesForPath: %v", err)
-	}
-	_, preparedIdentity, err := prepared.turns.LatestItemCandidates(40)
-	if err != nil {
-		t.Fatalf("prepared LatestItemCandidates: %v", err)
-	}
-	if preparedIdentity.Incarnation == "" || preparedIdentity.Incarnation != indexedIdentity.Incarnation {
-		t.Fatalf("restore prepared incarnation=%q, indexed=%q; want persisted item-index identity", preparedIdentity.Incarnation, indexedIdentity.Incarnation)
-	}
-}
-
-func TestPrepareAppIdentityFromEntriesRetainsFallbackIdentity(t *testing.T) {
-	entries := []transcript.Entry{{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hello"))}}
-	prepared, err := PrepareAppIdentityFromEntries("local", "th_restore_fallback", "local:th_restore_fallback", transcript.Header{SessionID: "th_restore_fallback"}, entries)
-	if err != nil {
-		t.Fatalf("PrepareAppIdentityFromEntries: %v", err)
-	}
-	_, identity, err := prepared.turns.LatestItemCandidates(40)
-	if err != nil {
-		t.Fatalf("prepared LatestItemCandidates: %v", err)
-	}
-	if identity.Incarnation == "" || !strings.HasPrefix(identity.Incarnation, "appwire-prepared-v") {
-		t.Fatalf("fallback incarnation=%q; want documented prepared fallback", identity.Incarnation)
-	}
-}
-
-func TestPrepareAppIdentityWithPreludeReservesLiveEntryCoordinate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_prelude_index", SystemPrompt: "system"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	prepared, err := PrepareAppIdentityForRef("local", "th_prelude_index", "local:th_prelude_index", path)
-	if err != nil {
-		t.Fatalf("PrepareAppIdentityForRef: %v", err)
-	}
-	started, err := json.Marshal(appwire.TurnStartedParams{ThreadID: "th_prelude_index", Turn: appwire.Turn{ID: "turn_live", Status: appwire.TurnStatusInProgress}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, err := json.Marshal(appwire.ItemLifecycleParams{TurnID: "turn_live", Item: appwire.ThreadItem{
-		ID: "live_item", TurnID: "turn_live", Type: "agentMessage", Status: appwire.TurnStatusCompleted, Text: "live",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepared.turns.Apply([]appserver.SequencedNotification{
-		{Seq: 1, Notification: appwire.Notification{Method: appwire.NotifyTurnStarted, Params: started}},
-		{Seq: 2, Notification: appwire.Notification{Method: appwire.NotifyItemStarted, Params: item}},
-	})
-	window, _, err := prepared.turns.LatestItemCandidates(40)
-	if err != nil {
-		t.Fatalf("LatestItemCandidates: %v", err)
-	}
-	if len(window.Candidates) != 3 {
-		t.Fatalf("candidate count=%d, want prelude, persisted, and live items", len(window.Candidates))
-	}
-	if got := window.Candidates[0].Position; got != (appwire.ThreadItemPosition{Entry: 0, Item: 0}) {
-		t.Fatalf("prelude position=%+v, want (0,0)", got)
-	}
-	if got := window.Candidates[1].Position; got != (appwire.ThreadItemPosition{Entry: 1, Item: 0}) {
-		t.Fatalf("persisted position=%+v, want (1,0)", got)
-	}
-	if got := window.Candidates[2].Position; got != (appwire.ThreadItemPosition{Entry: 2, Item: 0}) {
-		t.Fatalf("live position=%+v, want entry 2 after one persisted entry and reserved prelude", got)
-	}
-}
-
-func TestPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		systemPrompt string
-		wantEntry    uint64
-	}{
-		{name: "without prelude", wantEntry: 1},
-		{name: "with prelude", systemPrompt: "system", wantEntry: 2},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "resume-identity.transcript.jsonl")
-			header := transcript.Header{SessionID: "th_resume_identity", SystemPrompt: tc.systemPrompt}
-			tw, err := transcript.NewWriter(path, header)
-			if err != nil {
-				t.Fatalf("NewWriter: %v", err)
+	var published appwire.ThreadItem
+	for _, record := range st.srv.AppNotificationsAfter(cursor, "resume") {
+		if record.Notification.Method != appwire.NotifyHistoryUpdated {
+			continue
+		}
+		for _, item := range notificationParams[appwire.HistoryUpdatedParams](t, record).Items {
+			if item.Text == "live" {
+				published = item
 			}
-			for _, turn := range []schema.Turn{
-				schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
-				schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
-			} {
-				if err := tw.Append(turn); err != nil {
-					t.Fatalf("Append history: %v", err)
-				}
-			}
-			if err := tw.Close(); err != nil {
-				t.Fatalf("Close history: %v", err)
-			}
-
-			prepared, err := PrepareAppIdentity("local", "th_resume_identity", path)
-			if err != nil {
-				t.Fatalf("PrepareAppIdentity: %v", err)
-			}
-			srv := NewServer(ServerConfig{})
-			srv.ReplaceAppIdentity(prepared, nil)
-			srv.RecordAppEvent(events.SessionEvent{
-				Kind:      events.EventUserInput,
-				SessionID: "th_resume_identity",
-				Data:      events.UserInputData{Text: "live"},
-			})
-			var live appwire.ThreadItem
-			for _, turn := range srv.appAllTurns("th_resume_identity") {
-				for _, item := range turn.Items {
-					if item.Text == "live" {
-						live = item
-					}
-				}
-			}
-			if live.Position == nil {
-				t.Fatalf("live item = %+v, want positioned item", live)
-			}
-
-			writer, _, err := transcript.OpenWriterForSession(path, "th_resume_identity")
-			if err != nil {
-				t.Fatalf("OpenWriterForSession: %v", err)
-			}
-			if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
-				_ = writer.Close()
-				t.Fatalf("Append live: %v", err)
-			}
-			if err := writer.Close(); err != nil {
-				t.Fatalf("Close live: %v", err)
-			}
-
-			window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
-				ThreadRef: "local:th_resume_identity",
-				Limit:     40,
-			}, preparedItemProjector)
-			if err != nil {
-				t.Fatalf("LatestItemWindowFromFile: %v", err)
-			}
-			var persisted appwire.ThreadItem
-			for _, candidate := range window.Candidates {
-				if candidate.Item.Text == "live" {
-					persisted = candidate.Item
-				}
-			}
-			if persisted.Position == nil {
-				t.Fatalf("persisted item candidates = %+v, want positioned live item", window.Candidates)
-			}
-			wantPosition := appwire.ThreadItemPosition{Entry: tc.wantEntry, Item: 0}
-			if *live.Position != wantPosition || *persisted.Position != wantPosition {
-				t.Fatalf("live position=%+v, persisted position=%+v, want shared %+v", *live.Position, *persisted.Position, wantPosition)
-			}
-			if live.TranscriptKey != persisted.TranscriptKey {
-				t.Fatalf("live key=%q, persisted key=%q, want identical resumed item identity", live.TranscriptKey, persisted.TranscriptKey)
-			}
-		})
-	}
-}
-
-func TestPreparedResumeAfterEmptyLogicalTurnPreservesAbsoluteItemIdentity(t *testing.T) {
-	const sessionID = "th_resume_empty"
-	path := filepath.Join(t.TempDir(), "resume-empty.transcript.jsonl")
-	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	for _, turn := range []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
-		{Kind: schema.TurnCheckpoint},
-	} {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append history: %v", err)
 		}
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close history: %v", err)
+	if published.TranscriptKey == "" {
+		t.Fatal("the resumed thread's next entry produced no history/updated item")
 	}
-
-	prepared, err := PrepareAppIdentity("local", sessionID, path)
-	if err != nil {
-		t.Fatalf("PrepareAppIdentity: %v", err)
+	if published.TurnID != "turn_2" {
+		t.Fatalf("published item turn = %q, want the entry's own turn_2", published.TurnID)
 	}
-	srv := NewServer(ServerConfig{})
-	srv.ReplaceAppIdentity(prepared, nil)
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: sessionID,
-		Data:      events.UserInputData{Text: "live"},
-	})
-	live := findItemByText(t, srv.appAllTurns(sessionID), "live")
-
-	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
-	if err != nil {
-		t.Fatalf("OpenWriterForSession: %v", err)
-	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
-		_ = writer.Close()
-		t.Fatalf("Append live: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("Close live: %v", err)
-	}
-
-	fullTurns, _, err := appTurnsFromTranscriptFile(path)
-	if err != nil {
-		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
-	}
-	full := findItemByText(t, fullTurns, "live")
-	window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
-		ThreadRef: "local:" + sessionID,
-		Limit:     40,
-	}, preparedItemProjector)
-	if err != nil {
-		t.Fatalf("LatestItemWindowFromFile: %v", err)
-	}
-	var indexed appwire.ThreadItem
-	for _, candidate := range window.Candidates {
-		if candidate.Item.Text == "live" {
-			indexed = candidate.Item
-			break
-		}
-	}
-	if indexed.Position == nil {
-		t.Fatalf("indexed candidates = %+v, want positioned live item", window.Candidates)
-	}
-
-	wantPosition := appwire.ThreadItemPosition{Entry: 2, Item: 0}
-	wantKey := "apptranscript-item-v1:turn_3:2:0"
-	for _, projected := range []struct {
-		name string
-		item appwire.ThreadItem
-	}{
-		{name: "live", item: live},
-		{name: "full", item: full},
-		{name: "indexed", item: indexed},
-	} {
-		if projected.item.Position == nil || *projected.item.Position != wantPosition || projected.item.TranscriptKey != wantKey {
-			t.Errorf("%s item identity = (position %+v, key %q), want (%+v, %q)", projected.name, projected.item.Position, projected.item.TranscriptKey, wantPosition, wantKey)
-		}
-	}
-}
-
-func findItemByText(t testing.TB, turns []appwire.Turn, text string) appwire.ThreadItem {
-	t.Helper()
-	for _, turn := range turns {
+	var read appwire.ThreadItem
+	for _, turn := range st.read(t).Thread.Turns {
 		for _, item := range turn.Items {
-			if item.Text == text {
-				return item
-			}
-		}
-	}
-	t.Fatalf("no item with text %q in turns %+v", text, turns)
-	return appwire.ThreadItem{}
-}
-
-func TestDescendantPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *testing.T) {
-	for _, tc := range []struct {
-		name                        string
-		systemPrompt                string
-		includeZeroItemLogicalTurns bool
-		wantEntry                   uint64
-	}{
-		{name: "without prelude", wantEntry: 1},
-		{name: "with prelude", systemPrompt: "system", wantEntry: 2},
-		{name: "with zero-item logical turns", includeZeroItemLogicalTurns: true, wantEntry: 3},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "descendant.transcript.jsonl")
-			tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "child", SystemPrompt: tc.systemPrompt})
-			if err != nil {
-				t.Fatalf("NewWriter: %v", err)
-			}
-			history := []schema.Turn{
-				schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
-				schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
-			}
-			if tc.includeZeroItemLogicalTurns {
-				history = append([]schema.Turn{{Kind: schema.TurnCheckpoint}}, history...)
-				history = append(history, schema.Turn{Kind: schema.TurnSummary})
-			}
-			for _, turn := range history {
-				if err := tw.Append(turn); err != nil {
-					t.Fatalf("Append history: %v", err)
+			switch item.Text {
+			case "live":
+				read = item
+			case "historical":
+				if item.TurnID != "turn_1" {
+					t.Fatalf("the historical item moved to turn %q", item.TurnID)
 				}
 			}
-			if err := tw.Close(); err != nil {
-				t.Fatalf("Close history: %v", err)
-			}
-
-			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "root")
-			srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-				if threadID == "child" {
-					return path
-				}
-				return ""
-			})
-			srv.RecordDescendantAppEvent("root", events.SessionEvent{
-				Kind:      events.EventUserInput,
-				SessionID: "child",
-				Data:      events.UserInputData{Text: "live"},
-			})
-
-			read, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
-				Ref:          "local:child",
-				IncludeTurns: true,
-				ItemLimit:    40,
-			})
-			if err != nil {
-				t.Fatalf("item-mode thread/read: %v", err)
-			}
-			var live appwire.ThreadItem
-			for _, turn := range read.Thread.Turns {
-				for _, item := range turn.Items {
-					if item.Text == "live" {
-						live = item
-					}
-				}
-			}
-			if live.Position == nil {
-				t.Fatalf("live descendant item = %+v, want positioned item", live)
-			}
-
-			writer, _, err := transcript.OpenWriterForSession(path, "child")
-			if err != nil {
-				t.Fatalf("OpenWriterForSession: %v", err)
-			}
-			if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
-				_ = writer.Close()
-				t.Fatalf("Append live: %v", err)
-			}
-			if err := writer.Close(); err != nil {
-				t.Fatalf("Close live: %v", err)
-			}
-
-			window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
-				ThreadRef: "local:child",
-				Limit:     40,
-			}, preparedItemProjector)
-			if err != nil {
-				t.Fatalf("LatestItemWindowFromFile: %v", err)
-			}
-			var persisted appwire.ThreadItem
-			for _, candidate := range window.Candidates {
-				if candidate.Item.Text == "live" {
-					persisted = candidate.Item
-				}
-			}
-			if persisted.Position == nil {
-				t.Fatalf("persisted item candidates = %+v, want positioned live item", window.Candidates)
-			}
-			wantPosition := appwire.ThreadItemPosition{Entry: tc.wantEntry, Item: 0}
-			if *live.Position != wantPosition || *persisted.Position != wantPosition {
-				t.Fatalf("live position=%+v, persisted position=%+v, want shared %+v", *live.Position, *persisted.Position, wantPosition)
-			}
-			if live.TranscriptKey != persisted.TranscriptKey {
-				t.Fatalf("live key=%q, persisted key=%q, want identical resumed item identity", live.TranscriptKey, persisted.TranscriptKey)
-			}
-			if got, want := live.TranscriptKey, appitempaging.TranscriptItemKey(live.TurnID, wantPosition); got != want {
-				t.Fatalf("live descendant transcript key=%q, want %q", got, want)
-			}
-		})
-	}
-}
-
-func TestRecordAppEventLifecycleNotificationCarriesAllocatedIdentity(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_identity")
-	cursor := srv.appNotifier.CurrentSequence()
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_identity",
-		Data:      events.UserInputData{Text: "identity"},
-	})
-
-	var found appwire.ItemLifecycleParams
-	foundItem := false
-	for _, record := range srv.AppNotificationsAfter(cursor, "th_identity") {
-		if record.Notification.Method != appwire.NotifyItemCompleted {
-			continue
-		}
-		if err := json.Unmarshal(record.Notification.Params, &found); err != nil {
-			t.Fatalf("unmarshal lifecycle notification: %v", err)
-		}
-		foundItem = true
-		break
-	}
-	if !foundItem {
-		t.Fatal("event produced no item/completed notification")
-	}
-	if found.Item.TranscriptKey == "" || found.Item.Position == nil {
-		t.Fatalf("lifecycle item identity = %+v, want transcriptKey and position", found.Item)
-	}
-}
-
-func TestPreparedResumeFirstLiveLifecycleUsesAuthoritativeTurnIdentity(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "resume.transcript.jsonl")
-	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "resume"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("historical"))); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	prepared, err := PrepareAppIdentity("local", "resume", path)
-	if err != nil {
-		t.Fatalf("PrepareAppIdentity: %v", err)
-	}
-	srv := NewServer(ServerConfig{})
-	srv.ReplaceAppIdentity(prepared, nil)
-	cursor := srv.appNotifier.CurrentSequence()
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "resume",
-		Data:      events.UserInputData{Text: "live"},
-	})
-
-	var notification appwire.ItemLifecycleParams
-	found := false
-	for _, record := range srv.AppNotificationsAfter(cursor, "resume") {
-		if record.Notification.Method != appwire.NotifyItemCompleted {
-			continue
-		}
-		if err := json.Unmarshal(record.Notification.Params, &notification); err != nil {
-			t.Fatalf("unmarshal lifecycle notification: %v", err)
-		}
-		found = true
-		break
-	}
-	if !found {
-		t.Fatal("resume event produced no item/completed notification")
-	}
-	if notification.TurnID != "turn_2" || notification.Item.TurnID != "turn_2" || notification.Item.Text != "live" {
-		t.Fatalf("recorded resume lifecycle = %+v, want live turn_2 item", notification)
-	}
-
-	conn := srv.AppServer().NewConnection("resume-test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(
-		appwire.NewIntID(2), appwire.MethodInitialize,
-		appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion},
-	))
-	if init.Kind() != appwire.MessageResponse {
-		t.Fatalf("initialize: %v", init.Kind())
-	}
-	read := conn.HandleMessage(context.Background(), appwire.RequestMessage(
-		appwire.NewIntID(3), appwire.MethodThreadRead,
-		appwire.ThreadReadParams{Ref: "local:resume", IncludeTurns: true},
-	))
-	if read.Kind() != appwire.MessageResponse {
-		t.Fatalf("thread/read: %v", read.Kind())
-	}
-	readResponse, ok := read.Response.Result.(appwire.ThreadReadResponse)
-	if !ok {
-		t.Fatalf("thread/read result type = %T", read.Response.Result)
-	}
-	thread := readResponse.Thread
-	var liveItems []appwire.ThreadItem
-	for _, turn := range thread.Turns {
-		if turn.ID == "turn_2" {
-			liveItems = append(liveItems, turn.Items...)
 		}
 	}
-	if len(liveItems) != 1 {
-		t.Fatalf("live turn snapshot items = %+v, want one newly inserted item", liveItems)
-	}
-	if got := liveItems[0]; got.ID != notification.Item.ID || got.Text != notification.Item.Text || got.TurnID != notification.Item.TurnID || got.TranscriptKey != notification.Item.TranscriptKey || got.Position == nil || notification.Item.Position == nil || *got.Position != *notification.Item.Position {
-		t.Fatalf("recorded item=%+v differs from live snapshot item=%+v", notification.Item, got)
-	}
-	for _, turn := range thread.Turns {
-		if turn.ID == "turn_1" && len(turn.Items) == 1 && turn.Items[0].Text == "live" {
-			t.Fatalf("live lifecycle recovery replaced historical turn item: %+v", turn.Items[0])
-		}
+	if !reflect.DeepEqual(read, published) {
+		t.Fatalf("read item=%+v differs from the published item=%+v", read, published)
 	}
 }
 
 func TestDescendantReadDoesNotClaimDurableMutationAuthority(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	t.Cleanup(srv.Close)
+	serveRootWithoutHistory(t, srv, "root")
+	childPath := writeDelegateTranscript(t, "child", "child work")
+	srv.SetDescendantTranscriptPathFunc(func(string) string { return childPath })
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{
 		Kind: events.EventUserInput, SessionID: "child", Data: events.UserInputData{Text: "child work"},
 	})

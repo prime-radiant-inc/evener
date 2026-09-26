@@ -94,6 +94,10 @@ func (SandboxEscalationRequestedData) eventKind() EventKind {
 func (SandboxEscalationResolvedData) eventKind() EventKind {
 	return EventSandboxEscalationResolved
 }
+func (RoundStartedData) eventKind() EventKind     { return EventRoundStarted }
+func (RoundEndedData) eventKind() EventKind       { return EventRoundEnded }
+func (ExecutionStartedData) eventKind() EventKind { return EventExecutionStarted }
+func (ExecutionEndedData) eventKind() EventKind   { return EventExecutionEnded }
 
 // Compile-time assertions that every payload satisfies EventData. A new payload
 // added without a marker fails to build here.
@@ -148,4 +152,8 @@ var (
 	_ EventData = UrlsUpdatedData{}
 	_ EventData = SandboxEscalationRequestedData{}
 	_ EventData = SandboxEscalationResolvedData{}
+	_ EventData = RoundStartedData{}
+	_ EventData = RoundEndedData{}
+	_ EventData = ExecutionStartedData{}
+	_ EventData = ExecutionEndedData{}
 )

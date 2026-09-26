@@ -13,8 +13,10 @@ type PendingCoordinator interface {
 	// issued. The returned PendingHandle gives the client a way to
 	// signal RPC-level failure (network error, hub Unavailable).
 	// The coordinator owns the timeout, the reconciliation, and the
-	// authoritative confirmation lifecycle.
-	Register(method, text, ref string) PendingHandle
+	// authoritative confirmation lifecycle. clientMutationID is the
+	// identity minted for this call (empty when the caller mints none),
+	// echoed back on the history item or notification that settles it.
+	Register(method, text, ref, clientMutationID string) PendingHandle
 }
 
 // PendingHandle is the per-call lifecycle handle returned by

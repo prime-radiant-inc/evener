@@ -585,12 +585,16 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 	_, err := ForkSession(stateDir, parentID, 0, "irrelevant", "")
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=0) should return an error")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=0 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 
 	// divergenceTurn exceeding count (parent has 2 USER_INPUT turns).
 	_, err = ForkSession(stateDir, parentID, 10, "irrelevant", "")
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=10) should return an error when parent has only 2 USER_INPUT turns")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=10 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 }
 

@@ -67,7 +67,7 @@ function printProfile(n: number, seed: number): void {
     [
       "",
       `--- token-flood profile: n=${n} ---`,
-      `total fold time (all ${n} notifications incl. turn/started, item/started, item/completed, turn/completed): ${totalMs.toFixed(2)}ms`,
+      `total fold time (all ${n} notifications incl. history/updated, overlay/upserted, overlay/delta, overlay/end): ${totalMs.toFixed(2)}ms`,
       `mean per-delta:        ${mean(perDeltaMs).toFixed(4)}ms`,
       `p99 per-delta:         ${percentile(perDeltaMs, 99).toFixed(4)}ms`,
       `first 10% mean (n=${tenth}): ${firstMean.toFixed(4)}ms`,
@@ -91,28 +91,46 @@ function stringDeltaScaffold(kind: "toolOutput" | "agentMessage") {
   const threadId = `thr_${kind}`;
   const turnId = `turn_${kind}`;
   const itemId = `item_${kind}`;
+  const roundId = `round_${kind}`;
+  const overlayKey = `stream:${roundId}/0:${kind}`;
   let model = hydrateFloodModel(ref);
   model = applyNotification(
     model,
     {
-      method: "turn/started",
-      params: { threadId, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId,
+        ref,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc_flood", length: 1 },
+        turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+      },
     } as AnyNotification,
     1000,
   );
   model = applyNotification(
     model,
     {
-      method: "item/started",
+      method: "overlay/upserted",
       params: {
         threadId,
         ref,
-        turnId,
         item: {
-          type: kind === "toolOutput" ? "commandExecution" : "agentMessage",
-          id: itemId,
+          key: overlayKey,
+          kind: "stream",
           turnId,
-          status: "inProgress",
+          roundId,
+          streamId: `${roundId}/0`,
+          callId: kind === "toolOutput" ? `call_${kind}` : undefined,
+          item: {
+            type: kind === "toolOutput" ? "commandExecution" : "agentMessage",
+            id: itemId,
+            turnId,
+            roundId,
+            callId: kind === "toolOutput" ? `call_${kind}` : undefined,
+            status: "inProgress",
+          },
         },
       },
     } as AnyNotification,
@@ -120,13 +138,10 @@ function stringDeltaScaffold(kind: "toolOutput" | "agentMessage") {
   );
 
   const delta = "0123456789abcdef".repeat(4); // 64 B
-  const notification =
-    kind === "toolOutput"
-      ? ({
-          method: "item/toolOutput/delta",
-          params: { threadId, ref, turnId, itemId, callId: `call_${kind}`, delta },
-        } as AnyNotification)
-      : ({ method: "item/agentMessage/delta", params: { threadId, ref, turnId, itemId, delta } } as AnyNotification);
+  const notification = {
+    method: "overlay/delta",
+    params: { threadId, ref, key: overlayKey, field: kind === "toolOutput" ? "output" : "text", delta },
+  } as AnyNotification;
   return { model, notification, itemId };
 }
 

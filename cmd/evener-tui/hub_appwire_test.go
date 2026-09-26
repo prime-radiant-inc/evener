@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,209 +69,6 @@ func testInputText(input []appwire.InputItem) string {
 	return ""
 }
 
-func TestHubModelAppliesAppWireNotifications(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: "th_1",
-			Ref:      "local:th_1",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
-			Delta:    "hello",
-		}).Notification,
-	})
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: "th_1",
-			Ref:      "local:th_1",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
-			Delta:    " world",
-		}).Notification,
-	})
-	got := updated.(hubModel)
-	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgAssistant || got.session.messages[0].Text != "hello world" {
-		t.Fatalf("messages=%+v", got.session.messages)
-	}
-	updated, _ = got.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:   "agentMessage",
-				ID:     "item_1",
-				TurnID: "turn_1",
-				Text:   "hello world final",
-			},
-		}).Notification,
-	})
-	got = updated.(hubModel)
-	if len(got.session.messages) != 1 || got.session.messages[0].Text != "hello world final" {
-		t.Fatalf("final messages=%+v", got.session.messages)
-	}
-}
-
-func TestHubModelStreamsReasoningThenCollapsesOnAnswer(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
-
-	// item/started(reasoning) opens the thought; summary deltas stream into it.
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item":     appwire.ThreadItem{Type: "reasoning", ID: "reasoning_1", TurnID: "turn_1", Status: appwire.TurnStatusInProgress},
-		}).Notification,
-	})
-	for _, chunk := range []string{"weighing ", "the cache options"} {
-		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-			ok: true,
-			notification: *appwire.NotificationMessage(appwire.NotifyReasoningSummaryDelta, appwire.ReasoningSummaryDeltaParams{
-				ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "reasoning_1", Delta: chunk,
-			}).Notification,
-		})
-	}
-	got := updated.(hubModel)
-	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgReasoning {
-		t.Fatalf("expected one live reasoning message, got %+v", got.session.messages)
-	}
-	if got.session.messages[0].Text != "weighing the cache options" || got.session.messages[0].Done {
-		t.Fatalf("reasoning should stream open with full text: %+v", got.session.messages[0])
-	}
-
-	// The assistant answering collapses the thought (Done) without dropping it.
-	updated, _ = got.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "Here it is",
-		}).Notification,
-	})
-	got = updated.(hubModel)
-	if len(got.session.messages) != 2 {
-		t.Fatalf("expected reasoning + assistant messages, got %+v", got.session.messages)
-	}
-	if !got.session.messages[0].Done || got.session.messages[0].Text != "weighing the cache options" {
-		t.Fatalf("reasoning should collapse and keep its text: %+v", got.session.messages[0])
-	}
-	if got.session.messages[1].Kind != transcript.MsgAssistant || got.session.messages[1].Text != "Here it is" {
-		t.Fatalf("assistant message=%+v", got.session.messages[1])
-	}
-}
-
-func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
-
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:          "commandExecution",
-				ID:            "item_tool_1",
-				CallID:        "call_1",
-				TurnID:        "turn_1",
-				ToolName:      "shell",
-				ArgumentsJSON: `{"command":"printf 'one\ntwo\n'"}`,
-				Status:        appwire.TurnStatusInProgress,
-			},
-		}).Notification,
-	})
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyToolOutputDelta, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"itemId":   "item_tool_1",
-			"delta":    "one\n",
-		}).Notification,
-	})
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyToolOutputDelta, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"itemId":   "item_tool_1",
-			"delta":    "two\n",
-		}).Notification,
-	})
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:     "commandExecution",
-				ID:       "item_tool_1",
-				CallID:   "call_1",
-				TurnID:   "turn_1",
-				ToolName: "shell",
-				Output:   "one\ntwo\n",
-				Status:   "completed",
-			},
-		}).Notification,
-	})
-
-	got := updated.(hubModel)
-	var tools []transcript.ChatMessage
-	for _, msg := range got.session.messages {
-		if msg.Kind == transcript.MsgTool {
-			tools = append(tools, msg)
-		}
-	}
-	if len(tools) != 1 {
-		t.Fatalf("expected one tool message, got %d: %+v", len(tools), got.session.messages)
-	}
-	tool := tools[0].Tool
-	if tool == nil || tool.Output != "one\ntwo\n" || !tool.Done {
-		t.Fatalf("tool=%+v messages=%+v", tool, got.session.messages)
-	}
-	if _, ok := got.session.activeTools["item_tool_1"]; ok {
-		t.Fatalf("completed item id still active: %+v", got.session.activeTools)
-	}
-	if _, ok := got.session.activeTools["call_1"]; ok {
-		t.Fatalf("completed call id still active: %+v", got.session.activeTools)
-	}
-}
-
-func TestHubModelAppliesSteeringInjectedNotification(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
-
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyEvenerSteeringInjected, map[string]any{
-			"threadId": "th_1",
-			"ref":      "local:th_1",
-			"text":     "check the logs",
-		}).Notification,
-	})
-
-	got := updated.(hubModel)
-	if len(got.session.messages) != 1 {
-		t.Fatalf("messages=%+v", got.session.messages)
-	}
-	msg := got.session.messages[0]
-	if msg.Kind != transcript.MsgSteering || msg.Text != "check the logs" || msg.Pending || msg.Failed {
-		t.Fatalf("message=%+v, want authoritative steering", msg)
-	}
-}
-
-// TestHubModelAppliesQueueChangedNotification (kata r80p) verifies the
-// TUI consumes thread/queueChanged as the authoritative source for the
-// composer queue preview. The local sessionQueue field reflects the
-// wire snapshot exactly; consecutive notifications replace state in
-// full rather than appending.
 func TestHubModelAppliesQueueChangedNotification(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
@@ -362,113 +158,6 @@ func TestHubModelSurfacesStructuredWarningDiagnostic(t *testing.T) {
 	}
 }
 
-func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1", ActiveTurnID: "turn_1"}
-
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
-			"threadId": "th_1",
-			"ref":      "local:th_1",
-			"turn": appwire.Turn{
-				ID:     "turn_1",
-				Status: appwire.TurnStatusCompleted,
-				Items: []appwire.ThreadItem{{
-					Type: "userMessage",
-					ID:   "item_user",
-					Text: "hello",
-				}, {
-					Type: "agentMessage",
-					ID:   "item_agent",
-					Text: "done",
-				}},
-			},
-		}).Notification,
-	})
-
-	got := updated.(hubModel)
-	if got.detail.ActiveTurnID != "" {
-		t.Fatalf("active turn=%q, want cleared", got.detail.ActiveTurnID)
-	}
-	if len(got.session.messages) != 2 {
-		t.Fatalf("messages=%+v, want user and assistant snapshot items", got.session.messages)
-	}
-	if got.session.messages[0].Kind != transcript.MsgUser || got.session.messages[0].Text != "hello" {
-		t.Fatalf("user message=%+v", got.session.messages[0])
-	}
-	if got.session.messages[1].Kind != transcript.MsgAssistant || got.session.messages[1].Text != "done" {
-		t.Fatalf("assistant message=%+v", got.session.messages[1])
-	}
-}
-
-// TestHubModelTurnCompletedReconcilesProcessingForFailedTurn is the s8x8
-// regression, on the wire as it is: after turn/completed clears ActiveTurnID
-// for the active turn, the daemon's failure exit (agent/session_lifecycle.go
-// endInputAtTurnFailure) emits EventSessionEnd with Reason "turn_failed",
-// announced as thread/status/changed(idle). That frame is what takes the
-// session out of queue mode: session.processing and detail.State follow it,
-// not the turn/completed ahead of it, so the frame reads as the transition it
-// is and the capability refresh keyed on transitions fires.
-func TestHubModelTurnCompletedReconcilesProcessingForFailedTurn(t *testing.T) {
-	m := newHubModel(nil, "")
-	m.mode = hubModeSession
-	m.detail = hubSessionDetail{
-		Ref:          "local:th_1",
-		SessionID:    "sess_1",
-		State:        appwire.ThreadStatusActive,
-		ActiveTurnID: "turn_1",
-		Capabilities: hubSessionCapabilities{Send: true, Queue: true},
-	}
-	m.session.processing = true
-
-	// Precondition: a turn in flight puts the composer in queue mode.
-	if mode := m.sessionComposerMode(); mode != hubComposerModeQueue {
-		t.Fatalf("precondition: composer mode=%v, want queue", mode)
-	}
-
-	updated, _ := m.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
-			"threadId": "th_1",
-			"ref":      "local:th_1",
-			"turn": appwire.Turn{
-				ID:     "turn_1",
-				Status: appwire.TurnStatusFailed,
-				Error:  &appwire.TurnError{Message: "rate limited"},
-			},
-		}).Notification,
-	})
-	got := updated.(hubModel)
-	if got.detail.ActiveTurnID != "" {
-		t.Fatalf("active turn=%q, want cleared", got.detail.ActiveTurnID)
-	}
-	if got.detail.State != appwire.ThreadStatusActive || !got.session.processing {
-		t.Fatalf("state=%q processing=%v after the failed turn/completed, want the status frame behind it to own the transition", got.detail.State, got.session.processing)
-	}
-
-	updated, _ = got.Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
-			ThreadID: "th_1",
-			Ref:      "local:th_1",
-			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-		}).Notification,
-	})
-	got = updated.(hubModel)
-	if got.session.processing {
-		t.Fatal("session.processing=true after the failed turn's status frame, want false")
-	}
-	if mode := got.sessionComposerMode(); mode == hubComposerModeQueue {
-		t.Fatal("composer mode=queue after the failed turn's status frame; it offers a mutation with no turn running")
-	}
-	view := got.sessionComposerPanel().View()
-	if strings.Contains(view, "queue") {
-		t.Fatalf("composer view still advertises queue mode after the failed turn's status frame:\n%s", view)
-	}
-}
-
 func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
 	messages := transcript.MessagesFromThread(appwire.Thread{
 		Turns: []appwire.Turn{{
@@ -520,10 +209,9 @@ func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) 
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
 
-	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"threadId": "th_1",
-		"turnId":   "turn_1",
-		"item": appwire.ThreadItem{
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "th_1",
+		Items: []appwire.ThreadItem{{
 			Type:          "commandExecution",
 			ID:            "item_delegate",
 			TurnID:        "turn_1",
@@ -532,7 +220,7 @@ func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) 
 			ArgumentsJSON: `{"task":"inspect billing"}`,
 			Output:        `{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`,
 			Status:        appwire.TurnStatusCompleted,
-		},
+		}},
 	}).Notification})
 
 	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyEvenerDelegateUpdated, map[string]any{

@@ -75,18 +75,16 @@ func TestHubRelayViewSwitchDeliversEachDeltaOnce(t *testing.T) {
 	// so the block is fully delivered before the next phase begins.
 	streamDeltas := func(from, to int) {
 		for i := from; i < to; i++ {
-			payload, _ := json.Marshal(appwire.AgentMessageDeltaParams{
+			payload, _ := json.Marshal(appwire.OverlayDeltaParams{
 				ThreadID: thread.ID,
 				Ref:      thread.Evener.Ref,
-				TurnID:   "turn-view-switch",
-				ItemID:   "item-view-switch",
 				Delta:    fmt.Sprintf("delta-%d ", i),
 			})
 			ack := make(chan struct{})
 			var once sync.Once
 			deliveries <- appsource.RelayDelivery{
 				Notification: appwire.Notification{
-					Method: appwire.NotifyAgentMessageDelta,
+					Method: appwire.NotifyOverlayDelta,
 					Params: payload,
 				},
 				Acknowledge: func() { once.Do(func() { close(ack) }) },
@@ -106,8 +104,8 @@ func TestHubRelayViewSwitchDeliversEachDeltaOnce(t *testing.T) {
 		for time.Now().Before(deadline) {
 			select {
 			case notification := <-c.Notifications():
-				var params appwire.AgentMessageDeltaParams
-				if notification.Method == appwire.NotifyAgentMessageDelta && json.Unmarshal(notification.Params, &params) == nil {
+				var params appwire.OverlayDeltaParams
+				if notification.Method == appwire.NotifyOverlayDelta && json.Unmarshal(notification.Params, &params) == nil {
 					result[params.Delta]++
 				}
 			case <-time.After(500 * time.Millisecond):

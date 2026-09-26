@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 )
 
@@ -132,8 +133,5 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
 	return matchedData, matchedMediaType, matchedData != nil, nil
 }
 
-// imageSha returns the lowercase hex sha256 of raw image bytes.
-func imageSha(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
-}
+// imageSha is the content address the image routes this hub serves key on.
+var imageSha = events.ImageSHA

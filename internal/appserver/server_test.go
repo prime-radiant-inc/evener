@@ -571,7 +571,7 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 			projectedMu.Lock()
 			projectedText += "delta"
 			projectedMu.Unlock()
-			record := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"})
+			record := notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "delta"})
 			return []SequencedNotification{record}
 		})
 		close(eventCommitted)
@@ -599,7 +599,7 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 			}
 			combined.WriteString(got.Text)
 		case msg.Notification != nil:
-			var params appwire.AgentMessageDeltaParams
+			var params appwire.OverlayDeltaParams
 			if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
 				t.Fatalf("decode delta: %v", err)
 			}
@@ -639,7 +639,7 @@ func TestAtomicRejoinWaitsForMatchingResponseEnqueue(t *testing.T) {
 	)
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "post-cut"}),
 		}
 	})
 
@@ -662,7 +662,7 @@ func TestAtomicRejoinWaitsForMatchingResponseEnqueue(t *testing.T) {
 	if first.Response == nil || first.IDString() != "1" {
 		t.Fatalf("first matching delivery = %+v, want snapshot response", first)
 	}
-	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("second matching delivery = %+v, want released post-cut delta", second)
 	}
 }
@@ -784,7 +784,7 @@ func TestCaptureSubscriptionHandoffCommitsAfterMatchingResponseEnqueue(t *testin
 	)
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "post-cut"}),
 		}
 	})
 	if got := commits.Load(); got != 0 {
@@ -945,7 +945,7 @@ func TestCaptureSubscriptionPreservesLegacyReleaseAfterMatchingErrorResponse(t *
 	}
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "post-cut"}),
 		}
 	})
 
@@ -960,7 +960,7 @@ func TestCaptureSubscriptionPreservesLegacyReleaseAfterMatchingErrorResponse(t *
 	if first.Error == nil || first.IDString() != "24" {
 		t.Fatalf("first delivery = %+v, want matching error response", first)
 	}
-	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("second delivery = %+v, want released post-cut delta", second)
 	}
 }
@@ -1012,7 +1012,7 @@ func TestCaptureSubscriptionHandoffAbortsMatchingErrorResponse(t *testing.T) {
 	}
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "held"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "held"}),
 		}
 	})
 
@@ -1263,7 +1263,7 @@ func TestAtomicRejoinBeforeSubscriberInsertionIncludesDeltaOnceInSnapshot(t *tes
 	server.CommitProjection(func() []SequencedNotification {
 		projectedText += "delta"
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "delta"}),
 		}
 	})
 	close(releaseSubscriberInsertion)
@@ -1327,7 +1327,7 @@ func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
 	// state a live thread is ever in by the time a client rejoins it.
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "before"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "before"}),
 		}
 	})
 	if cut := notifier.CurrentSequence(); cut == 0 {
@@ -1412,7 +1412,7 @@ func TestSnapshotCutAbortsCaptureWhoseRequestContextDied(t *testing.T) {
 
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "after"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "after"}),
 		}
 	})
 	conn.closeSend()
@@ -1506,7 +1506,7 @@ func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
 			projectedText += "new"
 			projectedMu.Unlock()
 			return []SequencedNotification{
-				notifier.Record("th_new", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "new"}),
+				notifier.Record("th_new", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "new"}),
 			}
 		})
 		close(eventCommitted)

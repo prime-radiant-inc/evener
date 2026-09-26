@@ -76,6 +76,8 @@ export type { RejectableFile } from "./attachmentLimits";
 export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
+export type { BootGenerationAction } from "./bootGeneration";
+export { compareBootGeneration, DAEMONLESS_BOOT_GENERATION } from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
@@ -160,6 +162,8 @@ export {
   ErrorInstanceRenamePersisted,
   ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
+  ErrorTranscriptHistoryFailed,
+  ErrorUpgradeRequired,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -171,6 +175,8 @@ export {
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
   isStaleCursorError,
+  isTranscriptHistoryFailedError,
+  isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
   sessionActionError,
@@ -184,6 +190,7 @@ export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverv
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
+  displayTurnStatus,
   hasErrorText,
   hasFailureStatus,
   hasItemFailure,
@@ -296,6 +303,7 @@ export {
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,
+  HistoryState,
   ItemImage,
   ItemModel,
   ModelRetryState,
@@ -332,13 +340,18 @@ export type {
   TurnHistoryMergeResult,
 } from "./reducer";
 export {
+  applyHistoryReadFailure,
   applyNotification,
+  applyReadResponse,
   collectAuthoritativeMutationIds,
+  comparePositions,
   copyItemTextPresence,
   foldWarningParams,
   hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  invalidateHistory,
+  issueLatestWindowRead,
   isToolCallItemId,
   isToolResultItemId,
   itemIdentityMatches,

@@ -373,7 +373,7 @@ func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
 	}
 	// The whole burst arrives before anyone consumes Notifications().
 	for i := range burst {
-		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
+		transport.reads <- NotificationMessage(NotifyOverlayDelta, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_burst", Source: "evener"}}})
 
@@ -462,7 +462,7 @@ func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *test
 	}()
 	request := <-transport.writes
 	for i := range burst {
-		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
+		transport.reads <- NotificationMessage(NotifyOverlayDelta, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(request.Request.ID, ThreadListResponse{})
 

@@ -1,9 +1,7 @@
 // @vitest-environment node
 
-import type { AnyNotification } from "@evener/appwire-client";
-import { applyNotification } from "@evener/appwire-client";
-import { chunkViewBackingForTests } from "@evener/appwire-client/testing/reducerHooks";
-import { buildFloodChunks, hydrateFloodModel } from "@evener/appwire-client/testing/tokenFlood";
+import { appendChunk, chunkViewBackingForTests } from "@evener/appwire-client/testing/reducerHooks";
+import { buildFloodChunks } from "@evener/appwire-client/testing/tokenFlood";
 import { expect, test } from "vitest";
 import {
   formatThoughtDuration,
@@ -49,57 +47,27 @@ test("all paragraphs empty yields an empty array (the whole thought is empty)", 
 });
 
 // --- joinedReasoningParagraphs over LIVE chunk views -------------------------
-// The reducer accumulates reasoning deltas into brand-carrying chunk views
-// (chunkview.ts's appendChunk, folded by reducer.ts's appendReasoningDelta), so
-// a streaming think block hands this function view arrays, not plain ones.
-// These pin the contract the O(1) rerouting relies on: joining live views must
-// return text IDENTICAL to joining the same chunks as plain arrays, in every
-// summary slot.
+// item/reasoning/summaryTextDelta (per-summaryIndex reasoning chunks folded by
+// the reducer's now-deleted appendReasoningDelta) has no read-model
+// replacement: overlay/delta's single text/output field carries no
+// summaryIndex, and reasoningSummaries is now seeded once, from a settled
+// item's own wire text, never accumulated live (see wireItemToModel /
+// model.ts's doc comment). These tests build chunk views directly with
+// chunkview.ts's own appendChunk instead of folding through applyNotification
+// - the contract under test (joining live views must return text IDENTICAL
+// to joining the same chunks as plain arrays) is the view's own, not the
+// reducer's, so it still holds calling appendChunk straight.
 
-// Folds a reasoning item up through `counts.length` summary indices, each fed
-// its own list of deltas, exactly the way the live wire would (item/started
-// then one item/reasoning/summaryTextDelta per chunk). Returns the model so
-// callers can read the item's reasoningSummaries straight out of the fold.
+// Builds one chunk-view array per summary slot, each fed its own list of
+// deltas via chunkview.ts's appendChunk (the same O(1) view the reducer used
+// to produce). Returns them for joinedReasoningParagraphs to join.
 function foldLiveReasoning(deltas: string[][]): { summaries: string[][] | undefined } {
-  let model = hydrateFloodModel("ref_t");
-  const threadId = "thr_ref_t";
-  const ref = "ref_t";
-  const turnId = "turn_1";
-  const itemId = "item_r";
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
-    1001,
-  );
-  model = applyNotification(
-    model,
-    {
-      method: "item/started",
-      params: { threadId, ref, turnId, item: { type: "reasoning", id: itemId, turnId, status: "inProgress" } },
-    } as AnyNotification,
-    1002,
-  );
-  let now = 1003;
-  for (const [summaryIndex, chunks] of deltas.entries()) {
-    for (const delta of chunks) {
-      now += 1;
-      model = applyNotification(
-        model,
-        {
-          method: "item/reasoning/summaryTextDelta",
-          params: { threadId, ref, turnId, itemId, summaryIndex, delta },
-        } as AnyNotification,
-        now,
-      );
-    }
-  }
-  // Locate the reasoning item the fold produced (turn 0, item 0).
-  const turn = model.turns[0];
-  const item = turn?.items[0];
-  return { summaries: item?.reasoningSummaries };
+  const summaries = deltas.map((chunks) => {
+    let view: string[] | undefined;
+    for (const delta of chunks) view = appendChunk(view, delta);
+    return view ?? [];
+  });
+  return { summaries };
 }
 
 test("joinedReasoningParagraphs over live chunk views returns the same paragraphs as plain-array joins", () => {

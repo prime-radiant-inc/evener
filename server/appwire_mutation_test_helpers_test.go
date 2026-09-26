@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -159,4 +161,37 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 		}
 	}
 	s.SetRetrySafeTurnFunctions(functions)
+}
+
+// reservedTestTurns numbers the turn ids reserveAppTurnIDForStart mints.
+var reservedTestTurns atomic.Uint64
+
+// reserveAppTurnIDForStart is the projected-mutation fake's turn/start
+// reservation: it refuses a closed or busy thread and marks the thread's turn
+// reserved, which its status and capabilities report as active.
+func (s *Server) reserveAppTurnIDForStart() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	processing := s.processing
+	reserved := strings.TrimSpace(s.appReservedTurnID) != ""
+	if appStatus(s.status.State, processing, reserved) == appwire.ThreadStatusClosed {
+		return "", appwire.Conflict("session is closed")
+	}
+	if processing || reserved {
+		return "", appwire.Conflict("session is processing")
+	}
+	turnID := fmt.Sprintf("turn_reserved_%d", reservedTestTurns.Add(1))
+	s.appActiveTurnID = turnID
+	s.appReservedTurnID = turnID
+	return turnID, nil
+}
+
+// releaseAppTurnID undoes reserveAppTurnIDForStart's reservation of turnID.
+func (s *Server) releaseAppTurnID(turnID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appReservedTurnID == turnID {
+		s.appReservedTurnID = ""
+		s.appActiveTurnID = ""
+	}
 }

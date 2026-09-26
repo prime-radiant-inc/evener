@@ -19,9 +19,9 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 	}()
 
 	evs <- events.SessionEvent{
-		Kind:      events.EventAssistantTextDelta,
+		Kind:      events.EventNotesUpdated,
 		SessionID: "s1",
-		Data:      events.AssistantTextDeltaData{Delta: "hello"},
+		Data:      events.NotesUpdatedData{HumanNote: "hello"},
 	}
 	close(evs)
 	<-done
@@ -30,10 +30,9 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("expected at least one appwire notification")
 	}
-	// The delta arrives last: it opens the agent-message item it appends to.
 	last := items[len(items)-1]
-	if last.Notification.Method != appwire.NotifyAgentMessageDelta {
-		t.Fatalf("notification method: got %q, want %q", last.Notification.Method, appwire.NotifyAgentMessageDelta)
+	if last.Notification.Method != appwire.NotifyEvenerNotesUpdated {
+		t.Fatalf("notification method: got %q, want %q", last.Notification.Method, appwire.NotifyEvenerNotesUpdated)
 	}
 }
 
@@ -370,8 +369,8 @@ func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 }
 
 func TestBridge_RecordsAppWireNotifications(t *testing.T) {
-	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "th_1")
+	st := newServedTranscript(t, NewServer(ServerConfig{AppReplaySize: 100}), "th_1")
+	srv := st.srv
 	evs := make(chan events.SessionEvent, 10)
 	done := make(chan struct{})
 
@@ -380,16 +379,8 @@ func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 		Bridge(srv, evs)
 	}()
 
-	evs <- events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "hello"},
-	}
-	evs <- events.SessionEvent{
-		Kind:      events.EventAssistantTextDelta,
-		SessionID: "th_1",
-		Data:      events.AssistantTextDeltaData{Delta: "hi"},
-	}
+	evs <- threadEvent("th_1", events.RoundStartedData{RoundID: "r_1"})
+	evs <- threadEvent("th_1", events.AssistantTextDeltaData{Delta: "hi"})
 	close(evs)
 	<-done
 
@@ -399,11 +390,11 @@ func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 	}
 	found := false
 	for _, item := range items {
-		if item.Notification.Method == appwire.NotifyAgentMessageDelta {
+		if item.Notification.Method == appwire.NotifyOverlayUpserted {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("notifications=%+v", items)
+		t.Fatalf("notifications=%+v, want the delta's overlay stream", items)
 	}
 }

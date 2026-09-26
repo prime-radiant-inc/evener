@@ -852,6 +852,13 @@ type spawnConfig struct {
 	// the whole in-process tree without consuming any child's event channel.
 	descendantEvent func(events.SessionEvent)
 
+	// descendantRecorded reports every entry a descendant's transcript
+	// records, with the descendant's session id, to the root daemon. It is
+	// inherited unchanged like descendantEvent; each descendant installs it as
+	// its own transcript's recorded-entry hook, so it runs under that
+	// transcript's append lock.
+	descendantRecorded func(sessionID string, rec transcript.Record)
+
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.
 	parentDelegateID string

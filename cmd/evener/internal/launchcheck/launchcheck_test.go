@@ -146,8 +146,8 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("launch_flags=%v, want it to advertise api-log", out.LaunchFlags)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
-	if out.Protocol != "evener-appwire-v5" {
-		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v5\"", out.Protocol)
+	if out.Protocol != "evener-appwire-v6" {
+		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v6\"", out.Protocol)
 	}
 }
 

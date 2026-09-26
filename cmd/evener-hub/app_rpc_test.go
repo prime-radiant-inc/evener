@@ -398,9 +398,9 @@ func TestHubRPCItemListPreservesSavedErrorsAndCursorFallback(t *testing.T) {
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
 		t.Fatalf("source-accepted terminal cursor error = %T %v, want saved stale-cursor WireError", err, err)
 	}
-	data, ok := wireErr.Data.(appwire.ErrorData)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
-		t.Fatalf("source-accepted terminal cursor error data = %#v, want stale-cursor info", wireErr.Data)
+	data, ok := wireErr.Data.(appwire.HistoryReadErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale || data.BootGeneration != appwire.DaemonlessBootGeneration {
+		t.Fatalf("source-accepted terminal cursor error data = %#v, want the saved read's daemonless stale-cursor info", wireErr.Data)
 	}
 
 	fallback, err := dispatch(savedFirst.OlderCursor)
@@ -3230,17 +3230,15 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
-	daemon.Broadcast("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	daemon.Broadcast("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
 		ThreadID: "th_1",
 		Ref:      "local:th_1",
-		TurnID:   "turn_1",
-		ItemID:   "item_1",
 		Delta:    "hi",
 	})
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -3285,51 +3283,21 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 	}
 	expectRelaySubscription(t, source.subscribed)
 
-	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-		"turnId": "turn_1",
-		"item": appwire.ThreadItem{
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "th_img",
+		Ref:      "local:th_img",
+		Items: []appwire.ThreadItem{{
 			Type:          "commandExecution",
 			ID:            "item_write",
 			ToolName:      "write_file",
 			CallID:        "call_write",
 			ArgumentsJSON: `{"file_path":"plot.png"}`,
-			Status:        appwire.TurnStatusInProgress,
-		},
-	}).Notification
-	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"turnId": "turn_1",
-		"item": appwire.ThreadItem{
-			Type:     "commandExecution",
-			ID:       "item_write",
-			ToolName: "write_file",
-			CallID:   "call_write",
-			Output:   "wrote",
-			Status:   appwire.TurnStatusCompleted,
-		},
+			Output:        "wrote",
+			Status:        appwire.TurnStatusCompleted,
+		}},
 	}).Notification
 
-	var completed appwire.Notification
-	for i := 0; i < 2; i++ {
-		select {
-		case got := <-client.Notifications():
-			if got.Method == appwire.NotifyItemCompleted {
-				completed = got
-				i = 2
-			}
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for relayed completed notification")
-		}
-	}
-	if completed.Method == "" {
-		t.Fatal("completed notification was not relayed")
-	}
-	var params struct {
-		Item appwire.ThreadItem `json:"item"`
-	}
-	if err := json.Unmarshal(completed.Params, &params); err != nil {
-		t.Fatalf("unmarshal completed params: %v", err)
-	}
-	imgs := params.Item.OutputImages
+	imgs := relayedHistoryItem(t, client.Notifications()).OutputImages
 	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "plot.png" || imgs[0].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
 		t.Fatalf("OutputImages=%+v, want written-file plot.png /doc/image descriptor", imgs)
 	}
@@ -3377,42 +3345,46 @@ func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
-	daemon.Broadcast(sessionID, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-		ThreadID: sessionID, Ref: "local:" + sessionID, TurnID: "turn_1",
-		Item: appwire.ThreadItem{
+	daemon.Broadcast(sessionID, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: sessionID, Ref: "local:" + sessionID,
+		Items: []appwire.ThreadItem{{
 			Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
 			ToolName: "screenshot", CallID: "call_shot", Status: appwire.TurnStatusCompleted,
 			OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha}},
-		},
+		}},
 	})
 
+	imgs := relayedHistoryItem(t, client.Notifications()).OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped on the fanned-out descriptor", imgs)
+	}
+}
+
+// relayedHistoryItem waits for the next relayed history/updated and returns
+// its one item.
+func relayedHistoryItem(t *testing.T, notifications <-chan appwire.Notification) appwire.ThreadItem {
+	t.Helper()
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
-		case got := <-client.Notifications():
-			if got.Method != appwire.NotifyItemCompleted {
+		case got := <-notifications:
+			if got.Method != appwire.NotifyHistoryUpdated {
 				continue
 			}
-			var params struct {
-				Item appwire.ThreadItem `json:"item"`
+			var params appwire.HistoryUpdatedParams
+			if err := json.Unmarshal(got.Params, &params); err != nil || len(params.Items) != 1 {
+				t.Fatalf("relayed history/updated = %s (%v), want one item", got.Params, err)
 			}
-			if err := json.Unmarshal(got.Params, &params); err != nil {
-				t.Fatalf("unmarshal completed params: %v", err)
-			}
-			imgs := params.Item.OutputImages
-			if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
-				t.Fatalf("OutputImages=%+v, want the sha route stamped on the fanned-out descriptor", imgs)
-			}
-			return
+			return params.Items[0]
 		case <-deadline:
-			t.Fatal("timed out waiting for the relayed completed notification")
+			t.Fatal("timed out waiting for the relayed history/updated")
 		}
 	}
 }
 
 // TestHubRPCThreadReadRelaysSHARoutedToolResultImage is the live-streaming path
-// end to end through the relay (kata 2fxm): the daemon publishes an
-// item/completed whose tool-result image is named by sha and nothing else, and
+// end to end through the relay (kata 2fxm): the daemon publishes a
+// history/updated whose tool-result image is named by sha and nothing else, and
 // the browser must receive a descriptor it can actually fetch.
 func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
 	sessionID := "02wMz5Txv733WHFsVy66SR"
@@ -3446,41 +3418,19 @@ func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
 	}
 	expectRelaySubscription(t, source.subscribed)
 
-	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"turnId": "turn_1",
-		"item": appwire.ThreadItem{
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "th_shot",
+		Ref:      "local:th_shot",
+		Items: []appwire.ThreadItem{{
 			Type: "commandExecution", ID: "item_shot", ToolName: "screenshot", CallID: "call_shot",
 			Output: "captured", Status: appwire.TurnStatusCompleted,
 			OutputImages: []appwire.OutputImage{{
 				Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha,
 			}},
-		},
+		}},
 	}).Notification
 
-	var completed appwire.Notification
-	for range 3 {
-		select {
-		case got := <-client.Notifications():
-			if got.Method == appwire.NotifyItemCompleted {
-				completed = got
-			}
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for relayed completed notification")
-		}
-		if completed.Method != "" {
-			break
-		}
-	}
-	if completed.Method == "" {
-		t.Fatal("completed notification was not relayed")
-	}
-	var params struct {
-		Item appwire.ThreadItem `json:"item"`
-	}
-	if err := json.Unmarshal(completed.Params, &params); err != nil {
-		t.Fatalf("unmarshal completed params: %v", err)
-	}
-	imgs := params.Item.OutputImages
+	imgs := relayedHistoryItem(t, client.Notifications()).OutputImages
 	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
 		t.Fatalf("OutputImages=%+v, want the sha route stamped on the relayed descriptor", imgs)
 	}
@@ -3536,19 +3486,17 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	}
 
 	sourceB.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex-b:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "from source b",
 		}),
 	}
 
 	select {
 	case got := <-clientB.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("clientB method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -3559,18 +3507,16 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	// first (it was broadcast before the sentinel), so receiving the sentinel
 	// as the first notification structurally proves no cross-source leak.
 	sourceA.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex-a:" + threadID,
-			TurnID:   "turn_sentinel",
-			ItemID:   "item_sentinel",
 			Delta:    "sentinel",
 		}),
 	}
 	select {
 	case got := <-clientA.Notifications():
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("clientA: unmarshal params: %v", err)
 		}
@@ -3614,19 +3560,17 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 	expectRelaySubscription(t, source.subscribed)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "from codex",
 		}),
 	}
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -3681,12 +3625,10 @@ func TestHubRPCThreadUnsubscribeDropsDownstreamSubscription(t *testing.T) {
 
 	// The relay's notifications no longer reach this connection.
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after unsubscribe",
 		}),
 	}
@@ -3976,12 +3918,10 @@ func TestHubRPCThreadUnsubscribeDropsStableRefRelay(t *testing.T) {
 	}
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "current",
 			Ref:      stableRef,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after unsubscribe",
 		}),
 	}
@@ -4042,12 +3982,10 @@ func TestHubRPCThreadUnsubscribeDropsStableRefRelayWhenReadAlsoNamedThreadID(t *
 	}
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "current",
 			Ref:      stableRef,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after unsubscribe",
 		}),
 	}
@@ -4229,66 +4167,27 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 	retryClock.expectWait(t, 100*time.Millisecond)
 }
 
-// relayTurnStartedNotification builds the turn/started notification the relay
-// forwards from a real source, used to seed the relay's activeTurnID tracking
-// the same way a live daemon would.
-func relayTurnStartedNotification(t *testing.T, threadID, turnID string) appwire.Notification {
+// relayActiveStatusNotification builds the thread/status/changed a live
+// daemon publishes when a turn starts running, which seeds the relay's
+// running-turn tracking.
+func relayActiveStatusNotification(t *testing.T, threadID, turnID string) appwire.Notification {
 	t.Helper()
 	return appwire.Notification{
-		Method: appwire.NotifyTurnStarted,
-		Params: testRawJSON(t, appwire.TurnStartedParams{
-			ThreadID: threadID,
-			Ref:      "codex:" + threadID,
-			Turn:     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+		Method: appwire.NotifyThreadStatusChanged,
+		Params: testRawJSON(t, appwire.ThreadStatusChangedParams{
+			ThreadID:     threadID,
+			Ref:          "codex:" + threadID,
+			Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			ActiveTurnID: turnID,
 		}),
 	}
 }
 
-// expectRelaySynthesizedTurnFailure asserts the next notification is the
-// hub-authored turn/completed(failed) kata 3h02 synthesizes once a mid-turn
-// daemon stops answering: the same shape TurnFailureEndCap already renders
-// for a real daemon failure (connection-class, so its "Reconnect & retry"
-// button appears). It must name the relay's thread/ref, or a client routes
-// the frame nowhere (the reducer's target guard) and the synthesis is mute.
-func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID, wantMessageContains string) {
-	t.Helper()
-	select {
-	case got := <-notifications:
-		if got.Method != appwire.NotifyTurnCompleted {
-			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyTurnCompleted)
-		}
-		var params appwire.TurnCompletedParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("unmarshal turn/completed: %v", err)
-		}
-		if params.ThreadID != wantThreadID || params.Ref != wantRef {
-			t.Fatalf("turn/completed target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
-		}
-		if params.Turn.ID != wantTurnID {
-			t.Fatalf("turn.id=%q, want %q", params.Turn.ID, wantTurnID)
-		}
-		if params.Turn.Status != appwire.TurnStatusFailed {
-			t.Fatalf("turn.status=%q, want %q", params.Turn.Status, appwire.TurnStatusFailed)
-		}
-		if params.Turn.Error == nil {
-			t.Fatal("turn.error is nil, want a connection-class TurnError")
-		}
-		if params.Turn.Error.Source != "hub" {
-			t.Fatalf("turn.error.source=%q, want %q", params.Turn.Error.Source, "hub")
-		}
-		if !strings.Contains(params.Turn.Error.Message, wantMessageContains) {
-			t.Fatalf("turn.error.message=%q, want it to contain %q", params.Turn.Error.Message, wantMessageContains)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for the synthesized turn failure")
-	}
-}
-
-// expectRelaySynthesizedIdleStatus asserts the companion status frame the
-// relay now broadcasts right behind the synthesized failure. The session
-// status belongs to thread/status/changed, so without this the reducer keeps
-// the session active (Stop and Steer still showing, Send withheld) after the
-// failure it was just told about. It must carry the relay's target. The action
+// expectRelaySynthesizedIdleStatus asserts the status frame the relay
+// broadcasts once it gives up on a running turn's daemon. Without it the
+// reducer keeps the session active (Stop and Steer still showing, Send
+// withheld) with nothing left to end the turn. It must carry the relay's
+// target. The action
 // set is the hub's own only for a local (resumable) session; a non-local
 // source must carry none, preserving the masked set it sent.
 func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, wantCapabilities bool) {
@@ -4322,6 +4221,37 @@ func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire
 	}
 }
 
+// expectRelayGaveUpNotice asserts the overlay notice the relay publishes when
+// it gives up on a running turn: an error notice in that turn, anchored after
+// the latest history the relay forwarded, naming why, so the reader sees the
+// cause rather than a turn that silently stopped.
+func expectRelayGaveUpNotice(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID string, wantAnchorEntry uint64, wantCause string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyOverlayUpserted {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyOverlayUpserted)
+		}
+		var params appwire.OverlayUpsertedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal overlay/upserted: %v", err)
+		}
+		notice := params.Item
+		if params.ThreadID != wantThreadID || params.Ref != wantRef {
+			t.Fatalf("notice target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
+		}
+		if notice.Kind != appwire.OverlayNotice || notice.TurnID != wantTurnID || notice.Item.EventKind != appwire.ThreadItemEventKindError ||
+			notice.Anchor == nil || *notice.Anchor != (appwire.ThreadItemPosition{Entry: wantAnchorEntry, Item: appwire.NoticeAnchorItem}) {
+			t.Fatalf("notice = %+v, want an anchored error notice in turn %s", notice, wantTurnID)
+		}
+		if !strings.Contains(notice.Item.Text, wantCause) {
+			t.Fatalf("notice text=%q, want it to name %q", notice.Item.Text, wantCause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the give-up notice")
+	}
+}
+
 // relayGaveUpCapabilities decides the action set the synthesized idle status
 // carries: the hub's past-session set for a local thread it can resume, and
 // nothing for a non-local source, whose own masked set must stand (absent
@@ -4346,17 +4276,17 @@ func TestRelayGaveUpCapabilitiesOnlyForLocalThreads(t *testing.T) {
 	}
 }
 
-// TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures
-// covers kata 3h02: a daemon SIGKILLed mid-turn leaves the recovery loop
-// re-dialing a socket nothing answers, forever, with no diagnostic. After
+// TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures covers kata
+// 3h02: a daemon SIGKILLed mid-turn leaves the recovery loop re-dialing a
+// socket nothing answers, forever, with no diagnostic. After
 // relayGiveUpAfterFailures consecutive re-dial failures while a turn is
-// in-progress, the relay must synthesize a failed turn/completed for that
-// turn (source "hub") instead of retrying in total silence, followed by the
-// thread/status/changed(idle) frame that owns the session status (the status
-// is never turn/completed's) - and must fire the pair exactly once per stall,
-// not on every subsequent retry. Both frames must name the relay's target or
-// a client drops them at the routing guard.
-func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures(t *testing.T) {
+// running, the relay publishes thread/status/changed(idle), which owns the
+// session status, and evener/thread/resync, so the client re-reads the
+// transcript: the turn the daemon never completed reads as an open turn with
+// nothing running it. It fires the pair exactly once per stall, not on every
+// subsequent retry. Both frames must name the relay's target or a client
+// drops them at the routing guard.
+func TestHubRelayGivesUpOnARunningTurnAfterRepeatedRedialFailures(t *testing.T) {
 	const threadID = "th_dead_mid_turn"
 	const turnID = "turn_dead"
 	results := make(chan relaySubscribeResult)
@@ -4375,6 +4305,8 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	srv := httptest.NewUnstartedServer(nil)
 	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	cfg.RelayHooks.RetryWait = retryClock.Wait
+	logged := make(chan string, 16)
+	cfg.Logf = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
@@ -4406,14 +4338,26 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	// The turn opens; the reader is now watching a spinner. Then the daemon
 	// is gone (kill -9): its notification channel closes with no error and
 	// no persisted TurnFailure, exactly like a SIGKILLed process.
-	notifications <- relayTurnStartedNotification(t, threadID, turnID)
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyTurnStarted {
-			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyTurnStarted)
+	notifications <- relayActiveStatusNotification(t, threadID, turnID)
+	// The turn records history: the latest item the relay forwards sits at
+	// entry 7, so the give-up notice anchors after it, at entry 8 (ordinal +
+	// 1 of the preceding entry, the spec's notice-anchor rule).
+	notifications <- *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: threadID, Ref: "codex:" + threadID,
+		Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "late", Position: &appwire.ThreadItemPosition{Entry: 7, Item: 1}},
+			{Type: "userMessage", ID: "early", Position: &appwire.ThreadItemPosition{Entry: 5}},
+		},
+	}).Notification
+	for _, want := range []string{appwire.NotifyThreadStatusChanged, appwire.NotifyHistoryUpdated} {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != want {
+				t.Fatalf("notification method=%q, want %q", got.Method, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %s", want)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for turn/started")
 	}
 	close(notifications)
 
@@ -4427,11 +4371,25 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	retryClock.releaseWait(t, 200*time.Millisecond)
 
 	// The third consecutive failure crosses relayGiveUpAfterFailures: the
-	// relay must stop retrying in silence and tell the reader the turn died.
+	// relay must stop retrying in silence and tell the reader nothing runs
+	// the turn any more.
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
-	expectRelaySynthesizedTurnFailure(t, client.Notifications(), threadID, "codex:"+threadID, turnID, "connection refused (3)")
 	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
+	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 8, "connection refused (3)")
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	// The cause is recorded in the hub's log: the target, how many re-dials
+	// failed, and the last one's error.
+	select {
+	case line := <-logged:
+		for _, want := range []string{"codex:" + threadID, "3", "connection refused (3)"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("give-up log = %q, want it to name %q", line, want)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("give-up logged nothing")
+	}
 	retryClock.releaseWait(t, 400*time.Millisecond)
 
 	// The loop keeps retrying afterward (recovery is still worth having if
@@ -4446,6 +4404,92 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	case <-time.After(150 * time.Millisecond):
 	}
 	retryClock.expectWait(t, 800*time.Millisecond)
+}
+
+// TestHubRelayGivesUpAnchorsAtHistoryStartWhenNothingWasForwarded covers the
+// other half of the notice-anchor rule: when the relay never forwarded any
+// history item before giving up, there is no preceding entry, so the notice
+// anchors at the start of history (entry 0), not at some earlier entry the
+// hub happens to remember from nowhere.
+func TestHubRelayGivesUpAnchorsAtHistoryStartWhenNothingWasForwarded(t *testing.T) {
+	const threadID = "th_dead_before_history"
+	const turnID = "turn_dead_early"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	logged := make(chan string, 16)
+	cfg.Logf = func(format string, args ...any) { logged <- fmt.Sprintf(format, args...) }
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	// The turn opens, but the daemon dies before recording anything: the
+	// relay forwards a running status and nothing else.
+	notifications <- relayActiveStatusNotification(t, threadID, turnID)
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyThreadStatusChanged {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyThreadStatusChanged)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for thread/status/changed")
+	}
+	close(notifications)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (1)")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (2)")}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
+	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
+	expectRelayGaveUpNotice(t, client.Notifications(), threadID, "codex:"+threadID, turnID, 0, "connection refused (3)")
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	select {
+	case <-logged:
+	case <-time.After(time.Second):
+		t.Fatal("give-up logged nothing")
+	}
 }
 
 // TestHubRelayNoSyntheticFailureWithoutActiveTurn covers the scoping half of
@@ -6748,12 +6792,10 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 	expectRelaySubscription(t, sourceB.subscribed)
 
 	sourceA.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_a",
 			Ref:      "codex-a:th_a",
-			TurnID:   "turn_a",
-			ItemID:   "item_a",
 			Delta:    "from source a",
 		}),
 	}
@@ -6761,21 +6803,19 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 	// subscription leaked, sourceA's notification would arrive first; the
 	// client must receive sourceB's as the first notification.
 	sourceB.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_b",
 			Ref:      "codex-b:th_b",
-			TurnID:   "turn_b",
-			ItemID:   "item_b",
 			Delta:    "from source b",
 		}),
 	}
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("notification method=%q", got.Method)
 		}
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("unmarshal params: %v", err)
 		}
@@ -6840,22 +6880,18 @@ func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
 	expectRelaySubscription(t, sourceB.subscribed)
 
 	sourceA.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_a",
 			Ref:      "codex-a:th_a",
-			TurnID:   "turn_a",
-			ItemID:   "item_a",
 			Delta:    "from source a",
 		}),
 	}
 	sourceB.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_b",
 			Ref:      "codex-b:th_b",
-			TurnID:   "turn_b",
-			ItemID:   "item_b",
 			Delta:    "from source b",
 		}),
 	}
@@ -6864,10 +6900,10 @@ func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
 	for len(gotRefs) < 2 {
 		select {
 		case got := <-client.Notifications():
-			if got.Method != appwire.NotifyAgentMessageDelta {
+			if got.Method != appwire.NotifyOverlayDelta {
 				continue
 			}
-			var params appwire.AgentMessageDeltaParams
+			var params appwire.OverlayDeltaParams
 			if err := json.Unmarshal(got.Params, &params); err != nil {
 				t.Fatalf("unmarshal params: %v", err)
 			}
@@ -7050,19 +7086,17 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	close(releaseIdle)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_1",
 			Ref:      "codex:th_1",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "still live",
 		}),
 	}
 
 	select {
 	case got := <-client2.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-source.canceled:
@@ -7351,18 +7385,16 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 		t.Fatalf("ThreadRead okClient: %v", err)
 	}
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after retry",
 		}),
 	}
 	select {
 	case got := <-okClient.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("okClient method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -7374,12 +7406,10 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 	// received from the first broadcast is already in its buffer, because
 	// Broadcast enqueues to all subscribers synchronously before moving on.
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_sentinel",
-			ItemID:   "item_sentinel",
 			Delta:    "sentinel",
 		}),
 	}
@@ -7706,12 +7736,10 @@ func awaitRelaySubscribeCall(t *testing.T, calls <-chan struct{}) {
 func relayDeltaNotification(t *testing.T, threadID, delta string) appwire.Notification {
 	t.Helper()
 	return appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    delta,
 		}),
 	}
@@ -7766,7 +7794,7 @@ func expectRelayDelta(t *testing.T, notifications <-chan appwire.Notification, w
 	t.Helper()
 	select {
 	case got := <-notifications:
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("unmarshal relay notification: %v", err)
 		}
@@ -9062,7 +9090,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+	  printf '{"protocol":"evener-appwire-v6","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -10491,18 +10519,16 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	expectRelaySubscription(t, source.subscribed)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_start_relay",
 			Ref:      "codex:th_start_relay",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after start",
 		}),
 	}
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -10587,18 +10613,16 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 	expectRelaySubscription(t, source.subscribed)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_resume_relay",
 			Ref:      "codex:th_resume_relay",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after resume",
 		}),
 	}
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -10967,17 +10991,15 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 		t.Fatalf("TurnStart: %v", err)
 	}
 
-	daemon.Broadcast(sessionID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	daemon.Broadcast(sessionID, appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
 		ThreadID: sessionID,
 		Ref:      "local:" + sessionID,
-		TurnID:   "turn_4",
-		ItemID:   "item_1",
 		Delta:    "live update",
 	})
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -11371,9 +11393,9 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "codex:th_fork",
-		SourceTurnID: "codex-turn-1",
-		Model:        "gpt-5-codex",
+		Ref:           "codex:th_fork",
+		SourceItemKey: "codex-turn-1",
+		Model:         "gpt-5-codex",
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -11381,7 +11403,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	if !source.forkCalled {
 		t.Fatal("non-local source ForkThread was not called")
 	}
-	if source.forkParams.SourceTurnID != "codex-turn-1" || source.forkParams.EditedInput != "" {
+	if source.forkParams.SourceItemKey != "codex-turn-1" || source.forkParams.EditedInput != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
 	}
 	if resp.Thread.Evener.Ref != "codex:th_child" {
@@ -11426,7 +11448,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 	if !source.forkCalled {
 		t.Fatal("whole-thread fork was not routed to source")
 	}
-	if source.forkParams.SourceTurnID != "" || source.forkParams.EditedInput != "" || source.forkParams.Label != "" {
+	if source.forkParams.SourceItemKey != "" || source.forkParams.EditedInput != "" || source.forkParams.Label != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
 	}
 	if resp.Thread.Evener.Ref != "codex:th_whole_child" {
@@ -11459,8 +11481,8 @@ func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testi
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
-		Ref:          "codex:th_no_fork",
-		SourceTurnID: "codex-turn-1",
+		Ref:           "codex:th_no_fork",
+		SourceItemKey: "codex-turn-1",
 	}, &appwire.ThreadForkResponse{})
 	if err == nil {
 		t.Fatal("ThreadFork succeeded for source without fork capability")
@@ -11495,10 +11517,10 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		SourceTurnID: "3",
-		EditedInput:  "second task, edited",
-		Label:        "before edit",
+		Ref:           "local:" + parentID,
+		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+		EditedInput:   "second task, edited",
+		Label:         "before edit",
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -11538,9 +11560,9 @@ func TestHubRPCThreadForkDeferInput(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		SourceTurnID: "3",
-		DeferInput:   true,
+		Ref:           "local:" + parentID,
+		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+		DeferInput:    true,
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -11590,10 +11612,10 @@ func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		SourceTurnID: "3",
-		EditedInput:  "second task, edited",
-		DeferInput:   true,
+		Ref:           "local:" + parentID,
+		SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+		EditedInput:   "second task, edited",
+		DeferInput:    true,
 	}, &appwire.ThreadForkResponse{})
 	if err == nil {
 		t.Fatal("ThreadFork with both editedInput and deferInput should fail")

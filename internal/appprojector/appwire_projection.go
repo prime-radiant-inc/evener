@@ -1,21 +1,13 @@
 package appprojector
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"sort"
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/invariant"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
 )
 
 type AppNotification struct {
@@ -27,17 +19,13 @@ type AppNotification struct {
 	TaskPublicationRevision uint64
 }
 
-type skillActivationCandidate struct {
-	turnID         string
-	itemID         string
-	callID         string
-	skill          string
-	valid          bool
-	activationName string
-}
-
-var marshalContextCompaction = json.Marshal
-
+// AppEventProjector maps one thread's session events to its thread-level
+// AppWire notifications: thread/started, thread/status/changed, the queue,
+// goal, notes, URLs, tasks, delegates, model, effort and vision changes, jobs,
+// escalations, the name, model retries and thread/closed. History reaches
+// clients from recorded entries (history/updated) and live unrecorded state
+// from the overlay, so the projector holds no turn or item state and mints no
+// ids.
 type AppEventProjector struct {
 	threadID string
 	ref      string
@@ -49,151 +37,17 @@ type AppEventProjector struct {
 	taskPublicationEpoch    uint64
 	taskPublicationRevision uint64
 
-	nextTurn       int
-	nextItem       int
-	reservedTurnID string
-	// reservedTurnIDIsStable records that reservedTurnID came from outside the
-	// "turn_%d" sequence (a durable client-mutation id, or an environment
-	// entry's own id) rather than from ReserveTurnID. Such a turn still
-	// occupies an entry index in the cold projection, so startTurn spends a
-	// number for it; a reservation the counter minted already spent its own.
-	reservedTurnIDIsStable bool
-	activeTurnID           string
-	// anyTurnStarted records whether a REAL turn has ever started in this
-	// projector's life. It is the chronologically honest half of the prelude
-	// test in preTurnAnnouncementTurnID: nextTurn alone cannot answer "has
-	// anything actually run yet", because ReserveTurnID mints an id (and so
-	// bumps nextTurn) for a turn that has not started - turn/start's
-	// reservation, or SetProcessing's auto-continuation reservation for a
-	// queued initial prompt, both land while the session is still announcing
-	// its own startup. Those SESSION_START-time events happened BEFORE any
-	// real turn whatever the counter says.
-	anyTurnStarted bool
-	// historySeeded records whether SeedPersistedTurns ever raised the
-	// counter over a resumed session's persisted entries. A resumed session's
-	// startup burst happened AFTER the persisted history, not before any
-	// real turn, so it must keep minting its own gap id (kata 9ekv) rather
-	// than folding into the prelude turn at the very top of the transcript.
-	historySeeded bool
-	// midSessionAnnouncementTurnID is the shared synthetic turn id for the
-	// CURRENT gap between two real turns (nextTurn > 0, activeTurnID == "").
-	// See preTurnAnnouncementTurnID's doc comment (kata 9ekv): it is minted
-	// once per gap on that gap's first no-active-turn announcement, reused by
-	// every announcement in the same gap, and cleared by startTurn so the
-	// next gap gets its own fresh id.
-	midSessionAnnouncementTurnID string
-	assistantItem                string
-	assistantText                string
-	messageStartByID             map[string]time.Time
-	provisionalCommunicateItems  map[string]string
-	communicateCommittedCalls    map[string]struct{}
-	communicatePhases            map[string]communicatePhase
-	reasoningItem                string
-	// reasoningTurnID remains stable when a durable turn reservation replaces
-	// the live active turn before the reasoning item is completed.
-	reasoningTurnID string
-	toolItemsByKey  map[string]string
-	toolArgsByKey   map[string]string
-	// toolStartByKey records each open tool call's server-side start time (the
-	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
-	// the completed item with the call's real StartedAt/DurationMS (issue
-	// #37: the web hover meta shows server truth or nothing).
-	toolStartByKey  map[string]time.Time
-	suppressedTools map[string]struct{}
-	// heldToolResultImages keeps, per call id, the completed tool item whose
-	// sha-addressed result images no server can serve yet — see
-	// holdUnfetchableToolResultImages. Entries leave on the round's
-	// TOOL_RESULT_IMAGES_PERSISTED, or with the turn that opened them.
-	heldToolResultImages map[string]appwire.ThreadItem
-	skillCandidate       skillActivationCandidate
-	delegates            map[string]appwire.EvenerDelegateInfo
-
-	lastAssistantTurnID  string
-	lastAssistantText    string
-	pendingNotifications []AppNotification
-
-	// pendingTurnID/pendingCompletedAtMillis/pendingDurationMS record the most
-	// recent EventTurnEnded's timing until the turn it names is actually
-	// completed by one of the existing completion sites (EventTurnStarted,
-	// EventUserInput,
-	// EventGoalContinuation, EventError, EventSessionEnd). EventTurnEnded fires
-	// before those sites on some paths (interrupt/close) and after on others
-	// (a failed turn), so this is a stash, not a completion — see
-	// applyPendingTiming.
-	pendingTurnID            string
-	pendingCompletedAtMillis int64
-	pendingDurationMS        int64
-
-	// activeTurnUsage/activeTurnModel/activeTurnProvider accumulate the
-	// current turn's own (not cumulative-session) usage and the
-	// instance/model it ran on across every EventAssistantTextEnd since
-	// startTurn(), stamped onto the completing Turn at each of the five
-	// completion sites. Unlike pendingTurnID/pendingDurationMS, no
-	// stash-vs-completion-ordering race exists here: EventAssistantTextEnd
-	// always fires chronologically before the turn's own completion event.
-	activeTurnUsage    llm.Usage
-	activeTurnModel    string
-	activeTurnProvider string
-	// costLookup prices the completing turn. Nil until SetCostLookup
-	// installs one, which is the honest answer for a projection with no
-	// registry behind it: the turn reports usage and no cost.
-	costLookup func(provider, model string) *registry.Cost
+	// runningTurnID is the running execution's TurnID, from its
+	// EXECUTION_STARTED to its EXECUTION_ENDED (or the session's end).
+	runningTurnID string
+	delegates     map[string]appwire.EvenerDelegateInfo
 }
-
-type communicatePhase uint8
-
-const (
-	communicatePhaseNone communicatePhase = iota
-	communicatePhasePreview
-	communicatePhaseExecuting
-	communicatePhaseCommitted
-	communicatePhaseClosed
-)
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	return &AppEventProjector{
-		threadID:                    threadID,
-		ref:                         ref,
-		toolItemsByKey:              map[string]string{},
-		toolArgsByKey:               map[string]string{},
-		toolStartByKey:              map[string]time.Time{},
-		suppressedTools:             map[string]struct{}{},
-		heldToolResultImages:        map[string]appwire.ThreadItem{},
-		delegates:                   map[string]appwire.EvenerDelegateInfo{},
-		provisionalCommunicateItems: map[string]string{},
-		communicateCommittedCalls:   map[string]struct{}{},
-		communicatePhases:           map[string]communicatePhase{},
-	}
-}
-
-// SetCostLookup installs the $/Mtok cost source the completing turn is priced
-// at: the daemon passes the live session's registry lookup, keyed on the
-// instance and model each round reported (spec §7.5). A projector without one
-// reports usage and no cost.
-func (p *AppEventProjector) SetCostLookup(lookup func(provider, model string) *registry.Cost) {
-	p.costLookup = lookup
-}
-
-// SeedPersistedTurns raises the projector's turn counter so no live turn it
-// mints can collide with a turn id the transcript projection already assigned.
-//
-// Both namespaces are "turn_%d": internal/apptranscript numbers a persisted
-// turn by its ENTRY INDEX, and a fresh projector starts at turn_1. Since the
-// in-memory snapshot became the daemon's only turn authority, a collision is
-// permanent -- the live turn merges into the seeded entry and replaces its
-// content for the life of the session, with nothing left to re-derive it from.
-//
-// It only ever raises the counter, so seeding twice (once from the prepared
-// transcript, once from a restored session's own entry count) is safe and the
-// higher figure wins.
-func (p *AppEventProjector) SeedPersistedTurns(persistedEntries int) {
-	if persistedEntries > p.nextTurn {
-		p.nextTurn = persistedEntries
-	}
-	// Zero entries is a fresh session's no-op seed, not history: only a real
-	// persisted entry count fences the prelude off (see historySeeded).
-	if persistedEntries > 0 {
-		p.historySeeded = true
+		threadID:  threadID,
+		ref:       ref,
+		delegates: map[string]appwire.EvenerDelegateInfo{},
 	}
 }
 
@@ -222,75 +76,18 @@ func (p *AppEventProjector) observeTaskPublication(epoch, revision uint64) {
 	}
 }
 
-func (p *AppEventProjector) clearSkillCandidate() {
-	p.skillCandidate = skillActivationCandidate{}
-}
-
-func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotification) {
-	pending := p.pendingNotifications
-	p.pendingNotifications = nil
-	defer func() { out = append(pending, out...) }()
-	// Message lifecycles share one timing rule: keep the first visible event's
-	// timestamp through completion. One-shot messages use their own event time.
-	defer func() {
-		for i := range out {
-			if reset, ok := out[i].Params.(appwire.AgentMessageResetParams); ok {
-				delete(p.messageStartByID, reset.ItemID)
-			}
-			params, ok := out[i].Params.(appwire.ItemLifecycleParams)
-			if !ok || (params.Item.Type != "userMessage" && params.Item.Type != "agentMessage") {
-				continue
-			}
-			startedAt, exists := p.messageStartByID[params.Item.ID]
-			if !exists {
-				startedAt = event.Timestamp
-			}
-			if !startedAt.IsZero() {
-				ms := startedAt.UnixMilli()
-				params.Item.StartedAt = &ms
-			}
-			if out[i].Method == appwire.NotifyItemStarted {
-				if p.messageStartByID == nil {
-					p.messageStartByID = map[string]time.Time{}
-				}
-				p.messageStartByID[params.Item.ID] = startedAt
-			} else {
-				delete(p.messageStartByID, params.Item.ID)
-			}
-			out[i].Params = params
-		}
-	}()
-
+func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification {
 	if p.threadID == "" {
 		p.threadID = event.SessionID
 	}
 
 	switch event.Kind {
-	case events.EventEnvironment:
-		data := eventData[events.EnvironmentData](event.Data)
-		if strings.TrimSpace(data.Text) == "" {
-			return nil
-		}
-		// Environment context is a standalone saved turn, not a runnable
-		// work carrier. Close its group before the following user input.
-		return p.bookkeepingTurn(data.TurnID, event.Timestamp, func() []AppNotification {
-			return p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)
-		})
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {
 			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
 		}
 		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
-		// A resumed session's turn ids must not reuse the "turn_%d" namespace
-		// the transcript projection (internal/apptranscript) already assigned by
-		// entry index to the session's persisted entries (kata eptj). The
-		// daemon fences this when it prepares the identity, before any event
-		// arrives; this is the same fence for a projector whose seed count only
-		// the session knows.
-		if data.Restored {
-			p.SeedPersistedTurns(data.TranscriptEntries)
-		}
 		// A restored session carries its re-derived state on the event (spec
 		// §5.4's "two touchpoints"); a fresh session's State is empty and
 		// defaults to idle, same as an unrecognized value.
@@ -333,81 +130,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			out[i].TaskPublicationRevision = data.TaskPublicationRevision
 		}
 		return out
-	case events.EventTurnStarted:
-		// The one boundary for turns that carry no content event of their own.
-		// It owes its subscribers three things, and a notification turn needs
-		// all three: the previous turn closed (its items must not land in a
-		// turn that already ended), this turn opened under the daemon's own id
-		// (the one its mutation preconditions accept), and the thread
-		// published active (status and capabilities ride one frame, and the
-		// composer renders Stop and Steer only when it believes the thread is
-		// busy). An empty TurnID means the daemon could not name this turn;
-		// all three obligations still stand, so startTurn mints as usual and
-		// the status goes out either way.
-		//
-		// Active is published for an unnameable turn too. Control mutations
-		// stopped naming the turn they act on -- appwire v3 dropped
-		// expectedTurnId from steer, queue, interrupt, drain and promote
-		// (appwire/types.go) -- and the daemon's capability answer never
-		// consulted the id at all: appCapabilities (server/appwire_runtime.go)
-		// computes active from `processing || appReservedTurnID != ""`. So
-		// thread/read already hands a client hydrating mid-turn an active
-		// status and controls that work, whichever way the naming went.
-		// Withholding this frame would hide a Stop that works and leave the
-		// push and pull paths disagreeing about one turn (kata b19h).
-		p.clearSkillCandidate()
-		data := eventData[events.TurnStartedData](event.Data)
-		_, out := p.openTurn(data.TurnID, event.Timestamp, false)
-		return append(out, p.threadStatus(appwire.ThreadStatusActive))
-	case events.EventUserInput:
-		data := eventData[events.UserInputData](event.Data)
-		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp, false)
-		item := appwire.ThreadItem{
-			Type:                 "userMessage",
-			ID:                   p.nextItemID("user"),
-			TurnID:               turnID,
-			TranscriptEntryIndex: data.Turn,
-			Text:                 data.Text,
-			Images:               projectUserInputImages(data.Images),
-			Status:               "completed",
-			ClientMutationID:     data.ClientMutationID,
+	case events.EventExecutionStarted:
+		p.runningTurnID = eventData[events.ExecutionStartedData](event.Data).TurnID
+		return []AppNotification{p.threadStatus(appwire.ThreadStatusActive)}
+	case events.EventExecutionEnded:
+		if data := eventData[events.ExecutionEndedData](event.Data); data.TurnID != p.runningTurnID {
+			// An end for an execution another one already replaced.
+			return nil
 		}
-		out = append(out,
-			p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   turnID,
-				Item:     item,
-			}),
-			p.threadStatus(appwire.ThreadStatusActive),
-		)
-		return out
-	case events.EventGoalContinuation:
-		p.clearSkillCandidate()
-		// A goal continuation opens a fresh turn just like a user input
-		// (close the prior turn, start a new one), but renders its prompt as
-		// a systemMessage rather than a userMessage so continuations don't
-		// look like the user spoke.
-		data := eventData[events.GoalContinuationData](event.Data)
-		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp, false)
-		item := appwire.ThreadItem{
-			Type:        "systemMessage",
-			ID:          p.nextItemID("goal_continuation"),
-			TurnID:      turnID,
-			Description: "Goal",
-			Text:        data.Text,
-			Status:      appwire.TurnStatusCompleted,
-		}
-		out = append(out,
-			p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   turnID,
-				Item:     item,
-			}),
-			p.threadStatus(appwire.ThreadStatusActive),
-		)
-		return out
+		p.runningTurnID = ""
+		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
 	case events.EventGoalUpdated:
 		data := eventData[events.GoalUpdatedData](event.Data)
 		var state *appwire.GoalState
@@ -442,141 +174,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Ref:      p.ref,
 			URLs:     urls,
 		})}
-	case events.EventAssistantTextStart:
-		p.skillCandidate = skillActivationCandidate{}
-		out := p.ensureTurn(event.Timestamp)
-		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
-		// The agent message is materialized lazily -- with the first delta, or
-		// at ASSISTANT_TEXT_END when the round's whole text arrives there. Every
-		// round that answers with tool calls alone emits this same lifecycle
-		// (ASSISTANT_TEXT_END carries the round's usage and finish reason), and
-		// an empty agent message must not reach the envelope for it.
-		p.assistantItem = ""
-		p.assistantText = ""
-		return out
-	case events.EventAssistantTextDelta:
-		created, out := p.ensureAssistantItem(event.Timestamp)
-		data := eventData[events.AssistantTextDeltaData](event.Data)
-		p.assistantText += data.Delta
-		if created {
-			out = append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   p.activeTurnID,
-				Item: appwire.ThreadItem{
-					Type:   "agentMessage",
-					ID:     p.assistantItem,
-					TurnID: p.activeTurnID,
-					Status: appwire.TurnStatusInProgress,
-				},
-			}))
-		}
-		return append(out, p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   p.activeTurnID,
-			ItemID:   p.assistantItem,
-			Delta:    data.Delta,
-		}))
-	case events.EventReasoningSummaryDelta:
-		data := eventData[events.ReasoningSummaryDeltaData](event.Data)
-		created, out := p.ensureReasoningItem(event.Timestamp)
-		if created {
-			out = append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   p.activeTurnID,
-				Item: appwire.ThreadItem{
-					Type:   "reasoning",
-					ID:     p.reasoningItem,
-					TurnID: p.activeTurnID,
-					Status: appwire.TurnStatusInProgress,
-				},
-			}))
-		}
-		out = append(out, p.notification(appwire.NotifyReasoningSummaryDelta, appwire.ReasoningSummaryDeltaParams{
-			ThreadID:     p.threadID,
-			Ref:          p.ref,
-			TurnID:       p.activeTurnID,
-			ItemID:       p.reasoningItem,
-			SummaryIndex: data.SummaryIndex,
-			Delta:        data.Delta,
-		}))
-		return out
-	case events.EventAssistantTextEnd:
-		p.skillCandidate = skillActivationCandidate{}
-		out := p.ensureTurn(event.Timestamp)
-		data := eventData[events.AssistantTextEndData](event.Data)
-		p.activeTurnUsage = p.activeTurnUsage.Add(data.Usage)
-		if data.Model != "" {
-			p.activeTurnModel = data.Model
-		}
-		if data.Provider != "" {
-			p.activeTurnProvider = data.Provider
-		}
-		text := data.Text
-		if text == "" {
-			text = p.assistantText
-		}
-		// A round with nothing to say -- tool calls only -- ends the text
-		// lifecycle without ever materializing an item. Its usage, accumulated
-		// above, is the whole effect it has on the envelope.
-		if p.assistantItem == "" && strings.TrimSpace(text) == "" {
-			p.assistantText = ""
-			return append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
-		}
-		// The turn is already open above, so this can only materialize the
-		// item; it has no turn/started of its own left to announce.
-		p.ensureAssistantItem(event.Timestamp)
-		item := appwire.ThreadItem{
-			Type:   "agentMessage",
-			ID:     p.assistantItem,
-			TurnID: p.activeTurnID,
-			Text:   text,
-			Status: "completed",
-		}
-		turnID := p.activeTurnID
-		p.recordAssistantMessage(turnID, text)
-		p.assistantItem = ""
-		p.assistantText = ""
-		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
-		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   turnID,
-			Item:     item,
-		}))
-	case events.EventAssistantTextReset:
-		// A retry after partial output: discard the in-progress items so the
-		// retry's stream replaces them rather than appending. The retry loop
-		// emits this one reset for BOTH item kinds — a failed attempt's
-		// reasoning and assistant text both streamed, and both must be
-		// discarded; resetting only the assistant item left the reasoning
-		// item open, so the retry's reasoning deltas appended onto the failed
-		// attempt's (the #641 repeated-word live view). No-op when nothing
-		// was streamed yet (no items to reset).
-		out := []AppNotification{}
-		if p.assistantItem != "" {
-			out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   p.activeTurnID,
-				ItemID:   p.assistantItem,
-			}))
-			p.assistantItem = ""
-			p.assistantText = ""
-		}
-		if p.reasoningItem != "" {
-			out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   p.activeTurnID,
-				ItemID:   p.reasoningItem,
-			}))
-			p.reasoningItem = ""
-			p.reasoningTurnID = ""
-		}
-		return out
 	case events.EventModelRetry:
 		// Thread-scoped, item-less: the retry is state about the wait in
 		// progress, not a fact worth a transcript row (see
@@ -585,7 +182,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		return []AppNotification{p.notification(appwire.NotifyEvenerThreadModelRetry, appwire.ThreadModelRetryParams{
 			ThreadID:       p.threadID,
 			Ref:            p.ref,
-			TurnID:         p.activeTurnID,
+			TurnID:         p.runningTurnID,
 			Attempt:        data.Attempt,
 			MaxAttempts:    data.MaxAttempts,
 			DelayMS:        data.DelayMS,
@@ -596,491 +193,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			GroupElapsedMS: data.GroupElapsedMS,
 			AttemptCap:     data.AttemptCap,
 		})}
-	case events.EventCommunicatePreviewStart:
-		data := eventData[events.CommunicatePreviewStartData](event.Data)
-		if data.CallID == "" || p.provisionalCommunicateItems[data.CallID] != "" {
-			return nil
-		}
-		phase := p.communicatePhases[data.CallID]
-		if phase != communicatePhaseNone && phase != communicatePhaseClosed {
-			return nil
-		}
-		out := p.ensureTurn(event.Timestamp)
-		delete(p.communicateCommittedCalls, data.CallID)
-		p.communicatePhases[data.CallID] = communicatePhasePreview
-		itemID := p.nextItemID("communicate_preview")
-		p.provisionalCommunicateItems[data.CallID] = itemID
-		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Status: appwire.TurnStatusInProgress},
-		}))
-	case events.EventCommunicatePreviewDelta:
-		data := eventData[events.CommunicatePreviewDeltaData](event.Data)
-		itemID := p.provisionalCommunicateItems[data.CallID]
-		if itemID == "" || data.Delta == "" {
-			return nil
-		}
-		return []AppNotification{p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID, Delta: data.Delta,
-		})}
-	case events.EventCommunicatePreviewReset:
-		data := eventData[events.CommunicatePreviewResetData](event.Data)
-		itemID := p.provisionalCommunicateItems[data.CallID]
-		if itemID == "" {
-			return nil
-		}
-		delete(p.provisionalCommunicateItems, data.CallID)
-		p.communicatePhases[data.CallID] = communicatePhaseClosed
-		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
-		})}
-	case events.EventCommunicate:
-		p.skillCandidate = skillActivationCandidate{}
-		data := eventData[events.CommunicateData](event.Data)
-		text := strings.TrimSpace(data.Message)
-		if text == "" {
-			return nil
-		}
-		out := p.ensureTurn(event.Timestamp)
-		if data.CallID != "" {
-			if _, committed := p.communicateCommittedCalls[data.CallID]; committed {
-				return out
-			}
-			itemID := p.provisionalCommunicateItems[data.CallID]
-			if itemID == "" {
-				itemID = p.nextItemID("assistant")
-			}
-			p.communicateCommittedCalls[data.CallID] = struct{}{}
-			p.communicatePhases[data.CallID] = communicatePhaseCommitted
-			delete(p.provisionalCommunicateItems, data.CallID)
-			p.recordAssistantMessage(p.activeTurnID, text)
-			return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
-			}))
-		}
-		if p.matchesLastAssistantMessage(p.activeTurnID, text) {
-			return out
-		}
-		item := appwire.ThreadItem{
-			Type:   "agentMessage",
-			ID:     p.nextItemID("assistant"),
-			TurnID: p.activeTurnID,
-			Text:   text,
-			Status: appwire.TurnStatusCompleted,
-		}
-		p.recordAssistantMessage(p.activeTurnID, text)
-		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   p.activeTurnID,
-			Item:     item,
-		}))
-	case events.EventToolCallStart:
-		out := p.ensureTurn(event.Timestamp)
-		data := eventData[events.ToolCallStartData](event.Data)
-		if data.ToolName != "use_skill" {
-			p.skillCandidate = skillActivationCandidate{}
-		}
-		if data.ToolName == "communicate" {
-			phase := p.communicatePhases[data.CallID]
-			if phase == communicatePhasePreview {
-				p.communicatePhases[data.CallID] = communicatePhaseExecuting
-				p.suppressedTools[data.CallID] = struct{}{}
-				return out
-			}
-			if phase == communicatePhaseExecuting || phase == communicatePhaseCommitted {
-				return out
-			}
-			// A provider may reuse a raw call ID after the prior generation closed.
-			delete(p.communicateCommittedCalls, data.CallID)
-			p.communicatePhases[data.CallID] = communicatePhaseExecuting
-			p.suppressedTools[data.CallID] = struct{}{}
-			return out
-		}
-		itemID := p.nextItemID("tool")
-		p.toolItemsByKey[data.CallID] = itemID
-		p.toolArgsByKey[data.CallID] = data.ArgumentsJSON
-		startedItem := appwire.ThreadItem{
-			Type:          "commandExecution",
-			ID:            itemID,
-			TurnID:        p.activeTurnID,
-			ToolName:      data.ToolName,
-			CallID:        data.CallID,
-			ArgumentsJSON: data.ArgumentsJSON,
-			Description:   data.Description,
-			Status:        appwire.TurnStatusInProgress,
-		}
-		// The event's own timestamp is the server truth for when the call
-		// started; a zero timestamp leaves StartedAt unset rather than
-		// reporting the Unix epoch (issue #37).
-		if !event.Timestamp.IsZero() {
-			ms := event.Timestamp.UnixMilli()
-			startedItem.StartedAt = &ms
-			p.toolStartByKey[data.CallID] = event.Timestamp
-		}
-		if data.ToolName == "use_skill" {
-			skill := useSkillNameFromArgs(data.ArgumentsJSON)
-			p.skillCandidate = skillActivationCandidate{
-				turnID: p.activeTurnID,
-				itemID: itemID,
-				callID: data.CallID,
-				skill:  skill,
-				valid:  skill != "",
-			}
-		}
-		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   p.activeTurnID,
-			Item:     startedItem,
-		}))
-	case events.EventToolCallOutputDelta:
-		data := eventData[events.ToolCallOutputDeltaData](event.Data)
-		if _, ok := p.suppressedTools[data.CallID]; ok {
-			return nil
-		}
-		return []AppNotification{p.notification(appwire.NotifyToolOutputDelta, appwire.ToolOutputDeltaParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   p.activeTurnID,
-			ItemID:   p.toolItemID(data.CallID),
-			CallID:   data.CallID,
-			Delta:    data.Delta,
-		})}
-	case events.EventToolCallEnd:
-		data := eventData[events.ToolCallEndData](event.Data)
-		var out []AppNotification
-		if data.Error != "" {
-			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
-				delete(p.provisionalCommunicateItems, data.CallID)
-				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
-				}))
-			}
-			if p.communicatePhases[data.CallID] == communicatePhaseExecuting || p.communicatePhases[data.CallID] == communicatePhasePreview {
-				p.communicatePhases[data.CallID] = communicatePhaseClosed
-			}
-		}
-		if _, ok := p.suppressedTools[data.CallID]; ok {
-			delete(p.suppressedTools, data.CallID)
-			p.communicatePhases[data.CallID] = communicatePhaseClosed
-			return out
-		}
-		if data.ToolName == "communicate" && p.toolItemsByKey[data.CallID] == "" {
-			return out
-		}
-		raw := data.ToolState
-		if p.skillCandidate.valid && p.skillCandidate.callID == data.CallID && p.skillCandidate.activationName != "" {
-			raw = skillActivationRaw(p.skillCandidate.activationName)
-		}
-		argsJSON := p.toolArgsByKey[data.CallID]
-		if argsJSON == "" {
-			argsJSON = data.ArgumentsJSON
-		}
-		item := appwire.ThreadItem{
-			Type:          "commandExecution",
-			ID:            p.toolItemID(data.CallID),
-			TurnID:        p.activeTurnID,
-			ToolName:      data.ToolName,
-			CallID:        data.CallID,
-			ArgumentsJSON: argsJSON,
-			Output:        data.Output,
-			Error:         data.Error,
-			PrevalOnly:    data.PrevalOnly,
-			OutputImages:  projectOutputImages(data.OutputImages),
-			Status:        apptranscript.SettledToolStatus(data.Error != ""),
-			Raw:           raw,
-			// Carry the call's intent onto the completed item too (#26):
-			// the started item already has it, and live consumers (the web
-			// subagent activity line) render the intent from Description.
-			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
-			// ExitCode promotes the shell tool's exit code, already riding
-			// data.ToolState end to end (agent/session_tools_shell.go:483
-			// shellToolResult), onto the settled item (wire-honesty spec Part
-			// A). Read from data.ToolState directly rather than raw, which may
-			// have been overwritten above with the skill-activation payload.
-			ExitCode: apptranscript.ExitCodeFromToolState(data.ToolState),
-		}
-		// Server-truth timing for the hover meta (issue #37): CompletedAt from
-		// this event's own timestamp; StartedAt/DurationMS from the recorded
-		// call start. Anything not honestly recorded stays unset.
-		if !event.Timestamp.IsZero() {
-			ms := event.Timestamp.UnixMilli()
-			item.CompletedAt = &ms
-			if start, ok := p.toolStartByKey[data.CallID]; ok && !start.IsZero() {
-				startMs := start.UnixMilli()
-				item.StartedAt = &startMs
-				duration := event.Timestamp.Sub(start).Milliseconds()
-				if duration >= 0 {
-					item.DurationMS = &duration
-				}
-			}
-		}
-		delete(p.toolStartByKey, data.CallID)
-		if data.ToolName == "use_skill" && data.Error == "" {
-			skill := useSkillNameFromArgs(argsJSON)
-			activationName := ""
-			if p.skillCandidate.callID == data.CallID {
-				activationName = p.skillCandidate.activationName
-			}
-			p.skillCandidate = skillActivationCandidate{
-				turnID:         p.activeTurnID,
-				itemID:         item.ID,
-				callID:         data.CallID,
-				skill:          skill,
-				valid:          skill != "",
-				activationName: activationName,
-			}
-		} else {
-			p.skillCandidate = skillActivationCandidate{}
-		}
-		delete(p.toolItemsByKey, data.CallID)
-		delete(p.toolArgsByKey, data.CallID)
-		p.holdUnfetchableToolResultImages(&item)
-		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   p.activeTurnID,
-			Item:     item,
-		}))
-	case events.EventToolResultImagesPersisted:
-		// The bytes behind the descriptors held above have reached the
-		// transcript, so the promise they make is now one a server can keep.
-		// Re-send each item exactly as it settled, with its images restored:
-		// a client that has already seen this id replaces its copy wholesale,
-		// so a partial item would erase the call's output.
-		data := eventData[events.ToolResultImagesPersistedData](event.Data)
-		var released []AppNotification
-		for _, callID := range data.CallIDs {
-			item, held := p.heldToolResultImages[callID]
-			if !held {
-				continue
-			}
-			delete(p.heldToolResultImages, callID)
-			released = append(released, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   item.TurnID,
-				Item:     item,
-			}))
-		}
-		return released
-	case events.EventToolCallRepaired:
-		// This fires before EventToolCallStart creates the CallID-keyed tool
-		// item (repair runs before PreToolUse hooks, which run before the
-		// start event), so there is no item yet to annotate. Render it as a
-		// standalone system announcement instead, the same way other
-		// out-of-band, no-item-state events (hook end, plugin loaded, ...)
-		// are surfaced.
-		data := eventData[events.ToolCallRepairedData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindToolRepair, "Tool call repaired", toolCallRepairedAnnouncement(data))
-	case events.EventWarning:
-		p.clearSkillCandidate()
-		data := eventData[events.WarningData](event.Data)
-		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Message)
-		// Still map[string]any, not appwire.WarningParams (kcb5): info.Title/
-		// info.Hint/info.Source are frequently "" for a diagnostic.Classify fallback
-		// that recognized no known source or keyword - this map always emits those
-		// keys regardless, but WarningParams tags them all `omitempty`, so a typed
-		// literal would silently drop title/hint/source whenever they're blank. Not
-		// provably byte-identical; left as a map.
-		return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"message":  data.Message,
-			"source":   string(info.Source),
-			"title":    info.Title,
-			"hint":     info.Hint,
-			"warning":  event.Data,
-		})}
-	case events.EventError:
-		p.clearSkillCandidate()
-		data := eventData[events.ErrorData](event.Data)
-		message := strings.TrimSpace(data.Error)
-		if message == "" {
-			message = "session error"
-		}
-		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
-		cause := projectErrorCause(data.Cause)
-
-		// A user-cancelled turn is not a failure: surface it as a warning and
-		// let the interrupted SessionEnd own the turn's terminal state (do NOT
-		// complete the turn as failed here).
-		if isContextCanceledError(message) {
-			// Still map[string]any, not WarningParams - same omitempty-vs-blank-
-			// field risk as EventWarning's own comment above (kcb5).
-			return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"message":  message,
-				"source":   string(info.Source),
-				"title":    info.Title,
-				"hint":     info.Hint,
-				"cause":    cause,
-				"warning": events.WarningData{
-					Message: message,
-					Source:  string(info.Source),
-					Title:   info.Title,
-					Hint:    info.Hint,
-				},
-			})}
-		}
-
-		// A genuine turn failure is surfaced exactly once, as a failed turn. The
-		// TurnError carries the full diagnostic (message/source/title/hint/cause);
-		// emitting a separate NotifyWarning too would make the same error render
-		// twice in clients that show both the warning channel and turn errors.
-		out := p.ensureTurn(event.Timestamp)
-		turnID := p.activeTurnID
-		previewResets := p.resetProvisionalCommunicates()
-		reasoningCompletion := p.completeReasoningItem(appwire.TurnStatusFailed)
-		p.activeTurnID = ""
-		// A failed turn ends as thoroughly as a completed one. Clearing a
-		// smaller set here let reasoningItem, toolArgsByKey and toolStartByKey
-		// survive into the next turn, and ensureReasoningItem then reused the
-		// failed turn's item id without announcing it.
-		p.resetTurnScopedState()
-		turn := appwire.Turn{
-			ID:     turnID,
-			Status: appwire.TurnStatusFailed,
-			Error: &appwire.TurnError{
-				Message: message,
-				Source:  string(info.Source),
-				Title:   info.Title,
-				Hint:    info.Hint,
-				Cause:   cause,
-			},
-		}
-		// EventTurnEnded runs after EventError on the failure path (see
-		// handleModelError), so no pending timing has been recorded yet here;
-		// this call is a no-op today but keeps the timing path uniform across
-		// all five completion sites.
-		p.applyPendingTiming(turnID, &turn)
-		p.stampTurnUsage(&turn)
-		return append(append(append(out, previewResets...), reasoningCompletion...),
-			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
-			p.notification(appwire.NotifyTurnCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn":     turn,
-			}),
-		)
-	case events.EventSteeringInjected:
-		p.clearSkillCandidate()
-		data := eventData[events.SteeringInjectedData](event.Data)
-		// SteeringInjectedData.StableTurnID names the STEERING MUTATION's own
-		// durable record (clientMutationSteer reserves a fresh one per steer),
-		// not the turn the steer lands in. It must never be adopted as a turn
-		// reservation here: a steer drained across a turn boundary would then
-		// name the turn after itself, and every mid-turn control aimed at that
-		// turn would be rejected. A notification turn is named by
-		// EventTurnStarted, which exists as a carrier of its own precisely
-		// because this field is already spoken for.
-		images := projectUserInputImages(data.Images)
-		text := data.Text
-		if strings.TrimSpace(text) == "" {
-			text = apptranscript.ImagePlaceholder(len(images))
-		}
-		params := map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"text":     text,
-		}
-		if len(images) > 0 {
-			params["images"] = images
-		}
-		// User-sent steering carries its provenance so the web UI renders it
-		// as a user message rather than a system steering divider (issue #24).
-		// Empty (system) source is omitted from the wire payload.
-		if data.Source != "" {
-			params["source"] = data.Source
-		}
-		// Kind names what the daemon injected, so the UI labels a steer from
-		// the wire rather than pattern-matching its prose. Omitted when unset.
-		if data.Kind != "" {
-			params["kind"] = data.Kind
-		}
-		if data.ClientMutationID != "" {
-			params["clientMutationId"] = data.ClientMutationID
-		}
-		if !event.Timestamp.IsZero() {
-			params["startedAt"] = event.Timestamp.UnixMilli()
-		}
-		return []AppNotification{p.notification(appwire.NotifyEvenerSteeringInjected, params)}
-	case events.EventCompactionTurn:
-		p.clearSkillCandidate()
-		data := eventData[events.CompactionTurnData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text)
-	case events.EventTurnLimit:
-		p.clearSkillCandidate()
-		data := eventData[events.TurnLimitData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindTurnLimit, "Turn limit", turnLimitAnnouncement(data))
-	case events.EventLoopDetection:
-		p.clearSkillCandidate()
-		data := eventData[events.LoopDetectionData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindLoopDetection, "Loop detection", data.Message)
-	case events.EventGoalEnded:
-		p.clearSkillCandidate()
-		data := eventData[events.GoalEndedData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalEnded, "Goal", goalEndText(data))
-	case events.EventSkillActivated:
-		data := eventData[events.SkillActivatedData](event.Data)
-		name := strings.TrimSpace(data.Name)
-		if p.skillCandidate.valid && p.skillCandidate.turnID == p.activeTurnID && p.skillCandidate.skill == name {
-			candidate := p.skillCandidate
-			if _, inFlight := p.toolItemsByKey[candidate.callID]; inFlight {
-				p.skillCandidate.activationName = name
-				return nil
-			}
-			p.skillCandidate = skillActivationCandidate{}
-			item := appwire.ThreadItem{
-				Type:     "commandExecution",
-				ID:       candidate.itemID,
-				TurnID:   candidate.turnID,
-				ToolName: "use_skill",
-				CallID:   candidate.callID,
-				Status:   "completed",
-				Raw:      skillActivationRaw(name),
-			}
-			return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID,
-				Ref:      p.ref,
-				TurnID:   candidate.turnID,
-				Item:     item,
-			})}
-		}
-		p.skillCandidate = skillActivationCandidate{}
-		return p.systemAnnouncement(appwire.ThreadItemEventKindSkillActivated, "Skill activated", "Activated skill: "+data.Name)
-	case events.EventContextCompaction:
-		p.clearSkillCandidate()
-		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
-	case events.EventPluginLoaded:
-		p.clearSkillCandidate()
-		data := eventData[events.PluginLoadedData](event.Data)
-		summary := pluginLoadedAnnouncement(data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindPluginLoaded, summary, "", pluginLoadedRaw(data))
-	case events.EventHookStart:
-		return nil
-	case events.EventHookEnd:
-		p.clearSkillCandidate()
-		data := eventData[events.HookEndData](event.Data)
-		return p.systemAnnouncementWithExitCode(appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data), data.ExitCode)
-	case events.EventForkSummary:
-		p.clearSkillCandidate()
-		data := eventData[events.ForkSummaryData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindForkSummary, "Fork summary", forkSummaryAnnouncement(data))
-	case events.EventPromptLoaded:
-		p.clearSkillCandidate()
-		data := eventData[events.PromptLoadedData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindPromptLoaded, "Prompt loaded", promptLoadedAnnouncement(data))
-	case events.EventRoundTimings:
-		p.clearSkillCandidate()
-		data := eventData[events.RoundTimings](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data))
 	case events.EventQueueChanged:
-		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			ThreadID: p.threadID,
@@ -1097,7 +210,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}
 	case events.EventTaskUpdated:
-		p.clearSkillCandidate()
 		data := eventData[events.TaskUpdatedData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {
 			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
@@ -1153,7 +265,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			EscalationID: data.EscalationID,
 		})}
 	case events.EventSessionNameChanged:
-		p.clearSkillCandidate()
 		data := eventData[events.SessionNameChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadNameChanged, appwire.ThreadNameChangedParams{
 			ThreadID: p.threadID,
@@ -1162,9 +273,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Source:   data.Source,
 		})}
 	case events.EventModelChanged:
-		p.clearSkillCandidate()
 		data := eventData[events.ModelChangedData](event.Data)
-		out := []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
+		return []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
 			ThreadID:              p.threadID,
 			Ref:                   p.ref,
 			ModelProvider:         data.NewProvider,
@@ -1172,17 +282,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			ReasoningEffortLevels: data.ReasoningEffortLevels,
 			SupportsReasoning:     data.SupportsReasoning,
 		})}
-		// Live-only echo of the persisted TurnModelSwitch marker (N5): the
-		// same text SetModel wrote to the transcript, rendered as a
-		// systemMessage item so an already-connected client sees the marker
-		// immediately rather than waiting for a reload. The transcript still
-		// carries the marker independently, which is what a daemon restart
-		// seeds its snapshot from; this notification only covers the clients
-		// already attached when the switch happened.
-		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindModelSwitch, "Model switch", data.MarkerText)...)
-		return out
 	case events.EventReasoningEffortChanged:
-		p.clearSkillCandidate()
 		data := eventData[events.ReasoningEffortChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadReasoningEffortChanged, appwire.ThreadReasoningEffortChangedParams{
 			ThreadID:        p.threadID,
@@ -1190,7 +290,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			ReasoningEffort: data.ReasoningEffort,
 		})}
 	case events.EventVisionModelChanged:
-		p.clearSkillCandidate()
 		data := eventData[events.VisionModelChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadVisionModelChanged, appwire.ThreadVisionModelChangedParams{
 			ThreadID:    p.threadID,
@@ -1204,7 +303,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	// needs, so no lighter-weight second notification exists for the same
 	// instants (kata j7y6).
 	case events.EventJobStarted:
-		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
 		if data.JobType != "shell" {
 			return nil
@@ -1238,7 +336,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		}
 		return out
 	case events.EventJobFinished:
-		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
 		if data.JobType != "shell" {
 			return nil
@@ -1278,7 +375,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		}
 		return out
 	case events.EventDelegateUpdated:
-		p.clearSkillCandidate()
 		data := eventData[events.DelegateUpdatedData](event.Data)
 		if data.OwnerSessionID != p.threadID || data.DelegateID == "" {
 			return nil
@@ -1294,17 +390,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Ref:      p.ref,
 			Delegate: cloneAppwireDelegateInfo(merged),
 		})}
-	case events.EventTurnEnded:
-		if p.activeTurnID == "" {
-			return nil // turn already completed (e.g. failed via EventError)
-		}
-		data := eventData[events.TurnEndedData](event.Data)
-		p.pendingTurnID = p.activeTurnID
-		p.pendingCompletedAtMillis = event.Timestamp.UnixMilli()
-		p.pendingDurationMS = data.TurnDurationMS
-		return nil
 	case events.EventSessionEnd:
-		p.clearSkillCandidate()
 		data := eventData[events.SessionEndData](event.Data)
 		state := appwire.ThreadStatusClosed
 		switch data.State {
@@ -1315,12 +401,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		case appwire.ThreadStatusClosed:
 			state = appwire.ThreadStatusClosed
 		}
-		turnStatus := appwire.TurnStatusCompleted
-		if state == appwire.ThreadStatusClosed || data.Interrupted {
-			turnStatus = appwire.TurnStatusInterrupted
-		}
-		out := p.closeActiveTurn(turnStatus)
-		out = append(out, p.threadStatus(state))
+		// A session end outlives no execution: the ended one's own event may
+		// never arrive (a closing session stops emitting).
+		p.runningTurnID = ""
+		out := []AppNotification{p.threadStatus(state)}
 		if state == appwire.ThreadStatusClosed {
 			// Still map[string]any, not appwire.ThreadClosedParams (kcb5):
 			// data.Reason is empty whenever the source reported none (the type's
@@ -1466,32 +550,6 @@ func cloneInt64Pointer(value *int64) *int64 {
 	return &clone
 }
 
-func useSkillNameFromArgs(raw string) string {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return ""
-	}
-	for _, key := range []string{"skill_name", "name"} {
-		if v, ok := args[key].(string); ok {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-func skillActivationRaw(name string) json.RawMessage {
-	payload := struct {
-		SkillActivation struct {
-			Name string `json:"name"`
-			Text string `json:"text"`
-		} `json:"skillActivation"`
-	}{}
-	payload.SkillActivation.Name = name
-	payload.SkillActivation.Text = "Activated skill: " + name
-	raw, _ := json.Marshal(payload)
-	return raw
-}
-
 func (p *AppEventProjector) notification(method string, params any) AppNotification {
 	// Every notification carries an AppWire method name the hub routes on. The
 	// callers all pass a non-empty appwire.Notify* constant; an empty method
@@ -1511,853 +569,20 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
 }
 
-// startedTurn builds an in-progress turn carrying its start time so the web UI
-// can report how long the active turn has been running. A zero timestamp leaves
-// StartedAt unset rather than reporting the Unix epoch.
-func startedTurn(id string, startedAt time.Time) appwire.Turn {
-	turn := appwire.Turn{ID: id, Status: appwire.TurnStatusInProgress}
-	if !startedAt.IsZero() {
-		ms := startedAt.UnixMilli()
-		turn.StartedAt = &ms
-	}
-	return turn
-}
-
-// applyPendingTiming stamps CompletedAt/DurationMS from the most recently
-// recorded EventTurnEnded onto turn, but only when that recorded turn is the
-// one now completing (turnID matches). A mismatch — or no pending timing at
-// all, as at the EventError site where EventTurnEnded has not run yet — leaves
-// turn untouched.
-func (p *AppEventProjector) applyPendingTiming(turnID string, turn *appwire.Turn) {
-	if p.pendingTurnID == "" || p.pendingTurnID != turnID {
-		return
-	}
-	c := p.pendingCompletedAtMillis
-	d := p.pendingDurationMS
-	turn.CompletedAt = &c
-	turn.DurationMS = &d
-	p.pendingTurnID = ""
-	p.pendingCompletedAtMillis = 0
-	p.pendingDurationMS = 0
-}
-
-// stampTurnUsage sets turn.Usage/Cost from the projector's per-turn
-// accumulator (see activeTurnUsage doc). No turnID match is needed — by
-// construction the accumulator always holds the completing turn's own
-// totals at the moment each of the five completion sites reads it (the
-// accumulator resets only in startTurn(), which the wrap-up sites call
-// AFTER building the completing Turn).
-func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
-	usage := appwire.EvenerUsageFromLLM(p.activeTurnUsage)
-	if usage == nil {
-		return
-	}
-	turn.Usage = usage
-	if p.costLookup == nil {
-		return
-	}
-	turn.Cost = appwire.EstimateCost(p.costLookup(p.activeTurnProvider, p.activeTurnModel), usage)
-}
-
-func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEventKind, description, text string) []AppNotification {
-	return p.systemAnnouncementItem(eventKind, description, text, nil, nil)
-}
-
-// systemAnnouncementWithRaw renders a lifecycle system one-liner like
-// systemAnnouncement, additionally attaching structured detail to the item's
-// Raw field. The web can then surface that detail (e.g. a compaction
-// before→after expand, mockup #17 Alt A) from real numbers instead of
-// re-parsing the prose text.
-func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage) []AppNotification {
-	return p.systemAnnouncementItem(eventKind, description, text, raw, nil)
-}
-
-// systemAnnouncementWithExitCode renders a lifecycle system one-liner like
-// systemAnnouncement, additionally promoting the exit status of the process
-// behind it onto the item's typed ExitCode field. Only a hook has such a
-// process; the web splits "show every hook exit" from "show clean exits only"
-// on this number rather than re-parsing the "... exit N" prose, so a reworded
-// announcement can never change which lines a reader has chosen to see.
-func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind appwire.ThreadItemEventKind, description, text string, exitCode int) []AppNotification {
-	code := int64(exitCode)
-	return p.systemAnnouncementItem(eventKind, description, text, nil, &code)
-}
-
-func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
-	description = strings.TrimSpace(description)
-	text = strings.TrimSpace(text)
-	if text == "" && eventKind != appwire.ThreadItemEventKindPluginLoaded {
-		return nil
-	}
-	if description == "" && text == "" {
-		return nil
-	}
-	turnID := p.activeTurnID
-	if turnID == "" {
-		turnID = p.preTurnAnnouncementTurnID()
-	}
-	item := appwire.ThreadItem{
-		Type:        "systemMessage",
-		ID:          p.nextItemID(string(eventKind)),
-		TurnID:      turnID,
-		Description: description,
-		Text:        text,
-		Status:      appwire.TurnStatusCompleted,
-		Raw:         raw,
-		EventKind:   eventKind,
-		ExitCode:    exitCode,
-	}
-	if p.activeTurnID == "" {
-		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
-		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turn": appwire.Turn{
-				ID:        turnID,
-				Items:     []appwire.ThreadItem{item},
-				ItemsView: "full",
-				Status:    appwire.TurnStatusCompleted,
-			},
-		})}
-	}
-	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-		ThreadID: p.threadID,
-		Ref:      p.ref,
-		TurnID:   turnID,
-		Item:     item,
-	})}
-}
-
-func isContextCanceledError(message string) bool {
-	return strings.TrimSpace(message) == context.Canceled.Error()
-}
-
+// threadStatus is a thread/status/changed carrying the running execution's
+// TurnID when the thread is active.
 func (p *AppEventProjector) threadStatus(status string) AppNotification {
-	return p.notification(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+	params := appwire.ThreadStatusChangedParams{
 		ThreadID: p.threadID,
 		Ref:      p.ref,
 		Status:   appwire.ThreadStatus{Type: status},
-	})
+	}
+	if status == appwire.ThreadStatusActive {
+		params.ActiveTurnID = p.runningTurnID
+	}
+	return p.notification(appwire.NotifyThreadStatusChanged, params)
 }
 
-func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem {
-	if len(images) == 0 {
-		return nil
-	}
-	out := make([]appwire.InputItem, 0, len(images))
-	for _, img := range images {
-		out = append(out, appwire.InputItem{
-			Type:      "image",
-			MediaType: img.MediaType,
-			Data:      append([]byte(nil), img.Data...),
-			Name:      img.Name,
-		})
-	}
-	return out
-}
-
-// projectOutputImages returns nil, never empty, when nothing survives: an item whose descriptors were all unusable never showed images to remove.
-func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
-	if len(images) == 0 {
-		return nil
-	}
-	out := make([]appwire.OutputImage, 0, len(images))
-	for _, img := range images {
-		if img.URL == "" && img.SHA == "" {
-			continue
-		}
-		out = append(out, appwire.OutputImage{
-			Source:    img.Source,
-			Name:      img.Name,
-			MediaType: img.MediaType,
-			Size:      img.Size,
-			URL:       img.URL,
-			SHA:       img.SHA,
-			Path:      img.Path,
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// goalEndText renders the terminal /goal report line from a GoalEnded payload.
-// A completed goal reads "✓ Goal achieved"; a blocked goal "⊘ Goal blocked"
-// (with the reason appended when present); any other terminal status falls back
-// to "⊘ Goal stopped".
-func goalEndText(data events.GoalEndedData) string {
-	switch data.Status {
-	case "complete":
-		return "✓ Goal achieved"
-	case "blocked":
-		if reason := strings.TrimSpace(data.Reason); reason != "" {
-			return "⊘ Goal blocked: " + reason
-		}
-		return "⊘ Goal blocked"
-	default:
-		return "⊘ Goal stopped"
-	}
-}
-
-func turnLimitAnnouncement(data events.TurnLimitData) string {
-	var lines []string
-	if data.MaxTurns > 0 {
-		lines = append(lines, fmt.Sprintf("Maximum turns reached: %d", data.MaxTurns))
-	}
-	if data.MaxToolRoundsPerInput > 0 {
-		lines = append(lines, fmt.Sprintf("Maximum tool rounds per input reached: %d", data.MaxToolRoundsPerInput))
-	}
-	if len(lines) == 0 {
-		return "Turn limit reached"
-	}
-	return strings.Join(lines, "\n")
-}
-
-// contextCompactionRaw marshals the structured compaction numbers under a
-// "compaction" key on the system item's Raw field. The web reads these to draw
-// an honest before→after expand (mockup #17 Alt A) from real numbers. Returns
-// nil when there is nothing to carry so the item stays clean.
-func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
-	if data.Layer == "" && data.TurnsBefore == 0 && data.TurnsAfter == 0 &&
-		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
-		return nil
-	}
-	raw, err := marshalContextCompaction(map[string]any{"compaction": data})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func contextCompactionAnnouncement(data events.ContextCompactionData) string {
-	var lines []string
-	if strings.TrimSpace(data.Layer) != "" {
-		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
-	}
-	if data.TurnsBefore > 0 || data.TurnsAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", data.TurnsBefore, data.TurnsAfter))
-	}
-	if data.EstTokensBefore > 0 || data.EstTokensAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", data.EstTokensBefore, data.EstTokensAfter))
-	}
-	if len(lines) == 0 {
-		return "Context compaction ran"
-	}
-	return strings.Join(lines, "\n")
-}
-
-func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {
-	raw, err := json.Marshal(map[string]any{
-		"pluginLoaded": struct {
-			Name       string `json:"name"`
-			SkillCount int    `json:"skillCount"`
-			AgentCount int    `json:"agentCount"`
-			MCPCount   int    `json:"mcpCount"`
-		}{
-			Name:       strings.TrimSpace(data.Name),
-			SkillCount: data.SkillCount,
-			AgentCount: data.AgentCount,
-			MCPCount:   data.MCPCount,
-		},
-	})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func pluginLoadedAnnouncement(data events.PluginLoadedData) string {
-	name := strings.TrimSpace(data.Name)
-	if name == "" {
-		return fmt.Sprintf("Loaded plugin (%d skills, %d agents, %d MCP servers)", data.SkillCount, data.AgentCount, data.MCPCount)
-	}
-	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
-}
-
-// hookEndAnnouncement renders a live hook completion through the same builder
-// the persisted entry uses (schema.HookInfo.Announcement), so the line a
-// watching reader sees and the line a returning one sees cannot drift apart
-// (kata qm9y).
-func hookEndAnnouncement(data events.HookEndData) string {
-	return hookInfoFromEvent(data).Announcement()
-}
-
-// hookInfoFromEvent projects the live hook payload onto the persisted shape.
-func hookInfoFromEvent(data events.HookEndData) schema.HookInfo {
-	return schema.HookInfo{
-		Event:      data.Event,
-		HookType:   data.HookType,
-		Matcher:    data.Matcher,
-		PluginName: data.PluginName,
-		ExitCode:   data.ExitCode,
-		DurationMS: data.DurationMS,
-	}
-}
-
-// toolCallRepairedAnnouncement reports that a tool call needed a small,
-// automatic correction before it ran. The wire's Changes entries are the
-// repair engine's own machine format ("kind:field:detail", e.g.
-// "drop_unknown:artifacts:dropped artifacts") — telemetry for the CLI's raw
-// event trace, never meant for a reader parsing their transcript (kata k4v8).
-// This builds the reader-facing sentence instead: what changed, named by the
-// tool argument involved, with no internal enum or punctuation leaking through.
-func toolCallRepairedAnnouncement(data events.ToolCallRepairedData) string {
-	name := fallbackLabel(data.ToolName, "tool call")
-	if len(data.Changes) == 0 {
-		return "Repaired " + name
-	}
-	phrases := make([]string, 0, len(data.Changes))
-	for _, raw := range data.Changes {
-		phrases = append(phrases, repairChangePhrase(raw))
-	}
-	return fmt.Sprintf("Fixed the %s call: %s.", name, strings.Join(phrases, "; "))
-}
-
-// repairChangePhrase turns one "kind:field:detail" repair entry into a plain
-// sentence fragment. An unrecognized kind (e.g. a newer daemon's repair
-// category this build predates) falls back to naming just the field, never
-// the raw encoding.
-func repairChangePhrase(raw string) string {
-	parts := strings.SplitN(raw, ":", 3)
-	kind := parts[0]
-	var field string
-	if len(parts) > 1 {
-		field = parts[1]
-	}
-	switch kind {
-	case "alias":
-		if oldName, _, ok := strings.Cut(fieldDetail(parts), "→"); ok && oldName != "" {
-			return fmt.Sprintf("renamed %q to %q", oldName, field)
-		}
-		return fmt.Sprintf("renamed a field to %q", field)
-	case "coerce_type":
-		return fmt.Sprintf("adjusted the %q field's type", field)
-	case "drop_unknown":
-		return fmt.Sprintf("removed the unrecognized %q field", field)
-	case "unicode_repair":
-		return "fixed an invalid character in the arguments"
-	case "fill_required":
-		if fieldKey, ok := strings.CutPrefix(field, "output."); ok && fieldDetail(parts) == "filled default" && fieldKey != "" {
-			return fmt.Sprintf("filled the required %q key", fieldKey)
-		}
-		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
-			return fmt.Sprintf("filled the required %q key", key)
-		}
-		return fmt.Sprintf("filled a required key in the %q field", field)
-	case "synthesize":
-		if field == "output" && fieldDetail(parts) == "synthesized default envelope" {
-			return "created the required output object"
-		}
-	case "copy":
-		if field == "message" && fieldDetail(parts) == "copied output.message" {
-			return "copied nested output.message to the required message"
-		}
-	case "promote_json_object":
-		if field == "output" && fieldDetail(parts) == "promoted JSON object string" {
-			return "converted the output JSON string to an object"
-		}
-	}
-	if field == "" {
-		return "adjusted the arguments"
-	}
-	return fmt.Sprintf("adjusted the %q field", field)
-}
-
-// fieldDetail returns the third ("detail") segment of a split "kind:field:detail"
-// entry, or "" when the entry has fewer than three segments.
-func fieldDetail(parts []string) string {
-	if len(parts) < 3 {
-		return ""
-	}
-	return parts[2]
-}
-
-func forkSummaryAnnouncement(data events.ForkSummaryData) string {
-	if data.Turn > 0 {
-		return fmt.Sprintf("Fork summary captured at transcript turn %d", data.Turn)
-	}
-	return "Fork summary captured"
-}
-
-func promptLoadedAnnouncement(data events.PromptLoadedData) string {
-	label := fallbackLabel(data.Label, "prompt")
-	if data.Size > 0 {
-		return fmt.Sprintf("Loaded prompt %s (%d B)", label, data.Size)
-	}
-	return "Loaded prompt " + label
-}
-
-// roundTimingsRaw marshals the structured per-phase durations under a
-// "roundTimings" key on the system item's Raw field. The web reads these to
-// draw a rounded, prioritized summary (kata 7zkv) instead of re-parsing the
-// nanosecond-precision prose roundTimingsAnnouncement produces.
-func roundTimingsRaw(data events.RoundTimings) json.RawMessage {
-	raw, err := json.Marshal(map[string]any{"roundTimings": data})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
-func roundTimingsAnnouncement(data events.RoundTimings) string {
-	parts := []string{
-		fmt.Sprintf("Round %d", data.Round),
-		"total=" + data.TotalRound.String(),
-		"llm=" + data.LLMCall.String(),
-		"context=" + data.ContextMgmt.String(),
-		"tools=" + data.ToolExec.String(),
-		"prompt=" + data.SystemPrompt.String(),
-		"history=" + data.HistoryExpand.String(),
-		"tool_defs=" + data.ToolDefs.String(),
-		"persistence=" + data.Persistence.String(),
-		"after_action=" + data.AfterAction.String(),
-		"overhead=" + data.LoopOverhead.String(),
-	}
-	return strings.Join(parts, " ")
-}
-
-func fallbackLabel(value, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value != "" {
-		return value
-	}
-	return fallback
-}
-
-// holdUnfetchableToolResultImages takes off a settling tool item the image
-// descriptors nothing can serve yet, keeping the whole item to re-send when
-// the round says they can be (kata v3dv).
-//
-// A descriptor whose bytes came back INSIDE the tool result is addressed by
-// sha and carries no URL, because the route belongs to whichever server
-// publishes the thread; those bytes reach that server only through the round's
-// tool-result turn, and rounds are written whole. So between this item
-// settling and that write there is no reader for them — microseconds for a
-// single-call round, the length of a build for an image read batched with one
-// — and a thumbnail that fails to load in that gap is dropped for good.
-//
-// A descriptor that already names a URL is left alone: it points at bytes some
-// server can re-read on its own (the file-backed /doc/image route for a file
-// the call named), so holding it would delay a thumbnail that already works.
-func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.ThreadItem) {
-	if len(item.OutputImages) == 0 {
-		return
-	}
-	fetchable := make([]appwire.OutputImage, 0, len(item.OutputImages))
-	for _, image := range item.OutputImages {
-		if image.Source == events.OutputImageSourceToolResult && image.URL == "" {
-			continue
-		}
-		fetchable = append(fetchable, image)
-	}
-	if len(fetchable) == len(item.OutputImages) {
-		return
-	}
-	p.heldToolResultImages[item.CallID] = *item
-	// Empty, never nil: this tells a client holding an earlier copy to stop showing these images; the release below restores the descriptors.
-	item.OutputImages = fetchable
-}
-
-// closeActiveTurn ends the open turn, if there is one, and returns the
-// turn/completed announcement for it. It is the shape three of the four
-// completion sites share verbatim -- EventUserInput, EventGoalContinuation and
-// EventSessionEnd -- differing only in the status they close with.
-//
-// The fourth, EventError, is deliberately not routed through here: it resets a
-// smaller field set, opens a turn first so there is always one to fail, and
-// carries an appwire.TurnError. Folding it in would silently change what a
-// failed turn clears.
-//
-// The turn/completed payload is deliberately still map[string]any, not
-// appwire.TurnCompletedParams (kcb5): the two carry the same fields
-// ({threadId,ref,turn}), so the only thing a switch to the typed struct changes
-// is the Params type every projector test asserts on -- a test-fixture change
-// of its own, left to a separate decision.
-func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
-	if p.activeTurnID == "" {
-		return nil
-	}
-	turnID := p.activeTurnID
-	out := p.resetProvisionalCommunicates()
-	reasoningCompletion := p.completeReasoningItem(status)
-	p.activeTurnID = ""
-	p.resetTurnScopedState()
-	turn := appwire.Turn{ID: turnID, Status: status}
-	p.applyPendingTiming(turnID, &turn)
-	p.stampTurnUsage(&turn)
-	return append(append(out, reasoningCompletion...), p.notification(appwire.NotifyTurnCompleted, map[string]any{
-		"threadId": p.threadID,
-		"ref":      p.ref,
-		"turn":     turn,
-	}))
-}
-
-// openTurn closes the turn that was running and opens the one this event
-// names, returning the new turn's id and the frames announcing both. It is the
-// shared half of every turn boundary; the caller adds whatever opening item its
-// event carries and then publishes the thread active.
-//
-// stableID is the daemon's own name for the turn, the value its mutation
-// preconditions compare against. Empty means the daemon could not name this
-// turn and startTurn falls back to the turn_<n> bucket namespace, which no
-// control can address.
-//
-// Every event that opens a turn shares this sequence, so it lives in one place:
-// an event kind that adopts the daemon's id while its neighbour mints a
-// turn_<n> instead publishes a turn no mid-turn control can address, and the
-// two are indistinguishable from the call site.
-//
-// bookkeeping opens the turn for a persisted record that is not runnable work
-// (an environment block). Such a record occupies an entry index on reload, so
-// it spends a number here too, but it never touches the runnable reservation
-// already advertised for the following input, nor anyTurnStarted, which
-// tracks real work only.
-func (p *AppEventProjector) openTurn(stableID string, at time.Time, bookkeeping bool) (string, []AppNotification) {
-	out := p.closeActiveTurn(appwire.TurnStatusCompleted)
-	var turnID string
-	if bookkeeping {
-		p.nextTurn++
-		p.activeTurnID = stableID
-		if stableID == "" {
-			p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
-		}
-		turnID = p.beginTurnState()
-	} else {
-		if stableID != "" {
-			p.reservedTurnID = stableID
-			p.reservedTurnIDIsStable = true
-		}
-		turnID = p.startTurn()
-	}
-	return turnID, append(out, p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-		ThreadID: p.threadID,
-		Ref:      p.ref,
-		Turn:     startedTurn(turnID, at),
-	}))
-}
-
-// bookkeepingTurn opens and closes a standalone turn for a persisted record
-// that is not runnable work, around the items announce emits into it; see
-// openTurn's bookkeeping flag for what it leaves alone and why.
-func (p *AppEventProjector) bookkeepingTurn(stableID string, at time.Time, announce func() []AppNotification) []AppNotification {
-	_, out := p.openTurn(stableID, at, true)
-	out = append(out, announce()...)
-	return append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
-}
-
-// completeReasoningItem closes the reasoning item opened by a summary delta
-// when the provider advances to its answer round. The transcript already holds
-// the accumulated deltas; this lifecycle frame supplies the terminal status.
-func (p *AppEventProjector) completeReasoningItem(status string) []AppNotification {
-	if p.reasoningItem == "" {
-		return nil
-	}
-	turnID := p.reasoningTurnID
-	item := appwire.ThreadItem{Type: "reasoning", ID: p.reasoningItem, TurnID: turnID, Status: status}
-	p.reasoningItem = ""
-	p.reasoningTurnID = ""
-	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{ThreadID: p.threadID, Ref: p.ref, TurnID: turnID, Item: item})}
-}
-
-// resetTurnScopedState clears everything that belongs to one turn and must not
-// be visible to the next. Every field here names an item, a tool call in
-// flight, or text accumulated for an item -- so a value that survives a turn
-// boundary is re-used under the next turn's id without an item/started, and a
-// client that materializes items from item/started receives deltas for an item
-// it never saw open.
-//
-// One reset rather than one per ending: the close path, the failed-turn path
-// and the open path each used to clear a different subset, and nothing recorded
-// why they differed.
-func (p *AppEventProjector) resetTurnScopedState() {
-	p.assistantItem = ""
-	p.assistantText = ""
-	p.messageStartByID = nil
-	p.reasoningItem = ""
-	p.reasoningTurnID = ""
-	p.toolItemsByKey = map[string]string{}
-	p.toolArgsByKey = map[string]string{}
-	p.toolStartByKey = map[string]time.Time{}
-	p.suppressedTools = map[string]struct{}{}
-	p.provisionalCommunicateItems = map[string]string{}
-	p.communicateCommittedCalls = map[string]struct{}{}
-	p.communicatePhases = map[string]communicatePhase{}
-}
-
-func (p *AppEventProjector) resetProvisionalCommunicates() []AppNotification {
-	out := make([]AppNotification, 0, len(p.provisionalCommunicateItems))
-	callIDs := make([]string, 0, len(p.provisionalCommunicateItems))
-	for callID := range p.provisionalCommunicateItems {
-		callIDs = append(callIDs, callID)
-	}
-	sort.Strings(callIDs)
-	for _, callID := range callIDs {
-		itemID := p.provisionalCommunicateItems[callID]
-		if itemID == "" {
-			continue
-		}
-		out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
-			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
-		}))
-		p.communicatePhases[callID] = communicatePhaseClosed
-	}
-	return out
-}
-
-func (p *AppEventProjector) startTurn() string {
-	// Every started turn spends exactly one number, whatever it ends up being
-	// called. internal/apptranscript numbers a persisted turn by its ENTRY
-	// INDEX and falls back to "turn_%d" only for entries carrying no durable
-	// id, so a turn named by its own stable id still consumes an index there;
-	// skip it here and the next turn this projector names itself lands on a
-	// number the replay already gave to an earlier entry. A reservation the
-	// counter minted (ReserveTurnID) already spent its number, so only a
-	// stable id installed from outside the sequence spends one now.
-	if p.reservedTurnID != "" {
-		if p.reservedTurnIDIsStable {
-			p.nextTurn++
-		}
-		p.activeTurnID = p.reservedTurnID
-		p.reservedTurnID = ""
-		p.reservedTurnIDIsStable = false
-	} else {
-		p.nextTurn++
-		p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
-	}
-	p.anyTurnStarted = true
-	return p.beginTurnState()
-}
-
-// beginTurnState resets what belongs to the turn that just ended, once
-// activeTurnID names the new one, and returns that id.
-func (p *AppEventProjector) beginTurnState() string {
-	// A turn just started, ending whatever mid-session announcement gap
-	// preceded it — the next no-active-turn announcement belongs to a new
-	// gap and must mint its own fresh id (kata 9ekv).
-	p.midSessionAnnouncementTurnID = ""
-	p.assistantItem = ""
-	p.assistantText = ""
-	// A round interrupted before its results were written never announces
-	// them, so whatever it held belongs to a turn that is over.
-	clear(p.heldToolResultImages)
-	p.activeTurnUsage = llm.Usage{}
-	p.activeTurnModel = ""
-	p.activeTurnProvider = ""
-	// Every opener yields a usable turn id (a promoted reservation, a record's
-	// own id or a freshly minted turn_N); the item-emitting paths rely on
-	// activeTurnID being non-empty after this returns.
-	invariant.Hold(p.activeTurnID != "", "appprojector: startTurn left activeTurnID empty")
-	return p.activeTurnID
-}
-
-// preTurnAnnouncementTurnID returns the turn id a systemMessage announcement
-// gets when it arrives with no active turn. Before the session's first real
-// turn, every such announcement — SESSION_START's plugin loads, prompt-loaded
-// notices, hook/MCP warnings — shares the one synthetic
-// appwire.SystemPreludeTurnID, so the client's existing consecutive-run
-// grouping (SystemNoticeItem) has one turn's worth of items to fold into a
-// single collapsed disclosure instead of rendering a wall of one-line turns
-// (kata bz2z). It is the SAME id apptranscript.PreludeTurn uses for the
-// persisted-transcript system prompt, deliberately: both mean "before any
-// real turn," so a dormant session's live and replayed views agree.
-//
-// "Before the first real turn" is tested as !anyTurnStarted && !historySeeded,
-// NOT nextTurn == 0: a RESERVED turn id (turn/start's reservation, or
-// SetProcessing's auto-continuation reservation for a queued initial prompt)
-// bumps nextTurn without anything having run, and a spawned session reserves
-// exactly that way while plugins, prompts and hooks are still announcing.
-// Testing the counter exiled that startup burst to a gap id numbered after
-// turn_1 — which is how a session's "25 system events" group came to anchor
-// at the END of the transcript instead of the top. The reservation is an
-// intent, not a turn; the announcements still happened first.
-//
-// Once a real turn has started (anyTurnStarted), or the projector was seeded
-// over a resumed session's persisted history (historySeeded), a
-// no-active-turn announcement falls into the GAP after whichever real turn
-// just ended. Announcements landing back-to-back in the same gap (no real
-// turn started in between) share ONE turn id — same grouping rationale as
-// the prelude, so a burst of hook completions between two turns folds into
-// one disclosure instead of a wall of one-line turns (kata 9ekv) — but each
-// gap mints its OWN fresh id rather than reusing the prelude's or an earlier
-// gap's: it happened AFTER its preceding real turn, not before it, and
-// folding two different gaps into one bucket would misrepresent when each
-// happened relative to the real turns between them. startTurn clears
-// midSessionAnnouncementTurnID whenever a real turn starts, so the next gap
-// always gets a fresh id.
-func (p *AppEventProjector) preTurnAnnouncementTurnID() string {
-	if !p.anyTurnStarted && !p.historySeeded {
-		return appwire.SystemPreludeTurnID
-	}
-	if p.midSessionAnnouncementTurnID != "" {
-		return p.midSessionAnnouncementTurnID
-	}
-	p.nextTurn++
-	p.midSessionAnnouncementTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
-	return p.midSessionAnnouncementTurnID
-}
-
-func (p *AppEventProjector) ReserveTurnID() string {
-	if p.reservedTurnID != "" {
-		return p.reservedTurnID
-	}
-	// Spends the number at reservation time: the id is handed to a client
-	// before the turn runs, so it must not be mintable again -- a released
-	// reservation is never reissued (TestServerAppWireFailedDurableReplacement
-	// ReleasesOwnedGenericReservation), and an unrelated turn opening in
-	// between must not land on it.
-	p.nextTurn++
-	p.reservedTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
-	p.reservedTurnIDIsStable = false
-	return p.reservedTurnID
-}
-
-// ReserveStableTurnID makes the durable client-mutation turn identity the ID
-// consumed by the next real turn projection.
-func (p *AppEventProjector) ReserveStableTurnID(turnID string) {
-	invariant.Hold(strings.TrimSpace(turnID) != "", "appprojector: stable turn id is empty")
-	// Durable mutation state is authoritative over a stale live projection.
-	// Close the old projection before replacing its active identity, retaining
-	// its item completion, timing, usage, and cost receipts for the next event.
-	oldTurnID := p.activeTurnID
-	if oldTurnID == "" && p.reasoningItem != "" {
-		oldTurnID = p.reasoningTurnID
-	}
-	if oldTurnID != "" {
-		p.activeTurnID = oldTurnID
-		p.reservedTurnID = ""
-		p.reservedTurnIDIsStable = false
-		p.pendingNotifications = append(p.pendingNotifications, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
-	}
-	p.activeTurnID = ""
-	p.reservedTurnID = turnID
-	p.reservedTurnIDIsStable = true
-}
-
-func (p *AppEventProjector) ReservedTurnID() string {
-	return p.reservedTurnID
-}
-
-func (p *AppEventProjector) ReleaseReservedTurnID(turnID string) {
-	if p.reservedTurnID == turnID {
-		p.reservedTurnID = ""
-		p.reservedTurnIDIsStable = false
-	}
-}
-
-func (p *AppEventProjector) ActiveTurnID() string {
-	if p.activeTurnID != "" {
-		return p.activeTurnID
-	}
-	return p.reservedTurnID
-}
-
-// ensureTurn makes sure a turn is open for the round, returning the
-// turn/started announcement for a turn it had to open (nil when one was
-// already open, so the caller can concatenate unconditionally).
-//
-// A turn opened here was never asked for by a user input or a goal
-// continuation -- it is the round's first event finding nothing open, at
-// TEXT_START, TOOL_CALL_START or a bare error. It still announces itself the
-// way those two explicit openers do: a client keys "this turn is running" on
-// turn/started, and a turn that first appears with its own first item (or, for
-// a text-opening round after lazy agent-message materialization, only with its
-// first delta) is a turn that client never saw open (kata e5r2).
-func (p *AppEventProjector) ensureTurn(startedAt time.Time) []AppNotification {
-	if p.activeTurnID != "" {
-		return nil
-	}
-	turnID := p.startTurn()
-	return []AppNotification{p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-		ThreadID: p.threadID,
-		Ref:      p.ref,
-		Turn:     startedTurn(turnID, startedAt),
-	})}
-}
-
-// ensureAssistantItem makes sure an agent-message item exists for the active
-// turn, returning true when it had to create one (so the caller emits a single
-// item/started ahead of the first delta -- consumers key a delta by an item id
-// they have already seen) alongside whatever ensureTurn had to announce first.
-func (p *AppEventProjector) ensureAssistantItem(startedAt time.Time) (bool, []AppNotification) {
-	out := p.ensureTurn(startedAt)
-	if p.assistantItem == "" {
-		p.assistantItem = p.nextItemID("assistant")
-		return true, out
-	}
-	return false, out
-}
-
-// ensureReasoningItem makes sure an in-progress reasoning item exists for the
-// active turn, returning true when it had to create one (so the caller emits a
-// single item/started before the first delta) alongside whatever ensureTurn had
-// to announce first.
-func (p *AppEventProjector) ensureReasoningItem(startedAt time.Time) (bool, []AppNotification) {
-	var out []AppNotification
-	if p.reasoningItem != "" && p.reasoningTurnID != p.activeTurnID {
-		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
-	}
-	out = append(out, p.ensureTurn(startedAt)...)
-	if p.reasoningItem == "" {
-		p.reasoningItem = p.nextItemID("reasoning")
-		p.reasoningTurnID = p.activeTurnID
-		return true, out
-	}
-	return false, out
-}
-
-func (p *AppEventProjector) nextItemID(prefix string) string {
-	p.nextItem++
-	return fmt.Sprintf("item_%s_%d", prefix, p.nextItem)
-}
-
-func (p *AppEventProjector) toolItemID(callID string) string {
-	if itemID := p.toolItemsByKey[callID]; itemID != "" {
-		return itemID
-	}
-	itemID := p.nextItemID("tool")
-	p.toolItemsByKey[callID] = itemID
-	return itemID
-}
-
-func (p *AppEventProjector) recordAssistantMessage(turnID, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	p.lastAssistantTurnID = turnID
-	p.lastAssistantText = text
-}
-
-// matchesLastAssistantMessage scopes the shared duplicate comparison to the
-// turn that showed the text: an echo only counts within the turn it repeats.
-func (p *AppEventProjector) matchesLastAssistantMessage(turnID, text string) bool {
-	return turnID != "" &&
-		turnID == p.lastAssistantTurnID &&
-		apptranscript.EchoesAssistantText(p.lastAssistantText, text)
-}
-
-// projectErrorCause maps the agent-side structured cause attached to
-// EventError (kata ts0x) to its wire-level appwire shape (kata cmfz).
-// Returns nil when the caller did not attach a cause so the warning
-// envelope's "cause" field stays omitempty-eligible on the wire.
-func projectErrorCause(cause *events.ErrorCause) *appwire.DiagnosticCause {
-	if cause == nil {
-		return nil
-	}
-	return &appwire.DiagnosticCause{
-		Kind:     cause.Kind,
-		Provider: cause.Provider,
-		Model:    cause.Model,
-		Status:   cause.Status,
-	}
-}
-
-// eventData returns the concrete payload carried by a SessionEvent.Data value.
-// Data is now the sealed events.EventData interface holding the exact payload
-// the emit site constructed, so a direct type assertion is authoritative and
-// the former JSON marshal/unmarshal round-trip is gone. A mismatched T (a
-// projector bug) yields the zero value rather than panicking.
 func eventData[T events.EventData](data events.EventData) T {
 	typed, _ := data.(T)
 	return typed

@@ -3,7 +3,6 @@ package appprojector
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -112,14 +111,24 @@ var projectorCases = []struct {
 		return d
 	}},
 	{events.EventGoalEnded, func(b []byte) events.EventData { var d events.GoalEndedData; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventExecutionStarted, func(b []byte) events.EventData {
+		var d events.ExecutionStartedData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
+	{events.EventExecutionEnded, func(b []byte) events.EventData {
+		var d events.ExecutionEndedData
+		_ = json.Unmarshal(b, &d)
+		return d
+	}},
 }
 
 // FuzzProject drives the real AppEventProjector.Project state machine over a
 // fuzzed *sequence* of session events. The fuzz input is a compact script —
 // repeated [kindIndex][payloadLen][payload] records — applied to one projector
-// so the stateful transitions (turn open/close, ensureTurn/ensureAssistantItem,
-// reasoning-item creation, skill-activation tracking, communicate dedup) are
-// exercised, not just isolated single events. Each record's payload is decoded
+// so the stateful transitions (the running execution, task publication
+// fencing, delegate revision merging) are exercised, not just isolated single
+// events. Each record's payload is decoded
 // into the concrete payload type matching its kind. The oracle is floor "no
 // panic" plus re-serializability of every emitted notification's params, since
 // the projector's whole job is producing wire-bound AppWire notifications.
@@ -164,58 +173,18 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 		name string
 		run  func(*testing.T)
 	}{
-		{"assistant_delta", TestAppEventProjectorProjectsAssistantDelta},
-		{"user_input_index", TestAppEventProjectorCarriesUserInputTranscriptEntryIndex},
 		{"task_updated", TestProject_TaskUpdated},
 		{"job_started_only", TestProject_JobStartedIsTheOnlyStartNotification},
 		{"job_finished_only", TestProject_JobFinishedIsTheOnlyFinishNotification},
 		{"sandbox_escalation", TestProject_SandboxEscalationRequested},
 		{"sandbox_transcript", TestProject_SandboxEscalationNotInTranscript},
-		{"turn_started_at", TestAppEventProjectorTurnStartedCarriesStartedAt},
-		{"turn_zero_time", TestAppEventProjectorTurnStartedZeroTimestampOmitsStartedAt},
-		{"reasoning_delta", TestAppEventProjectorProjectsReasoningDelta},
-		{"lifecycle_json", TestAppEventProjectorJSONUsesCodexLifecycleShape},
-		{"user_images", TestAppEventProjectorCarriesUserInputImages},
-		{"output_images", TestAppEventProjectorCarriesToolCallOutputImages},
-		{"queued_input", TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput},
-		{"goal_continuation", TestAppEventProjectorGoalContinuationOpensNonUserTurn},
-		{"goal_prior_turn", TestAppEventProjectorGoalContinuationCompletesActivePriorTurn},
-		{"goal_ended", TestAppEventProjectorGoalEndedRendersSystemAnnouncement},
 		{"thread_lifecycle", TestAppEventProjectorProjectsThreadLifecycle},
 		{"restored_session", TestAppEventProjectorRestoredSessionStartCarriesAwaitingState},
-		{"session_end", TestAppEventProjectorCompletesTurnOnSessionEnd},
 		{"awaiting_end", TestAppEventProjectorMapsAwaitingSessionEnd},
-		{"interrupted", TestAppEventProjectorMarksInterruptedTurnCanceled},
-		{"canceled_error", TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledError},
-		{"turn_timing", TestProjectorTurnEndedStampsTiming},
-		{"interrupt_status", TestProjectorTurnEndedPreservesInterruptStatus},
-		{"usage_rounds", TestProjectorAccumulatesPerTurnUsageAcrossRounds},
-		{"usage_reset", TestProjectorNewTurnResetsUsageAccumulator},
-		{"tool_after_text", TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText},
-		{"tool_description", TestAppEventProjectorCarriesToolDescription},
-		{"communicate", TestAppEventProjectorProjectsCommunicateAsAssistantMessage},
-		{"communicate_suppressed", TestAppEventProjectorSuppressesCommunicateToolEvents},
-		{"output_call_id", TestAppEventProjectorIncludesCallIDOnToolOutputDelta},
 		{"jobs", TestAppEventProjectorProjectsJobEvents},
 		{"queue", TestAppEventProjectorProjectsQueueChanged},
-		{"steering", TestAppEventProjectorProjectsSteeringInjected},
-		{"compaction_turn", TestAppEventProjectorProjectsCompactionTurn},
-		{"active_compaction", TestAppEventProjectorProjectsCompactionTurnInActiveTurn},
-		{"skill_before_end", TestAppEventProjectorGroupsSkillActivationBeforeUseSkillEnd},
-		{"skill_group", TestAppEventProjectorGroupsSkillActivationWithUseSkill},
-		{"skill_unmatched", TestAppEventProjectorLeavesUnmatchedSkillActivationStandalone},
-		{"skill_legacy", TestAppEventProjectorGroupsSkillActivationWithLegacyUseSkillNameArg},
-		{"skill_text_boundary", TestAppEventProjectorDoesNotInferSkillActivationAcrossAssistantText},
-		{"agent_announcements", TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements},
-		{"compaction_numbers", TestAppEventProjectorContextCompactionCarriesStructuredNumbers},
-		{"hook_start", TestAppEventProjectorDoesNotDisplayHookStart},
-		{"active_announcement", TestAppEventProjectorProjectsAgentOnlyAnnouncementInActiveTurn},
-		{"image_steering", TestAppEventProjectorProjectsImageOnlySteeringInjected},
-		{"provider_cause", TestProjector_ForwardsProviderCause},
-		{"absent_cause", TestProjector_OmitsCauseWhenAbsent},
-		{"legacy_error", TestProjector_BackcompatNonProviderError},
-		{"diagnostic", TestProjector_GenuineErrorEmitsSingleDiagnostic},
-		{"assistant_reset", TestProjector_AssistantTextResetDiscardsInProgressItem},
+		{"execution_status", TestProjectorPublishesExecutionsAsThreadStatus},
+		{"no_history", TestProjectorEmitsNoHistory},
 	}
 	for _, regression := range projectRegressionTests {
 		t.Run(regression.name, regression.run)
@@ -235,25 +204,11 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 	empty.Project(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "derived", Data: events.SessionStartData{State: "idle"}})
 	empty.Project(events.SessionEvent{Kind: events.EventKind("unknown")})
 
-	reserved := p.ReserveTurnID()
-	if p.ReserveTurnID() != reserved || p.ActiveTurnID() != reserved {
-		t.Fatal("reserved turn ID was not stable")
-	}
-	p.ReleaseReservedTurnID("different")
-	project(events.EventUserInput, events.UserInputData{Text: "start reserved turn"})
-	if p.ActiveTurnID() != reserved {
-		t.Fatal("reserved turn ID was not adopted")
-	}
-	released := p.ReserveTurnID()
-	p.ReleaseReservedTurnID(released)
-
-	project(events.EventAssistantTextEnd, events.AssistantTextEndData{Text: "same"})
-	project(events.EventCommunicate, events.CommunicateData{Message: "same"})
-	project(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: "one"})
-	project(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: "two"})
-	project(events.EventTurnEnded, events.TurnEndedData{})
+	project(events.EventExecutionStarted, events.ExecutionStartedData{TurnID: "t_fuzz"})
+	project(events.EventModelRetry, events.ModelRetryData{Attempt: 1})
+	project(events.EventExecutionEnded, events.ExecutionEndedData{TurnID: "t_other"})
+	project(events.EventExecutionEnded, events.ExecutionEndedData{TurnID: "t_fuzz"})
 	project(events.EventSessionEnd, events.SessionEndData{State: "idle"})
-	project(events.EventTurnEnded, events.TurnEndedData{})
 
 	project(events.EventWarning, events.WarningData{})
 	project(events.EventError, events.ErrorData{})
@@ -272,13 +227,6 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 	project(events.EventToolCallStart, events.ToolCallStartData{ToolName: "use_skill", ArgumentsJSON: "{"})
 	project(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "use_skill"})
 	project(events.EventToolCallStart, events.ToolCallStartData{ToolName: "use_skill", ArgumentsJSON: `{}`})
-
-	oldMarshal := marshalContextCompaction
-	defer func() { marshalContextCompaction = oldMarshal }()
-	marshalContextCompaction = func(any) ([]byte, error) { return nil, errors.New("injected marshal failure") }
-	if raw := contextCompactionRaw(events.ContextCompactionData{Layer: "layer"}); raw != nil {
-		t.Fatalf("marshal failure returned raw payload: %s", raw)
-	}
 }
 
 func applyEvent(t *testing.T, p *AppEventProjector, kindIdx int, payload []byte, record int) {

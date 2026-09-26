@@ -85,19 +85,15 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		m.mode = hubModeSession
 		m.detail.Ref = "local:session"
 		for _, n := range []appwire.Notification{
-			{Method: appwire.NotifyTurnStarted, Params: []byte(`!`)},
 			{Method: appwire.NotifyThreadStatusChanged, Params: []byte(`!`)},
-			{Method: appwire.NotifyItemStarted, Params: []byte(`!`)},
-			{Method: appwire.NotifyItemCompleted, Params: []byte(`!`)},
-			{Method: appwire.NotifyAgentMessageDelta, Params: []byte(`!`)},
-			{Method: appwire.NotifyReasoningSummaryDelta, Params: []byte(`!`)},
-			{Method: appwire.NotifyAgentMessageReset, Params: []byte(`!`)},
-			{Method: appwire.NotifyToolOutputDelta, Params: []byte(`!`)},
+			{Method: appwire.NotifyHistoryUpdated, Params: []byte(`!`)},
+			{Method: appwire.NotifyOverlayUpserted, Params: []byte(`!`)},
+			{Method: appwire.NotifyOverlayDelta, Params: []byte(`!`)},
+			{Method: appwire.NotifyOverlayReset, Params: []byte(`!`)},
+			{Method: appwire.NotifyOverlayEnd, Params: []byte(`!`)},
 			{Method: appwire.NotifyEvenerJobStarted, Params: []byte(`!`)},
-			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`!`)},
 			{Method: appwire.NotifyThreadQueueChanged, Params: []byte(`!`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`!`)},
-			{Method: appwire.NotifyTurnCompleted, Params: []byte(`!`)},
 			{Method: appwire.NotifyEvenerSandboxEscalationRequested, Params: []byte(`!`)},
 		} {
 			_ = m.applyHubNotification(n)
@@ -111,17 +107,17 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		m.mode = hubModeSession
 		m.detail.Ref = "local:session"
 		m.watchedChildRefs = map[string]bool{"child": true}
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"child","item":{}}`)})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"ref":"child","items":[{}]}`)})
 		m.watchedChildRefs = nil
 		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyWarning, Params: []byte(`{"ref":"other"}`)})
 		for _, n := range []appwire.Notification{
-			{Method: appwire.NotifyAgentMessageReset, Params: []byte(`{}`)},
+			{Method: appwire.NotifyOverlayReset, Params: []byte(`{}`)},
 			{Method: appwire.NotifyThreadQueueChanged, Params: []byte(`{"queue":{"depth":1,"preview":["q"]}}`)},
-			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"images":[{"type":"image","url":"x"}]}`)},
-			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"text":"Job job_123 finished: headline"}`)},
+			{Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":[{"type":"steering","images":[{"type":"image","url":"x"}]}]}`)},
+			{Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":[{"type":"steering","text":"Job job_123 finished: headline"}]}`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`{"warning":{"message":"provider unavailable"}}`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`{"message":"provider error: openai rate limited"}`)},
-			{Method: appwire.NotifyTurnCompleted, Params: []byte(`{"turn":{"id":"turn","status":"failed","error":{"message":"bad"},"items":[{"type":"agentMessage"}]}}`)},
+			{Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"turns":[{"id":"turn","status":"failed","error":{"message":"bad"}}]}`)},
 		} {
 			_ = m.applyHubNotification(n)
 		}
@@ -136,12 +132,12 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		m.watchedChildRefs = map[string]bool{"child": true}
 		m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "child", JobID: "job_T", Status: "running"}}}}
 		jobText := `<job-notification job_id="job_T" event="completed" job_type="delegate" status="completed" transcript_ref="child">` + "\n" + `{"message":"done","data":{"status":"DONE","test_summary":"passed"}}` + "\n</job-notification>"
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"text":` + strconv.Quote(jobText) + `}`)})
-		for _, n := range []appwire.Notification{{Method: "other"}, {Method: appwire.NotifyItemStarted, Params: []byte(`!`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"other"}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"child","item":"bad"}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"child","item":{"type":"reasoning"}}`)}} {
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":[{"type":"steering","text":` + strconv.Quote(jobText) + `}]}`)})
+		for _, n := range []appwire.Notification{{Method: "other"}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`!`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"ref":"other"}`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"ref":"child","items":"bad"}`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"ref":"child","items":[{"type":"reasoning"}]}`)}} {
 			_, _ = m.handleChildActivityFrame(n)
 		}
 		m.watchedChildRefs = nil
-		_, _ = m.handleChildActivityFrame(appwire.Notification{Method: appwire.NotifyItemStarted})
+		_, _ = m.handleChildActivityFrame(appwire.Notification{Method: appwire.NotifyHistoryUpdated})
 		m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser}, {Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "", Status: "running"}}}, {Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "child", Status: "done"}}}}
 		_ = m.subscribeNewChildren()
 

@@ -13,6 +13,9 @@ type TranscriptItemCandidate struct {
 	Position        appwire.ThreadItemPosition
 	HasEarlierItems bool
 	HasLaterItems   bool
+	// Model is the turn's latest recorded model, for cost at egress. Only the
+	// transcript index fills it.
+	Model string
 }
 
 type TranscriptItemWindow struct {

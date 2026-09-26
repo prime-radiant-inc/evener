@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -25,13 +27,6 @@ import (
 // failure stamping — so the projector receives that same schema.Turn directly
 // rather than decoding the entry a second time (kata j13r).
 type EntryProjector func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem
-
-// BoundedEntryProjector converts one already-decoded transcript turn into
-// AppWire items. The supported bounded-reader contract is a named adapter that
-// calls ProjectTurn. Its toolNames argument is mutable, ephemeral state for
-// that record only; callers must not inspect unrelated history.
-// EntryProjector remains the full-read contract for existing callers.
-type BoundedEntryProjector func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
 
 // ImageProjector converts transcript image content into an AppWire image item.
 type ImageProjector func(image llm.ImageData) appwire.InputItem
@@ -285,6 +280,18 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 	}
 }
 
+// AddressedImageProjector is DefaultImageProjector plus the image's content
+// address: the sha and size a reader fetches the bytes back by, from the
+// transcript, over the hub's /s/<session>/images/<sha> route.
+func AddressedImageProjector(image llm.ImageData) appwire.InputItem {
+	item := DefaultImageProjector(image)
+	if len(image.Data) == 0 {
+		return item
+	}
+	item.Metadata = map[string]string{"sha": events.ImageSHA(image.Data), "size": strconv.Itoa(len(image.Data))}
+	return item
+}
+
 // UserFacingText concatenates a message's text parts the way Message.Text
 // does, except parts flagged as machinery — llm.ContentPart.Machinery, the
 // notifications the session manufactured for the model (e.g. the
@@ -337,6 +344,46 @@ func ProjectTurnParts(turnID string, turnIndex int, turn schema.Turn, toolNames 
 	invariant.Hold(len(parts) == len(items),
 		"apptranscript: ProjectTurnParts reported %d parts for %d items (kind %s)", len(parts), len(items), turn.Kind)
 	return items, parts
+}
+
+// ProjectEntryParts is ProjectTurnParts under the transcript read model's
+// rules: a new-format entry (Format == schema.TurnFormatIdentity) projects
+// its text runs, one reasoning item, its COMMUNICATE message and its NOTICE,
+// hides its communicate call and status entries, and projects nothing for a
+// fold copy. A legacy entry, and any new-format kind those rules leave
+// alone, projects exactly as ProjectTurnParts does.
+func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (items []appwire.ThreadItem, parts []int) {
+	if turn.Format != schema.TurnFormatIdentity {
+		return ProjectTurnParts(turnID, entryIndex, turn, toolNames, imageProjector, outputImageProjector)
+	}
+	// A fold copy is model history for resume; the original it copies
+	// already projected.
+	if turn.OriginalOrdinal != nil {
+		return nil, nil
+	}
+	switch turn.Kind {
+	case schema.TurnAssistant:
+		if toolNames == nil {
+			toolNames = map[string]string{}
+		}
+		items = projectIdentityAssistant(turnID, entryIndex, turn, toolNames, &parts)
+		return items, parts
+	case schema.TurnCommunicate:
+		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
+			return []appwire.ThreadItem{item}, []int{0}
+		}
+		return nil, nil
+	case schema.TurnNotice:
+		if item, ok := NoticeItem(turnID, entryIndex, turn); ok {
+			return []appwire.ThreadItem{item}, []int{0}
+		}
+		return nil, nil
+	case schema.TurnCompletion, schema.TurnReopen:
+		// These set the turn's status; they display nothing.
+		return nil, nil
+	default:
+		return ProjectTurnParts(turnID, entryIndex, turn, toolNames, imageProjector, outputImageProjector)
+	}
 }
 
 // projectTurn is ProjectTurn. When parts is non-nil, the kinds that project
@@ -558,7 +605,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					Type:   "reasoning",
 					ID:     fmt.Sprintf("item_reasoning_%d_%d", turnIndex, i),
 					TurnID: turnID,
-					Text:   "[redacted thinking]",
+					Text:   redactedThinkingText,
 					Status: appwire.TurnStatusCompleted,
 				})
 				recordPart(parts, i)
@@ -566,22 +613,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				if part.WebSearch == nil {
 					continue
 				}
-				query, results := WebSearchProjection(part.WebSearch)
-				args := "{}"
-				if query != "" {
-					if encoded, err := json.Marshal(map[string]string{"query": query}); err == nil {
-						args = string(encoded)
-					}
-				}
-				items = append(items, appwire.ThreadItem{
-					Type:          "commandExecution",
-					ID:            fmt.Sprintf("item_websearch_%d_%d", turnIndex, i),
-					TurnID:        turnID,
-					ToolName:      "web_search",
-					ArgumentsJSON: args,
-					Output:        results,
-					Status:        appwire.TurnStatusCompleted,
-				})
+				items = append(items, webSearchItem(turnID, turnIndex, i, part.WebSearch))
 				recordPart(parts, i)
 			case llm.ContentToolCall:
 				if part.ToolCall == nil {
@@ -602,23 +634,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					}
 					continue
 				}
-				item := appwire.ThreadItem{
-					Type:          "commandExecution",
-					ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, i),
-					TurnID:        turnID,
-					ToolName:      part.ToolCall.Name,
-					CallID:        part.ToolCall.ID,
-					ArgumentsJSON: string(part.ToolCall.Arguments),
-					Description:   ToolIntentFromArguments(part.ToolCall.Arguments),
-					Status:        appwire.TurnStatusInProgress,
-				}
-				// The entry's recorded timestamp is the server truth for when the
-				// call was issued (issue #37); a zero timestamp mints no stamp.
-				if !turn.Timestamp.IsZero() {
-					ms := turn.Timestamp.UnixMilli()
-					item.StartedAt = &ms
-				}
-				items = append(items, item)
+				items = append(items, toolCallItem(turnID, turnIndex, i, turn))
 				recordPart(parts, i)
 			}
 		}
@@ -671,6 +687,162 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 	default:
 		return nil
 	}
+}
+
+// projectIdentityAssistant projects a new-format ASSISTANT entry the way live
+// displays it: one agentMessage per maximal run of consecutive text parts,
+// keyed by the run's first part, and one reasoning item for the whole entry,
+// keyed by its first thinking part. A communicate call projects nothing: its
+// COMMUNICATE entry carries the delivered message. Every item names the
+// entry's round.
+func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, parts *[]int) []appwire.ThreadItem {
+	var items []appwire.ThreadItem
+	reasoningPart, reasoningText := identityReasoning(turn.Message.Content)
+	var run strings.Builder
+	runStart := -1
+	flushRun := func() {
+		if runStart >= 0 && run.Len() > 0 {
+			item := appwire.ThreadItem{
+				Type:   "agentMessage",
+				ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, runStart),
+				TurnID: turnID,
+				Text:   run.String(),
+				Status: appwire.TurnStatusCompleted,
+			}
+			// A persisted message has the entry's recorded instant.
+			if !turn.Timestamp.IsZero() {
+				ms := turn.Timestamp.UnixMilli()
+				item.StartedAt = &ms
+			}
+			items = append(items, item)
+			recordPart(parts, runStart)
+		}
+		run.Reset()
+		runStart = -1
+	}
+	for i, part := range turn.Message.Content {
+		if part.Kind == llm.ContentText {
+			if runStart < 0 {
+				runStart = i
+			}
+			run.WriteString(part.Text)
+			continue
+		}
+		flushRun()
+		switch part.Kind {
+		case llm.ContentThinking, llm.ContentRedThinking:
+			if i == reasoningPart && reasoningText != "" {
+				items = append(items, appwire.ThreadItem{
+					Type:   "reasoning",
+					ID:     fmt.Sprintf("item_reasoning_%d_%d", turnIndex, i),
+					TurnID: turnID,
+					Text:   reasoningText,
+					Status: appwire.TurnStatusCompleted,
+				})
+				recordPart(parts, i)
+			}
+		case llm.ContentWebSearch:
+			if part.WebSearch == nil {
+				continue
+			}
+			items = append(items, webSearchItem(turnID, turnIndex, i, part.WebSearch))
+			recordPart(parts, i)
+		case llm.ContentToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			toolNames[part.ToolCall.ID] = part.ToolCall.Name
+			if part.ToolCall.Name == "communicate" {
+				continue
+			}
+			items = append(items, toolCallItem(turnID, turnIndex, i, turn))
+			recordPart(parts, i)
+		}
+	}
+	flushRun()
+	for i := range items {
+		items[i].RoundID = turn.RoundID
+	}
+	return items
+}
+
+// redactedThinkingText stands in for a redacted-thinking part's content.
+const redactedThinkingText = "[redacted thinking]"
+
+// identityReasoning returns the index of the entry's first thinking or
+// redacted-thinking part (-1 when there is none) and the entry's reasoning
+// text: each thinking part's Text, or its Summary when Text is empty, and
+// redactedThinkingText for a redacted part, joined with blank lines.
+func identityReasoning(content []llm.ContentPart) (int, string) {
+	first := -1
+	var texts []string
+	for i, part := range content {
+		if part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if part.Kind == llm.ContentRedThinking {
+			texts = append(texts, redactedThinkingText)
+			continue
+		}
+		if part.Thinking == nil {
+			continue
+		}
+		text := part.Thinking.Text
+		if text == "" {
+			text = strings.Join(part.Thinking.Summary, "\n\n")
+		}
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return first, strings.Join(texts, "\n\n")
+}
+
+// webSearchItem projects a provider-native web-search part through the
+// web_search tool card.
+func webSearchItem(turnID string, turnIndex, part int, ws *llm.WebSearchData) appwire.ThreadItem {
+	query, results := WebSearchProjection(ws)
+	args := "{}"
+	if query != "" {
+		if encoded, err := json.Marshal(map[string]string{"query": query}); err == nil {
+			args = string(encoded)
+		}
+	}
+	return appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            fmt.Sprintf("item_websearch_%d_%d", turnIndex, part),
+		TurnID:        turnID,
+		ToolName:      "web_search",
+		ArgumentsJSON: args,
+		Output:        results,
+		Status:        appwire.TurnStatusCompleted,
+	}
+}
+
+// toolCallItem projects the tool call at content part part of an ASSISTANT
+// entry as an in-progress tool item; its result settles it.
+func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.ThreadItem {
+	call := turn.Message.Content[part].ToolCall
+	item := appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, part),
+		TurnID:        turnID,
+		ToolName:      call.Name,
+		CallID:        call.ID,
+		ArgumentsJSON: string(call.Arguments),
+		Description:   ToolIntentFromArguments(call.Arguments),
+		Status:        appwire.TurnStatusInProgress,
+	}
+	// The entry's recorded timestamp is the server truth for when the call
+	// was issued (issue #37); a zero timestamp mints no stamp.
+	if !turn.Timestamp.IsZero() {
+		ms := turn.Timestamp.UnixMilli()
+		item.StartedAt = &ms
+	}
+	return item
 }
 
 // recordPart appends a projected item's part index when the caller asked for
@@ -872,6 +1044,24 @@ func positionProjectedItemsAt(items []appwire.ThreadItem, turnID string, entryOr
 		position := appwire.ThreadItemPosition{Entry: entryOrdinal, Item: uint32(i)}
 		item.Position = &position
 		item.TranscriptKey = appitempaging.TranscriptItemKey(turnID, position)
+		positioned[i] = item
+	}
+	return positioned, nil
+}
+
+// positionPreludeItems assigns the prelude turn's items their fixed entry-0
+// positions and transcript keys: the prelude holds content from before the
+// session's first real entry, so it is pinned at entry 0 regardless of when
+// (or whether) a later reducer inserts it.
+func positionPreludeItems(items []appwire.ThreadItem) ([]appwire.ThreadItem, error) {
+	positioned := make([]appwire.ThreadItem, len(items))
+	for i, item := range items {
+		if uint64(i) > uint64(^uint32(0)) {
+			return nil, errors.New("prelude item index exceeds uint32")
+		}
+		position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
+		item.Position = &position
+		item.TranscriptKey = appitempaging.TranscriptItemKey(appwire.SystemPreludeTurnID, position)
 		positioned[i] = item
 	}
 	return positioned, nil

@@ -20,7 +20,7 @@ func TestServerAppWireNotesHumanSetRejectsStaleInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare replacement: %v", err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	calls := 0
 	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
 		calls++
@@ -59,7 +59,7 @@ func TestServerAppWireUrlsRemoveRejectsStaleInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare replacement: %v", err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	calls := 0
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) {
 		calls++
@@ -104,7 +104,7 @@ func TestServerAppWireNotesMutationFencedWhileClearReplaces(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		srv.ReplaceAppIdentity(prepared, nil)
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 		return nil
 	})
 	notesCalls, urlsCalls := 0, 0

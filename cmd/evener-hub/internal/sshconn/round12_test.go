@@ -209,7 +209,7 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
 			return nil, nil
 		case strings.Contains(joined, "evener_resolve"):
