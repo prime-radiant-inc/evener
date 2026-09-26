@@ -1181,6 +1181,14 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
 	}
+	// Read the durable holds before attentionMu — the order the live Stop
+	// path established, where the store's state mutex never nests inside
+	// attentionMu. A hold that survived the restart is a Stop the user has
+	// not re-engaged, so the rebuilt rail comes up seeded from the holds its
+	// live park mirrored: parked, not armed, and a transient provider
+	// failure cannot re-open the paced retry over a queue the user parked.
+	holdsStand := s.clientMutations != nil &&
+		(s.clientMutations.queueHeld() || s.clientMutations.steeringHeld())
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	ready := s.transcriptReady
@@ -1228,6 +1236,18 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	s.rootAttentionWakeIDs = make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		s.rootAttentionWakeIDs[id] = struct{}{}
+	}
+	if holdsStand {
+		// The park mirrors the holds (see rootAttentionParked), and after a
+		// restart the holds are the only copy that survived, so they are the
+		// park's seed — the same state parkRootDelegateAttention leaves, here
+		// inlined under the lock already held. Pending IDs stay cached for the
+		// re-engagement that releases the holds to re-arm.
+		s.rootAttentionParked = true
+		s.rootAttentionWake = false
+		s.resetRootAttentionRetryLocked()
+		s.attentionMu.Unlock()
+		return nil
 	}
 	shouldWake := len(ids) != 0 && !s.rootAttentionWake
 	if shouldWake {

@@ -2871,12 +2871,6 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// defers the attention, and a turn carrying nothing deliverable runs
 	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
 	// and unpark re-arms them.
-	// A parked rail stands down here too, even with attention pending: the
-	// outer gate's carve-out reads the RAW queue depth, so a stale watch tick
-	// (a token whose watch died, a cleared timer) phantom-opens it. The park
-	// defers the attention, and a turn carrying nothing deliverable runs
-	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
-	// and unpark re-arms them.
 	if len(jobNotifs) == 0 && !hasSteering && (!hasRootAttention || s.rootAttentionRailParked()) {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()

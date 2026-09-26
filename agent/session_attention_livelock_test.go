@@ -5,7 +5,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -38,11 +40,15 @@ import (
 //     steering: the paced retry cancels, a fresh arm caches its ID without
 //     waking the session, a straggler wake stands down without a model turn,
 //     and re-engagement (turn/start) re-arms the deferred IDs.
+//  4. The park survives the restart the holds it mirrors survive: restore
+//     seeds it from the durable holds, so a restarted daemon cannot re-arm
+//     pending attention over a queue its user parked.
 //
 // The tests drive the real durable arm path (appendDelegateNotificationDurably
 // + armDelegateAttention), the real turn path (ProcessInputKind with
-// EntryNotification), and the real interrupt path
-// (InterruptClientMutation), with only the LLM boundary scripted.
+// EntryNotification), the real interrupt path (InterruptClientMutation), and
+// the real restore path (RestoreSessionFromMetaWithConfig), with only the
+// LLM boundary scripted.
 
 // newAttentionLivelockSession builds a session whose "openai" provider fails
 // every stream with streamErr, on a fake clock, with a counted notify func.
@@ -652,5 +658,123 @@ func TestParkedRootAttentionIsNotDrainLive(t *testing.T) {
 	}
 	if live {
 		t.Fatal("parked attention keeps the drain's liveness read busy; it is deferred to re-engagement and must not hold a drain open")
+	}
+}
+
+// A Stop's park must survive the restart the holds it mirrors survive.
+// Restore rebuilds the wake cache from the transcript fold; when a durable
+// hold stands there, the rebuilt rail must come up parked rather than waking
+// over a queue the user parked. The old restore armed the wake unconditionally,
+// so one transient failure re-armed the paced retry and reproduced the exact
+// livelock this series ends — one restart later. The crash-during-Stop
+// recovery finalizes the fence but leaves the holds standing, so seeding
+// from them covers that path too.
+func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
+	dir := t.TempDir()
+	clk := agenttest.NewFakeClock()
+	transient := llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+
+	// Session one: pending durable attention plus an accepted Stop.
+	c := llm.NewClient()
+	c.Register(&streamingAdapter{name: "openai", streamErr: transient})
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		clock:          clk,
+	}))
+	var notifies atomic.Int64
+	s.SetNotifyFunc(func() { notifies.Add(1) })
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	id := s.Meta().ID
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_restart", "delegate:dlg_restart/delivery/1")
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-restart",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if !s.rootAttentionRailParked() {
+		t.Fatal("this test is not in the state it means to be: the accepted Stop left the live rail unparked")
+	}
+	// The crash: no re-engagement, the process just ends. The holds and the
+	// transcript survive it; the in-memory park and wake do not.
+	s.Close()
+
+	// Session two: the restart, through the same restore plumbing a daemon
+	// restart uses, with the livelock's own transient provider behind it.
+	meta, err := schema.LoadSessionMeta(dir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	restoredClient := llm.NewClient()
+	adapter := &streamingAdapter{name: "openai", streamErr: transient}
+	restoredClient.Register(adapter)
+	restored, err := RestoreSessionFromMetaWithConfig(restoredClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		clock:          clk,
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	var restoredNotifies atomic.Int64
+	restored.SetNotifyFunc(func() { restoredNotifies.Add(1) })
+	go func() {
+		for range restored.Events() {
+		}
+	}()
+
+	if !restored.rootAttentionRailParked() {
+		t.Fatal("the restart lost the Stop's park: restore rebuilt the rail unparked, and the pending attention can re-arm the paced retry over a queue the user parked")
+	}
+	wake, retryActive, pending := attentionRailState(restored)
+	if wake {
+		t.Fatal("restore woke the attention rail over a still-held queue")
+	}
+	if retryActive {
+		t.Fatal("restore armed the paced retry")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after restore = %d, want 1 (deferred, not dropped)", pending)
+	}
+
+	// A wake that reaches the parked rail stands down without a model turn,
+	// exactly as it does live.
+	_, streamCallsBefore := adapter.Counts()
+	if _, err := restored.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("straggler EntryNotification while parked after restore: %v", err)
+	}
+	_, streamCallsAfter := adapter.Counts()
+	if streamCallsAfter != streamCallsBefore {
+		t.Fatalf("a straggler wake while parked after restore ran %d model call(s) the user stopped", streamCallsAfter-streamCallsBefore)
+	}
+	if wake, _, _ := attentionRailState(restored); wake {
+		t.Fatal("the straggler wake re-armed the attention rail while parked after restore")
+	}
+
+	// Re-engagement unparks and re-arms the deferred attention, so the
+	// restart deferred the delivery rather than dropping it.
+	beforeReEngage := restoredNotifies.Load()
+	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-after-restart",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the user re-engages"}},
+	}); err != nil {
+		t.Fatalf("turn/start after the restart: %v", err)
+	}
+	wake, _, pending = attentionRailState(restored)
+	if !wake {
+		t.Fatal("re-engagement did not re-arm the deferred attention wake after the restart; the pending deliveries are stranded")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after re-engagement = %d, want 1", pending)
+	}
+	if got := restoredNotifies.Load(); got == beforeReEngage {
+		t.Fatal("re-engagement re-armed the wake without asking for a notification turn to deliver it")
 	}
 }

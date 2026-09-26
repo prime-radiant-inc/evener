@@ -912,11 +912,13 @@ type Session struct {
 	// cache their IDs but neither set the wake flag nor notify, the paced
 	// retry stays cancelled, and an attention-only notification turn stands
 	// down — the deliveries the user stopped wait for the user, not the
-	// clock. In-memory by design, like the wake flag it parks: restart
-	// rebuilds the rail from the transcript fold. Unlike the durable holds
-	// it mirrors, the park does not survive restart — pending attention may
-	// re-arm over a still-held queue and run one turn there; the
-	// permanent-failure rule keeps that from ever becoming a loop.
+	// clock. In-memory like the wake flag it parks, but restore seeds it
+	// from the durable holds it mirrors
+	// (rearmRootDelegateAttentionFromTranscript): a Stop that survived the
+	// restart brings its rail up parked, so a restart cannot re-open the
+	// loop over a queue the user parked. A restart with no hold standing
+	// re-arms pending attention as normal — that session was never stopped,
+	// and transient failures keep their paced retry by design.
 	rootAttentionParked bool
 	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
