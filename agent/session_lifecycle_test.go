@@ -327,7 +327,7 @@ func TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus(t *testing.T)
 // end-to-end kata hen0 repro: it feeds the session's real events through the
 // real appwire projector, exactly as server.RecordAppEvent does for a live
 // subscriber, and asserts a thread/status/changed(systemError) notification
-// follows turn/completed(Failed) — without re-reading the thread. It also pins that
+// follows turn/completed(Failed), without re-reading the thread. It also pins that
 // the specific failure text lands on turn/completed unaltered (Jesse,
 // 2026-07-30): the new status notification carries no message of its own, so
 // there is nothing to bury or duplicate it with.
