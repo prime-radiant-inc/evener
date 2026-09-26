@@ -180,8 +180,13 @@ it("keeps showing its rows while disconnected and replaces them only when the ne
 	expect(board.getSnapshot().retained).toBe(true);
 
 	answer(second, "needs_you", { sessions: [], remaining: 0 });
-	answer(second, "pin_catalog", { pin_sections: [], remaining: 0 });
 	answer(second, "manifest", manifest({ sources }));
+	await tick();
+	expect(board.getSnapshot().retained).toBe(true);
+	expect(board.getSnapshot().pins.rows.map((row) => row.id)).toEqual([
+		"pins-1",
+	]);
+	answer(second, "pin_catalog", { pin_sections: [], remaining: 0 });
 	await tick();
 	expect(emitted.length).toBeGreaterThan(0);
 	for (const snapshot of emitted) {
@@ -245,22 +250,22 @@ it("reads every Needs you page, up to 200 rows", async () => {
 	expect(requestsFor(hub, "needs_you")).toHaveLength(2);
 });
 
-it("stops reading Needs you at 200 rows", async () => {
+it("reads Needs you until the hub has no more rows, past 200", async () => {
 	const hub = boundary();
 	const board = createBoardController();
 	board.setClient(hub.client);
-	for (let page = 0; page < 4; page++) {
+	for (let page = 0; page < 5; page++) {
 		const request = next(hub, "needs_you");
 		expect(request.params.offset ?? 0).toBe(page * 50);
 		request.resolve(
 			response(request.params, {
 				sessions: sessions("ask-", 50, page * 50),
-				remaining: 500 - (page + 1) * 50,
+				remaining: 250 - (page + 1) * 50,
 			}),
 		);
 		await tick();
 	}
-	expect(board.getSnapshot().needsYou.rows).toHaveLength(200);
+	expect(board.getSnapshot().needsYou.rows).toHaveLength(250);
 	expect(() => next(hub, "needs_you")).toThrow("no pending needs_you request");
 });
 
@@ -311,6 +316,85 @@ it("re-reads the manifest again when an invalidation names a newer revision than
 	answer(hub, "manifest", manifest({ sources }), 2);
 	await tick();
 	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+});
+
+it("a revision-less manifest invalidation earns one follow-up read, and later numbered ones still coalesce", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	invalidate(hub, 1, [{ kind: "manifest" }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+	answer(hub, "manifest", manifest({ sources }), 2);
+	await tick();
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+	invalidate(hub, 2, [{ kind: "manifest", revision: 3 }]);
+	invalidate(hub, 3, [{ kind: "manifest", revision: 3 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+	answer(hub, "manifest", manifest({ sources }), 3);
+	await tick();
+	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+});
+
+it("a revision-less invalidation during a read earns a follow-up read", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	invalidate(hub, 1, [{ kind: "manifest", revision: 2 }]);
+	invalidate(hub, 2, [{ kind: "manifest" }]);
+	answer(hub, "manifest", manifest({ sources }), 2);
+	await tick();
+	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+	answer(hub, "manifest", manifest({ sources }), 2);
+	await tick();
+	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+});
+
+it("a manifest read that never answers doesn't strand the Board after pause and resume", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	answer(hub, "live", { sessions: [session("live-0")], remaining: 0 });
+	await tick();
+	const stranded = next(hub, "manifest");
+	board.pause();
+	board.resume();
+	await Promise.resolve();
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+	answer(hub, "manifest", manifest({ sources }));
+	await tick();
+	expect(board.getSnapshot().manifest?.sources).toEqual(sources);
+	stranded.resolve(
+		response(stranded.params, manifest({ sources: [] })),
+	);
+	await tick();
+	expect(board.getSnapshot().manifest?.sources).toEqual(sources);
+});
+
+it("pausing an idle, loaded Board notifies no listener", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	let notified = 0;
+	board.subscribe(() => notified++);
+	const before = board.getSnapshot();
+	board.pause();
+	expect(notified).toBe(0);
+	expect(board.getSnapshot()).toBe(before);
+});
+
+it("a client given while paused notifies nothing beyond the connection itself", () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.pause();
+	let notified = 0;
+	board.subscribe(() => notified++);
+	const before = board.getSnapshot();
+	board.setClient(hub.client);
+	expect(notified).toBe(0);
+	expect(board.getSnapshot()).toBe(before);
 });
 
 it("ignores invalidations that don't name the manifest", async () => {
@@ -410,7 +494,7 @@ it("resume reads what a pause interrupted before its first answer", async () => 
 			.slice(before)
 			.map((request) => readerOf(request.params))
 			.sort(),
-	).toEqual(["live", "needs_you", "pin_catalog"]);
+	).toEqual(["live", "manifest", "needs_you", "pin_catalog"]);
 	const interrupted = hub.requests.slice(0, before);
 	for (const request of interrupted) request.answered = true;
 	answer(hub, "live", { sessions: [session("live-0")], remaining: 0 });

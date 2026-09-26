@@ -11,7 +11,6 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { NavigationPages } from "../navigationPages";
-import { singleFlight } from "../singleFlight";
 
 type Page<T> = ReturnType<NavigationPages<T>["getSnapshot"]>;
 export interface BoardSnapshot {
@@ -41,8 +40,6 @@ export interface BoardController {
 
 /** The hub caps a section page at 50 rows. */
 const PAGE_LIMIT = 50;
-/** Needs you is read in full, up to this many rows. */
-const NEEDS_YOU_LIMIT = 200;
 const PIN_CATALOG_LIMIT = 100;
 const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 2 };
 const MANIFEST_KEY = navigationParamsToResourceKey(MANIFEST_PARAMS);
@@ -54,19 +51,26 @@ interface ManifestState {
 }
 
 /** Reads the hub's manifest, and re-reads it whenever an invalidation names
- * it. Invalidations that arrive during a read coalesce into one trailing
- * read, which is dropped when the read already returned the revision they
+ * it. Invalidations that arrive during a read coalesce into one follow-up
+ * read, which is dropped when the read already returned every revision they
  * announced. */
 class ManifestReader {
 	state: ManifestState = { manifest: null, loaded: false, error: null };
+	/** Bumped by every read and by pause, so an abandoned read's late answer
+	 * is dropped. */
+	private request = 0;
+	private loading = false;
+	/** A read is owed: the first one, or one an invalidation asked for that no
+	 * landed read has covered yet. */
+	private owed = false;
 	private paused = false;
 	private disposed = false;
 	private generation = "";
 	private required = 0;
-	private flight = singleFlight(
-		() => this.fetch(),
-		() => !this.paused && !this.disposed,
-	);
+	/** Invalidations seen, and the count as of the last one without a
+	 * revision: only a read started after that one can cover it. */
+	private invalidations = 0;
+	private unversionedAt = 0;
 	constructor(
 		private client: ConversationClientLike,
 		private onChange: () => void,
@@ -78,20 +82,28 @@ class ManifestReader {
 		});
 	}
 	read() {
-		this.flight.request();
+		this.owed = true;
+		this.drain();
 	}
+	/** Abandon the read in flight: a connection held through the background
+	 * may never answer it. */
 	pause() {
 		this.paused = true;
+		if (!this.loading) return;
+		this.request++;
+		this.loading = false;
+		this.owed = true;
 	}
 	/** Catch up on invalidations held while paused, and retry a first read
 	 * that never landed. */
 	resume() {
 		this.paused = false;
-		if (!this.state.loaded && !this.flight.running) this.flight.request();
-		else this.flight.drain();
+		if (!this.state.loaded) this.owed = true;
+		this.drain();
 	}
 	dispose() {
 		this.disposed = true;
+		this.request++;
 	}
 	private invalidate(payload: NavigationInvalidatedPayload) {
 		const targets = payload.targets.filter(
@@ -102,29 +114,39 @@ class ManifestReader {
 			this.generation = payload.generationId;
 			this.required = 0;
 		}
-		// A target without a revision can't be proven read, so it always
-		// earns a read of its own.
-		this.required = Math.max(
-			this.required,
-			...targets.map((target) => target.revision ?? Number.POSITIVE_INFINITY),
-		);
-		this.flight.request();
+		this.invalidations++;
+		for (const target of targets)
+			if (target.revision === undefined)
+				this.unversionedAt = this.invalidations;
+			else this.required = Math.max(this.required, target.revision);
+		this.owed = true;
+		this.drain();
+	}
+	private drain() {
+		if (!this.owed || this.loading || this.paused || this.disposed) return;
+		this.owed = false;
+		void this.fetch();
 	}
 	private async fetch() {
+		const request = ++this.request;
+		const seen = this.invalidations;
+		this.loading = true;
 		try {
 			const wire = await this.client.request(
 				"evener/navigation/read",
 				MANIFEST_PARAMS,
 			);
-			if (this.disposed) return;
+			if (request !== this.request) return;
 			const decoded = decodeNavigationResponse(MANIFEST_KEY, undefined, wire);
 			if (decoded.status !== "snapshot")
 				throw new Error("Hub navigation is unavailable.");
 			if (
-				decoded.version.generationId === this.generation &&
-				decoded.version.revision >= this.required
+				seen >= this.unversionedAt &&
+				(this.generation === "" ||
+					(decoded.version.generationId === this.generation &&
+						decoded.version.revision >= this.required))
 			)
-				this.flight.settle();
+				this.owed = false;
 			this.publish({
 				manifest: materializeSnapshot(
 					MANIFEST_KEY,
@@ -134,13 +156,18 @@ class ManifestReader {
 				error: null,
 			});
 		} catch (cause) {
-			if (this.disposed) return;
+			if (request !== this.request) return;
 			this.publish({
 				error:
 					cause instanceof Error
 						? cause.message
 						: "Could not read the hub's navigation.",
 			});
+		} finally {
+			if (request === this.request) {
+				this.loading = false;
+				this.drain();
+			}
 		}
 	}
 	private publish(change: Partial<ManifestState>) {
@@ -216,6 +243,7 @@ export function createBoardController(): BoardController {
 		retained:
 			retained.live !== null ||
 			retained.needsYou !== null ||
+			retained.pins !== null ||
 			retained.manifest !== null,
 		error: readers
 			? (readers.live.getSnapshot().error ??
@@ -225,9 +253,19 @@ export function createBoardController(): BoardController {
 			: null,
 	});
 	let snapshot = build();
+	// A reader republishes on cancel() with nothing changed, and every fresh
+	// reader starts with its own empty rows, so pages compare by content.
+	const samePage = (a: Page<unknown>, b: Page<unknown>) =>
+		(Object.keys(a) as Array<keyof Page<unknown>>).every((field) =>
+			field === "rows"
+				? a.rows === b.rows || (!a.rows.length && !b.rows.length)
+				: a[field] === b[field],
+		);
 	const unchanged = (next: BoardSnapshot) =>
-		(Object.keys(next) as Array<keyof BoardSnapshot>).every(
-			(field) => next[field] === snapshot[field],
+		(Object.keys(next) as Array<keyof BoardSnapshot>).every((field) =>
+			field === "live" || field === "needsYou" || field === "pins"
+				? samePage(next[field], snapshot[field])
+				: next[field] === snapshot[field],
 		);
 
 	const publish = () => {
@@ -252,7 +290,7 @@ export function createBoardController(): BoardController {
 	};
 
 	/** Needs you must be complete, so keep paging until the hub has no more
-	 * rows or the Board holds its cap. */
+	 * rows. */
 	const fillNeedsYou = () => {
 		if (!readers || paused) return;
 		const page = readers.needsYou.getSnapshot();
@@ -261,8 +299,7 @@ export function createBoardController(): BoardController {
 			!page.loading &&
 			!page.error &&
 			!page.stale &&
-			page.remaining > 0 &&
-			page.rows.length < NEEDS_YOU_LIMIT
+			page.remaining > 0
 		)
 			void readers.needsYou.more();
 	};
