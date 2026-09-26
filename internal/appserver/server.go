@@ -581,14 +581,23 @@ type Connection struct {
 	// recoveryClearID is the requestIDKey of the in-flight force-stop
 	// response whose transmission should clear recoveryRunning. It is set
 	// before that response is enqueued (recoveryRunning must survive the
-	// enqueue itself, to bound in-flight force stops to one) and consumed by
-	// beforeSend, which clears both fields together right before the send
-	// loop hands the matching response to the transport.
+	// enqueue itself, to bound in-flight force stops to one) and read by
+	// beforeSend and afterSend, keyed the same way, to drive the two-stage
+	// handoff below.
 	recoveryClearID string
-	cancel          context.CancelFunc
-	responseMu      sync.Mutex
-	hydrationMu     sync.Mutex
-	hydrations      map[string]*hydrationResponseFinalizer
+	// recoverySendPending covers the span beforeSend's clear of
+	// recoveryRunning cannot: it is set the moment beforeSend clears
+	// recoveryRunning (so the client-visible guarantee — recoveryRunning is
+	// already false before any byte of the response reaches the wire — is
+	// unchanged) and cleared by afterSend, once the send loop's Send call for
+	// that same response actually returns. Admission checks both flags, so a
+	// force stop is refused for the whole span from claim through actual
+	// transport delivery, not just through enqueue.
+	recoverySendPending bool
+	cancel              context.CancelFunc
+	responseMu          sync.Mutex
+	hydrationMu         sync.Mutex
+	hydrations          map[string]*hydrationResponseFinalizer
 	// afterWrite holds the AfterResponseWritten callbacks, keyed the same way
 	// hydrations is (requestIDKey). afterWriteDrained records that
 	// runPendingAfterWrite has already run, so a callback arriving after the
@@ -788,14 +797,20 @@ func (c *Connection) clearRecoveryOnPanic(fn func()) {
 // beforeSend runs on the send loop immediately before the transport call for
 // every outbound frame, so it stays cheap for the common case (no force stop
 // in flight) via the RLock check below: when msg is the response
-// markRecoveryClear tagged, it clears the force-stop busy flag here —
-// strictly before Send, not after: Send can block or fail against a peer that
-// stopped draining, so clearing only once it returns would (as an earlier
-// version of this fix did) leave a gap between the client receiving the
-// frame and the flag actually clearing. Clearing immediately before the call
-// instead keeps a real ordering guarantee: this runs in the same goroutine as
-// Send, strictly before it in program order, so the client cannot observe
-// the response before the flag is already false.
+// markRecoveryClear tagged, it clears recoveryRunning here — strictly before
+// Send, not after: Send can block or fail against a peer that stopped
+// draining, so clearing only once it returns would (as an earlier version of
+// this fix did) leave a gap between the client receiving the frame and the
+// flag actually clearing. Clearing immediately before the call instead keeps
+// a real ordering guarantee: this runs in the same goroutine as Send,
+// strictly before it in program order, so the client cannot observe the
+// response before recoveryRunning is already false.
+//
+// It also sets recoverySendPending in the same step (recoveryClearID is left
+// set, not cleared, so afterSend below can still match this response) so a
+// force stop is still refused for as long as Send is actually in flight — a
+// blocked write, not just a full outbound buffer, is otherwise a second gap
+// this same flag needs to cover.
 func (c *Connection) beforeSend(msg appwire.Message) {
 	c.mu.RLock()
 	clearID := c.recoveryClearID
@@ -809,8 +824,34 @@ func (c *Connection) beforeSend(msg appwire.Message) {
 	}
 	c.mu.Lock()
 	if c.recoveryClearID == id {
-		c.recoveryClearID = ""
 		c.recoveryRunning = false
+		c.recoverySendPending = true
+	}
+	c.mu.Unlock()
+}
+
+// afterSend runs on the send loop immediately after a successful transport
+// call, the send-loop half of beforeSend: it clears recoverySendPending (and
+// recoveryClearID, done with this response) once Send has actually returned
+// for the response beforeSend marked. It is wired in beside responseWritten,
+// which already runs at this exact point for an unrelated purpose (the
+// AfterResponseWritten callback), rather than adding a third send-loop
+// callback parameter for one more single-purpose hook.
+func (c *Connection) afterSend(msg appwire.Message) {
+	c.mu.RLock()
+	clearID := c.recoveryClearID
+	c.mu.RUnlock()
+	if clearID == "" {
+		return
+	}
+	id, _ := responseHydrationOutcome(msg)
+	if id != clearID {
+		return
+	}
+	c.mu.Lock()
+	if c.recoveryClearID == id {
+		c.recoveryClearID = ""
+		c.recoverySendPending = false
 	}
 	c.mu.Unlock()
 }
@@ -1478,7 +1519,13 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodEvenerThreadForceStop && c.isInitialized() {
 		c.mu.Lock()
-		busy := c.recoveryRunning
+		// recoverySendPending covers the gap between beforeSend clearing
+		// recoveryRunning and afterSend confirming the response actually
+		// reached the transport: without it, a force stop whose write is
+		// merely slow (not blocked behind a full buffer, which
+		// recoveryRunning alone already covers) would be admitted while the
+		// prior one is still being transmitted.
+		busy := c.recoveryRunning || c.recoverySendPending
 		if !busy {
 			c.recoveryRunning = true
 		}

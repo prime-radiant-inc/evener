@@ -267,3 +267,102 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 		}
 	}
 }
+
+// TestServeWebSocketForceStopBackpressureHoldsAcrossTransportSend pins a
+// roborev finding against the previous round: beforeSend clears
+// recoveryRunning strictly before calling transport.Send, which is what
+// TestServeWebSocketForceStopClearsRecoveryBeforeResponseIsSent requires (the
+// client must never see the response while the flag still reads true). But
+// clearing recoveryRunning there also reopened admission the instant Send is
+// merely called, not once it has actually completed — if the write itself
+// blocks (a stalled peer, distinct from a full outbound buffer, which the
+// enqueue-side fix already covers), a second force stop would be admitted
+// while the first's response is still being transmitted, with the
+// underlying recovery side effect running before the client has any
+// confirmation the first one finished.
+//
+// recoverySendPending is a second, narrower gate: beforeSend sets it in the
+// same moment it clears recoveryRunning, and only afterSend (wired through
+// the same send-loop callback as responseWritten, so it runs right after
+// Send returns) clears it. Admission checks both flags, so a force stop is
+// refused for the whole span from claim through actual transport delivery,
+// while the client-visible guarantee (recoveryRunning already false before
+// any byte reaches the wire) is untouched.
+func TestServeWebSocketForceStopBackpressureHoldsAcrossTransportSend(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	gate := &gatedSendTransport{blocked: make(chan struct{}, 1), release: make(chan struct{})}
+	server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+		gate.webSocketTransport = inner
+		return gate
+	}
+	HandleTyped(server.Router(), appwire.MethodEvenerThreadForceStop, func(context.Context, appwire.ThreadForceStopParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	transport := dialRawAppWire(t, httpServer)
+	initializeRaw(t, transport)
+	conn := registeredConnection(t, server)
+	frames := collectFrames(transport)
+
+	gate.gated.Store(true)
+	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
+	waitFor(t, "send loop to park writing the force-stop response", gate.blocked)
+
+	conn.mu.RLock()
+	stillRunning := conn.recoveryRunning
+	conn.mu.RUnlock()
+	if stillRunning {
+		t.Fatal("recoveryRunning was still true while the response was gated for delivery: the #2469 guarantee regressed")
+	}
+
+	sendRaw(t, transport, rawRequest(t, 3, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
+	// The channel is otherwise empty here: the first response was already
+	// dequeued into the gated transport.Send call, so it no longer occupies
+	// a slot. Waiting for one to appear is a race-free barrier — it can only
+	// happen once the server has decided request 3's fate (a synchronous
+	// busy refusal, or an admitted request's eventual response) — so closing
+	// the gate below can never race ahead of that decision the way an
+	// earlier version of this test did (a roborev finding on the sibling
+	// enqueue-backpressure test above, and, on this test's first version,
+	// the same mistake repeated: sending request 3 and releasing the gate
+	// with nothing in between).
+	waitUntil(t, "the second force stop's response to be enqueued (proving the server decided its fate before the transport gate is released)", func() bool {
+		return len(conn.send) > 0
+	})
+
+	close(gate.release)
+	var sawBusyRefusal, sawFirstSuccess bool
+	deadline := time.After(5 * time.Second)
+	for !sawBusyRefusal || !sawFirstSuccess {
+		select {
+		case msg := <-frames:
+			switch {
+			case msg.Error != nil && msg.Error.ID.Int64() == 3:
+				if msg.Error.Error.Code != appwire.CodeUnavailable {
+					t.Fatalf("second force stop error code = %d, want CodeUnavailable", msg.Error.Error.Code)
+				}
+				sawBusyRefusal = true
+			case msg.Response != nil && msg.Response.ID.Int64() == 2:
+				sawFirstSuccess = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for both frames: busyRefusal=%v firstSuccess=%v", sawBusyRefusal, sawFirstSuccess)
+		}
+	}
+
+	sendRaw(t, transport, rawRequest(t, 4, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
+	deadline = time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-frames:
+			if msg.Response != nil && msg.Response.ID.Int64() == 4 {
+				return
+			}
+			if msg.Error != nil && msg.Error.ID.Int64() == 4 {
+				t.Fatalf("third force stop, sent after the first's send completed, was refused: %+v", msg.Error)
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the third force stop to succeed once the send-pending gate cleared")
+		}
+	}
+}

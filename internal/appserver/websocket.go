@@ -168,7 +168,10 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 		// The loop returning means nothing further will be written, so any
 		// callback still waiting on its response runs now.
 		defer conn.runPendingAfterWrite()
-		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout, conn.responseWritten, conn.beforeSend)
+		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout, func(msg appwire.Message) {
+			conn.responseWritten(msg)
+			conn.afterSend(msg)
+		}, conn.beforeSend)
 	})
 	go conn.runWorker(ctx)
 
