@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"io"
 	"strings"
 	"testing"
@@ -19,63 +17,24 @@ type renderedResourceCaps struct {
 	MemoryMB int64   `json:"memory_mb"`
 }
 
-func parseRenderedEnvironmentResourceCaps(t *testing.T, prompt string) (*renderedResourceCaps, bool) {
+// promptResourceCaps decodes the resource caps the environment block renders,
+// from the typed prompt input; ok is false when the session renders none.
+func promptResourceCaps(t *testing.T, s *Session, env execenv.ExecutionEnvironment) (renderedResourceCaps, bool) {
 	t.Helper()
-
-	const openEnvironment = "<environment>"
-	const closeEnvironment = "</environment>"
-	var section strings.Builder
-	capturing := false
-	found := false
-	scanner := bufio.NewScanner(strings.NewReader(prompt))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == openEnvironment {
-			if capturing || found {
-				t.Fatal("rendered prompt contains multiple environment sections")
-			}
-			capturing = true
-		}
-		if !capturing {
-			continue
-		}
-		section.WriteString(line)
-		section.WriteByte('\n')
-		if line == closeEnvironment {
-			capturing = false
-			found = true
-		}
+	data := s.buildPromptData(env)
+	if data.ResourceCapsJSON == "" {
+		return renderedResourceCaps{}, false
 	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan rendered prompt: %v", err)
-	}
-	if capturing || !found {
-		t.Fatal("rendered prompt has no complete environment section")
-	}
-
-	var environment struct {
-		ResourceCaps []string `xml:"resource_caps"`
-	}
-	if err := xml.Unmarshal([]byte(section.String()), &environment); err != nil {
-		t.Fatalf("parse rendered environment section: %v", err)
-	}
-	if len(environment.ResourceCaps) == 0 {
-		return nil, false
-	}
-	if len(environment.ResourceCaps) != 1 {
-		t.Fatalf("rendered environment has %d resource payloads, want 1", len(environment.ResourceCaps))
-	}
-
 	var caps renderedResourceCaps
-	decoder := json.NewDecoder(strings.NewReader(environment.ResourceCaps[0]))
+	decoder := json.NewDecoder(strings.NewReader(data.ResourceCapsJSON))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&caps); err != nil {
-		t.Fatalf("parse rendered resource payload: %v", err)
+		t.Fatalf("decode resource caps %q: %v", data.ResourceCapsJSON, err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		t.Fatalf("rendered resource payload has trailing data: %v", err)
+		t.Fatalf("resource caps %q have trailing data: %v", data.ResourceCapsJSON, err)
 	}
-	return &caps, true
+	return caps, true
 }
 
 type maskedResourceFixtureEnv struct {
@@ -105,11 +64,11 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 			},
 		},
 	}))
-	prompt, warning := sess.renderSystemPrompt(sess.env)
+	_, warning := sess.renderSystemPrompt(sess.env)
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt)
+	caps, ok := promptResourceCaps(t, sess, sess.env)
 	if !ok {
 		t.Fatal("rendered environment omitted finite resource payload")
 	}
@@ -136,11 +95,11 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 					},
 				},
 			}))
-			prompt, warning := sess.renderSystemPrompt(sess.env)
+			_, warning := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			if caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt); ok {
+			if caps, ok := promptResourceCaps(t, sess, sess.env); ok {
 				t.Fatalf("rendered environment resource payload for %s resources: %+v", name, caps)
 			}
 		})

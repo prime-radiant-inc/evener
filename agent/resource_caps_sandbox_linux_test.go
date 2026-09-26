@@ -66,11 +66,11 @@ func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testi
 	if resources == nil || resources.CPUs <= 0 || resources.MemoryMB <= 0 {
 		t.Skip("host does not expose finite CPU and memory cgroup caps")
 	}
-	prompt, warning := sess.renderSystemPrompt(local)
+	_, warning := sess.renderSystemPrompt(local)
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt)
+	caps, ok := promptResourceCaps(t, sess, local)
 	if !ok {
 		t.Fatal("rendered environment omitted finite resource payload")
 	}

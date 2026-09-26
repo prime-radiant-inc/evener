@@ -14,9 +14,10 @@ package agent
 //                           each explicit req.Provider=<name> to its adapter.
 //  2. Behavior by surface — each instance name resolves to the right
 //                           surface/provider-id pair and routes by its own ID.
-//  3. Real-openai boundary — compat-x (surface "generic") does NOT get the
-//                            openai prompt section; work (surface "openai")
-//                            does. Prompt-cache eligibility is no longer part
+//  3. Real-openai boundary — work resolves to surface "openai" and compat-x
+//                            to "generic"; the prompt each surface gets is
+//                            pinned in session_surface_behavior_test.go.
+//                            Prompt-cache eligibility is no longer part
 //                            of this boundary: the session stamps both fields
 //                            and the resolved row's Fields decide (spec §7.5,
 //                            session_openai_prompt_cache_test.go).
@@ -158,11 +159,10 @@ func TestPhase1b_ResolveProfile_RegistryKeys(t *testing.T) {
 
 // ── Assertion 3: Real-openai boundary ─────────────────────────────────────────
 
-// TestPhase1b_CompatX_NoOpenAIBehavior verifies cohesively that compat-x
-// (surface "generic") does NOT get the openai prompt section while work
-// (surface "openai") does, and that the prompt-cache fields are no longer part
-// of that boundary: the session stamps them for every instance and
-// llm.ShapeRequest drops what the resolved row cannot send.
+// TestPhase1b_CompatX_NoOpenAIBehavior verifies cohesively that work resolves
+// to surface "openai" and compat-x to "generic", and that the prompt-cache
+// fields are no longer part of that boundary: the session stamps them for
+// every instance and llm.ShapeRequest drops what the resolved row cannot send.
 func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -187,9 +187,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 		t.Fatalf("compatProfile.Surface() = %q, want generic", got)
 	}
 
-	const openAIMarker = "they execute in the order you"
-
-	// ── work instance gets openai behavior ──
+	// ── work instance: the session stamps the prompt-cache fields ──
 	workSess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
@@ -197,11 +195,6 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 		t.Fatalf("NewSession(work): %v", err)
 	}
 	defer workSess.Close()
-
-	workPrompt, _ := workSess.renderSystemPrompt(workSess.env)
-	if !strings.Contains(workPrompt, openAIMarker) {
-		t.Errorf("work session (surface=openai): system prompt missing openai section marker %q", openAIMarker)
-	}
 
 	workReq := llm.Request{Model: "gpt-5.2", Provider: workProfile.ID()}
 	workSess.applyModelRequestMetadata(&workReq)
@@ -212,7 +205,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 		t.Errorf("work session: PromptCacheRetention = %q, want 24h", workReq.PromptCacheRetention)
 	}
 
-	// ── compat-x instance does NOT get openai behavior ──
+	// ── compat-x instance: stamped the same way ──
 	compatSess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
@@ -220,11 +213,6 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 		t.Fatalf("NewSession(compat-x): %v", err)
 	}
 	defer compatSess.Close()
-
-	compatPrompt, _ := compatSess.renderSystemPrompt(compatSess.env)
-	if strings.Contains(compatPrompt, openAIMarker) {
-		t.Errorf("compat-x session (surface=generic): system prompt must NOT contain openai section marker %q", openAIMarker)
-	}
 
 	// The prompt-cache fields are stamped here for compat-x too; what the
 	// endpoint may carry is the row's decision at dispatch, not the profile's.

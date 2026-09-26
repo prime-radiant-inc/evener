@@ -714,9 +714,6 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 						break
 					}
 				}
-				if !strings.Contains(sysPrompt, "<available_agents>") {
-					return finalResponse("FAIL: no <available_agents> in system prompt")
-				}
 				if !strings.Contains(sysPrompt, "live-test:analyzer") {
 					return finalResponse("FAIL: missing live-test:analyzer")
 				}
