@@ -148,7 +148,8 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 10. **The tray is the one live line.**
     - The transcript drops the live "Thinking…" row, because the tray already says it (spec 8.2's own rule that the step in progress is the tray's line). Settled thoughts show where the level shows reasoning.
     - "Quiet" starts after 20 seconds without a frame (the web's threshold, `liveness.ts`). "May be stuck" starts at 10 minutes (spec 13.1).
-    - Neither shows while a subagent runs. Jesse ruled on S5 that an agent waiting on subagents is never stuck (the server plan's "Jesse's answers"), so the tray reads "Waiting on 12 subagents" instead, and a subagent row whose own subagents run reads the same way (Task 28).
+    - Neither shows while a subagent runs. Jesse ruled on S5 that an agent waiting on subagents is never stuck (the server plan's "Jesse's answers"), so the tray reads "Waiting on 12 subagents" instead, and a subagent row whose own subagents run reads the same way (Task 28). The web's liveness line still reports a stall past its threshold with children running (`liveness.ts:140-157`); the phone follows the ruling.
+    - A model retry the hub reported explains the silence, so its line wins over both. Past 10 minutes it adds "no updates for 12m" in amber, as the web's liveness line does (`liveness.ts:183-186`).
     - The meter counts the frames this phone saw each minute while the session is open, subagent updates included. Minutes before it opened read as empty. That is S5's fallback; S5 brings the whole tree's counts.
 11. **Next goes by Needs you order until phase 6** adds "whichever session alerted you most recently".
 12. **Approvals use S12's fallback.**
@@ -1058,6 +1059,22 @@ describe("the tray's line (spec 8.3)", () => {
 			"Retrying · provider error · attempt 3",
 		);
 	});
+
+	it("keeps a long retry's explanation past ten minutes, adding the silence in amber", () => {
+		const retry: ModelRetryState = {
+			attempt: 9,
+			maxAttempts: 11,
+			attemptCap: 11,
+			delayMs: 60_000,
+			errorClass: "rate_limit",
+			groupElapsedMs: 700_000,
+			receivedAt: NOW - 60_000,
+		};
+		expect(trayLine(session({ modelRetry: retry, lastFrameAt: NOW - 12 * 60_000 }), NOW)).toEqual({
+			text: "Retrying · rate limited · attempt 9 of 11 · no updates for 12m",
+			attention: true,
+		});
+	});
 });
 
 describe("the tray's pulse counts (spec 16.4)", () => {
@@ -1131,6 +1148,16 @@ const WAITING_TOOLS = new Set(["delegate", "delegate_send", "job_watch", "job_st
 export function trayLine(session: TraySource, now: number): TrayLine | null {
 	if (session.status.type !== "active") return null;
 	const silence = now - session.lastFrameAt;
+	// A retry the hub reported explains the silence (modelRetry deliberately
+	// leaves lastFrameAt alone, model.ts), so it wins, as on the web
+	// (liveness.ts's describeLiveness). Past ten minutes the line adds the
+	// silence and turns amber, as the web's stalled level does.
+	if (session.modelRetry) {
+		const retry = retryText(session.modelRetry);
+		return silence >= STUCK_AFTER_MS
+			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
+			: { text: retry, attention: false };
+	}
 	const running = runningSubagents(session);
 	// An agent waiting on subagents is never stuck (Jesse's ruling on S5): a
 	// subagent inside one long model call sends nothing for minutes. Quiet
@@ -1138,7 +1165,6 @@ export function trayLine(session: TraySource, now: number): TrayLine | null {
 	// subagent returns first.
 	if (running === 0 && silence >= STUCK_AFTER_MS)
 		return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true };
-	if (session.modelRetry) return { text: retryText(session.modelRetry), attention: false };
 	const step = currentStep(session);
 	if (running > 0 && (!step || step.waitsOnSubagents))
 		return { text: `Waiting on ${running} ${running === 1 ? "subagent" : "subagents"}`, attention: false };
