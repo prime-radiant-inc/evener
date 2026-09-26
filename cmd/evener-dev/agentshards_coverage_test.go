@@ -451,31 +451,32 @@ func TestReplaySurveyFailuresKeepsNestedMultilineContinuation(t *testing.T) {
 	}
 }
 
-// TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict covers a
-// buffered nested sibling verdict before the parent failure. The verdict must
-// restore ownership to its sibling parent; otherwise later sibling diagnostics
-// are incorrectly preferred over the parent's earlier assertion.
+// TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict models the
+// Go 1.27 flushToParent shape: a sibling's top-level PASS precedes its
+// indented nested verdicts, then the parent's unframed output precedes its
+// FAIL. Nested verdicts are buffered output, not an ownership switch, so the
+// parent's assertion and output must retain parent ownership.
 func TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict(t *testing.T) {
 	const (
-		assertion    = "    parent_test.go:110: parent assertion before sibling output"
-		firstSibling = "    sibling_test.go:1: later sibling diagnostic"
+		assertion = "    parent_test.go:110: parent assertion before sibling output"
+		parentLog = "parent buffered output after sibling verdicts"
 	)
 	var log strings.Builder
 	log.WriteString("=== RUN   TestParent\n")
 	log.WriteString(assertion + "\n")
 	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("--- PASS: TestSibling (0.00s)\n")
 	log.WriteString("    --- PASS: TestSibling/sub (0.00s)\n")
-	for i := range surveyContextBefore + 1 {
-		fmt.Fprintf(&log, "    sibling_test.go:%d: later sibling diagnostic\n", i+1)
-	}
+	log.WriteString("    --- PASS: TestSibling/sub2 (0.00s)\n")
+	log.WriteString(parentLog + "\n")
 	log.WriteString("--- FAIL: TestParent (0.00s)\n")
 
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
 	if !strings.Contains(got, assertion) {
-		t.Fatalf("parent assertion was omitted after nested sibling verdict: %q", got)
+		t.Fatalf("parent assertion was omitted after buffered nested verdicts: %q", got)
 	}
-	if strings.Contains(got, firstSibling) {
-		t.Fatalf("sibling diagnostics were preferred after nested verdict: %q", got)
+	if !strings.Contains(got, parentLog) {
+		t.Fatalf("parent output lost ownership after buffered nested verdicts: %q", got)
 	}
 }
 

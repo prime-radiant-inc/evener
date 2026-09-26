@@ -909,12 +909,7 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		}
 		trimmed := strings.TrimSpace(line)
 		if surveyTestVerdictLine.MatchString(trimmed) {
-			verdictName := surveyVerdictName(trimmed)
-			if slash := strings.LastIndex(verdictName, "/"); slash >= 0 {
-				owner = verdictName[:slash]
-			} else {
-				owner = name
-			}
+			owner = name
 		}
 		if surveyFrameworkLine(line) || trimmed == "" {
 			continue
@@ -983,22 +978,6 @@ func surveyPhaseOwner(line string) string {
 		return ""
 	}
 	return strings.Join(fields[2:], " ")
-}
-
-// surveyVerdictName extracts the test name from a PASS, FAIL, or SKIP frame.
-// A nested verdict's name can restore ownership to its immediate parent while
-// a top-level verdict remains associated with the failing parent block.
-func surveyVerdictName(line string) string {
-	line = strings.TrimSpace(strings.TrimPrefix(line, "--- "))
-	colon := strings.IndexByte(line, ':')
-	if colon < 0 {
-		return ""
-	}
-	name := strings.TrimSpace(line[colon+1:])
-	if end := strings.Index(name, " ("); end >= 0 {
-		name = name[:end]
-	}
-	return strings.TrimSpace(name)
 }
 
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
