@@ -2900,7 +2900,8 @@ git commit -m "feat(native): host states, the hosts controller and live counts p
    - Then one row per `HostRow`, in the hub's order:
      - icon `server.rack`, and the host's name;
      - the second line joins the status word, `systemLabel` and `liveSessionsText(count, !attached)`, leaving out what's unknown;
-     - the value is the gray `Tag` from `versionDriftTag` when there is one, else an amber `Tag` "Offline" for an offline state;
+     - the value is the host's last-known version (`row.hubVersion`, in `inkMid` with tabular figures) when the hub knows it, followed by the gray `Tag` from `versionDriftTag` when there is one. Spec 12 has each row show its version, with that tag when it differs from the hub's.
+     - The state stays in words on the second line, so a row carries no Offline tag. The home's amber "N offline" and the detail's status carry the attention;
      - a chevron, pushing `HostDetail`.
    - Footer: "Hosts come from hub.toml or were added in the web app. Add hosts from the web app; they need an SSH address and a key."
    - Before the first read, it shows `Connecting`; after it, the last rows stay through a failed read or a dropped connection.
@@ -2938,6 +2939,7 @@ git commit -m "feat(native): host states, the hosts controller and live counts p
   - The pages: drive a scripted client answering `evener/host/list`, `evener/navigation/read` for Live (with `wireV2`), `evener/host/attach`, `evener/host/update` and `evener/host/remove`. Cover:
     - every requirement above, including `focus`;
     - the "Offline · reconnecting" host showing no Connect;
+    - a drifting host's row showing its own version ("0.9.409") beside the gray "Hub runs 0.9.412" tag, a matching host's row showing its version and no tag, and a host whose version the hub doesn't know showing neither;
     - Connect's in-flight state and a refusal;
     - a `hub.toml` host with no Edit or Remove;
     - Edit's field-blamed refusal (a `WireError` whose data carries `evenerErrorInfo: "invalidHostField"` and `field: "roots"`, the shape `appwire-client/typescript/errors.test.ts` builds);
