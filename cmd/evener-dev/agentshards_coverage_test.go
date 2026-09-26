@@ -406,6 +406,9 @@ func TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership(t *testing.T) {
 	if strings.Contains(got, firstSibling) {
 		t.Fatalf("first sibling diagnostic was favored as parent output: %q", got)
 	}
+	if strings.Contains(got, "later sibling diagnostic") {
+		t.Fatalf("later sibling diagnostic was backfilled into parent output: %q", got)
+	}
 }
 
 // TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail covers
@@ -519,6 +522,35 @@ func TestReplaySurveyFailuresKeepsFailingChildDiagnosticAfterParentSetup(t *test
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
 	if !strings.Contains(got, boom) {
 		t.Fatalf("failing child diagnostic was omitted after parent setup logs: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsNewestOwnedTail pins the bounded overflow rule
+// for ordinary descendant output: the newest lines survive around the
+// reserved parent assertion as one contiguous tail.
+func TestReplaySurveyFailuresKeepsNewestOwnedTail(t *testing.T) {
+	const assertion = "    parent_test.go:101: parent assertion before child output"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "        child output line %d\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted: %q", got)
+	}
+	if strings.Contains(got, "        child output line 1\n") {
+		t.Fatalf("oldest owned line was retained instead of dropping the oldest: %q", got)
+	}
+	for i := 2; i <= surveyContextBefore; i++ {
+		line := fmt.Sprintf("        child output line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("contiguous newest owned tail line %d was omitted: %q", i, got)
+		}
 	}
 }
 
