@@ -140,8 +140,25 @@ const refusal = () =>
 // pre-D23d literal row shape.
 class UnsupportedRowShapeError extends Error {}
 
+// A read response's versioned-history baseline (bootGeneration/epoch/
+// snapshot), matching what this file's live history/updated frames carry
+// ("1"/1/"inc-1") so a merge test's push lands against a held generation
+// instead of invalidating on arrival (classifySignal: an unversioned hydrate
+// holds no bootGeneration/epoch at all, so the first push's own "1"/1 reads
+// as a newer generation and invalidates rather than merges). Opt-in only: a
+// v6 model also disables the reducer's pre-v6 "warning" item-synthesis path
+// (reducer.ts's own `model.history` gate — warnings are a separate, not-yet-
+// migrated v6 home, flagged there), so tests exercising that path must NOT
+// take this baseline.
+const V6_HISTORY_BASELINE = {
+  bootGeneration: "1",
+  epoch: 1,
+  snapshot: { incarnation: "inc-1", length: 0 },
+} as const;
+
 function makeConversation(
   over: Partial<MobileConversation> = {},
+  versioned = false,
 ): MobileConversation {
   // Hydrated through the package from a minimal wire Thread, so the fixture
   // tracks hydrateThread's defaults instead of restating every model field.
@@ -167,7 +184,13 @@ function makeConversation(
       queue: { revision: 0, depth: 0, preview: [] },
     },
   };
-  const base = projectConversation(hydrateThread({ thread }, "ref-1", 0));
+  const base = projectConversation(
+    hydrateThread(
+      versioned ? { thread, ...V6_HISTORY_BASELINE } : { thread },
+      "ref-1",
+      0,
+    ),
+  );
   const { items, turns, ...rest } = over;
   if (turns !== undefined) {
     // A turns override is the model itself: the rows project from it, so
@@ -185,7 +208,12 @@ function makeConversation(
     // fixture scripts over the conversation must be model-backed — build
     // the wire turns that project to them.
     const model = hydrateThread(
-      { thread: { ...thread, turns: wirePageFromRows(items).data } },
+      versioned
+        ? {
+            thread: { ...thread, turns: wirePageFromRows(items).data },
+            ...V6_HISTORY_BASELINE,
+          }
+        : { thread: { ...thread, turns: wirePageFromRows(items).data } },
       "ref-1",
       0,
     );
@@ -2270,7 +2298,7 @@ describe("ConversationStore", () => {
 
     it("marks running on turn/started", async () => {
       const service = new FakeConversationService();
-      service.openConv = makeConversation({ status: { type: "idle" } });
+      service.openConv = makeConversation({ status: { type: "idle" } }, true);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "default", status: "running" }] } } as AnyNotification);
@@ -2335,7 +2363,7 @@ describe("ConversationStore", () => {
     // frame owns the settle, exactly as it does for a completed turn.
     it("settles idle on the status frame when the active turn fails", async () => {
       const service = new FakeConversationService();
-      service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
+      service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" }, true);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } }] } } as AnyNotification);
@@ -2369,7 +2397,7 @@ describe("ConversationStore", () => {
           ids: ["q1"],
           texts: ["queued"],
         },
-      });
+      }, true);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
 
@@ -3024,7 +3052,7 @@ describe("ConversationStore", () => {
 
   describe("item/started inserts/replaces authoritative item", () => {
     it("inserts a new assistant item from item/started", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
             id: "item-a",
@@ -3037,7 +3065,7 @@ describe("ConversationStore", () => {
     it("replaces an existing item when item/started carries the same id", async () => {
       const { store } = await openRunningTurn([
         agentMessageItem("item-a", "old", "inProgress"),
-      ]);
+      ], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
             id: "item-a",
@@ -3093,7 +3121,7 @@ describe("ConversationStore", () => {
             items: [{ id: "image", src: "https://hub.test/stale" }],
           },
         ],
-      });
+      }, true);
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
@@ -3142,7 +3170,7 @@ describe("ConversationStore", () => {
     ];
 
     it("updates a first clustered member without losing later members or attachments", async () => {
-      const { store } = await openRunningTurn(clusterPair());
+      const { store } = await openRunningTurn(clusterPair(), {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "call-first",
@@ -3189,7 +3217,7 @@ describe("ConversationStore", () => {
           status: "inProgress",
           outputImages: [{ source: "old", url: "https://hub.test/old" }],
         } as ThreadItem,
-      ]);
+      ], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "new-wire-later",
@@ -3230,7 +3258,7 @@ describe("ConversationStore", () => {
     it("takes the reread's snapshot over a cluster the live frames built", async () => {
       const { store, service, release, rehydratePromise } = await beginHeldClusterRehydrate();
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" }), turnId: "t1" }] } } as AnyNotification);
-      release(makeReadProjectionResult(makeThread()));
+      release(makeReadProjectionResult(makeThread(), ALL_TRUE_CAPS, true));
       await rehydratePromise;
       expect(rows(store)).toEqual([]);
       expect(service.readProjectionCalls.length).toBeGreaterThan(0);
@@ -3249,7 +3277,7 @@ describe("ConversationStore", () => {
       release(makeReadProjectionResult(runningTurnThread([
         { type: "commandExecution", id: "wire-first", transcriptKey: "first", toolName: "shell", status: "completed", output: "authoritative first" } as ThreadItem,
         { type: "commandExecution", id: "wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "failed", error: "boom" } as ThreadItem,
-      ])));
+      ]), ALL_TRUE_CAPS, true));
       await rehydratePromise;
       const activities = rows(store).filter((item) => item.kind === "activity");
       expect(activities).toHaveLength(2);
@@ -3407,7 +3435,7 @@ describe("ConversationStore", () => {
           status: "inProgress",
           outputImages: [{ source: "old", url: "old" }],
         } as ThreadItem,
-      ]);
+      ], {}, true);
       expect(rows(store).some((item) => item.kind === "attachments")).toBe(true);
       let release!: (value: ConversationReadProjection) => void;
       service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
@@ -3424,7 +3452,7 @@ describe("ConversationStore", () => {
       const { store } = await openRunningTurn([
         { type: "commandExecution", id: "wire-first", transcriptKey: "first", toolName: "shell", status: "completed" } as ThreadItem,
         { type: "commandExecution", id: "wire-later", transcriptKey: "later", toolName: "shell", status: "inProgress" } as ThreadItem,
-      ]);
+      ], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ source: "new", url: "new" }] }), turnId: "t1" }] } } as AnyNotification);
       const items = rows(store);
       const activity = items.find((item) => item.kind === "activity");
@@ -3439,7 +3467,7 @@ describe("ConversationStore", () => {
       const { store } = await openRunningTurn([
         { type: "commandExecution", id: "call-first", toolName: "shell", status: "inProgress" } as ThreadItem,
         { type: "commandExecution", id: "call-later", toolName: "shell", status: "inProgress" } as ThreadItem,
-      ]);
+      ], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "call-later",
@@ -3478,7 +3506,7 @@ describe("ConversationStore", () => {
     it("stops streaming when the assistant item settles inside a running turn", async () => {
       const { store } = await openRunningTurn([
         agentMessageItem("item-a", "partial", "inProgress"),
-      ]);
+      ], {}, true);
       expect(rowById(store, "item-a")).toMatchObject({ streaming: true });
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem("item-a", "all of it", "completed")), turnId: "t1" }] } } as AnyNotification);
       expect(store.getState().conversation?.activeTurnId).toBe("t1");
@@ -3492,7 +3520,7 @@ describe("ConversationStore", () => {
     it("marks an assistant item as not streaming on item/completed", async () => {
       const { store } = await openRunningTurn([
         agentMessageItem("item-a", "streaming text", "inProgress"),
-      ]);
+      ], {}, true);
       expect(rowById(store, "item-a")).toMatchObject({ streaming: true });
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
@@ -3517,9 +3545,13 @@ describe("ConversationStore", () => {
     ] as const)(
       "marks an activity item as %s on item/completed",
       async (_label, exitCode, error, expected) => {
-        const { store } = await openRunningTurn([
-          { type: "commandExecution", id: "tool-1", toolName: "shell", status: "inProgress" } as ThreadItem,
-        ]);
+        const { store } = await openRunningTurn(
+          [
+            { type: "commandExecution", id: "tool-1", toolName: "shell", status: "inProgress" } as ThreadItem,
+          ],
+          {},
+          true,
+        );
         store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
               type: "commandExecution",
               id: "tool-1",
@@ -3538,7 +3570,7 @@ describe("ConversationStore", () => {
 
     it("C6: upserts completed item even when start was missed", async () => {
       // The turn is open but empty — the item/started was missed.
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "tool-missed",
@@ -3555,7 +3587,7 @@ describe("ConversationStore", () => {
     // "tool" and preserves callId exactly; a reasoning item is family
     // "reasoning".
     it("a commandExecution named 'Reasoning' is family 'tool' with exact callId", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "tool-reasoning-1",
@@ -3577,7 +3609,7 @@ describe("ConversationStore", () => {
     });
 
     it("a reasoning item is family 'reasoning'", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-notify-1",
@@ -3607,7 +3639,7 @@ describe("ConversationStore", () => {
       ["explicit empty text", "", ""],
       ["omitted text", undefined, "old reasoning"],
     ] as const)("shows the completion's text over the seeded summary when the completion carries %s", async (_label, text, expected) => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-authoritative-1",
@@ -3629,7 +3661,7 @@ describe("ConversationStore", () => {
     // A reasoning item the model never streamed into shows the text the wire
     // settled it with.
     it("shows the settled text of a reasoning item that streamed nothing", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-settled-1",
@@ -4004,7 +4036,7 @@ describe("ConversationStore", () => {
       // window does not hold is a gap (a reread request), not a row.
       service.openConv = makeConversation({
         turns: [{ id: "t1", status: "inProgress", items: [] }],
-      });
+      }, true);
       await store.getState().open(service, "ref-1");
       const largeName = "n".repeat(MAX_ITEM_BYTES + 100);
       const src = "https://hub.test/live.png";
@@ -4081,7 +4113,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ threadId: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }, true),
         activity: {
           tasks: [],
           work: [],
@@ -4454,7 +4486,7 @@ describe("ConversationStore", () => {
   // refresh path.
   describe("item frames settle locally; resync is the reread path", () => {
     it("projects a started ask_user as its question row, without a reread", async () => {
-      const { store, service } = await openRunningTurn();
+      const { store, service } = await openRunningTurn([], {}, true);
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
@@ -4473,7 +4505,7 @@ describe("ConversationStore", () => {
     });
 
     it("projects a completed ask_user as a question row once the status frame carries the pending flag, without a reread", async () => {
-      const { store, service } = await openRunningTurn();
+      const { store, service } = await openRunningTurn([], {}, true);
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
@@ -4506,7 +4538,7 @@ describe("ConversationStore", () => {
     // label, or read as a choice the agent never actually offered under its
     // real name (boundQuestion's own contract).
     it("bounds a live question row's option label but leaves liveAskQuestions' canonical copy whole", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       const oversizedLabel = "x".repeat(MAX_ITEM_BYTES + 100);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
@@ -4813,7 +4845,7 @@ describe("ConversationStore", () => {
     // An item frame the reducer has no case for cannot be projected, so the
     // canonical read is still the recovery.
     it("rereads for an item frame the model has no rule for", async () => {
-      const { store, service } = await openRunningTurn();
+      const { store, service } = await openRunningTurn([], {}, true);
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/somethingNew/delta",
@@ -5050,7 +5082,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      true);
       expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1"]);
       store.getState().applyNotification({
         method: "warning",
@@ -5094,7 +5126,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      true);
       expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1"]);
       // Two notices land back-to-back, with no model row between them.
       store.getState().applyNotification({
@@ -5232,7 +5264,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
@@ -5319,7 +5351,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
@@ -5375,7 +5407,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const opened = rows(store);
@@ -5439,7 +5471,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      true);
       // The user row, then its attachments row keyed to the wire id.
       expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
         ["user", "wire-old"],
@@ -5521,7 +5553,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      true);
       expect(rows(store).map((row) => row.kind)).toEqual([
         "user",
         "attachments",
@@ -5589,7 +5621,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      true);
       expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
         ["activity", "call-a"],
         ["attachments", "call-a:attachments"],
@@ -5630,7 +5662,7 @@ describe("ConversationStore", () => {
     });
 
     it("preserves a command description through live item projection", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "command-1",
@@ -5645,7 +5677,7 @@ describe("ConversationStore", () => {
     });
 
     it("preserves a user transcript entry index through live item projection", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "fork-source",
@@ -6290,7 +6322,7 @@ describe("ConversationStore", () => {
             },
           ],
           olderCursor: "c0",
-        }),
+        }, true),
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "c0",
       };
@@ -13006,7 +13038,7 @@ describe("ConversationStore", () => {
             },
           ],
           olderCursor: "c0",
-        }),
+        }, true),
         activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
         olderCursor: "c0",
       };
@@ -15454,9 +15486,20 @@ describe("ConversationStore", () => {
   const VALID_ASK_ARGS =
     '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
 
+  // A read response's versioned-history baseline (bootGeneration/epoch/
+  // snapshot), matching what this file's live history/updated frames carry
+  // ("1"/1/"inc-1") so a merge test's push lands against a held generation
+  // instead of invalidating on arrival (classifySignal: an unversioned
+  // hydrate holds no bootGeneration/epoch at all, so the first push's own
+  // "1"/1 reads as a newer generation and invalidates rather than merges).
+  // Opt-in only: a v6 model also disables the reducer's pre-v6 "warning"
+  // item-synthesis path (reducer.ts's own `model.history` gate — warnings
+  // are a separate, not-yet-migrated v6 home, RoboRev-flagged there), so
+  // tests exercising that path must NOT take this baseline.
   function makeReadProjectionResult(
     thread: Thread,
     capabilities: ThreadCapabilities = ALL_TRUE_CAPS,
+    versioned = false,
   ): {
     conversation: MobileConversation;
     activity: ActivityView;
@@ -15464,7 +15507,11 @@ describe("ConversationStore", () => {
   } {
     return {
       conversation: projectConversation(
-        hydrateThread({ thread }, thread.evener.ref, 0),
+        hydrateThread(
+          versioned ? { thread, ...V6_HISTORY_BASELINE } : { thread },
+          thread.evener.ref,
+          0,
+        ),
       ),
       activity: {
         tasks: [],
@@ -15478,9 +15525,13 @@ describe("ConversationStore", () => {
 
   // A store opened through openProjected onto a fresh fake service serving
   // `thread` as its projection.
-  async function openProjectedThread(thread: Thread) {
+  async function openProjectedThread(thread: Thread, versioned = false) {
     const service = new FakeConversationService();
-    service.readProjectionResult = makeReadProjectionResult(thread);
+    service.readProjectionResult = makeReadProjectionResult(
+      thread,
+      ALL_TRUE_CAPS,
+      versioned,
+    );
     const store = createConversationStore();
     await store.getState().openProjected(service, createFakeSink(), "ref-1");
     return store;
@@ -15502,6 +15553,7 @@ describe("ConversationStore", () => {
   async function openRunningTurn(
     items: ThreadItem[] = [],
     over: Partial<Thread> = {},
+    versioned = false,
   ): Promise<{
     store: ReturnType<typeof createConversationStore>;
     service: FakeConversationService;
@@ -15510,7 +15562,11 @@ describe("ConversationStore", () => {
   }> {
     const thread = runningTurnThread(items, over);
     const service = new FakeConversationService();
-    service.readProjectionResult = makeReadProjectionResult(thread);
+    service.readProjectionResult = makeReadProjectionResult(
+      thread,
+      ALL_TRUE_CAPS,
+      versioned,
+    );
     const store = createConversationStore();
     const sink = createFakeSink();
     await store.getState().openProjected(service, sink, "ref-1");
@@ -15520,10 +15576,14 @@ describe("ConversationStore", () => {
   // A rehydrate held open while live frames land, on a thread whose running
   // turn holds two shell calls the projector clusters into one row.
   async function beginHeldClusterRehydrate() {
-    const { store, service, sink, thread } = await openRunningTurn([
-      { type: "commandExecution", id: "wire-first", transcriptKey: "first", toolName: "shell", status: "inProgress" } as ThreadItem,
-      { type: "commandExecution", id: "wire-later", transcriptKey: "later", toolName: "shell", status: "inProgress" } as ThreadItem,
-    ]);
+    const { store, service, sink, thread } = await openRunningTurn(
+      [
+        { type: "commandExecution", id: "wire-first", transcriptKey: "first", toolName: "shell", status: "inProgress" } as ThreadItem,
+        { type: "commandExecution", id: "wire-later", transcriptKey: "later", toolName: "shell", status: "inProgress" } as ThreadItem,
+      ],
+      {},
+      true,
+    );
     let release!: (value: ConversationReadProjection) => void;
     service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
     const rehydratePromise = store.getState().rehydrate(service, sink);
@@ -15977,7 +16037,7 @@ describe("ConversationStore", () => {
   // ANYTHING is pending at all before it looks.
   describe("the question lifecycle through the projection", () => {
     it("shows a completed parseable ask_user as a question row once askPending says so, with no reread", async () => {
-      const { store, service } = await openRunningTurn();
+      const { store, service } = await openRunningTurn([], {}, true);
       expect(store.getState().conversation?.askPending).toBe(false);
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(askUserItem("ask-1", VALID_ASK_ARGS)), turnId: "t1" }] } } as AnyNotification);
@@ -16075,7 +16135,7 @@ describe("ConversationStore", () => {
     // #1731 round 4 closed (a client re-deriving "is anything pending" from
     // transcript shape instead of the wire's own fact).
     it("renders no question row for a live ask until a status frame carries askPending", async () => {
-      const { store } = await openRunningTurn();
+      const { store } = await openRunningTurn([], {}, true);
       expect(store.getState().conversation?.askPending).toBe(false);
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(askUserItem("ask-live", VALID_ASK_ARGS)), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "ask-live")).toMatchObject({ kind: "activity", family: "tool" });
@@ -16124,7 +16184,7 @@ describe("ConversationStore", () => {
       ["malformed", () => askUserItem("ask-bad", "not valid json {{{")],
       ["still in flight", () => askUserItem("ask-incomplete", VALID_ASK_ARGS, "inProgress")],
     ] as const)("projects a %s ask_user as its tool row, never a question row", async (_label, item) => {
-      const { store, service } = await openRunningTurn();
+      const { store, service } = await openRunningTurn([], {}, true);
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "history/updated",
@@ -16565,7 +16625,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      ALL_TRUE_CAPS, true);
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const ctrl = makeControlledRead(service);
       service.readProjectionResult = makeReadProjectionResult(
@@ -17458,7 +17518,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // The older page is a FRAGMENT of the active turn itself (the
@@ -17654,7 +17714,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // The page fragment carries a KEYED item: the claim records the key
@@ -18707,7 +18767,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -18750,7 +18810,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -18789,7 +18849,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -18870,7 +18930,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "tA", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "tA" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -18990,7 +19050,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -19048,7 +19108,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -19124,7 +19184,7 @@ describe("ConversationStore", () => {
           ],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -19197,7 +19257,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
           evener: evenerWith({ activeTurnId: "t1" }),
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -21273,7 +21333,7 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -21322,7 +21382,7 @@ describe("ConversationStore", () => {
       // shares "key-Z" (the source) but carries no attachment of its own —
       // the snapshot merely mentioning the source must not read as "this
       // attachment is already there."
-      const { store, service } = await openRunningTurn([]);
+      const { store, service } = await openRunningTurn([], {}, true);
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
         items: [
@@ -21372,7 +21432,7 @@ describe("ConversationStore", () => {
     // snapshot says nothing about the source's images (unchanged); here it
     // says there are none (removed).
     it("drops a page-owned attachment once its source explicitly clears its output images", async () => {
-      const { store, service } = await openRunningTurn([]);
+      const { store, service } = await openRunningTurn([], {}, true);
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
         items: [
@@ -21417,7 +21477,7 @@ describe("ConversationStore", () => {
       // where it sits (the page's images stay — absent means unchanged),
       // so the attachment row re-keys with its source and stays directly
       // beside it — never orphaned wherever it sat in the page.
-      const { store, service } = await openRunningTurn([]);
+      const { store, service } = await openRunningTurn([], {}, true);
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
         items: [
@@ -21525,7 +21585,7 @@ describe("ConversationStore", () => {
       // "new-wire-Z:attachments" share source "key-Z" but no own identity, so
       // the own-identity check alone would keep both — one page-owned image
       // row and one fresh one, for the same message.
-      const { store, service } = await openRunningTurn([]);
+      const { store, service } = await openRunningTurn([], {}, true);
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = {
         items: [
@@ -21942,10 +22002,14 @@ describe("ConversationStore", () => {
     it.each(liveCases)("shows the live change under $kind until the reread commits", async ({ initialX, frame, live }) => {
       // The frame lands on the open conversation and is on screen at once;
       // the reread that follows is what settles it.
-      const { store } = await openRunningTurn([initialX()], {
-        turns: [makeTurn({ id: "t0", status: "inProgress", items: [initialX()] })],
-        evener: evenerWith({ activeTurnId: "t0" }),
-      });
+      const { store } = await openRunningTurn(
+        [initialX()],
+        {
+          turns: [makeTurn({ id: "t0", status: "inProgress", items: [initialX()] })],
+          evener: evenerWith({ activeTurnId: "t0" }),
+        },
+        true,
+      );
       store.getState().applyNotification(frame);
       expect(markdownOf(store, "X")).toBe(live);
     });
@@ -22394,7 +22458,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
-      );
+      ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
@@ -22726,6 +22790,7 @@ describe("ConversationStore", () => {
       ReturnType<typeof createConversationStore>
     > {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({}, true);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       // turn/started's read-model replacement: a turn row's "running" status
@@ -22835,13 +22900,18 @@ describe("ConversationStore", () => {
   });
 
   describe("live updates resolve clustered members", () => {
-    async function openProjectedWithItems(items: ThreadItem[]): Promise<{
+    async function openProjectedWithItems(
+      items: ThreadItem[],
+      versioned = false,
+    ): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;
     }> {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+        ALL_TRUE_CAPS,
+        versioned,
       );
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -22906,10 +22976,13 @@ describe("ConversationStore", () => {
     });
 
     it("preserves a clustered member's output when a sparse completion changes its wire id", async () => {
-      const { store } = await openProjectedWithItems([
-        reasoningItem("wire-a", "key-a", "first"),
-        reasoningItem("wire-b", "key-b", "accumulated"),
-      ]);
+      const { store } = await openProjectedWithItems(
+        [
+          reasoningItem("wire-a", "key-a", "first"),
+          reasoningItem("wire-b", "key-b", "accumulated"),
+        ],
+        true,
+      );
 
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
@@ -22971,7 +23044,7 @@ describe("ConversationStore", () => {
     ): Promise<ReturnType<typeof createConversationStore>> {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.openConv = makeConversation({ items: current });
+      service.openConv = makeConversation({ items: current }, true);
       await store.getState().open(service, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderItems = { items: older, nextCursor: "next" };
