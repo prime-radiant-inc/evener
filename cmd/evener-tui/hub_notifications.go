@@ -304,24 +304,23 @@ func (m *hubModel) refreshPluginsPanel() tea.Cmd {
 // regardless of text, because the daemon collapses queued entries
 // into one STEERING and the placeholder doesn't know the joined text.
 func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n appwire.Notification) {
+	// history/updated carries the recorded form of every affected item,
+	// including a steering echo (both a human's Ctrl+S and a
+	// daemon-injected job/delegate result) or the turn-opening user message.
+	if n.Method != appwire.NotifyHistoryUpdated {
+		return
+	}
+	var p appwire.HistoryUpdatedParams
+	if err := json.Unmarshal(n.Params, &p); err != nil {
+		return
+	}
 	ref := notificationPendingRef(n)
-	switch n.Method {
-	case appwire.NotifyHistoryUpdated:
-		// history/updated carries the recorded form of every affected item,
-		// including a steering echo (both a human's Ctrl+S and a
-		// daemon-injected job/delegate result — evener/steering/injected's
-		// replacement) or the turn-opening user message.
-		var p appwire.HistoryUpdatedParams
-		if err := json.Unmarshal(n.Params, &p); err != nil {
-			return
+	for _, item := range p.Items {
+		if item.Type == "steering" {
+			reconcileSteeringItem(pending, item, ref)
+			continue
 		}
-		for _, item := range p.Items {
-			if item.Type == "steering" {
-				reconcileSteeringItem(pending, item, ref)
-				continue
-			}
-			reconcileUserMessageItem(pending, item, ref)
-		}
+		reconcileUserMessageItem(pending, item, ref)
 	}
 }
 
