@@ -37,6 +37,18 @@ import type {
 const SECTION_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 
+// The generation id demo-hub.mts advertises in the initialize handshake's
+// navigation capability. Every wireV2 response must carry the exact same
+// id: the shared navigation store rejects any other generation as a
+// mismatch (appwire-client/typescript/state/navigation/revalidator.ts's
+// `validate`, "generation mismatch"), so this is exported and imported by
+// demo-hub.mts rather than each file keeping its own string.
+export const DEMO_FLEET_GENERATION = "demo-fleet";
+const DEMO_ETAG = '"demo-fleet-1"';
+const DEMO_REVISION = 1;
+const respond = (params: NavigationReadParams, data: unknown): NavigationReadResponse =>
+	wireV2(params, data, DEMO_ETAG, DEMO_REVISION, DEMO_FLEET_GENERATION);
+
 // A local copy of that same module's relativeAge (now/m/h/d), for the same
 // reason: SearchResult.age needs it and importing it hits the barrel above.
 // The format is a spec contract (redesign design.md 7.2: "2m", "1h", "3d"),
@@ -62,6 +74,9 @@ const D = 86400;
 const MAX_CHILDREN = 50;
 
 const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED · 271")
+// How many archived rows a "project" overview embeds as a preview, versus a
+// project_page(tier=archived) read paging through the real, full list.
+const PROJECT_OVERVIEW_ARCHIVED_PREVIEW = 5;
 
 // Names cycled through for a swarm whose members aren't individually named in
 // the fixture, copied verbatim from data.js's swarmNames.
@@ -307,6 +322,21 @@ const SESSIONS: RawSession[] = [
 	{ id: "s-audit1", title: "Audit Tool Descriptions First Pass", state: "shutdown", ago: 9 * D, archived: true },
 	{ id: "s-pairing", title: "Pairing Endpoint Review", state: "shutdown", ago: 12 * D, archived: true },
 	{ id: "s-daemon", title: "Daemon Idle Retirement Timer", state: "shutdown", ago: 15 * D, archived: true },
+
+	// data.js pins archivedTotal at 271 (Board mockup: "ARCHIVED · 271")
+	// without individually naming 266 of them. These fill that count with
+	// plain, clearly-generic entries so the archived tier is a real, fully
+	// pageable list of 271 -- the hub's own archived tier is real paged rows,
+	// never five real ones plus a promise of 266 more that never arrive --
+	// instead of a page that stalls the moment a client asks for more than
+	// the 5 named above.
+	...Array.from({ length: ARCHIVED_TOTAL - 5 }, (_, i) => ({
+		id: `s-archived-filler-${i}`,
+		title: SWARM_NAMES[i % SWARM_NAMES.length] as string,
+		state: "shutdown" as const,
+		archived: true,
+		ago: (16 + i) * D, // continues after the 5 named ones (6-15 days ago)
+	})),
 ];
 
 // The prototype's known projects (data.js's `projects`), plus the synthetic
@@ -379,7 +409,17 @@ const SUBAGENT_WIRE_STATE: Record<SubState, { state: string; live: boolean }> = 
 	done: { state: "ended", live: false },
 };
 
-function toChildRow(sub: RawSubagent, ownerHostId: string, project: string, startupMs: number): NavigationSessionSummary {
+// cmd/evener-hub/navigation_projection.go's projectShallow sets Offline the
+// same way for every projected node, subagents included -- it reads the
+// row's own HostID, not anything about its parent -- so a session's
+// children from an offline source are offline too, not just the parent row.
+function toChildRow(
+	sub: RawSubagent,
+	ownerHostId: string,
+	project: string,
+	startupMs: number,
+	offline: boolean,
+): NavigationSessionSummary {
 	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
 	return {
 		ref: `${ownerHostId}:${sub.id}`,
@@ -390,8 +430,9 @@ function toChildRow(sub: RawSubagent, ownerHostId: string, project: string, star
 		state,
 		kind: "subagent",
 		live,
+		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - sub.ago * 1000).toISOString(),
-		children: (sub.children ?? []).map((child) => toChildRow(child, ownerHostId, project, startupMs)),
+		children: (sub.children ?? []).map((child) => toChildRow(child, ownerHostId, project, startupMs, offline)),
 	};
 }
 
@@ -423,6 +464,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 	const project = raw.project ?? "evener";
 	const { state, askPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
+	const offline = owner === "paradise-park" && offlineHost;
 	const all = rawChildren(raw);
 	const capped = all.slice(0, MAX_CHILDREN);
 	const omitted = all.length - capped.length;
@@ -437,11 +479,11 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		kind: "session",
 		live,
 		...(askPending ? { ask_pending: true as const } : {}),
-		...(owner === "paradise-park" && offlineHost ? { offline: true as const } : {}),
+		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
 		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
 		...(jobs ? { running_jobs: jobs } : {}),
-		children: capped.map((child) => toChildRow(child, owner, project, startupMs)),
+		children: capped.map((child) => toChildRow(child, owner, project, startupMs, offline)),
 	};
 }
 
@@ -519,18 +561,16 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return projectKey;
 	}
 
-	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): { rows: NavigationSessionSummary[]; remaining: number } {
-		if (tier === "archived") {
-			if (projectKey !== "evener") return { rows: [], remaining: 0 };
-			return { rows: archivedRaw.map(rowOf), remaining: ARCHIVED_TOTAL - archivedRaw.length };
-		}
-		if (projectKey === "hub-test-env") {
-			if (tier === "recent") return { rows: [], remaining: 0 };
-			return { rows: testRunRaw.map(rowOf), remaining: 0 };
-		}
+	// Every tier is a real, fully pageable list -- including archived, now
+	// that SESSIONS carries all 271 (5 named plus the generated filler) --
+	// so callers page it with the same page() every other resource uses
+	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
+	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
+		if (tier === "archived") return projectKey === "evener" ? archivedRaw.map(rowOf) : [];
+		if (projectKey === "hub-test-env") return tier === "current" ? testRunRaw.map(rowOf) : [];
 		const inProject = projectSessionsRaw(projectKey);
 		const inTier = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
-		return { rows: inTier.map(rowOf), remaining: 0 };
+		return inTier.map(rowOf);
 	}
 
 	function page<T>(items: T[], params: NavigationReadParams, defaultLimit: number): { page: T[]; remaining: number } {
@@ -539,10 +579,18 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return { page: items.slice(offset, offset + limit), remaining: Math.max(0, items.length - (offset + limit)) };
 	}
 
+	// cmd/evener-hub/navigation_projection.go sets a resource's Truncated
+	// whenever any row it projected (at any depth) had its own children
+	// capped (OmittedDescendants set) -- not only when the page itself was
+	// cut short. Mirrored here instead of a hardcoded false.
+	function anyTruncated(rows: NavigationSessionSummary[]): boolean {
+		return rows.some((row) => (row.omitted_descendants ?? 0) > 0 || anyTruncated(row.children));
+	}
+
 	function answerNavigationRead(params: NavigationReadParams): NavigationReadResponse {
 		switch (params.resource) {
 			case "manifest":
-				return wireV2(params, {
+				return respond(params, {
 					sources,
 					attentionSummary: { needsYou: needsYouSessions.length, error: erroredCount, working: workingCount },
 					sections: {
@@ -557,44 +605,58 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					},
 				});
 			case "section": {
+				// cmd/evener-hub/app_navigation.go's navigationReadKeyWithFields:
+				// an unrecognized section is a hard error, never a fallback to Live.
+				if (params.section !== "live" && params.section !== "needs_you")
+					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
 				const { page: sessions, remaining } = page(source, params, SECTION_LIMIT);
-				return wireV2(params, { sessions, remaining, truncated: false });
+				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "pin_catalog": {
 				const { page: sections, remaining } = page(pinSections, params, CATALOG_LIMIT);
-				return wireV2(params, { pin_sections: sections, remaining });
+				return respond(params, { pin_sections: sections, remaining });
 			}
 			case "pin_section": {
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
 				const { page: sessions, remaining } = page(pinSessions(id), params, SECTION_LIMIT);
-				return wireV2(params, { sessions, remaining, truncated: false });
+				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "catalog": {
+				// Same as "section": an unrecognized catalog is a hard error, never
+				// a silent fallback to the projects catalog.
+				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
+					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
 				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
 				const { page: rows, remaining } = page(source, params, CATALOG_LIMIT);
-				return wireV2(params, { projects: rows, remaining });
+				return respond(params, { projects: rows, remaining });
 			}
 			case "project": {
 				const projectKey = knownProjectKey(params);
 				const current = tierRows(projectKey, "current");
 				const recent = tierRows(projectKey, "recent");
-				const archived = tierRows(projectKey, "archived");
-				return wireV2(params, {
+				// wireV2's "project" branch hardcodes every tier's own remaining to
+				// 0 regardless of input (a real project_page read reports the true
+				// count instead), so only the preview size shown here is ours to
+				// choose: the archived tier is now a real 271-row list, and an
+				// overview embedding all of it would defeat "overview". Preview the
+				// same 5 rows this call showed before archived became fully
+				// pageable; "See all" is what project_page is for.
+				const archived = tierRows(projectKey, "archived").slice(0, PROJECT_OVERVIEW_ARCHIVED_PREVIEW);
+				return respond(params, {
 					key: projectKey,
-					current: { sessions: current.rows, remaining: current.remaining },
-					recent: { sessions: recent.rows, remaining: recent.remaining },
-					archived: { sessions: archived.rows, remaining: archived.remaining },
-					truncated: false,
+					current: { sessions: current, remaining: 0 },
+					recent: { sessions: recent, remaining: 0 },
+					archived: { sessions: archived, remaining: 0 },
+					truncated: anyTruncated([...current, ...recent, ...archived]),
 				});
 			}
 			case "project_page": {
 				const projectKey = knownProjectKey(params);
 				const tier = params.tier as "current" | "recent" | "archived";
-				const { rows: tierSessions, remaining } = tierRows(projectKey, tier);
-				const { page: sessions, remaining: pageRemaining } = page(tierSessions, params, SECTION_LIMIT);
-				return wireV2(params, { key: projectKey, tier, sessions, remaining: remaining || pageRemaining, truncated: false });
+				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, SECTION_LIMIT);
+				return respond(params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			default:
 				throw new Error(`Navigation resource not served by the demo fleet: ${params.resource}`);
@@ -622,7 +684,11 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					provider: EXPIRED_PROVIDER,
 					supported: true,
 					signedIn: false,
-					activeSource: "none",
+					// cmd/evener-hub/app_auth.go's openAIInstanceStatusKeyed: the Codex
+					// transport's ActiveSource is "oauth" whenever an OAuth record
+					// exists at all (HasStoredOAuth true), expired or not -- "none" is
+					// only for a provider with no record. This is an expired record.
+					activeSource: "oauth",
 					hasStoredOAuth: true,
 					needsLogin: true,
 				},

@@ -12,11 +12,7 @@ import type {
 	TurnStartParams,
 } from "@evener/appwire-client";
 import { capability } from "@evener/appwire-client/testing/navigation";
-import { createDemoFleet, type DemoFleetOptions } from "./demoFleet.mjs";
-
-// The generation id the fleet's navigation capability and every response
-// share; fixed because the fleet is read-only for the demo hub's lifetime.
-const DEMO_FLEET_GENERATION = "demo-fleet";
+import { createDemoFleet, DEMO_FLEET_GENERATION, type DemoFleetOptions } from "./demoFleet.mjs";
 
 export async function createDemoHub(
 	port = 9196,

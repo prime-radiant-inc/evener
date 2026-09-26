@@ -8,7 +8,7 @@ import {
 	materializeSnapshot,
 	navigationParamsToResourceKey,
 } from "@evener/appwire-client/state/navigation";
-import { createDemoFleet } from "./demoFleet.mjs";
+import { createDemoFleet, DEMO_FLEET_GENERATION } from "./demoFleet.mjs";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
 
@@ -230,8 +230,14 @@ describe("demo fleet catalogs and projects", () => {
 	});
 
 	it("reports the true archived remaining count on the archived tier page, not the zeroed project overview", () => {
+		// The default page (limit 50, the section maximum) returns a full page
+		// of the real 271-row tier, with a remaining that adds up against it --
+		// not the 5 named rows plus a "266 remaining" that never shrinks.
 		const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
-		expect(page.remaining).toBe(271 - 5);
+		expect(sessionsOf(page)).toHaveLength(50);
+		expect(page.remaining).toBe(271 - 50);
+		// The project overview still just previews the 5 named rows -- "See
+		// all" is what a project_page(tier=archived) read is for.
 		const overview = read(fleet, params({ resource: "project", projectKey: "evener" }));
 		expect((overview.archived as { sessions: unknown[] }).sessions).toHaveLength(5);
 	});
@@ -250,11 +256,20 @@ describe("demo fleet search, auth and plugins", () => {
 		expect(response.live[0]).toMatchObject({ project: "c-to-wasm", ref: "paradise-park:s-wasm" });
 	});
 
-	it("reports one provider needing sign-in, so the Board's notice can show", () => {
+	it("reports one provider needing sign-in, in a combination the hub actually produces", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		const response = fleet.answerAuthList();
+		// cmd/evener-hub/app_auth.go's openAIInstanceStatusKeyed: a stored OAuth
+		// record (however expired) makes ActiveSource "oauth" and HasStoredOAuth
+		// true together -- "none" is only for a provider with no record at all.
 		expect(response.providers).toEqual([
-			expect.objectContaining({ provider: "codex-jesse-fsck.com", needsLogin: true }),
+			expect.objectContaining({
+				provider: "codex-jesse-fsck.com",
+				needsLogin: true,
+				activeSource: "oauth",
+				hasStoredOAuth: true,
+				signedIn: false,
+			}),
 		]);
 	});
 
@@ -271,8 +286,113 @@ describe("demo fleet search, auth and plugins", () => {
 });
 
 describe("demo fleet error handling", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+
 	it("fails loudly on a navigation resource kind it doesn't serve", () => {
-		const fleet = createDemoFleet({ now: STARTUP });
 		expect(() => fleet.answerNavigationRead(params({ resource: "location", ref: "local:s-retry" }))).toThrow();
+	});
+
+	// cmd/evener-hub/app_navigation.go's navigationReadKeyWithFields: an
+	// unrecognized section or catalog value is a hard error, not a silent
+	// fallback to the first branch.
+	it("rejects an unknown section instead of falling back to Live", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "nope" }))).toThrow(/section/i);
+	});
+
+	it("rejects an unknown catalog instead of falling back to projects", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "catalog", catalog: "nope" }))).toThrow(/catalog/i);
+	});
+});
+
+describe("demo fleet generation", () => {
+	it("advertises the same generation id every response actually carries", () => {
+		const fleet = createDemoFleet({ now: STARTUP });
+		const key = navigationParamsToResourceKey(params({ resource: "manifest" }));
+		const decoded = decodeNavigationResponse(key, undefined, fleet.answerNavigationRead(params({ resource: "manifest" })));
+		if (decoded.status !== "snapshot") throw new Error(`expected a snapshot, got ${decoded.status}`);
+		expect(decoded.version.generationId).toBe(DEMO_FLEET_GENERATION);
+	});
+});
+
+describe("demo fleet paging", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+
+	it("pages the Live section in windows of 7, remaining adding up to the true total", () => {
+		const first = read(fleet, params({ resource: "section", section: "live", offset: 0, limit: 7 }));
+		expect(sessionsOf(first)).toHaveLength(7);
+		expect(first.remaining).toBe(13);
+		const second = read(fleet, params({ resource: "section", section: "live", offset: 7, limit: 7 }));
+		expect(sessionsOf(second)).toHaveLength(7);
+		expect(second.remaining).toBe(6);
+		const third = read(fleet, params({ resource: "section", section: "live", offset: 14, limit: 7 }));
+		expect(sessionsOf(third)).toHaveLength(6);
+		expect(third.remaining).toBe(0);
+		const seen = new Set([...sessionsOf(first), ...sessionsOf(second), ...sessionsOf(third)].map((row) => row.session_id));
+		expect(seen.size).toBe(20);
+	});
+
+	it("pages the projects catalog in windows smaller than its size, remaining adding up", () => {
+		const projectsOf = (materialized: Record<string, unknown>) => materialized.projects as unknown[];
+		const first = read(fleet, params({ resource: "catalog", catalog: "projects", offset: 0, limit: 4 }));
+		expect(projectsOf(first)).toHaveLength(4);
+		expect(first.remaining).toBe(6);
+		const second = read(fleet, params({ resource: "catalog", catalog: "projects", offset: 4, limit: 4 }));
+		expect(projectsOf(second)).toHaveLength(4);
+		expect(second.remaining).toBe(2);
+		const third = read(fleet, params({ resource: "catalog", catalog: "projects", offset: 8, limit: 4 }));
+		expect(projectsOf(third)).toHaveLength(2);
+		expect(third.remaining).toBe(0);
+	});
+
+	it("pages the evener archived tier all the way to the end without stalling", () => {
+		const seen = new Set<string>();
+		let offset = 0;
+		let remaining = Number.POSITIVE_INFINITY;
+		for (let guard = 0; remaining > 0; guard++) {
+			if (guard > 20) throw new Error("archived paging never reached the end");
+			// 50 is the real protocol's own maximum for a section-shaped page
+			// (NAVIGATION_SECTION_LIMIT); the hub rejects a request over it.
+			const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }));
+			const rows = sessionsOf(page);
+			if (rows.length === 0) throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
+			for (const row of rows) seen.add(row.session_id);
+			remaining = page.remaining as number;
+			offset += rows.length;
+		}
+		expect(seen.size).toBe(271);
+	});
+});
+
+describe("demo fleet truncation", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+
+	it("marks a response truncated when one of its rows had children capped", () => {
+		// s-fuzz: 467 subagents capped to 50 -- cmd/evener-hub/navigation_projection.go
+		// sets Truncated whenever OmittedDescendants is set on any projected row.
+		const archived = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived" }));
+		expect(archived.truncated).toBe(true);
+		const live = read(fleet, params({ resource: "section", section: "live" })); // includes s-pr2138 (54 -> 50)
+		expect(live.truncated).toBe(true);
+	});
+
+	it("leaves a response untruncated when nothing in it was capped", () => {
+		const needsYou = read(fleet, params({ resource: "section", section: "needs_you" }));
+		expect(needsYou.truncated).toBe(false);
+	});
+});
+
+describe("demo fleet offline propagation", () => {
+	it("marks an offline-host session's own children offline too, not just the parent row", () => {
+		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
+		const retry = findRow(liveRows(fleet), "s-retry"); // paradise-park
+		expect(retry.children.length).toBeGreaterThan(0);
+		expect(retry.children.every((child) => child.offline === true)).toBe(true);
+	});
+
+	it("leaves a local session's children alone under the offline flag", () => {
+		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
+		const pr2138 = findRow(liveRows(fleet), "s-pr2138"); // local/magic-kingdom
+		expect(pr2138.children.length).toBeGreaterThan(0);
+		expect(pr2138.children.every((child) => child.offline === undefined)).toBe(true);
 	});
 });
