@@ -1518,6 +1518,18 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 		// merely slow (not blocked behind a full buffer, which
 		// recoveryRunning alone already covers) would be admitted while the
 		// prior one is still being transmitted.
+		//
+		// This does trade back a sliver of the #2469 guarantee: between
+		// transport.Send handing the frame to the socket and afterSend
+		// running (a handful of instructions in the same goroutine, no I/O),
+		// a client that received the response and immediately fires a
+		// sequential force stop could still see a spurious "already
+		// running" refusal. Closing that sliver would mean clearing
+		// recoveryClearID in beforeSend too - which is exactly what would
+		// reopen the (much larger, blocked-write-duration) admission window
+		// this field exists to close. Deliberately kept as an over-refusal
+		// this narrow rather than reintroduced as an under-refusal this
+		// wide.
 		busy := c.recoveryRunning || c.recoveryClearID != ""
 		if !busy {
 			c.recoveryRunning = true
