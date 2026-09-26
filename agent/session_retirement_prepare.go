@@ -250,7 +250,7 @@ func (s *Session) validateRetirementRestore(ctx context.Context) error {
 			return fmt.Errorf("retirement preparation: transcript durability: %w", err)
 		}
 	}
-	data, err := readTranscriptFull(s.TranscriptPath())
+	data, err := readTranscriptFull(s.TranscriptPath(), s.stateDir)
 	if err != nil {
 		return fmt.Errorf("retirement preparation: transcript reconstruction: %w", err)
 	}

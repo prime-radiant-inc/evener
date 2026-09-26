@@ -33,7 +33,7 @@ type drainGraceChild struct {
 // a stalled tree owes no live work, so waiting two minutes before giving up
 // costs nothing but guarantees an otherwise-forever hang cannot survive it.
 // A package var (not a const) so tests override and restore it without wall
-// time, matching LaneClosePassBudget in jobs.go. It is EXPORTED because the
+// time, matching the close-cascade budget in jobs.go. It is EXPORTED because the
 // drain's only end-to-end shape is a whole one-shot `evener run`, which lives
 // in another module (cmd/evener) and so cannot reach an unexported var — the
 // same reason SessionConfig.LLMRetryPolicy is exported. Nothing in production

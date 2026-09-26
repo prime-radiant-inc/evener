@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/apptranscript"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -105,7 +107,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_ = threadRef(appwire.Thread{})
 		_ = transcriptTargetSource("bad", "fallback")
 		_, _ = pastEntryTurns(hubcore.WebConfig{}, hubcore.PastEntry{Meta: meta, StateDir: state})
-		_ = appItemsFromReplayTurn("t", 0, schema.Turn{}, map[string]string{})
+		_ = appItemsFromReplayTurn("t", 0, schema.Turn{}, apptranscript.NewToolCallRegistry())
 		_ = variant
 	})
 }

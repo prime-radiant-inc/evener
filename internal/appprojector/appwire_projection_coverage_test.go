@@ -208,6 +208,28 @@ func TestUseSkillNameFromArgsTrimSpace(t *testing.T) {
 	}
 }
 
+// TestUseSkillNameFromArgsRepairableMalformed (F5 round 6): a repairable-
+// malformed use_skill call carries byte-faithful invalid JSON (bare keys
+// without quotes). The live path repaired the same bytes to dispatch; the
+// consumer must repair too so the skill announcement recovers the name
+// instead of degrading to a plain systemAnnouncement.
+func TestUseSkillNameFromArgsRepairableMalformed(t *testing.T) {
+	// Bare-key malformed JSON — repair.RepairJSON wraps unquoted keys in quotes.
+	got := useSkillNameFromArgs(`{skill_name: "my-skill"}`)
+	if got != "my-skill" {
+		t.Fatalf("repairable-malformed use_skill args should recover skill name, got %q", got)
+	}
+}
+
+// TestUseSkillNameFromArgsUnrepairableMalformed (F5 round 6): when the bytes
+// cannot be repaired (truncated, not just malformed), the consumer stays empty
+// — the repair gate is not a free-for-all, it mirrors what RepairJSON can heal.
+func TestUseSkillNameFromArgsUnrepairableMalformed(t *testing.T) {
+	if useSkillNameFromArgs(`{"skill_name": "incomplete`) != "" {
+		t.Fatal("unrepairable truncated JSON should return empty string")
+	}
+}
+
 func TestSkillActivationRaw(t *testing.T) {
 	raw := skillActivationRaw("test-skill")
 	var payload struct {

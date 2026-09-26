@@ -79,14 +79,14 @@ var preparedAppIncarnationSerial atomic.Uint64
 // do not transfer; RPC reads remain file-free.
 var preparedTranscriptItemCache = apptranscript.NewTurnCache()
 
-func preparedItemProjector(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+func preparedItemProjector(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
 	if entryIndex <= 0 {
 		return nil
 	}
 	// The bounded item-window reader assigns each item its grouped
 	// Position/TranscriptKey; per-entry positioning here would only be
 	// overwritten, and wrong for merged call/result items.
-	return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+	return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 }
 
 func preparedItemIndexIncarnation(path, threadRef string) (string, error) {

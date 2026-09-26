@@ -149,7 +149,8 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 	}
 
 	selectedRanges := intersectItemRanges(ranges, start, end)
-	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project)
+	tail := end == total && !previous
+	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project, tail)
 	if err != nil {
 		if !isContextError(err) {
 			c.invalidate(path)
@@ -212,7 +213,8 @@ func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) 
 }
 
 func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosition) (uint64, error) {
-	for _, itemRange := range ranges {
+	last := len(ranges) - 1
+	for i, itemRange := range ranges {
 		if itemRange.prelude {
 			if before.Entry != 0 {
 				continue
@@ -226,6 +228,14 @@ func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosi
 			continue
 		}
 		if uint64(before.Item) >= itemRange.count {
+			// The tail group may have flushed communicates that extend
+			// beyond the sidecar's item count. A cursor naming one of
+			// those flushed positions (Item == count) is valid: clamp
+			// to the indexed boundary so the previous window returns
+			// the older indexed items rather than erroring stale.
+			if i == last {
+				return itemRange.start + itemRange.count, nil
+			}
 			return 0, appwire.TranscriptItemCursorStale()
 		}
 		return itemRange.start + uint64(before.Item), nil
@@ -247,12 +257,34 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 	return selected
 }
 
-func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
+func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector, tail bool) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0
 	var file *os.File
 	var err error
+	// Thread one ToolCallRegistry across all selected ranges, matching the
+	// full read's single-registry threading. CommRawArgs seeded by an
+	// assistant communicate call in one group must reach its paired result
+	// turn in a later group (e.g. across a standalone HOOK_COMPLETED turn).
+	reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
+	// Seed the registry from the first selected group's StartsGroup record.
+	// The persisted CommRawArgs/LastAssistantText carry the unpaired
+	// communicate bytes and last assistant text from all preceding groups,
+	// matching the full read's single-registry threading without replaying
+	// the prefix.
+	firstGroupStart := -1
 	for _, itemRange := range ranges {
+		if itemRange.prelude {
+			continue
+		}
+		if itemRange.group != nil && firstGroupStart < 0 {
+			firstGroupStart = itemRange.group.start
+		}
+	}
+	if firstGroupStart >= 0 {
+		seedRegistryFromRecord(reg, index.recordAt(firstGroupStart))
+	}
+	for ri, itemRange := range ranges {
 		if err := ctx.Err(); err != nil {
 			if file != nil {
 				_ = file.Close()
@@ -322,7 +354,8 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			entries = append(entries, entry.Turn)
 			projectedRecords++
 			if project != nil {
-				projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+				reg.Names = cloneToolNames(record.ToolSeed)
+				projectedItems := project(entry.Turn, group.turnID, record.Index, reg)
 				items = append(items, projectedItems...)
 			}
 			if err := ctx.Err(); err != nil {
@@ -330,12 +363,25 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 		}
+		// Flush unpaired communicates only at the tail of the read,
+		// matching the full read's FlushUnpairedCommunicates. A
+		// middle-window read's unpaired communicates may be paired by a
+		// result turn outside the window; flushing them would render a
+		// spurious agentMessage.
+		if tail && ri == len(ranges)-1 {
+			items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
+		}
 		merged := mergeGroupedItems(items)
 		if err := ctx.Err(); err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
 		}
-		if uint64(len(merged)) != itemRange.count {
+		// The sidecar count (group.items) excludes flushed communicates:
+		// they are a projection-time rendering decision, not an index-time
+		// count. Flush can only ADD items, so merged >= count is expected.
+		// A deficit means items were lost — a real projection/index
+		// disagreement.
+		if uint64(len(merged)) < itemRange.count {
 			_ = file.Close()
 			return nil, projectedRecords, fmt.Errorf("indexed item count for logical group %d changed", group.id)
 		}
@@ -346,6 +392,16 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		if err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
+		}
+		// Flushed communicates extend the group beyond the sidecar's count.
+		// They land at the highest Item positions, so widen the window to
+		// include them — raising hi and count to the effective total does
+		// not shift earlier items' positions or keys.
+		if effectiveCount := uint64(len(positioned)); effectiveCount > itemRange.count {
+			itemRange.count = effectiveCount
+			if itemRange.hi < effectiveCount {
+				itemRange.hi = effectiveCount
+			}
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
 		stampGroupedTurnFromEntries(&turn, entries)

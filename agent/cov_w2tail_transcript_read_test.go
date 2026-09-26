@@ -19,7 +19,7 @@ func w2tailWriteTranscript(t *testing.T, content string) string {
 
 // A missing file surfaces the open error rather than a corruption error.
 func TestW2Tail_readStrictChildTranscript_OpenError(t *testing.T) {
-	_, err := readStrictChildTranscript(filepath.Join(t.TempDir(), "nope.jsonl"), "01SESS", 0)
+	_, err := readStrictChildTranscript(filepath.Join(t.TempDir(), "nope.jsonl"), "", "01SESS", 0)
 	if err == nil || errors.Is(err, errStrictChildTranscriptCorrupt) {
 		t.Fatalf("open error = %v, want a plain open failure", err)
 	}
@@ -29,7 +29,7 @@ func TestW2Tail_readStrictChildTranscript_OpenError(t *testing.T) {
 // partial record is skipped and the read succeeds.
 func TestW2Tail_readStrictChildTranscript_FinalIncompleteLine(t *testing.T) {
 	content := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"01SESS\"}\n{trunc"
-	data, err := readStrictChildTranscript(w2tailWriteTranscript(t, content), "01SESS", 0)
+	data, err := readStrictChildTranscript(w2tailWriteTranscript(t, content), "", "01SESS", 0)
 	if err != nil {
 		t.Fatalf("final-incomplete should be tolerated: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestW2Tail_readStrictChildTranscript_FinalIncompleteLine(t *testing.T) {
 // skipped rather than treated as corruption.
 func TestW2Tail_readStrictChildTranscript_FinalIncompleteEntry(t *testing.T) {
 	content := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"01SESS\"}\n{\"kind\":\"entry\",\"turn\":"
-	data, err := readStrictChildTranscript(w2tailWriteTranscript(t, content), "01SESS", 0)
+	data, err := readStrictChildTranscript(w2tailWriteTranscript(t, content), "", "01SESS", 0)
 	if err != nil {
 		t.Fatalf("final-incomplete entry should be tolerated: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestW2Tail_readStrictChildTranscript_FinalIncompleteEntry(t *testing.T) {
 // A header line longer than the byte cap is reported as corrupt.
 func TestW2Tail_readStrictChildTranscript_LineTooLong(t *testing.T) {
 	content := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"01SESS\"}\n"
-	_, err := readStrictChildTranscript(w2tailWriteTranscript(t, content), "01SESS", 10)
+	_, err := readStrictChildTranscript(w2tailWriteTranscript(t, content), "", "01SESS", 10)
 	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
 		t.Fatalf("err = %v, want corrupt (line too long)", err)
 	}
