@@ -375,8 +375,9 @@ function useLiveReadRetry(
 	const [retries, setRetries] = useState({ client, count: 0 });
 	const count = retries.client === client ? retries.count : 0;
 	const failed = live.error !== null;
-	// A retry in flight clears a never-loaded page's error too, so only a
-	// read that finished without one counts as success.
+	// A retry in flight shows no error while it loads (the controller gives
+	// retained rows the fresh read's status), so only a read that finished
+	// without one counts as success.
 	const succeeded = !failed && !live.loading;
 	useEffect(() => {
 		if (succeeded && count > 0) setRetries({ client, count: 0 });

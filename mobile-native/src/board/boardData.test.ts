@@ -224,6 +224,23 @@ it("swapping straight to a new client keeps the rows too", async () => {
 	expect(board.getSnapshot().retained).toBe(true);
 });
 
+it("retained rows say what the new connection's read of them is doing", async () => {
+	const first = boundary();
+	const board = createBoardController();
+	board.setClient(first.client);
+	await answerAll(first);
+	const second = boundary();
+	board.setClient(second.client);
+	await tick();
+	expect(refs(board.getSnapshot().live)).toEqual(["live-0", "live-1"]);
+	expect(board.getSnapshot().live).toMatchObject({ loading: true, error: null });
+	fail(second, "live", "The hub went away.");
+	await tick();
+	expect(refs(board.getSnapshot().live)).toEqual(["live-0", "live-1"]);
+	expect(board.getSnapshot().live).toMatchObject({ loading: false, error: "The hub went away." });
+	expect(board.getSnapshot().retained).toBe(true);
+});
+
 it("a disconnected board that never loaded has nothing retained", () => {
 	const board = createBoardController();
 	board.setClient(null);

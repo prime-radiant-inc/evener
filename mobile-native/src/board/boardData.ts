@@ -214,13 +214,17 @@ const pinSectionKey = (row: NavigationPinSectionDescriptor) => row.id;
 function keep<T>(page: Page<T>): Page<T> | null {
 	return page.loaded ? { ...page, loading: false } : null;
 }
-/** The fresh reader's page once it has loaded, the retained copy until then. */
+/** The fresh reader's page once it has loaded, the retained copy until then.
+ * The retained rows carry the fresh reader's loading and error, so a screen
+ * reading them sees what the current connection's read is doing. */
 function shown<T>(
 	reader: NavigationPages<T> | undefined,
 	kept: Page<T> | null,
 ): Page<T> {
 	const fresh = reader?.getSnapshot();
 	if (fresh?.loaded) return fresh;
+	if (kept && fresh)
+		return { ...kept, loading: fresh.loading, error: fresh.error };
 	return kept ?? fresh ?? emptyPage;
 }
 

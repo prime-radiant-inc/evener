@@ -651,6 +651,36 @@ it("reads a failed later Live page again after the backoff, keeping the loaded r
 	act(() => tree.unmount());
 });
 
+it("lets a slow retry finish instead of starting another over it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let lastPageFails = true;
+	let holdLive = false;
+	const fake = hub(
+		{ ...fleet, live: [[failing, working], [finished]] },
+		(read) => holdLive && read.section === "live",
+		(read) => lastPageFails && read.section === "live" && read.offset === 2,
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 2]);
+	lastPageFails = false;
+	holdLive = true;
+	await advance(1000);
+	expect(liveReads(fake)).toEqual([0, 2, 0]);
+	// The retry's read is still out: later backoff steps start nothing.
+	await advance(60_000);
+	expect(liveReads(fake)).toEqual([0, 2, 0]);
+	holdLive = false;
+	fake.release();
+	await settle();
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 2, 0, 2]);
+	expect(hasRow(tree, "Ship it")).toBe(true);
+	act(() => tree.unmount());
+});
+
 it("starts the backoff over once a Live read succeeds", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
