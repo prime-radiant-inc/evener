@@ -52,7 +52,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 9. **Alerts read the fleet with their own board controller, never paused.** The Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. That costs a second set of navigation reads while the Board or a Session is in front; sharing one controller is a later consolidation.
 10. **The connection clock counts only time in front.** The app closes its connection in the background (`ConnectionProvider`), so returning never flashes "Offline". "Updated 3m ago" still counts from when the data was last live, background included.
 11. **The offline age is whole minutes, at least 1m** ("updated 1m ago" from the 30-second mark), because the status changes once a minute. `relativeAge` says "now" under a minute, which would read "updated now ago".
-12. **Offline Send is fenced to the session instance the phone last saw,** as an online send is. A session never loaded since launch has no instance to fence with, so there Send stays disabled offline and the draft stays.
+12. **Offline Send is fenced to the session instance the phone last saw,** as an online send is. A session this phone hasn't read since launch has no instance to fence with, so there Send stays disabled offline and the draft stays. That is about the phone's read, not the session's status: a shut-down session (`notLoaded` on the hub) the phone has read resumes on a send, fenced as an online resume is.
 13. **Offline, Send queues whenever the harness can.** By the time the message arrives another turn may have started, which refuses a `turn/start`; the daemon runs a queued message at once on an idle session and holds it behind a running one (`clientMutationQueue`, `agent/session_client_mutation_queue.go`). A shut-down session resumes on a send.
 14. **What a waiting message says.** "Sending…" while the connection is live, "Will send when you're back online" while it isn't (the prototype's words, and principle 5: nothing is sending), and Send's label offline says the same.
 15. **"Couldn't confirm this was sent" offers Check only while connected, and Discard always,** since Check needs the hub and Discard doesn't. This covers a lost send, the unconfirmed draft and a record the phone couldn't place.
@@ -76,7 +76,7 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 | `createBoardController` (`src/board/boardData.ts`), `connectionStatus` (`src/board/connectionStatus.ts`), `BoardScreen`, `BoardToolbar` | phase 2 PR 2 | Tasks 1, 7, 8 |
 | `Notice` and `notices` (`src/board/notices.ts`), `Notices.tsx`; `rowActions.ts`, `SwipeRow.tsx`, `RowMenu.tsx`, `SelectBar.tsx` | phase 2 part 2 (its Tasks 12-14) | Tasks 4, 8, 16 |
 | The demo fleet (`src/dev/demoFleet.ts`, `scripts/demo-hub.mts`) | phase 2 PR B | Task 17 |
-| `useConnectionStatusText()` and the Session's connection bar (its Task 15); `compactDuration` (`src/session/format.ts`) and `sendAction` (its Task 3); `Composer` (its Task 5); `ghosts.ts` and its wiring (its Tasks 7-8); `fleetOrder.ts` (`othersNeedingYou`, `nextSession`), `BackButton` and the Next capsule (its Tasks 32-33); `Toast` | phase 3 | Tasks 1, 2, 10, 11, 13, 14 |
+| `useConnectionStatusText()` and the Session's connection bar (its Task 15); `compactDuration` (`src/session/format.ts`) and `sendAction` (its Task 3); `Composer` (its Task 5); `ghosts.ts`, whose parked queue reads the package's `isQueueParked`, and its wiring (its Tasks 7-8); `fleetOrder.ts` (`othersNeedingYou`, `nextSession`), `BackButton` and the Next capsule (its Tasks 32-33); `Toast` | phase 3 | Tasks 1, 2, 10, 11, 13, 14 |
 | Phase 3 left here: Send while offline (ruling 4), every haptic (ruling 5), Next's recent order (ruling 11), the Board's outbox and a Stop-held message's retry (ruling 3) | phase 3 | Tasks 6, 11, 13, 14, 16 |
 | `NativeMutationRuntime.settleTarget` (its Task 2); `ReaderScreen` (`src/reader/ReaderScreen.tsx`, its Task 14) on the `"Reader"` route | phase 4 | Tasks 10, 15 |
 | The grouped-list pieces (`src/sheet/Grouped.tsx`, its Task 1); `useConnectionStatusLine`, `SheetStatus` and `INCOMPATIBLE_VERSIONS` (its Task 2); the Hub sheet (`src/hub/HubSheet.tsx`, `HubHome.tsx`, its Task 3) and its sheet routes `"Hub"` and `"NewSession"`; the "Reconnect" guard and the connection messages (its Task 27); phase 5 left the In-app alerts page here (its ruling 11) | phase 5 | Tasks 1, 2, 8, 9 |
@@ -455,45 +455,24 @@ git commit -m "feat(native): one connection clock for every screen, never counti
 
 Principle 2: "Nothing asks you to do what the app can do itself: it reconnects, keeps every screen current and retries its reads on its own, so no screen carries a Reconnect button or asks you to refresh." Phase 5's last PR guards the word "Reconnect" (`src/noReconnect.test.ts`, phase 5 Task 27). Shared messages still ask for a refresh, though: `navigationPages.ts` says "Could not read this navigation page. Refresh to try again.", and `navigationActions.ts` says "Refresh before trying again". This task ends them and widens the guard so they stay ended.
 
-Spec 14's version sentence also lives in three places: phase 2's Board notice, phase 3's connection bar hint, and `INCOMPATIBLE_VERSIONS` in phase 5's `src/sheet/SheetStatus.tsx`, which phase 5 Task 27 imports into `connectionRecovery.ts`. That import runs in a circle (`ConnectionProvider` → `hubConnection` → `connectionRecovery` → `SheetStatus` → `ConnectionProvider`). The constant moves down into `connectionRecovery.ts`, and the other three import it from there.
+Phase 5 also gives spec 14's version sentence one home, `INCOMPATIBLE_VERSIONS` in `src/connectionRecovery.ts` (its Task 2), and makes it and "Couldn't reach the hub. Check its address, its token and your network." the connection's two failure messages (its Task 27). Phase 2's Board notice and phase 3's connection bar hint still spell the sentence out; they import the constant instead.
 
 **Files:**
-- Modify: `mobile-native/src/connectionRecovery.ts` (`INCOMPATIBLE_VERSIONS` declared here), `mobile-native/src/sheet/SheetStatus.tsx` and its test (import it from `../connectionRecovery`), phase 2's Board notice and phase 3's `SessionHeader.tsx` hint (import it instead of repeating the sentence)
-- Create: `mobile-native/src/connectionRecovery.test.ts` and `mobile-native/src/calmCopy.test.ts`
+- Create: `mobile-native/src/calmCopy.test.ts`
 - Delete: `mobile-native/src/noReconnect.test.ts` (phase 5 Task 27), which `calmCopy.test.ts` replaces
 - Modify: every production file the audit reports, and the tests that assert the strings you change
+- Modify: phase 2's Board notice for a close no retry can fix, and phase 3's `src/session/SessionHeader.tsx` hint: both import `INCOMPATIBLE_VERSIONS`
 
 **Interfaces:**
-- Consumes: phase 5's `INCOMPATIBLE_VERSIONS` (its Task 2) and its `connectionRecovery.ts` messages (its Task 27).
-- Produces: `INCOMPATIBLE_VERSIONS: string` from `src/connectionRecovery.ts`. `connectionFailure(terminalReason)` keeps its signature.
+- Consumes: `INCOMPATIBLE_VERSIONS` from `src/connectionRecovery.ts` (phase 5 Task 2), and phase 5 Task 27's `connectionFailure` messages.
 
 **Requirements:**
-1. `connectionRecovery.ts` declares `INCOMPATIBLE_VERSIONS`, spec 14's sentence, and returns it for a protocol close. A transport close returns "Couldn't reach the hub. Check its address, its token and your network." Phase 5 Task 27 writes both messages; if they aren't on main, write them here. They show while pairing and in Hub settings; during use, the status line speaks instead.
+1. Spec 14's sentence has one copy: the Board's notice and the Session's bar hint import `INCOMPATIBLE_VERSIONS`. If phase 5's messages aren't on main, give `connectionFailure` them here, with its test.
 2. Each string the audit reports is either removed with its control, because the app already does the thing (it reconnects on its own and re-reads on every hub invalidation), or rewritten per spec 5: what went wrong and what to do, where "what to do" is never to reconnect, refresh or pull. Where the app doesn't retry by itself (a save or a change it couldn't confirm), "Try again" is fine.
 3. The audit allows one file, `nativeMutationHost.ts`, whose "Reconnect and try again." refusal Task 14 deletes along with the allowance.
 4. A test that asserts a rewritten string changes in the same commit, and the commit body lists them.
 
-- [ ] **Step 1: Write the failing tests**
-
-```ts
-// mobile-native/src/connectionRecovery.test.ts
-import { expect, it } from "vitest";
-import { connectionFailure, INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
-
-it("says what to do when the app and the hub speak different versions (spec 14)", () => {
-	expect(INCOMPATIBLE_VERSIONS).toBe(
-		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
-	);
-	expect(connectionFailure("protocol")).toEqual({ kind: "protocol", message: INCOMPATIBLE_VERSIONS });
-});
-
-it("says what to check when the hub can't be reached, and never to retry", () => {
-	expect(connectionFailure(null)).toEqual({
-		kind: "transport",
-		message: "Couldn't reach the hub. Check its address, its token and your network.",
-	});
-});
-```
+- [ ] **Step 1: Write the failing test**
 
 ```ts
 // mobile-native/src/calmCopy.test.ts
@@ -575,22 +554,22 @@ it("no text a person can read asks them to reconnect or refresh", () => {
 });
 ```
 
-- [ ] **Step 2: Run them and read the list**
+- [ ] **Step 2: Run it and read the list**
 
-Run: `cd mobile-native && npx vitest run src/connectionRecovery.test.ts src/calmCopy.test.ts`
+Run: `cd mobile-native && npx vitest run src/calmCopy.test.ts`
 Expected: FAIL. The self-check passes, and the audit lists each offending string by file: this task's worklist, whose length goes in the PR description. On main at `d0c0211be` it held 101 strings in 43 files. Phases 2 to 5 replace the screens behind most of them (phase 3 rewrites `approvalControls.ts`'s). The shared navigation messages are the likeliest to remain: `navigationActions.ts` (6), `navigationPages.ts` (5), `navigationReadback.ts` (4), `pinNavigation.ts` (4), `organizationNavigation.ts` (2), and one each in `navigationReveal.ts` and `sessionDeletionNavigation.ts`.
 
-- [ ] **Step 3: Implement** requirement 1 and the constant's move, then work through the list under requirements 2 and 4, one file at a time, running that file's own tests after each.
+- [ ] **Step 3: Implement** requirement 1, then work through the list under requirements 2 and 4, one file at a time, running that file's own tests after each.
 
 - [ ] **Step 4: Run the audit, the touched tests and the type check**
 
-Run: `cd mobile-native && npx vitest run src/connectionRecovery.test.ts src/calmCopy.test.ts <touched test files> && npm run check`
+Run: `cd mobile-native && npx vitest run src/calmCopy.test.ts <touched test files> && npm run check`
 Expected: PASS, with the audit's offender list empty.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/connectionRecovery.ts mobile-native/src/connectionRecovery.test.ts mobile-native/src/calmCopy.test.ts <every file you changed or deleted>
+git add mobile-native/src/calmCopy.test.ts <every file you changed or deleted>
 git commit -m "fix(native): no text asks you to reconnect or refresh"
 ```
 
@@ -1380,10 +1359,12 @@ describe("session alerts (spec 13.3)", () => {
 		expect(later.alerts.map((alert) => alert.ref)).toEqual(["b"]);
 	});
 
-	it("alerts for an approval the hub promotes into Needs you", () => {
+	it("alerts once for an approval the hub promotes into Needs you, though it is in both lists", () => {
 		const start = detectSessionAlerts(null, bands([row("c", { state: "active" })]), none).states;
-		const later = detectSessionAlerts(start, bands([row("c", { state: "active" })], [row("c", { state: "active" })]), none);
+		const both = bands([row("c", { state: "active" })], [row("c", { state: "active" })]);
+		const later = detectSessionAlerts(start, both, none);
 		expect(later.alerts.map((alert) => alert.kind)).toEqual(["approval"]);
+		expect(detectSessionAlerts(later.states, both, none).alerts).toEqual([]);
 	});
 
 	it("alerts a finished turn only when the session was working", () => {
@@ -1405,9 +1386,21 @@ describe("session alerts (spec 13.3)", () => {
 	});
 });
 
-const signIn: Notice = { kind: "signIn", key: "signIn:codex", text: "codex-jesse-fsck.com sign-in expired", action: "Sign in" };
-const hostDown: Notice = { kind: "host", key: "host:paradise-park", text: "paradise-park is offline · 3 sessions", action: "Details" };
-const brokenPlugin: Notice = { kind: "plugin", key: "plugin:go", text: "go is broken", action: "Plugins" };
+const signIn: Notice = {
+	kind: "signIn",
+	key: "signIn:codex",
+	text: "codex-jesse-fsck.com sign-in expired",
+	action: "Sign in",
+	providerId: "codex",
+};
+const hostDown: Notice = {
+	kind: "host",
+	key: "host:paradise-park",
+	text: "paradise-park is offline · 3 sessions",
+	action: "Details",
+	sourceId: "paradise-park",
+};
+const brokenPlugin: Notice = { kind: "plugin", key: "plugin:go", text: "go is broken", action: "Plugins", pluginId: "go" };
 
 describe("notice alerts (ruling 5)", () => {
 	it("alerts a sign-in or host notice when it appears, never a broken plugin, and nothing on the first read", () => {
@@ -1476,6 +1469,9 @@ export function detectSessionAlerts(
 		if (state !== undefined) states.set(ref, state);
 	}
 	const alerts: SessionAlert[] = [];
+	// liveBands holds each session once, from Live or the Needs you section,
+	// and leaves offline rows out (boardState calls them shutDown), so each
+	// ref is diffed once and an offline ref keeps the state seeded above.
 	for (const item of [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]) {
 		const { ref, title } = item.row;
 		const before = previous?.get(ref);
@@ -2566,7 +2562,7 @@ git commit -m "feat(native): Discard and Send now for your own undelivered messa
 **Requirements (spec 8.5, 14; rulings 14 to 16):**
 1. A message this phone hasn't handed to the hub yet (`state: "submitting"`, and an accepted send) reads "Sending…" while connected and "Will send when you're back online" while not.
 2. "Couldn't confirm this was sent" offers Check only while connected, and always Discard: on a lost send (`blockedUnknown`), on the unconfirmed draft and on a record the phone couldn't place (`orphaned`).
-3. A message a Stop held before it left the phone (`state: "canceled"`) shows as a held ghost: "Held · you stopped this turn", with "Send now" and "Cancel" as buttons. Another client's rows stay out.
+3. A message a Stop held before it left the phone (`state: "canceled"`) shows as a held ghost: "Held · you stopped this turn", with "Send now" and "Cancel" as buttons. Another client's rows stay out. This is a record on the phone, which the hub never saw; the queue a Stop parks on the hub stays phase 3's (`queueGhosts`, through `isQueueParked`).
 4. In the action handler, a ghost whose origin is `{ kind: "pending" }`:
    - Discard and Cancel call `getNativeMutationRuntime().discardUndelivered(clientMutationId, nativeMutationTargetKey(hubId, ref))`.
    - Send now calls `getNativeMutationRuntime().releaseCanceled(clientMutationId, nativeMutationTargetKey(hubId, ref))`.
@@ -2723,8 +2719,8 @@ Phase 3 disables Send while offline (its ruling 4): the durable submitter refuse
 
 **Requirements (spec 8.5 and 14; rulings 12 to 14):**
 1. **Routing offline.** A message waits in the outbox, and by the time it arrives another turn may have started, where `turn/start` is refused. So offline, Send queues whenever the harness can: the daemon runs a queued message at once on an idle session (`clientMutationQueue` wakes it, `agent/session_client_mutation_queue.go:107-190`) and holds it behind a running one. A shut-down session resumes on a send. A paused session, one that needs a restart, and one whose harness takes neither stay `"none"`.
-2. **What Send admits offline.** When the screen isn't connected and the session loaded since launch (`store.getState().conversation` is set), Send is enabled on the same draft conditions as online, minus `ready`. It runs `document.submit(async (text, images) => …)`, which submits `offlineRequest({ hubId, ref, threadId, instanceId }, action, buildComposerInput(text, images))` to `getNativeMutationRuntime()`, plays `haptic("light")`, and returns `true`. The ghost shows at once through the durable pending rows the screen already follows (phase 3 Task 8).
-3. **Never loaded.** A session that hasn't loaded since launch has no instance to fence with (ruling 12), so its Send stays disabled offline, and the draft stays.
+2. **What Send admits offline.** When the screen isn't connected and the phone has read the session since launch (`store.getState().conversation` is set), Send is enabled on the same draft conditions as online, minus `ready`. It runs `document.submit(async (text, images) => …)`, which submits `offlineRequest({ hubId, ref, threadId, instanceId }, action, buildComposerInput(text, images))` to `getNativeMutationRuntime()`, plays `haptic("light")`, and returns `true`. The ghost shows at once through the durable pending rows the screen already follows (phase 3 Task 8).
+3. **Never read.** A session this phone hasn't read since launch (`store.getState().conversation` is unset) has no instance to fence with (ruling 12), so its Send stays disabled offline, and the draft stays. `sendAction` is never asked there. A thread whose hub status is `notLoaded` is a shut-down session the phone did read, and routes to `"resume"`.
 4. **Words.** The placeholder is `composerPlaceholder` of the connected routing, so it describes the session rather than the outbox. Send's accessibility label offline is "Send when you're back online", or "Send answer when you're back online" while a question is pending.
 5. **Answers.** The dock's "Send answer" admits offline through the same `offlineRequest` path, with the composed text as one text input, and marks the batch sent as `sendAnswers` does online.
 6. **The refusal left online.** `NATIVE_MUTATION_HOST_UNAVAILABLE` becomes "Couldn't keep this message on the phone. Try again." It now means only that the mutations database couldn't open. Remove its allowance from `calmCopy.test.ts`.
@@ -2792,7 +2788,7 @@ it("sends to start or resume, and falls back to the thread id for a session with
 `ConversationScreen.offline.test.tsx` mounts the real screen on the harness of phase 3's `ConversationScreen.send.test.tsx`, with the real durable runtime over `openSqliteSyncDouble()` (mock `expo-sqlite`'s `openDatabaseSync` to return that port). It covers:
 - the session loads connected; the connection drops (the mocked connection reports `"reconnecting"`); typing "sent on the train" and pressing Send ("Send when you're back online") leaves the composer empty, stores one `turn/queue` record for `nativeMutationTargetKey("hub-1", ref)`, and shows a ghost reading "Will send when you're back online";
 - the connection returns (`"ready"`, the same client): the client receives that `turn/queue` exactly once, and the ghost goes when the read reflects it;
-- a screen whose session never loaded keeps Send disabled while offline, and the typed draft stays.
+- a screen that never read its session keeps Send disabled while offline, and the typed draft stays.
 
 - [ ] **Step 2: Run them and watch them fail**
 
