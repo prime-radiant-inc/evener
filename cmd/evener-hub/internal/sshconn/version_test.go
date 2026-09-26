@@ -1862,6 +1862,10 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 // controller's own version to wait for — so the same pending record was judged by
 // two different rules depending on whether anything answered /api/health, and a
 // host that kept its own build failed its restart with a permanent ErrRestart.
+//
+// The hub answers a DIFFERENT build before the restart, so the healthy-start
+// settlement (a start whose served build already answers is settled without a
+// restart) does not fire and the restartHub branch is still exercised.
 func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 	const relaunch = "systemctl restart evener-hub.service"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -1885,8 +1889,11 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 		case strings.Contains(joined, "api/health"):
-			// The hub that answers serves the host's own build, before and after
-			// the restart: nothing here can ever report the controller's version.
+			// Before the restart a stale process answers; the restart must converge
+			// it on the host's own build (never the controller's version).
+			if !restarted {
+				return []byte(`{"version":"stale","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			}
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -1956,6 +1963,52 @@ func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
 	}
 	if got := m.pendingRestart(host.Name); got != (pendingRestartState{}) {
 		t.Fatalf("pending start survived a healthy hub: %+v", got)
+	}
+}
+
+// TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches is the companion for a
+// host that keeps its own build (hostBuildDiffers, no deploy configured). The
+// recorded start was judged against expectedServedBuild — the host's own build —
+// so settlement must use that same expectation, not the controller's version;
+// otherwise the marker survives, ensureDecision takes the restart branch because
+// runningKnown sends it to restartHub rather than recoverRestart, and a
+// supervisorless host refuses forever.
+func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
+	const relaunch = "nohup /opt/evener/bin/evener hub"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor
+		case strings.Contains(joined, "api/health"):
+			// The host serves its own build; the attach path accepts it.
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+	m.setPendingStart(host.Name, relaunch)
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
+	}
+	if got := m.pendingRestart(host.Name); got != (pendingRestartState{}) {
+		t.Fatalf("pending start survived a healthy host keeping its own build: %+v", got)
 	}
 }
 

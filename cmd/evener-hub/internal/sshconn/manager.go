@@ -1476,7 +1476,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
-	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected &&
+	// Settlement judges the build the host will actually serve, exactly as
+	// recoverRestart and the restart waits do: a host that keeps its own build
+	// (hostBuildDiffers, no deploy configured) answers with its own version, not
+	// the controller's. Comparing against the controller's version here would
+	// leave a recorded start on such a host unsettled forever.
+	servedVersion, _ := expectedServedBuild(facts, expected)
+	if pending := m.pendingRestart(host.Name); runningKnown && running.version == servedVersion &&
 		(pending.start || running.differentProcessFrom(pending.replaced)) {
 		// A hub already serving exactly the expected build resolves whatever an
 		// earlier restart or start left outstanding; do not launch a second hub
