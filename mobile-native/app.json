@@ -45,6 +45,16 @@
       ],
       "expo-sqlite",
       [
+        "expo-font",
+        {
+          "fonts": [
+            "./node_modules/@expo-google-fonts/source-serif-4/400Regular/SourceSerif4_400Regular.ttf",
+            "./node_modules/@expo-google-fonts/source-serif-4/400Regular_Italic/SourceSerif4_400Regular_Italic.ttf",
+            "./node_modules/@expo-google-fonts/source-serif-4/600SemiBold/SourceSerif4_600SemiBold.ttf"
+          ]
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Choose images to attach to your Evener conversations.",
