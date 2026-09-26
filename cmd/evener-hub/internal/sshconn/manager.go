@@ -1476,15 +1476,21 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
-	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected && running.differentProcessFrom(pending.replaced) {
-		// A hub already serving exactly the expected build — and provably not the
-		// process the recorded restart meant to replace — resolves whatever an
-		// earlier restart left outstanding; do not launch a second hub over it.
-		// Version equality alone is not that proof: two unstamped builds both
-		// report "dev", so a restart that never took would otherwise be cleared on
-		// the old process's answer and the next Ensure would attach to it. A start
-		// time that is missing on either side is not proof either: an old hub
-		// whose health body carries no started_at would otherwise clear the
+	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected &&
+		(pending.start || running.differentProcessFrom(pending.replaced)) {
+		// A hub already serving exactly the expected build resolves whatever an
+		// earlier restart or start left outstanding; do not launch a second hub
+		// over it. A recorded START has no predecessor to exclude — bootstrapHub
+		// only ever starts a hub where nothing was serving — so the expected build
+		// alone settles it, exactly as recoverRestart judges a recovered start (a
+		// start's zero `replaced` can never satisfy differentProcessFrom, so the
+		// version match is the only thing that can clear it). A recorded
+		// REPLACEMENT must additionally be provably not the process it meant to
+		// replace: version equality alone is not that proof, because two unstamped
+		// builds both report "dev", so a restart that never took would otherwise be
+		// cleared on the old process's answer and the next Ensure would attach to
+		// it. A start time that is missing on either side is not proof either: an
+		// old hub whose health body carries no started_at would otherwise clear the
 		// pending marker on the same answer, so the identity must be known on BOTH
 		// sides and must differ before the marker is cleared (differentProcessFrom).
 		m.clearPendingRestart(host.Name)

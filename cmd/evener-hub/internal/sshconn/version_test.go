@@ -1909,6 +1909,56 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 	}
 }
 
+// TestPendingStartOnHealthySupervisorlessHostAttaches pins the regression the
+// supervisorless restart refusal introduced: a recorded START leaves a zero
+// `replaced`, so the "different process" test can never clear it. When the
+// started hub later came up healthy on a supervisorless host, the next Ensure
+// saw a pending restart, took the restartHub branch (runningKnown is true, so
+// recoverRestart is not used), and refused with ErrRestart forever — a host
+// already serving the expected build could never attach. A recorded start has no
+// predecessor to exclude, so a hub answering the expected build settles it,
+// exactly as recoverRestart judges a recovered start.
+func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
+	const relaunch = "nohup /opt/evener/bin/evener hub"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor: a supervisorless host
+		case strings.Contains(joined, "api/health"):
+			// The started hub is healthy and serves the expected build.
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+	// An interrupted first attach on a supervisorless host leaves a pending start
+	// behind; the launched hub came up healthy afterwards.
+	m.setPendingStart(host.Name, relaunch)
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: a healthy hub must settle a recorded start, not be refused as a supervisorless restart", err)
+	}
+	if got := m.pendingRestart(host.Name); got != (pendingRestartState{}) {
+		t.Fatalf("pending start survived a healthy hub: %+v", got)
+	}
+}
+
 // TestFirstAttachBootstrapAdHocLaunch proves the bootstrap falls back to the
 // detached ad hoc launch of the resolved executable when no supervisor unit is
 // identified.
