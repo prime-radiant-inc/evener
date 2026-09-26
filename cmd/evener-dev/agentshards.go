@@ -921,7 +921,8 @@ func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 // block budget. The caller defers only those lines, so maxBlocks exhaustion
 // cannot silently discard context. Ownership follows RUN/CONT/NAME frames and
 // verdicts, matching expandSurveyFailure; a parent marker can claim a failed
-// descendant. A later RUN of the owner ends the earlier output's claim.
+// descendant. A later RUN of the owner or its later failing parent ends the
+// earlier output's claim.
 func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlocks int) string {
 	if surveyFrameworkLine(lines[index]) {
 		return ""
@@ -947,7 +948,7 @@ func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlock
 		laterName := surveyFailureName(lines[later])
 		if laterName == owner || strings.HasPrefix(owner, laterName+"/") {
 			for between := index + 1; between < later; between++ {
-				if lines[between] == "=== RUN   "+owner {
+				if lines[between] == "=== RUN   "+owner || lines[between] == "=== RUN   "+laterName {
 					return ""
 				}
 			}
@@ -983,8 +984,9 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // source diagnostic owned by the failing test or one of its failed children.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
-// The result is still no larger than one block's existing before bound plus its
-// marker.
+// Deferred context is emitted in addition to one block's ordinary before bound
+// and marker. It is bounded by the number of deferred windows admitted by the
+// remaining block budget.
 func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines map[int]struct{}, deferredLines []int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {

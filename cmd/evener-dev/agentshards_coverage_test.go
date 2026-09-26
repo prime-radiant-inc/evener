@@ -474,6 +474,31 @@ func TestReplaySurveyFailuresDefersFailedChildDiagnosticToParent(t *testing.T) {
 	}
 }
 
+func TestReplaySurveyFailuresKeepsChildDiagnosticBeforeRepeatedParentRun(t *testing.T) {
+	const childDiagnostic = "    child_test.go:7: failed child assertion"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent/child\n"+
+			childDiagnostic+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"=== RUN   TestParent\n"+
+			"=== NAME  TestParent\n"+
+			"    parent_test.go:8: later parent output\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	want := []string{
+		childDiagnostic,
+		"--- FAIL: TestSibling (0.00s)",
+		"    parent_test.go:8: later parent output",
+		"--- FAIL: TestParent (0.00s)",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want child diagnostic before the repeated parent run %q", got, want)
+	}
+}
+
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
 // top-level parallel shape from go test -v: a sibling resumes after the
 // parent's assertion, emits source-located diagnostics, passes, and the
