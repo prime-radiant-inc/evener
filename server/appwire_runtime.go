@@ -23,6 +23,18 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// appTranscriptMaxLineBytes bounds a single transcript line. It is the same
+// ceiling the hub's reader uses; a line beyond it is a corrupt file, not a
+// large turn.
+const appTranscriptMaxLineBytes = 128 << 20
+
+// transcriptHeaderReadBufferBytes bounds the prefetch for an ordinary header
+// line. The parser stops at that line; keeping this buffer finite prevents a
+// large historical transcript from crossing the reader boundary merely because
+// identity validation needs its header. Oversized headers are still governed
+// by the maxLineBytes limit passed to transcript.ReadLine.
+const transcriptHeaderReadBufferBytes = 64 * 1024
+
 func (s *Server) AppServer() *appserver.Server {
 	return s.appServer
 }

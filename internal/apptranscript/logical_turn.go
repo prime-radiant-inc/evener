@@ -53,13 +53,6 @@ func continuesLogicalTurn(kind schema.TurnKind) bool {
 	}
 }
 
-// groupOpenAfter reports whether the logical-turn group is open for
-// continuations once this kind has been appended: openers and continuations
-// leave a group open; standalone kinds close it.
-func groupOpenAfter(kind schema.TurnKind) bool {
-	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
-}
-
 // groupedTurn is one logical turn: the group's first entry's identity plus
 // every projected item of the group, in arrival order, before call-id merge.
 type groupedTurn struct {
@@ -250,24 +243,6 @@ func mergeGroupedItems(items []appwire.ThreadItem) []appwire.ThreadItem {
 		merged = append(merged, item)
 	}
 	return merged
-}
-
-// mergedContribution is the counting form of mergeGroupedItems for the index
-// scan: it reports how many of the entry's projected items survive merging
-// into calls already in the set, and which new call ids the items introduce.
-// calls is mutated to include the introduced ids.
-func mergedContribution(items []appwire.ThreadItem, calls map[string]bool) (count int, introduced []string) {
-	for _, item := range items {
-		if MergesByCallID(item) {
-			if calls[item.CallID] {
-				continue
-			}
-			calls[item.CallID] = true
-			introduced = append(introduced, item.CallID)
-		}
-		count++
-	}
-	return count, introduced
 }
 
 // MergeThreadItems merges a later projected item into an earlier one of

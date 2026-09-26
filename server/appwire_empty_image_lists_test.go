@@ -11,26 +11,7 @@ import (
 )
 
 // output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
-
-// A clone must carry OutputImages' nilness both ways: nil (never had images)
-// stays nil, and an explicit empty list (the removal) stays non-nil and empty.
-// Input images carry no such rule -- see appwire.MergeInputImages -- so this
-// test does not assert their nilness.
-func TestCloneCarriesImageListNilnessBothWays(t *testing.T) {
-	removed := cloneAppThreadItem(appwire.ThreadItem{
-		ID:           "item_1",
-		OutputImages: []appwire.OutputImage{},
-		Images:       []appwire.InputItem{},
-	})
-	if removed.OutputImages == nil {
-		t.Fatal("cloned OutputImages is nil, so the removal this item announces is lost")
-	}
-
-	never := cloneAppThreadItem(appwire.ThreadItem{ID: "item_2"})
-	if never.OutputImages != nil {
-		t.Fatalf("cloned OutputImages=%+v for an item that never had images, want nil", never.OutputImages)
-	}
-}
+// Clone nilness-both-ways coverage lives in appwire.TestCloneOutputImages.
 
 // The end-to-end path: a tool call whose result images cannot be served yet
 // settles with them withheld, and the overlay frame the server records for its

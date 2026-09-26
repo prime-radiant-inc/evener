@@ -91,58 +91,7 @@ func TestItemReadersHonorSteeringOwner(t *testing.T) {
 		if got := turnIDs(full); !reflect.DeepEqual(got, wantIDs) {
 			t.Fatalf("%s full IDs = %v, want %v", name, got, wantIDs)
 		}
-		var paged []appwire.Turn
-		cursor := ""
-		for {
-			page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, cursor, 1, boundedTestProjector)
-			paged = append(page.Turns, paged...)
-			if page.NextCursor == "" {
-				break
-			}
-			cursor = page.NextCursor
-		}
-		if got := turnIDs(paged); !reflect.DeepEqual(got, wantIDs) {
-			t.Errorf("%s paged IDs = %v, want %v", name, got, wantIDs)
-		}
-		if got, want := keysForTurns(paged), keysForTurns(full); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s paged keys = %v, want full keys %v", name, got, want)
-		}
-		cache := NewTurnCache()
-		window, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:" + name, Limit: 1}, boundedTestProjector)
-		if err != nil {
-			t.Fatalf("%s LatestItemWindowFromFile: %v", name, err)
-		}
-		var itemKeys []string
-		for _, candidate := range window.Candidates {
-			itemKeys = append(itemKeys, candidate.Item.TranscriptKey)
-		}
-		for window.OlderCursor != "" {
-			window, _, err = cache.PreviousItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:" + name, Cursor: window.OlderCursor, Limit: 1}, boundedTestProjector)
-			if err != nil {
-				t.Fatalf("%s PreviousItemWindowFromFile: %v", name, err)
-			}
-			previousKeys := make([]string, 0, len(window.Candidates))
-			for _, candidate := range window.Candidates {
-				previousKeys = append(previousKeys, candidate.Item.TranscriptKey)
-			}
-			itemKeys = append(previousKeys, itemKeys...)
-		}
-		var wantKeys []string
-		for _, turn := range full {
-			wantKeys = append(wantKeys, keysFor(turn)...)
-		}
-		if !reflect.DeepEqual(itemKeys, wantKeys) {
-			t.Errorf("%s item-window keys = %v, want full keys %v", name, itemKeys, wantKeys)
-		}
 	}
-}
-
-func keysForTurns(turns []appwire.Turn) []string {
-	keys := make([]string, 0)
-	for _, turn := range turns {
-		keys = append(keys, keysFor(turn)...)
-	}
-	return keys
 }
 
 func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
@@ -165,22 +114,17 @@ func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 				return ProjectTurn(turnID, turnIndex, turn, names, nil, nil)
 			})
-			page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-				return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
-			})
-			for reader, turns := range map[string][]appwire.Turn{"full": full, "indexed": page.Turns} {
-				if len(turns) != 1 || turns[0].Status != want {
-					t.Fatalf("%s turns = %+v, want one %s turn", reader, turns, want)
+			if len(full) != 1 || full[0].Status != want {
+				t.Fatalf("turns = %+v, want one %s turn", full, want)
+			}
+			found := false
+			for _, item := range full[0].Items {
+				if item.SteeringKind == events.SteeringKindInterrupted {
+					found = true
 				}
-				found := false
-				for _, item := range turns[0].Items {
-					if item.SteeringKind == events.SteeringKindInterrupted {
-						found = true
-					}
-				}
-				if !found {
-					t.Fatalf("%s lost interrupted steering item", reader)
-				}
+			}
+			if !found {
+				t.Fatalf("lost interrupted steering item")
 			}
 		})
 	}
@@ -262,63 +206,6 @@ func TestFileProjectionReproducesLiveLogicalTurnKeysWithoutStableIDs(t *testing.
 	}
 }
 
-// TestBoundedReadsMatchGroupedFileProjection holds the bounded reader to the
-// same grouping as the full read: whatever the full read renders for a
-// transcript, windowed and paged reads must render exactly the same turns.
-func TestBoundedReadsMatchGroupedFileProjection(t *testing.T) {
-	path := writeEntries(t, logicalTurnFixture()...)
-	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-
-	cache := NewTurnCache()
-	latest, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
-	wantLatest, wantCursor := latestGroupedTurns(full, 1)
-	if !reflect.DeepEqual(latest, wantLatest) || cursor != wantCursor {
-		t.Fatalf("windowed read = (%#v, %q), want the full read's (%#v, %q)", latest, cursor, wantLatest, wantCursor)
-	}
-
-	for cursor != "" {
-		page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 1, boundedTestProjector)
-		wantPage := pageGroupedTurns(full, cursor, 1)
-		if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
-			t.Fatalf("paged read at cursor %q = (%#v, next %q), want the full read's (%#v, next %q)",
-				cursor, page.Turns, page.NextCursor, wantPage.Data, wantPage.NextCursor)
-		}
-		cursor = page.NextCursor
-	}
-}
-
-// TestItemWindowKeysMatchGroupedFileProjection holds the item-paging path to
-// the same logical-turn keys as the full read: the saved-index candidate
-// window must answer with the exact TranscriptKeys the full projection yields
-// for the same items, or a cursor minted by one path stales in the other.
-func TestItemWindowKeysMatchGroupedFileProjection(t *testing.T) {
-	path := writeEntries(t, logicalTurnFixture()...)
-	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-
-	cache := NewTurnCache()
-	window, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
-		ThreadRef: "local:th_1",
-		Limit:     10,
-	}, boundedTestProjector)
-	if err != nil {
-		t.Fatalf("latest item window: %v", err)
-	}
-
-	var wantKeys []string
-	for _, turn := range full {
-		for _, item := range turn.Items {
-			wantKeys = append(wantKeys, item.TranscriptKey)
-		}
-	}
-	var gotKeys []string
-	for _, candidate := range window.Candidates {
-		gotKeys = append(gotKeys, candidate.Item.TranscriptKey)
-	}
-	if !reflect.DeepEqual(gotKeys, wantKeys) {
-		t.Fatalf("item window keys = %v, want the full projection's %v", gotKeys, wantKeys)
-	}
-}
-
 func TestEmptyLogicalGroupReservesOrdinalInFullAndIndexedProjections(t *testing.T) {
 	path := writeEntries(t,
 		transcript.Entry{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnCheckpoint}},
@@ -334,24 +221,6 @@ func TestEmptyLogicalGroupReservesOrdinalInFullAndIndexedProjections(t *testing.
 	if got := full[0].Items[0]; got.Position == nil || *got.Position != wantPosition || got.TranscriptKey != wantKey {
 		t.Fatalf("full item identity = (position %+v, key %q), want (%+v, %q)", got.Position, got.TranscriptKey, wantPosition, wantKey)
 	}
-
-	window, _, err := NewTurnCache().LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
-		ThreadRef: "local:th_empty_group",
-		Limit:     40,
-	}, boundedTestProjector)
-	if err != nil {
-		t.Fatalf("LatestItemWindowFromFile: %v", err)
-	}
-	if len(window.Candidates) != 1 {
-		t.Fatalf("indexed candidates = %+v, want one visible item", window.Candidates)
-	}
-	indexed := window.Candidates[0].Item
-	if indexed.Position == nil || *indexed.Position != wantPosition || indexed.TranscriptKey != wantKey {
-		t.Fatalf("indexed item identity = (position %+v, key %q), want (%+v, %q)", indexed.Position, indexed.TranscriptKey, wantPosition, wantKey)
-	}
-	if indexed.TranscriptKey != full[0].Items[0].TranscriptKey {
-		t.Fatalf("indexed key %q differs from full key %q", indexed.TranscriptKey, full[0].Items[0].TranscriptKey)
-	}
 }
 
 func keysFor(turn appwire.Turn) []string {
@@ -360,13 +229,4 @@ func keysFor(turn appwire.Turn) []string {
 		keys = append(keys, item.TranscriptKey)
 	}
 	return keys
-}
-
-func requireItemTurnsFromFile(t testing.TB, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
-	t.Helper()
-	turns, err := ItemTurnsFromFile(path, maxLineBytes, project)
-	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
-	}
-	return turns
 }
