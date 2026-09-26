@@ -123,3 +123,27 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 			liveRow.AskPending, projectRow.AskPending)
 	}
 }
+
+// fuzzScenarioBuildTree_EveryRowCarriesApprovalPending: an escalation-promoted
+// session reports the approval on its NeedsYou, Live and project rows alike,
+// from the one approvalPendingFor closure, and keeps its real state on all of
+// them: promotion changes membership, not state.
+func fuzzScenarioBuildTree_EveryRowCarriesApprovalPending(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "01APPROVAL", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	live := []LiveEntry{{PID: 1, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true}}
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	if len(tree.NeedsYou) != 1 || !tree.NeedsYou[0].ApprovalPending || tree.NeedsYou[0].State != "active" {
+		t.Fatalf("NeedsYou = %+v, want one active row carrying ApprovalPending", tree.NeedsYou)
+	}
+	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01APPROVAL")
+	if !inLive || !inProject {
+		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)
+	}
+	if !liveRow.ApprovalPending || !projectRow.ApprovalPending {
+		t.Fatalf("Live row %v, project row %v: both must carry the approval", liveRow.ApprovalPending, projectRow.ApprovalPending)
+	}
+	if liveRow.State != "active" || projectRow.State != "active" {
+		t.Fatalf("Live row state %q, project row state %q: both must keep the real state active", liveRow.State, projectRow.State)
+	}
+}

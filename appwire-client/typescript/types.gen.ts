@@ -86,6 +86,13 @@ export interface AttentionChanged {
   project: string;
   level: string;
   askPending?: boolean;
+  /**
+   * ApprovalPending is true while the session is blocked on a sandbox
+   * escalation a human must allow or deny (M7). It is why an
+   * escalation-promoted session's Level is needs_you; AskPending is the
+   * question's equivalent.
+   */
+  approvalPending?: boolean;
   prevLevel: string;
 }
 
