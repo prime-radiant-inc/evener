@@ -28,6 +28,7 @@ func s5covResolver(dir, provider, agent string, agentFS fstest.MapFS) *sectionRe
 
 // Section layers provider body + agent prepend/append when no agent body exists.
 func TestS5Cov_Section_ProviderAndAgentLayering(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s5covWriteSection(t, dir, "intro.md", "BASE BODY")
 	s5covWriteSection(t, dir, "intro.agent-explorer_prepend.md", "AGENT PRE")
@@ -48,6 +49,7 @@ func TestS5Cov_Section_ProviderAndAgentLayering(t *testing.T) {
 
 // An agent body replaces the provider result entirely.
 func TestS5Cov_Section_AgentBodyReplaces(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s5covWriteSection(t, dir, "intro.md", "BASE BODY")
 	s5covWriteSection(t, dir, "intro.agent-explorer.md", "AGENT BODY")
@@ -61,6 +63,7 @@ func TestS5Cov_Section_AgentBodyReplaces(t *testing.T) {
 // resolveRole: explicit override wins; else disk override; else embedded agent
 // definition with frontmatter stripped.
 func TestS5Cov_ResolveRole_Precedence(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	agentFS := fstest.MapFS{
 		"explorer.md": &fstest.MapFile{Data: []byte("---\nname: explorer\n---\nEMBEDDED ROLE\n")},
@@ -84,6 +87,7 @@ func TestS5Cov_ResolveRole_Precedence(t *testing.T) {
 
 // resolveRole returns empty when there is no agent.
 func TestS5Cov_ResolveRole_NoAgent(t *testing.T) {
+	t.Parallel()
 	r := s5covResolver(t.TempDir(), "openai", "", nil)
 	if got := r.Section("role", promptData{}); got != "" {
 		t.Errorf("no agent should yield empty role, got %q", got)
@@ -93,6 +97,7 @@ func TestS5Cov_ResolveRole_NoAgent(t *testing.T) {
 // readAndRender: a .md.tmpl is rendered; a template execution error tracks an
 // ERROR source and yields empty.
 func TestS5Cov_ReadAndRender_TemplateAndError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s5covWriteSection(t, dir, "greet.md.tmpl", "Hi {{.Model}}")
 	r := s5covResolver(dir, "openai", "", nil)
@@ -120,6 +125,7 @@ func TestS5Cov_ReadAndRender_TemplateAndError(t *testing.T) {
 // Render executes a top-level template whose {{section}} calls resolve through
 // the resolver.
 func TestS5Cov_Render_TopLevelTemplate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s5covWriteSection(t, dir, "intro.md", "INTRO BODY")
 	s5covWriteSection(t, dir, "main.md.tmpl", "START\n{{section \"intro\"}}\nEND")
@@ -144,6 +150,7 @@ func TestS5Cov_Render_TopLevelTemplate(t *testing.T) {
 // RenderEmbedded renders a top-level template from an embedded FS mirror. Since
 // embed.FS cannot be built in a test, exercise the error path (missing file).
 func TestS5Cov_RenderEmbedded_MissingErrors(t *testing.T) {
+	t.Parallel()
 	r := s5covResolver(t.TempDir(), "openai", "", nil)
 	if _, _, err := r.RenderEmbedded(embeddedPrompts, "prompts/nonexistent/", "missing", promptData{}); err == nil {
 		t.Error("missing embedded template should error")
@@ -152,6 +159,7 @@ func TestS5Cov_RenderEmbedded_MissingErrors(t *testing.T) {
 
 // sourceLabel distinguishes disk, embedded, and unknown sources.
 func TestS5Cov_SourceLabel(t *testing.T) {
+	t.Parallel()
 	r := &sectionResolver{}
 	if got := r.sourceLabel(diskSource{dir: "dir"}, "x.md"); got != "disk:"+filepath.Join("dir", "x.md") {
 		t.Errorf("disk label = %q", got)

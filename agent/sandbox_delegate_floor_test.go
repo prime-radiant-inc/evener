@@ -62,6 +62,7 @@ func TestBuildDelegateSandboxPolicy_ModeFloor(t *testing.T) {
 // ordinary workspace-write scope just because ModeReadOnly and ModeRestricted are
 // incomparable in the normal mode lattice.
 func TestReadOnlyDelegateSandbox_RestrictedParentBlocksWrites(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	parent := sbxDelegateSession(t, facts)

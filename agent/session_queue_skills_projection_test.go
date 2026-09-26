@@ -22,6 +22,7 @@ import (
 // per-entry arrays, or an edit/return of that entry silently drops the
 // selection.
 func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "probe", "---\nname: probe\ndescription: fixture\n---\nBODY_queue_projection")
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {

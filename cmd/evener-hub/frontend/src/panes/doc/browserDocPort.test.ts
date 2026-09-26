@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { docImageURL } from "@evener/appwire-client";
 import { afterEach, expect, test, vi } from "vitest";
 import { browserDocPort } from "./browserDocPort";

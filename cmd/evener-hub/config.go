@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
@@ -139,15 +140,43 @@ func DefaultPastIndexDBPath() string {
 	return filepath.Join(DefaultHubStateRoot(), "index.db")
 }
 
-// LoadConfig reads path. A missing file returns DefaultConfig() and nil error.
+// LoadConfig reads path. A missing file returns DefaultConfig() and a nil
+// error: that fallback is the implicit default-path contract
+// (DefaultConfigPath), which a hub started without --config relies on. A file
+// that exists but cannot be read or parsed is an error.
+//
+// An operator-named path must go through LoadConfigExplicit: silently
+// defaulting a typo'd --config would start the hub against the wrong state
+// root, address, and host list.
 func LoadConfig(path string) (Config, error) {
+	return loadConfig(path, false)
+}
+
+// LoadConfigExplicit reads a path an operator named (--config). Unlike
+// LoadConfig, a missing file is an error naming the path rather than a silent
+// DefaultConfig() fallback.
+func LoadConfigExplicit(path string) (Config, error) {
+	return loadConfig(path, true)
+}
+
+// loadConfigForCommandLine loads cfgPath the way the flag layer resolved it:
+// explicit is true when the operator named the path with --config, which makes
+// a missing file a startup refusal instead of a default.
+func loadConfigForCommandLine(cfgPath string, explicit bool) (Config, error) {
+	if explicit {
+		return LoadConfigExplicit(cfgPath)
+	}
+	return LoadConfig(cfgPath)
+}
+
+func loadConfig(path string, explicit bool) (Config, error) {
 	cfg := DefaultConfig()
 	data, err := configReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && !explicit {
 			return cfg, nil
 		}
-		return cfg, fmt.Errorf("read config: %w", err)
+		return cfg, fmt.Errorf("read config %s: %w", path, err)
 	}
 	metadata, decodeErr := toml.Decode(string(data), &cfg)
 	for _, key := range []string{"codex_sources", "codex_launches"} {
@@ -156,7 +185,7 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	if decodeErr != nil {
-		return cfg, fmt.Errorf("parse config: %w", decodeErr)
+		return cfg, fmt.Errorf("parse config %s: %w", path, decodeErr)
 	}
 	// DaemonIdleTimeout is a duration STRING. BurntSushi/toml decodes a bare
 	// integer as a nanosecond count without error, so `daemon_idle_timeout =
@@ -183,11 +212,33 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+// The host-entry refusals spec 03 ("config_path / addr") assigns to
+// validateHostConfigs. They are named sentinels so tests and callers can match
+// them with errors.Is.
+var (
+	// ErrHostAddrPair marks a [[hosts]] entry that sets exactly one of
+	// config_path and addr. The pair describes one host hub layout — the bridge
+	// resolves the hub's address and token from config_path, while the SSH
+	// manager's restart and health path probes addr — so a half-specified entry
+	// would attach through one layout while the manager probes another.
+	ErrHostAddrPair = errors.New("host config_path and addr must be set together")
+	// ErrHostAddr marks an addr the controller cannot use: malformed, missing a
+	// usable port, or not a loopback/wildcard bind. addr is interpolated into an
+	// SSH-side health probe and restart identity check, so a non-loopback value
+	// could let those paths reach an arbitrary host; the wildcard spellings are
+	// accepted because the manager normalizes them to loopback for its own dial
+	// and probe.
+	ErrHostAddr = errors.New("host addr unusable")
+)
+
 // validateHostConfigs normalizes and validates the [[hosts]] list by building a
 // throwaway registry, so name grammar, duplicate names, reserved "local", the
 // ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
-// checked by the single source of truth in hostreg. No host is registered
-// anywhere: this is pure validation.
+// checked by the single source of truth in hostreg. Each entry also runs
+// validateHostEntry — the pair and addr rules spec 03's "config_path / addr"
+// contract requires, the same function the runtime add/update paths run — so a
+// hub.toml entry and a UI-added entry are validated by one code path. No host
+// is registered anywhere: this is pure validation.
 //
 // It rewrites hosts IN PLACE with the normalized values. hostreg trims before it
 // stores, so validating a copy would let ssh = "  m4.local  " pass here and then
@@ -208,6 +259,9 @@ func validateHostConfigs(hosts []HostConfig) error {
 			Addr:       h.Addr,
 			Roots:      h.Roots,
 		})
+		if err := validateHostEntry(entry); err != nil {
+			return err
+		}
 		hosts[i].SSH = entry.SSH
 		hosts[i].Name = entry.Name
 		hosts[i].User = entry.User
@@ -219,6 +273,50 @@ func validateHostConfigs(hosts []HostConfig) error {
 	}
 	_, err := hostreg.New(entries)
 	return err
+}
+
+// validateHostEntry runs every entry check the host surfaces share: hostreg's
+// own shape validation (name grammar, reserved name, ssh destination, user/ssh
+// agreement, non-empty roots) plus the config_path/addr pair and addr host
+// rules hub.toml loading applies (validateHostAddr). hub.toml loading and the
+// runtime evener/host/add and evener/host/update paths all call it, so an entry
+// one surface refuses can never be stored by another.
+func validateHostEntry(entry hostreg.Host) error {
+	if err := hostreg.ValidateEntry(entry); err != nil {
+		return err
+	}
+	return validateHostAddr(entry)
+}
+
+// validateHostAddr refuses an entry whose config_path/addr pair is
+// half-specified, or whose addr the controller cannot use. It checks the
+// normalized values the registry would store.
+//
+// The pair describes ONE host hub layout (component 04, "Address, config path,
+// token"): the bridge resolves the hub's listen address and token state root
+// from config_path, while the manager's restart and health path probes addr. A
+// half-specified entry attaches through one layout while the manager probes
+// another — a silent split-brain, not a clean failure.
+//
+// addr is interpolated into an SSH-side curl probe and the restart identity
+// check, so a non-loopback value could let those paths reach an arbitrary
+// reachable host. The address half delegates to sshconn.ValidateHubAddrShape —
+// the SSH probe's own accepted-address rule — and wraps its refusal in this
+// package's ErrHostAddr, so load-time validation and the use-time probe cannot
+// drift on what an address may be: a loopback host literal, "localhost", the
+// wildcard spellings the manager normalizes to loopback (0.0.0.0, ::, and the
+// empty host of ":port"), and a usable port.
+func validateHostAddr(entry hostreg.Host) error {
+	if (entry.ConfigPath == "") != (entry.Addr == "") {
+		return fmt.Errorf("%w: host %q sets exactly one of config_path and addr; set both or neither", ErrHostAddrPair, entry.Name)
+	}
+	if entry.Addr == "" {
+		return nil
+	}
+	if err := sshconn.ValidateHubAddrShape(entry.Addr); err != nil {
+		return fmt.Errorf("%w: host %q %w", ErrHostAddr, entry.Name, err)
+	}
+	return nil
 }
 
 // validateMobileBaseURL accepts only an HTTP(S) origin. The pairing endpoint

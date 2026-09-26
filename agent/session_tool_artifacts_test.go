@@ -127,6 +127,7 @@ func newArtifactTestClient() *llm.Client {
 }
 
 func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
+	t.Parallel()
 	store := newFakeArtifactStore()
 	s := &Session{artifactStore: store}
 	res := tool.ExecResult{
@@ -156,6 +157,7 @@ func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
 }
 
 func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *testing.T) {
+	t.Parallel()
 	store := newFakeArtifactStore()
 	const sensitivePath = "/Users/operator/.evener/private/session-artifacts/model-output"
 	store.putErr = &os.PathError{
@@ -203,6 +205,7 @@ func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *test
 }
 
 func TestRetainToolArtifactLeavesUntruncatedResultAlone(t *testing.T) {
+	t.Parallel()
 	store := newFakeArtifactStore()
 	s := &Session{artifactStore: store}
 	res := tool.ExecResult{
@@ -223,6 +226,7 @@ func TestRetainToolArtifactLeavesUntruncatedResultAlone(t *testing.T) {
 }
 
 func TestRetainToolArtifactExecToolPublishesSplitTextResultHandle(t *testing.T) {
+	t.Parallel()
 	modelOutput := strings.Repeat("model text ", 2_001)
 	const eventOutput = "event-facing text remains complete and separate"
 	sess, stop := imageToolSession(t, "retain_split", func() (any, error) {
@@ -255,6 +259,7 @@ func TestRetainToolArtifactExecToolPublishesSplitTextResultHandle(t *testing.T) 
 }
 
 func TestRetainToolArtifactExecToolPreservesErrorEvent(t *testing.T) {
+	t.Parallel()
 	errorOutput := "tool failed: " + strings.Repeat("error text ", 2_001)
 	sess, stop := imageToolSession(t, "retain_error", func() (any, error) {
 		return nil, errors.New(errorOutput)
@@ -286,6 +291,7 @@ func TestRetainToolArtifactExecToolPreservesErrorEvent(t *testing.T) {
 }
 
 func TestRetainToolArtifactExecToolRetentionFailureOmitsOutputRef(t *testing.T) {
+	t.Parallel()
 	modelOutput := strings.Repeat("model text ", 2_001)
 	const eventOutput = "event-facing text"
 	sess, stop := imageToolSession(t, "retain_failure", func() (any, error) {
@@ -313,6 +319,7 @@ func TestRetainToolArtifactExecToolRetentionFailureOmitsOutputRef(t *testing.T) 
 }
 
 func TestSessionArtifactStoreSharedByDescendantsOnly(t *testing.T) {
+	t.Parallel()
 	rootA := newArtifactTestRoot(t)
 	rootB := newArtifactTestRoot(t)
 	childID := spawnRuntimeAgent(t, rootA, "child task", "", 1, "", "", nil)
@@ -332,6 +339,7 @@ func TestSessionArtifactStoreSharedByDescendantsOnly(t *testing.T) {
 }
 
 func TestSessionArtifactStoreChildCloseDoesNotCloseStore(t *testing.T) {
+	t.Parallel()
 	root := newArtifactTestRoot(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)
@@ -352,6 +360,7 @@ func TestSessionArtifactStoreChildCloseDoesNotCloseStore(t *testing.T) {
 }
 
 func TestSessionArtifactStoreRootCascadeClosesTrackedChildFirstAndExactlyOnce(t *testing.T) {
+	t.Parallel()
 	root := newArtifactTestRoot(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)
@@ -429,6 +438,7 @@ func TestSessionArtifactStoreOwnedRestoredConstructorFailureClosesStore(t *testi
 }
 
 func TestSessionArtifactStoreInheritedFreshConstructorFailurePreservesStore(t *testing.T) {
+	t.Parallel()
 	root := newArtifactTestRoot(t)
 	store := &recordingArtifactStore{}
 	replaceRootArtifactStore(t, root, store)

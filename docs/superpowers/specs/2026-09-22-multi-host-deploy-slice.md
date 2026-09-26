@@ -142,8 +142,8 @@ here would relitigate §4.
 ### D2 — what consents to a write on a host (decided: controller-level only)
 
 Jesse ruled: this slice lands **controller-level behavior only**. Configuring a
-deploy path on the controller is the consent; the per-host `deploy = "auto" |
-"never"` field is deferred to its own slice.
+deploy path on the controller is the consent, and that rule **stands**: a host
+cannot opt out of the controller replacing its binary.
 
 The reasoning, for the record: `canDeploy()` is today purely "is a path
 configured" (`manager.go:2560`), so a configured path would deploy to every host
@@ -151,9 +151,10 @@ the operator connects. That is acceptable because the design doc already decided
 auto-match on attach, because a source or binary is a deliberate act by the
 operator who runs the controller, and because the blast radius is that
 operator's own hosts over that operator's own credentials. The per-host field
-remains worth having — it changes the config schema, `hostreg.Host`, the
-`HostEntry` wire type, and the host edit dialog that just shipped, four surfaces
-that each deserve their own review and none of which the mechanism needs.
+is therefore **decided against, not deferred**: no per-host `deploy = "auto" |
+"never"` field, and none of its four surfaces (the config schema,
+`hostreg.Host`, the `HostEntry` wire type, the host edit dialog), is added. Do
+not implement it without a new decision.
 
 ### D3 — what the user sees
 
@@ -198,7 +199,7 @@ does not have.
 **Re-examined, and held.** After this ruling was recorded, the master design
 doc's tracked-follow-up ledger turned out to carry the *opposite* decision as
 unimplemented work: "[04] installer fallback is release-only (round 22)", which
-would have `installerRefFor` lose its `snapshot` arm (`design.md:641`, whose
+would have `installerRefFor` lose its `snapshot` arm (`design.md:673`, whose
 entry is now titled "[04] installer fallback's reference (round 22; reconsidered
 and reversed 2026-09-22)"). That was
 put back to Jesse, since the earlier question had not mentioned it, and he held
@@ -276,8 +277,8 @@ pins the channel source, the wait, the restart wiring, and the start wiring.
 
 ## Non-scope
 
-- The per-host `deploy` field and its four surfaces (D2, deferred by
-  recommendation).
+- The per-host `deploy` field and its four surfaces (D2: decided against — the
+  controller-level rule stands).
 - Any new deploy mechanism: no download-by-URL, no new artifact reference, no
   change to the push path's stamping.
 - Restart deferral while clients are attached (`04` §Open questions):
@@ -291,7 +292,7 @@ to carry two further **decided but unimplemented** items in this same deploy
 half. Both were done here rather than left as "tracked", because this is the
 slice that owns them and both are small.
 
-- **Run target must be `evener`** (`design.md:622`, round 22).
+- **Run target must be `evener`** (`design.md:653`, round 22).
   `installableEvenerBasename` accepted `evener-dev`, the development/test tooling
   binary — no `hub` subcommand and no `launch-check` — so a host configured with
   it *installed and then failed* preflight, health and restart, after the
@@ -479,5 +480,6 @@ coverage.
   refused. Whether the host pane should *say* "this hub has no deploy path"
   before a user hits the refusal is a UI question for another slice; today the
   row's `lastAttachError` carries it.
-- **The deferred per-host field.** If D2 goes the other way, size the four
-  surfaces before writing that spec.
+- **The per-host field (resolved).** D2 decides against it: controller-level
+  configuration is the consent, and a host cannot opt out of the controller
+  replacing its binary.

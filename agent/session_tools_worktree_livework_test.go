@@ -27,6 +27,7 @@ import (
 // docs/developing-evener/testing.md for the rule.
 
 func TestPathEqualOrUnder(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		candidate string

@@ -5,6 +5,7 @@ use (
 	./agent
 	./auth
 	./envvars
+	./execsupport
 	./fuzz
 	./identifier
 	./invariant
@@ -28,3 +29,5 @@ replace primeradiant.com/evener/fuzz v0.0.0 => ./fuzz
 replace primeradiant.com/evener/invariant v0.0.0 => ./invariant
 
 replace primeradiant.com/evener/identifier v0.0.0 => ./identifier
+
+replace primeradiant.com/evener/execsupport v0.0.0 => ./execsupport

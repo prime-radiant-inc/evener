@@ -86,6 +86,7 @@ func TestRestoreSessionConfigUsesInjectedClock(t *testing.T) {
 }
 
 func TestRestoreSessionLifetimeOwnsRootAndChild(t *testing.T) {
+	t.Parallel()
 	owner, cancelOwner := context.WithCancel(context.Background())
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{
@@ -153,6 +154,7 @@ func TestRestoreSessionLifetimeOwnsRootAndChild(t *testing.T) {
 // background shell tool call actually starts a background job, and quiesceJobs
 // drives it to a terminal status deterministically.
 func TestLifecycleBackgroundShellQuiesces(t *testing.T) {
+	t.Parallel()
 	var round atomic.Int64
 	responder := func(llm.Request) llm.Response {
 		if round.Add(1) == 1 {

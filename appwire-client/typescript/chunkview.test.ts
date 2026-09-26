@@ -29,17 +29,7 @@ function agentMessageDelta(delta: string): AnyNotification {
   };
 }
 
-// The O(1)-append test's ceiling is a tripwire for a hang, not a
-// responsiveness bar: its 20,000-delta fold measures ~0.4s in isolation and
-// in-suite, so this ceiling sits far above the work while staying bounded.
-// Sized like hookTimeout/WARM_ROUTE_TRIPWIRE_MS, and a regression to O(n^2)
-// blows through it regardless (a copy per delta is ~200M string copies at
-// N=20,000).
-const O1_APPEND_TRIPWIRE_MS = 30_000;
-
-test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", {
-  timeout: O1_APPEND_TRIPWIRE_MS,
-}, () => {
+test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", () => {
   // White-box on purpose (chunkViewBackingForTests): chunk strings are
   // PRIMITIVES, so element-level identity checks survive a per-delta copy
   // ([...chunks, delta] preserves every string reference) — only the
@@ -48,8 +38,10 @@ test("every delta's fold appends onto the SAME backing array, which grows by exa
   // array one longer. Each iteration therefore asserts (a) the backing
   // reference is IDENTICAL to the previous fold's and (b) its length grew
   // by exactly one, keeping the test O(n) — it must not recreate the very
-  // blowup it guards against. Rationale: chunkview.ts's header.
-  const N = 20_000;
+  // blowup it guards against. The check is structural, so any N >= 2
+  // catches a copy; chunkview.ts has no size threshold a larger N would
+  // cross. Rationale: chunkview.ts's header.
+  const N = 200;
   let model = streamingItem();
   let prevBacking: string[] | undefined;
   for (let i = 0; i < N; i++) {

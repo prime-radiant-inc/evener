@@ -318,8 +318,8 @@ func verifyPinnedBinary(path string, pin restartPin) error {
 	return nil
 }
 
-// result. installExtractedBinaries also installs "evener-dev" alongside it,
-// so the entry to exec into can't be assumed to be Installed[0].
+// evenerBinaryFrom returns the installed path of the evener binary in an
+// upgrade's Installed list, found by name rather than by position.
 func evenerBinaryFrom(channel string, installed []string) (string, error) {
 	for _, path := range installed {
 		if filepath.Base(path) == "evener" {

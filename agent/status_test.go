@@ -24,6 +24,7 @@ import (
 )
 
 func TestDetailedStatusUsesNamespacedSkillCatalogKey(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
 		"plugin:simplify": {CatalogName: "plugin:simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", Description: "rewrite", SkillFile: writeSkillBodyFile(t, "body")}},
@@ -575,6 +576,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 }
 
 func TestDetailedStatusJobRecords_OmitsLegacyDelegateActivations(t *testing.T) {
+	t.Parallel()
 	records := detailedStatusJobRecords([]*jobstore.JobRecord{{
 		JobID:  "job_exhausted",
 		Type:   jobstore.JobType(delegateResourceType),
@@ -909,6 +911,7 @@ func TestSessionOwnsDelegateCancellationDuringJournalFold(t *testing.T) {
 }
 
 func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
+	t.Parallel()
 	const rootID = "02wMz5Txv1C3Hut0M8GCeC"
 	const parentID = "02wMz5Txv1C3Hut0M8GCeD"
 	const childID = "02wMz5Txv1C3Hut0M8GCeE"

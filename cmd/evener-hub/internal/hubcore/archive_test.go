@@ -153,9 +153,9 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 
 	// Interleave a competing migrator between the caller's schema pre-check and
 	// its write lock: it upgrades the table and writes a source-qualified row.
-	previous := decisionMigrationInterleave
-	decisionMigrationInterleave = func() {
-		decisionMigrationInterleave = nil // the competing migration is one-shot
+	previous := indexMigrationInterleave
+	indexMigrationInterleave = func() {
+		indexMigrationInterleave = nil // the competing migration is one-shot
 		competing := NewArchiveStore(dbPath)
 		if _, err := competing.Decisions(); err != nil {
 			t.Errorf("competing migration: %v", err)
@@ -164,7 +164,7 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 			t.Errorf("competing set: %v", err)
 		}
 	}
-	t.Cleanup(func() { decisionMigrationInterleave = previous })
+	t.Cleanup(func() { indexMigrationInterleave = previous })
 
 	store := NewArchiveStore(dbPath)
 	got, err := store.Decisions()

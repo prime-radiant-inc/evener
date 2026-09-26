@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, expectTypeOf, test } from "vitest";
 import type {
   EvenerDiagnostics,

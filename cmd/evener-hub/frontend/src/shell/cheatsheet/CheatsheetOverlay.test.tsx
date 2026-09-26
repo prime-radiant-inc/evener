@@ -84,13 +84,15 @@ async function openDialog(): Promise<HTMLElement> {
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
-  // Await the lazy pane/dock modules once up front, then pay react-dom's
-  // per-boundary fallback throttle in one warm render - see
-  // keybindingsMigration.test.tsx's beforeAll for the full reasoning.
+  // Await the lazy pane/dock modules once up front, then initialize each
+  // lazy payload in one warm render - see keybindingsMigration.test.tsx's
+  // beforeAll for the full reasoning.
   await import("../../panes/welcome/Welcome");
   await import("../DockHost");
   window.history.pushState({}, "", "/");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByText("No session open", undefined, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();

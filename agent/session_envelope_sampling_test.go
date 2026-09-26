@@ -148,6 +148,7 @@ var envelopeSamplingPermittedLocks = map[string]string{
 // test edit: the method set is read off the interface type, so a method added
 // tomorrow is exercised tomorrow.
 func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if sess.subagents == nil {
 		t.Fatal("test session has no subagent manager; the subagent.mu case cannot be set up")
@@ -178,6 +179,7 @@ func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
 // subagent must be classified as permitted or forbidden before it can be
 // silently uncovered.
 func TestEverySamplingRelevantMutexIsClassified(t *testing.T) {
+	t.Parallel()
 	forbidden := map[string]bool{}
 	for _, lock := range envelopeSamplingForbiddenLocks {
 		forbidden[lock.String()] = true

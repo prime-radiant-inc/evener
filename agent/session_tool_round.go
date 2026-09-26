@@ -399,6 +399,8 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	haveResults := len(results) == len(calls)
 	lastFailure := ""
 	for i, call := range calls {
+		// RawArguments is always empty here: calls come from resp.ToolCalls()
+		// (value copies), before assistantHistoryMessage sets RawArguments.
 		*toolSigs = append(*toolSigs, call.Name+":"+shortHash(call.Arguments))
 		failed := haveResults && results[i].IsError
 		*toolSigFailed = append(*toolSigFailed, failed)

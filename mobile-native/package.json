@@ -10,6 +10,7 @@
     }
   },
   "dependencies": {
+    "@expo-google-fonts/source-serif-4": "0.4.1",
     "@react-navigation/elements": "^2.9.40",
     "@react-navigation/native": "^7.3.18",
     "@react-navigation/native-stack": "^7.18.10",
@@ -19,6 +20,7 @@
     "expo-clipboard": "~57.0.1",
     "expo-crypto": "~57.0.2",
     "expo-file-system": "~57.0.6",
+    "expo-font": "~57.0.4",
     "expo-image-manipulator": "~57.0.16",
     "expo-image-picker": "~57.0.16",
     "expo-secure-store": "~57.0.3",

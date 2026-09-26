@@ -18,7 +18,7 @@ import (
 // truncated/elided_turns report the budget elision honestly.
 // This is a flat envelope (no nested meta) per spec §"format: outline".
 type readOutlineEnvelope struct {
-	TranscriptRef string `json:"transcript_ref"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
 	Format        string `json:"format"`
 	TurnsTotal    int    `json:"turns_total"`
 	Content       string `json:"content"`

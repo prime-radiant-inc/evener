@@ -2063,6 +2063,17 @@ export interface NavigationSessionSummary {
   live: boolean;
   ask_pending?: boolean;
   dormant?: boolean;
+  /**
+   * Offline marks a row folded into the merged list from a source that is
+   * currently unreachable: its last-known rows stay visible, but they are not
+   * live and cannot serve host-targeted actions until the source reattaches.
+   * It is keyed off the row's source identity (HostID), never the row's own
+   * state, and is never set for the controller's own local rows.
+   *
+   * It sits BESIDE Dormant rather than reusing it: Dormant means the session
+   * has never run, and an offline row that ran must not read as "Not started".
+   */
+  offline?: boolean;
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
@@ -2462,6 +2473,19 @@ export interface SessionDeleteResponse {
   deleted: string[];
   skipped: DeletionSkip[];
   navigation: NavigationMutation;
+}
+
+export interface SessionImageParams {
+  sessionId: string;
+  sha?: string;
+  path?: string;
+}
+
+export interface SessionImageResponse {
+  mediaType: string;
+  size: number;
+  sha?: string;
+  data: string;
 }
 
 export interface SessionPinAssignParams {
@@ -3596,6 +3620,7 @@ export const METHOD_NAMES = [
   "evener/host/remove",
   "evener/host/update",
   "evener/host/pushCredentials",
+  "evener/session/image",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3808,6 +3833,7 @@ export interface MethodTypes {
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
+  "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }
 
 export interface NotificationTypes {

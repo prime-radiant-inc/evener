@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 func TestLoadMCPConfigFile_Basic(t *testing.T) {

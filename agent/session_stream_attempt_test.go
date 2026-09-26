@@ -17,6 +17,7 @@ import (
 // consumeModelStream, so no goroutine/synchronization is needed.
 
 func TestConsumeModelStream_Observation_ReasoningThenError(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	req := llm.Request{Provider: "openai", Model: "gpt-5.2"}
 	st := llm.NewChanStream(nil)
@@ -45,6 +46,7 @@ func TestConsumeModelStream_Observation_ReasoningThenError(t *testing.T) {
 }
 
 func TestConsumeModelStream_Observation_TextThenError(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	req := llm.Request{Provider: "openai", Model: "gpt-5.2"}
 	st := llm.NewChanStream(nil)
@@ -75,6 +77,7 @@ func TestConsumeModelStream_Observation_TextThenError(t *testing.T) {
 // "text + tool-arg bytes" salvage (spec: reasoning is never salvaged, but
 // tool-call argument deltas are, exactly like text).
 func TestConsumeModelStream_Observation_ToolArgsThenError(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	req := llm.Request{Provider: "openai", Model: "gpt-5.2"}
 	st := llm.NewChanStream(nil)
@@ -115,6 +118,7 @@ func TestConsumeModelStream_Observation_ToolArgsThenError(t *testing.T) {
 // makes the early-stop streak transparent to exactly the failure shape this
 // component exists to catch.
 func TestConsumeModelStream_Observation_ToolCallEndOnlyThenError(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	req := llm.Request{Provider: "google", Model: "gemini-3-pro"}
 	st := llm.NewChanStream(nil)
@@ -145,6 +149,7 @@ func TestConsumeModelStream_Observation_ToolCallEndOnlyThenError(t *testing.T) {
 // the full Phase/SalvagedBytes/Partial assertion set — a scenario can't be
 // added here without also covering all three.
 func TestConsumeModelStream_Observation_ZeroContentPhases(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		err            error
@@ -212,6 +217,7 @@ func TestConsumeModelStream_Observation_ZeroContentPhases(t *testing.T) {
 // tests) because the gaps must be observed as real elapsed time by the
 // consumer, not just queued ahead of it in the buffered channel.
 func TestConsumeModelStream_Observation_ContentWindowExcludesPrefixGap(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	req := llm.Request{Provider: "openai", Model: "gpt-5.2"}
 	st := llm.NewChanStream(nil)

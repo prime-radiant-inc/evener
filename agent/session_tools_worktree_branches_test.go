@@ -18,6 +18,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestShortSHA(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input, want string
 	}{
@@ -39,6 +40,7 @@ func TestShortSHA(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGitCmdError(t *testing.T) {
+	t.Parallel()
 	t.Run("with stderr", func(t *testing.T) {
 		err := &gitCmdError{code: 1, args: []string{"status"}, stderr: "not a repo"}
 		if !strings.Contains(err.Error(), "git status") {
@@ -76,6 +78,7 @@ func TestGitCmdError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPathEqualOrUnderMore(t *testing.T) {
+	t.Parallel()
 	t.Run("equal", func(t *testing.T) {
 		if !pathEqualOrUnder("/a/b/c", "/a/b/c") {
 			t.Fatalf("expected true for equal paths")
@@ -103,6 +106,7 @@ func TestPathEqualOrUnderMore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMetaDirForProject(t *testing.T) {
+	t.Parallel()
 	result := metaDirForProject("/project/dir")
 	if result != filepath.Join("/project/dir", ".meta") { //nolint:gocritic // test needs absolute path
 		t.Fatalf("metaDir = %q", result)
@@ -110,6 +114,7 @@ func TestMetaDirForProject(t *testing.T) {
 }
 
 func TestMetaDirForLaneMore(t *testing.T) {
+	t.Parallel()
 	result := metaDirForLane("/project/dir/lane")
 	if result != filepath.Join("/project/dir", ".meta") { //nolint:gocritic // test needs absolute path
 		t.Fatalf("metaDir = %q", result)
@@ -121,6 +126,7 @@ func TestMetaDirForLaneMore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeStateResolutionErrorNil(t *testing.T) {
+	t.Parallel()
 	st := worktreeState{}
 	if err := st.resolutionError("test"); err != nil {
 		t.Fatalf("expected nil for no error, got %v", err)
@@ -128,6 +134,7 @@ func TestWorktreeStateResolutionErrorNil(t *testing.T) {
 }
 
 func TestWorktreeStateResolutionErrorWithErr(t *testing.T) {
+	t.Parallel()
 	st := worktreeState{err: errors.New("resolve failed")}
 	err := st.resolutionError("list")
 	if err == nil {
@@ -146,6 +153,7 @@ func TestWorktreeStateResolutionErrorWithErr(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProjectIsGitCheckoutEmptyPath(t *testing.T) {
+	t.Parallel()
 	// Empty canonical path should return false
 	proj := identifierProjectWithCanonical("")
 	if projectIsGitCheckout(proj) {
@@ -154,6 +162,7 @@ func TestProjectIsGitCheckoutEmptyPath(t *testing.T) {
 }
 
 func TestProjectIsGitCheckoutNonExistent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	proj := identifierProjectWithCanonical(dir)
 	if projectIsGitCheckout(proj) {
@@ -162,6 +171,7 @@ func TestProjectIsGitCheckoutNonExistent(t *testing.T) {
 }
 
 func TestProjectIsGitCheckoutWithGit(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
@@ -182,6 +192,7 @@ func identifierProjectWithCanonical(path string) identifier.Project {
 // ---------------------------------------------------------------------------
 
 func TestCanonicalOrCleanNonExistent(t *testing.T) {
+	t.Parallel()
 	result := canonicalOrClean("/nonexistent/path")
 	if result != filepath.Clean("/nonexistent/path") {
 		t.Fatalf("expected cleaned path, got %q", result)
@@ -189,6 +200,7 @@ func TestCanonicalOrCleanNonExistent(t *testing.T) {
 }
 
 func TestCanonicalOrCleanExisting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	result := canonicalOrClean(dir)
 	if result == "" {
@@ -201,6 +213,7 @@ func TestCanonicalOrCleanExisting(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRelPathUnderManagedDir(t *testing.T) {
+	t.Parallel()
 	t.Run("under", func(t *testing.T) {
 		dir := t.TempDir()
 		sub := filepath.Join(dir, "subdir")
@@ -234,6 +247,7 @@ func TestRelPathUnderManagedDir(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsUnderManagedDir(t *testing.T) {
+	t.Parallel()
 	t.Run("under", func(t *testing.T) {
 		dir := t.TempDir()
 		sub := filepath.Join(dir, "sub")
@@ -264,6 +278,7 @@ func TestIsUnderManagedDir(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestManagedWorktreeExists(t *testing.T) {
+	t.Parallel()
 	t.Run("exists", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /somewhere"), 0644); err != nil {
@@ -291,6 +306,7 @@ func TestManagedWorktreeExists(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCtxCancelled(t *testing.T) {
+	t.Parallel()
 	t.Run("not cancelled", func(t *testing.T) {
 		if ctxCancelled(context.Background()) {
 			t.Fatalf("expected false for background context")
@@ -310,6 +326,7 @@ func TestCtxCancelled(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrunePolicy(t *testing.T) {
+	t.Parallel()
 	policy := prunePolicy()
 	if !policy.abortOnError {
 		t.Fatalf("expected abortOnError=true for prune")
@@ -327,6 +344,7 @@ func TestPrunePolicy(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBranchExists(t *testing.T) {
+	t.Parallel()
 	t.Run("exists", func(t *testing.T) {
 		run := func(args ...string) (string, error) {
 			return "", nil // no error = branch exists
@@ -350,6 +368,7 @@ func TestBranchExists(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveBaseFromActiveRootEmpty(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "abcdef1234567890\n", nil
 	}
@@ -363,6 +382,7 @@ func TestResolveBaseFromActiveRootEmpty(t *testing.T) {
 }
 
 func TestResolveBaseFromActiveRootWithRef(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "deadbeef\n", nil
 	}
@@ -376,6 +396,7 @@ func TestResolveBaseFromActiveRootWithRef(t *testing.T) {
 }
 
 func TestResolveBaseFromActiveRootDashPrefix(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "", nil
 	}
@@ -386,6 +407,7 @@ func TestResolveBaseFromActiveRootDashPrefix(t *testing.T) {
 }
 
 func TestResolveBaseFromActiveRootWhitespace(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "", nil
 	}
@@ -396,6 +418,7 @@ func TestResolveBaseFromActiveRootWhitespace(t *testing.T) {
 }
 
 func TestResolveBaseFromActiveRootUnresolvable(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "", errors.New("unknown ref")
 	}
@@ -406,6 +429,7 @@ func TestResolveBaseFromActiveRootUnresolvable(t *testing.T) {
 }
 
 func TestResolveBaseFromActiveRootEmptySHA(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) (string, error) {
 		return "  \n", nil
 	}
@@ -420,6 +444,7 @@ func TestResolveBaseFromActiveRootEmptySHA(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckoutLocationOf(t *testing.T) {
+	t.Parallel()
 	t.Run("found", func(t *testing.T) {
 		run := func(args ...string) (string, error) {
 			return "worktree /path/to/wt\nHEAD abcdef\nbranch refs/heads/mybranch\n", nil
@@ -457,6 +482,7 @@ func TestCheckoutLocationOf(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPartitionWorktreeListEntries(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Name: "managed1", HasMetadata: true},
 		{Name: "unmanaged1", HasMetadata: false},
@@ -473,6 +499,7 @@ func TestPartitionWorktreeListEntries(t *testing.T) {
 }
 
 func TestPartitionWorktreeListEntriesEmpty(t *testing.T) {
+	t.Parallel()
 	managed, unmanaged := partitionWorktreeListEntries(nil)
 	if len(managed) != 0 || len(unmanaged) != 0 {
 		t.Fatalf("expected empty results")
@@ -480,6 +507,7 @@ func TestPartitionWorktreeListEntriesEmpty(t *testing.T) {
 }
 
 func TestPartitionWorktreeListEntriesAllManaged(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{{Name: "a", HasMetadata: true}}
 	managed, unmanaged := partitionWorktreeListEntries(entries)
 	if len(managed) != 1 || len(unmanaged) != 0 {
@@ -488,6 +516,7 @@ func TestPartitionWorktreeListEntriesAllManaged(t *testing.T) {
 }
 
 func TestPartitionWorktreeListEntriesAllUnmanaged(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{{Name: "a", HasMetadata: false}}
 	managed, unmanaged := partitionWorktreeListEntries(entries)
 	if len(managed) != 0 || len(unmanaged) != 1 {
@@ -500,6 +529,7 @@ func TestPartitionWorktreeListEntriesAllUnmanaged(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeUnmanagedEntryToMap(t *testing.T) {
+	t.Parallel()
 	e := WorktreeListEntry{
 		Path:           "/path/to/wt",
 		Branch:         "mybranch",
@@ -536,6 +566,7 @@ func TestWorktreeUnmanagedEntryToMap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeUnmanagedSummaryEmpty(t *testing.T) {
+	t.Parallel()
 	if worktreeUnmanagedSummary(nil) != "" {
 		t.Fatalf("expected empty for nil")
 	}
@@ -545,6 +576,7 @@ func TestWorktreeUnmanagedSummaryEmpty(t *testing.T) {
 }
 
 func TestWorktreeUnmanagedSummaryWithBranch(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Path: "/path/a", Branch: "feature"},
 	}
@@ -561,6 +593,7 @@ func TestWorktreeUnmanagedSummaryWithBranch(t *testing.T) {
 }
 
 func TestWorktreeUnmanagedSummaryWithDetachedHead(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Path: "/path/a", Branch: ""},
 	}
@@ -575,6 +608,7 @@ func TestWorktreeUnmanagedSummaryWithDetachedHead(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeListSummaryEmpty(t *testing.T) {
+	t.Parallel()
 	result := worktreeListSummary(nil, nil)
 	if !strings.Contains(result, "0 managed worktree(s)") {
 		t.Fatalf("expected '0 managed' in summary: %q", result)
@@ -582,6 +616,7 @@ func TestWorktreeListSummaryEmpty(t *testing.T) {
 }
 
 func TestWorktreeListSummaryWithEntries(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Name: "wt1", AheadCommits: 5, Dirty: false, Merged: true},
 	}
@@ -604,6 +639,7 @@ func TestWorktreeListSummaryWithEntries(t *testing.T) {
 }
 
 func TestWorktreeListSummaryDirtyUnknown(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Name: "wt1", AheadUnknown: true, DirtyUnknown: true, Merged: false},
 	}
@@ -653,6 +689,7 @@ func TestWorktreeListZeroAheadLaneNotMergedThroughList(t *testing.T) {
 }
 
 func TestWorktreeListSummaryWithUnmanaged(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Name: "wt1", AheadCommits: 0, Merged: true},
 	}
@@ -671,6 +708,7 @@ func TestWorktreeListSummaryWithUnmanaged(t *testing.T) {
 // because isAncestor(base, main) is trivially true but is not evidence of a
 // merge.
 func TestWorktreeListSummaryZeroAheadNotMerged(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Name: "fresh-lane", AheadCommits: 0, Dirty: false, Merged: false},
 	}
@@ -698,6 +736,7 @@ func TestWorktreeListSummaryZeroAheadNotMerged(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeListEntryToMap(t *testing.T) {
+	t.Parallel()
 	e := WorktreeListEntry{
 		Name:           "wt1",
 		Path:           "/path",
@@ -739,6 +778,7 @@ func TestWorktreeListEntryToMap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreePruneEntryToMap(t *testing.T) {
+	t.Parallel()
 	e := WorktreePruneEntry{
 		Name:            "wt1",
 		Path:            "/path",
@@ -773,6 +813,7 @@ func TestWorktreePruneEntryToMap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDisposableReasonUnchanged(t *testing.T) {
+	t.Parallel()
 	run := worktree.GitRunner(func(args ...string) (string, error) {
 		return "", nil
 	})
@@ -783,6 +824,7 @@ func TestDisposableReasonUnchanged(t *testing.T) {
 }
 
 func TestDisposableReasonGitError(t *testing.T) {
+	t.Parallel()
 	run := worktree.GitRunner(func(args ...string) (string, error) {
 		return "", errors.New("git failed")
 	})
@@ -797,6 +839,7 @@ func TestDisposableReasonGitError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWorktreeCreateCoreResultStruct(t *testing.T) {
+	t.Parallel()
 	r := worktreeCreateCoreResult{
 		Path:     "/path",
 		Branch:   "branch",
@@ -813,6 +856,7 @@ func TestWorktreeCreateCoreResultStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestManagedEntryStruct(t *testing.T) {
+	t.Parallel()
 	e := managedEntry{
 		Path: "/path",
 		Name: "wt1",
@@ -827,6 +871,7 @@ func TestManagedEntryStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLockStateFromPorcelain(t *testing.T) {
+	t.Parallel()
 	t.Run("empty porcelain", func(t *testing.T) {
 		locked, reason := lockStateFromPorcelain(nil, "/path")
 		if locked {
@@ -843,6 +888,7 @@ func TestLockStateFromPorcelain(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRootOnlySubagentToolsIncludesJobControl(t *testing.T) {
+	t.Parallel()
 	tools := rootOnlySubagentTools()
 	// Should include items from rootOnlyJobControlTools too
 	// Just verify it's non-empty and contains expected tools

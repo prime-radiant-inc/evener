@@ -16,6 +16,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestClientMutationQueueConstants(t *testing.T) {
+	t.Parallel()
 	if clientMutationMethodQueue != "turn/queue" {
 		t.Fatalf("clientMutationMethodQueue = %q", clientMutationMethodQueue)
 	}
@@ -38,6 +39,7 @@ func TestClientMutationQueueConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAcceptedClientMutationProjection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		method string
 		want   appwire.MutationProjectionState
@@ -65,6 +67,7 @@ func TestAcceptedClientMutationProjection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMutationReceipt(t *testing.T) {
+	t.Parallel()
 	record := clientMutationRecord{
 		ClientMutationID:    "cm_123",
 		StableTurnID:        "turn_456",
@@ -92,6 +95,7 @@ func TestMutationReceipt(t *testing.T) {
 }
 
 func TestMutationReceiptEmpty(t *testing.T) {
+	t.Parallel()
 	receipt := mutationReceipt("t", clientMutationRecord{}, appwire.MutationDispositionReplayed, appwire.MutationProjectionReflected)
 	if receipt.ClientMutationID != "" || receipt.TurnID != "" {
 		t.Fatalf("expected empty fields")
@@ -106,6 +110,7 @@ func TestMutationReceiptEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApplyClientMutationRecord(t *testing.T) {
+	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_1"}
 	result := json.RawMessage(`{"key":"val"}`)
 	applyClientMutationRecord(record, result, appwire.MutationProjectionPending)
@@ -128,6 +133,7 @@ func TestApplyClientMutationRecord(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRejectClientMutationWithWireError(t *testing.T) {
+	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_1"}
 	wireErr := appwire.Conflict("some conflict")
 	rejectClientMutation(record, wireErr)
@@ -152,6 +158,7 @@ func TestRejectClientMutationWithWireError(t *testing.T) {
 }
 
 func TestRejectClientMutationWithNonWireError(t *testing.T) {
+	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_2"}
 	// A plain error (not a WireError) should be wrapped as Conflict
 	rejectClientMutation(record, errors.New("plain error"))
@@ -164,6 +171,7 @@ func TestRejectClientMutationWithNonWireError(t *testing.T) {
 }
 
 func TestRejectClientMutationDataHasClientMutationID(t *testing.T) {
+	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_3"}
 	rejectClientMutation(record, appwire.InvalidParams("bad params"))
 	if record.Rejection.Data.ClientMutationID != "cm_3" {
@@ -182,6 +190,7 @@ func TestRejectClientMutationDataHasClientMutationID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationRejectionError(t *testing.T) {
+	t.Parallel()
 	t.Run("with rejection", func(t *testing.T) {
 		record := clientMutationRecord{
 			Rejection: &clientMutationRejection{
@@ -219,6 +228,7 @@ func TestClientMutationRejectionError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReservedClientMutationTurns(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		snap := &clientMutationSnapshot{}
 		if n := reservedClientMutationTurns(snap); n != 0 {
@@ -243,6 +253,7 @@ func TestReservedClientMutationTurns(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestQueueResponseFromRecord(t *testing.T) {
+	t.Parallel()
 	t.Run("with result", func(t *testing.T) {
 		resultJSON := `{"receipt":{"client_mutation_id":"cm_1"}}`
 		record := clientMutationRecord{
@@ -295,6 +306,7 @@ func TestQueueResponseFromRecord(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestQueuedInputFromClientMutation(t *testing.T) {
+	t.Parallel()
 	t.Run("text only", func(t *testing.T) {
 		entry := clientMutationQueueEntry{
 			ID:    "q_1",
@@ -380,6 +392,7 @@ func TestQueuedInputFromClientMutation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationInput(t *testing.T) {
+	t.Parallel()
 	t.Run("text only", func(t *testing.T) {
 		input := clientMutationInput("hello", nil, nil)
 		if len(input) != 1 {
@@ -430,6 +443,7 @@ func TestClientMutationInput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneClientMutationInput(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		dst := cloneClientMutationInput(nil)
 		if len(dst) != 0 {
@@ -472,6 +486,7 @@ func TestCloneClientMutationInput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationQueueIDs(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		ids := clientMutationQueueIDs(nil)
 		if len(ids) != 0 {
@@ -499,6 +514,7 @@ func TestClientMutationQueueIDs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationQueueEntryIndex(t *testing.T) {
+	t.Parallel()
 	entries := []clientMutationQueueEntry{
 		{ID: "q_1"},
 		{ID: "q_2"},
@@ -526,6 +542,7 @@ func TestClientMutationQueueEntryIndex(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationQueueEntryReserved(t *testing.T) {
+	t.Parallel()
 	t.Run("not reserved", func(t *testing.T) {
 		snap := &clientMutationSnapshot{
 			Journal: map[string]clientMutationRecord{},
@@ -580,6 +597,7 @@ func TestClientMutationQueueEntryReserved(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTakeClientMutationQueueEntries(t *testing.T) {
+	t.Parallel()
 	queue := []clientMutationQueueEntry{
 		{ID: "q_1"},
 		{ID: "q_2"},
@@ -643,6 +661,7 @@ func TestTakeClientMutationQueueEntries(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemoveQueuedMutationSource(t *testing.T) {
+	t.Parallel()
 	t.Run("existing record", func(t *testing.T) {
 		snap := &clientMutationSnapshot{
 			BudgetReservations: map[string]clientMutationBudgetReservation{
@@ -696,6 +715,7 @@ func TestRemoveQueuedMutationSource(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemoveClientMutationSteeringOrder(t *testing.T) {
+	t.Parallel()
 	t.Run("found and removed", func(t *testing.T) {
 		snap := &clientMutationSnapshot{
 			SteeringOrder: []string{"cm_1", "cm_2", "cm_3"},
@@ -749,6 +769,7 @@ func TestRemoveClientMutationSteeringOrder(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReserveClientMutationTurnID(t *testing.T) {
+	t.Parallel()
 	snap := &clientMutationSnapshot{NextTurnSequence: 5}
 	record := &clientMutationRecord{ClientMutationID: "cm_1"}
 	reserveClientMutationTurnID(snap, record)
@@ -765,6 +786,7 @@ func TestReserveClientMutationTurnID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReplayClientMutationResult(t *testing.T) {
+	t.Parallel()
 	t.Run("valid result", func(t *testing.T) {
 		record := clientMutationRecord{Result: json.RawMessage(`{"key":"val"}`)}
 		var dest map[string]any
@@ -799,6 +821,7 @@ func TestReplayClientMutationResult(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAddPendingSteering(t *testing.T) {
+	t.Parallel()
 	snap := &clientMutationSnapshot{
 		PendingExecutions: map[string]appwire.PendingMutation{},
 	}
@@ -835,6 +858,7 @@ func TestAddPendingSteering(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientSteeringFromSnapshot(t *testing.T) {
+	t.Parallel()
 	t.Run("with accepted steering", func(t *testing.T) {
 		snap := &clientMutationSnapshot{
 			SteeringOrder: []string{"cm_1", "cm_2"},
@@ -897,6 +921,7 @@ func TestClientSteeringFromSnapshot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCombineClientMutationInputs(t *testing.T) {
+	t.Parallel()
 	t.Run("entries only", func(t *testing.T) {
 		entries := []clientMutationQueueEntry{
 			{Input: []appwire.InputItem{{Type: "text", Text: "msg1"}}},
@@ -984,6 +1009,7 @@ func TestCombineClientMutationInputs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReturnClaimedQueuedMutation(t *testing.T) {
+	t.Parallel()
 	t.Run("valid return", func(t *testing.T) {
 		snap := &clientMutationSnapshot{
 			InputQueue: []clientMutationQueueEntry{
@@ -1079,6 +1105,7 @@ func TestReturnClaimedQueuedMutation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationTranscriptItemsStruct(t *testing.T) {
+	t.Parallel()
 	items := clientMutationTranscriptItems{
 		StableTurnID: "turn_1",
 		User:         true,
@@ -1094,6 +1121,7 @@ func TestClientMutationTranscriptItemsStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationProjectionNilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	queue, pending := s.ClientMutationProjection()
 	if queue.Depth != 0 {
@@ -1109,6 +1137,7 @@ func TestClientMutationProjectionNilSession(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationProjectionNilStore(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	queue, pending := s.ClientMutationProjection()
 	if queue.Depth != 0 {
@@ -1124,6 +1153,7 @@ func TestClientMutationProjectionNilStore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRecoverClientMutationFailuresNil(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if err := s.recoverClientMutationFailures(true); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -1131,6 +1161,7 @@ func TestRecoverClientMutationFailuresNil(t *testing.T) {
 }
 
 func TestRecoverClientMutationFailuresNilStore(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if err := s.recoverClientMutationFailures(true); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -1147,6 +1178,7 @@ func TestRecoverClientMutationFailuresNilStore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRejectClientMutationPreservesCode(t *testing.T) {
+	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_1"}
 	wireErr := appwire.Conflict("test")
 	rejectClientMutation(record, wireErr)
@@ -1160,6 +1192,7 @@ func TestRejectClientMutationPreservesCode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientMutationProjectionPopulated(t *testing.T) {
+	t.Parallel()
 	// We can't easily create a Session with a real clientMutations store
 	// without state dir, so test the projection indirectly through
 	// the snapshot structure.
@@ -1196,6 +1229,7 @@ func TestClientMutationProjectionPopulated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestQueuedEntryPreviewLineIntegration(t *testing.T) {
+	t.Parallel()
 	t.Run("text", func(t *testing.T) {
 		preview := queuedEntryPreviewLine(queuedInput{Text: "first line\nsecond line"})
 		if preview != "first line" {
@@ -1227,6 +1261,7 @@ func TestQueuedEntryPreviewLineIntegration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRejectClientMutationWithInvalidParams(t *testing.T) {
+	t.Parallel()
 	record := &clientMutationRecord{ClientMutationID: "cm_invalid"}
 	rejectClientMutation(record, appwire.InvalidParams("bad input"))
 	if record.Rejection == nil {

@@ -27,6 +27,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
@@ -94,20 +95,14 @@ function nextHandledRequest<M extends MethodName>(
 // caller's own catch, and nothing fails when that assumption stops holding -
 // the caller instead converges through the "adopt a replacement read already in
 // flight" arm and the test silently stops covering the owner's wait. A task
-// callback, by contrast, is specified to run only after the microtask
-// checkpoint has drained completely, including microtasks queued by other
-// microtasks. So this holds however many turns that path grows.
+// yield holds however many turns that path grows (see nextMacrotask).
 //
 // Its one boundary: it does not cover a future change that parks the caller
 // behind a task or I/O of its own (an IndexedDB read on the rejection path,
 // say). That would need its own awaited condition, and the mutation proof in
 // this task's report - which fires each owner-wait arm and requires the
 // matching test to fail - is what would catch it.
-function settleCallerContinuations(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
-}
+const settleCallerContinuations = nextMacrotask;
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -8941,23 +8936,27 @@ test("a new message composed after a saved snapshot can still dispatch", async (
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
-test("a message composed during a saved read dispatches its first delivery", async () => {
-  const fake = connectFakeClient("connecting");
-  const saved = deferred<ThreadReadResponse>();
-  fake.on("thread/read", () => saved.promise);
-  const delivered = deferred<void>();
-  fake.on("turn/queue", (params) => {
-    delivered.resolve();
-    return { receipt: mutationReceipt(params.clientMutationId) };
-  });
-  fake.emitReady();
-  const hydration = threadsStore.getState().ensureThread("ref_a");
-  await threadsStore.getState().queue("ref_a", "new message during hydration");
-  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
-  saved.resolve(readResponse("ref_a", { status: { type: "notLoaded" } }));
-  await hydration;
-  await delivered.promise;
-  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+test("a message composed during a saved read dispatches when the read completes", async () => {
+  // The outbox's periodic scan would also find this message, seconds later.
+  // With the interval faked and never advanced, only the hydration's own
+  // completion can deliver it.
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient("connecting");
+    const saved = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => saved.promise);
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    const hydration = threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().queue("ref_a", "new message during hydration");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    saved.resolve(readResponse("ref_a", { status: { type: "notLoaded" } }));
+    await hydration;
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("reload after a failed restart write reconciles persisted uncertainty with the resumed daemon", async () => {

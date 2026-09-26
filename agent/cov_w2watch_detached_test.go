@@ -62,6 +62,7 @@ func w2watch_failAppendEventsOnKind(jm *jobManager, kind jobstore.EventKind, err
 // drains that pending durably; when the drain append fails the clear returns the
 // error and leaves the detached config reachable for retry (rejecting rolled back).
 func TestW2Watch_clearWatchByIDMatchingDetachedAppendError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	const watchID = "w_detached"
 	detached := w2watch_seedDetachedPending(t, jm, watchID, "job_x", "dlg_obs")
@@ -89,6 +90,7 @@ func TestW2Watch_clearWatchByIDMatchingDetachedAppendError(t *testing.T) {
 // that pending first; when that drain append fails the install aborts with the
 // error and no live watch is registered.
 func TestW2Watch_configureWatchNewWithDetachedAppendError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
@@ -121,6 +123,7 @@ func TestW2Watch_configureWatchNewWithDetachedAppendError(t *testing.T) {
 // on the same key drains that residue; when the drain append fails the reconfigure
 // returns the error and the existing live watch is untouched.
 func TestW2Watch_configureWatchEqualWithDetachedAppendError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})

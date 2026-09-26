@@ -315,11 +315,11 @@ func TestProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	pins := hubcore.NewPinSectionStore(dbPath)
-	section, _, err := pins.CreateOrReuseAndAssign("Research", deletedID, timeNowForTest())
+	section, _, err := pins.CreateOrReuseAndAssign("Research", "", deletedID, timeNowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := pins.Assign(section.ID, skippedID, timeNowForTest()); err != nil {
+	if _, _, err := pins.Assign(section.ID, "", skippedID, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: pins, Roster: hubcore.NewRosterWithEntries()})
@@ -341,10 +341,10 @@ func TestProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := assignments[deletedID]; ok {
+	if _, ok := assignments[hubcore.SessionPinKey("", deletedID)]; ok {
 		t.Fatalf("deleted assignment survived: %+v", assignments)
 	}
-	if _, ok := assignments[skippedID]; !ok {
+	if _, ok := assignments[hubcore.SessionPinKey("", skippedID)]; !ok {
 		t.Fatalf("skipped assignment removed: %+v", assignments)
 	}
 }
@@ -367,7 +367,7 @@ func TestProjectDeleteReportsPinStoreCleanupError(t *testing.T) {
 		t.Fatal(err)
 	}
 	pins := hubcore.NewPinSectionStore(dbPath)
-	if _, _, err := pins.CreateOrReuseAndAssign("Research", webTestSessionID, timeNowForTest()); err != nil {
+	if _, _, err := pins.CreateOrReuseAndAssign("Research", "", webTestSessionID, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 	pins.SetFs(failingMkdirAllFS{Fs: afero.NewOsFs(), err: errors.New("forced pin cleanup failure")})
