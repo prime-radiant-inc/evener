@@ -67,7 +67,7 @@ const (
 //
 //	stop   active && interrupt  (the hub advertises interrupt as harness support)
 //	steer  active && steer      (the hub advertises steer as harness support)
-//	drain  steer && (active || idle with a non-empty queue, the one a Stop parked),
+//	drain  steer && (active || resting with a non-empty queue, the one a Stop parked),
 //	       and not while the queue revision is stale after a partial drain
 //	queue  active && queue      (the hub advertises queue as harness support)
 //	send   !active && send      (the hub folds the status into send; the status is

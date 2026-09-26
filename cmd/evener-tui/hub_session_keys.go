@@ -532,8 +532,8 @@ func (m hubModel) restoreInstructionMessage() string {
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	if controls := m.sessionControls(); !controls.drain {
-		// A plain idle composer with nothing queued: silently no-op so the
-		// keybind doesn't fight with idle-state composing. Anything else --
+		// A plain resting composer with nothing queued: silently no-op so the
+		// keybind doesn't fight with resting-state composing. Anything else --
 		// a queue, a running turn, a harness without steer, a syncing revision
 		// -- gets the twin's own reason for refusing.
 		if appwire.IsRestingThreadStatus(m.detail.State) && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {

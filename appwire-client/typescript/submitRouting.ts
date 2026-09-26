@@ -79,13 +79,13 @@ export function decideSteerRoute(opts: {
 //          route; the daemon would accept a steer while idle but it lands in
 //          the next turn.
 //   drain  turn/drainAsSteer and turn/promoteQueuedAsSteer: steer && (active
-//          || idle with a non-empty queue). A Stop parks the daemon's queue
+//          || resting with a non-empty queue). A Stop parks the daemon's queue
 //          (agent/session_client_mutation.go QueueHeld); the entries stay and
-//          the session reports idle with a queue, which an unparked queue
-//          never does (agent/session_state.go WireState upgrades idle to
+//          the session reports resting with a queue, which an unparked queue
+//          never does (agent/session_state.go WireState upgrades resting to
 //          active on pending queued work). A drain or promote is one of the
 //          runs that releases it (agent/session_client_mutation_queue.go,
-//          no status precondition). Idle only: awaiting with a queue is the
+//          no status precondition). Resting only: awaiting with a queue is the
 //          ask boundary and that queue runs next on its own.
 //   queue  turn/queue: active && queue.
 //   send   turn/start: !active && send. The composer routes Send through
