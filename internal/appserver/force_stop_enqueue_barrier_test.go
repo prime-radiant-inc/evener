@@ -9,6 +9,29 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// parkSendLoopLeavingRoom mirrors parkSendLoopWithFullBuffer (which fills the
+// outbound buffer to capacity) but stops once exactly room slots remain
+// free. The backpressure test needs two: one for the first force stop's own
+// response, so its enqueue does not itself block (only beforeSend's clear
+// waits behind the backlog), and one for the second force stop's response,
+// so that response landing in the channel is an observable, race-free signal
+// that the server has already decided its fate.
+func parkSendLoopLeavingRoom(t *testing.T, server *Server, gate *gatedSendTransport, room int) *Connection {
+	t.Helper()
+	conn := registeredConnection(t, server)
+	gate.gated.Store(true)
+	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+		t.Fatal("could not enqueue the first fill notification")
+	}
+	waitFor(t, "send loop to park in the gated Send", gate.blocked)
+	for cap(conn.send)-len(conn.send) > room {
+		if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+			t.Fatalf("outbound buffer filled before reaching the target of %d free slots", room)
+		}
+	}
+	return conn
+}
+
 // TestHandleRecoveredCoversOnResponsePanic pins a roborev finding against
 // #2469: splitting handleAndEnqueue into handleRecovered (a panic barrier
 // around HandleMessage) plus a separate enqueueDispatched call narrowed the
@@ -151,12 +174,29 @@ func TestClearRecoveryOnPanicRollsBackBusyFlagBeforeRepanicking(t *testing.T) {
 // fix established (the clear still strictly precedes transmission) while
 // restoring the one-at-a-time bound.
 //
-// This test gates the outbound transport and fills the send buffer so the
-// first force stop's response enqueue genuinely blocks (a full channel with a
-// parked drain side blocks unconditionally — this isn't timing-dependent),
-// then asserts a second, concurrent force stop is refused while the first is
-// still stuck, and that releasing the transport lets the first complete and
-// a subsequent force stop succeed again.
+// This test gates the outbound transport and fills the send buffer, leaving
+// exactly two slots free, so the first force stop's response enqueue
+// genuinely blocks behind the backlog (a full-minus-two channel with a
+// parked drain side blocks unconditionally once those two slots fill — this
+// isn't timing-dependent), then asserts a second, concurrent force stop is
+// refused while the first is still stuck, and that releasing the transport
+// lets the first complete and a subsequent force stop succeed again.
+//
+// The two free slots are the test's synchronization point (a roborev finding
+// against an earlier version of this test, which sent the second force stop
+// and released the transport gate immediately, racing the gate release
+// against the receive loop's own scheduling: nothing confirmed the second
+// force stop had actually been decided before the drain could clear
+// recoveryRunning out from under it). The first slot is the first force
+// stop's own response, whose enqueue can complete without blocking (the
+// backpressure under test is beforeSend not having run yet, not the enqueue
+// itself); the second is whatever response the second force stop
+// produces — a busy refusal if the flag correctly held, or a real success if
+// it didn't. Either way, that response can only be sitting in the channel
+// once the server has fully decided the second force stop's fate, so waiting
+// for the buffer to fill again is a race-free barrier: it happens before the
+// gate is released, and only afterward do we drain the frames and assert
+// which outcome occurred.
 func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	gate := &gatedSendTransport{blocked: make(chan struct{}, 1), release: make(chan struct{})}
@@ -170,7 +210,7 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 	httpServer := serveWebSocketHTTP(t, server)
 	transport := dialRawAppWire(t, httpServer)
 	initializeRaw(t, transport)
-	conn := parkSendLoopWithFullBuffer(t, server, gate)
+	conn := parkSendLoopLeavingRoom(t, server, gate, 2)
 	frames := collectFrames(transport)
 
 	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
@@ -187,6 +227,9 @@ func TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue(t *testing.T) {
 	}
 
 	sendRaw(t, transport, rawRequest(t, 3, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}))
+	waitUntil(t, "the second force stop's response to be enqueued (proving the server decided its fate before the transport gate is released)", func() bool {
+		return len(conn.send) == cap(conn.send)
+	})
 
 	close(gate.release)
 	var sawBusyRefusal, sawFirstSuccess bool
