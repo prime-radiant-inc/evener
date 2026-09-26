@@ -14,6 +14,26 @@ authoritative and were verified on the implementation branches
 a non-Go line reference survives (docs, `install.sh`, Makefiles) treat it as a
 hint, not as pinning; the reviewer's base is `origin/main`.
 
+> **Partial supersession (2026-09-26) — the guarded ad hoc restart is
+> restored.** The 2026-09-26 ruling *"Keep the ad hoc path — restore the
+> capability"* reverses the two refusals that acceptance criteria 19–20 and
+> the refusal prose of §"Stop/restart mechanics" require. A hub with **no
+> supervisor**, and a detected launchd supervisor whose restart command
+> **cannot be built safely** (no numeric uid, or a label outside the bare-safe
+> set), restart through the **guarded ad hoc path** — recover the listening
+> pid, its argv, and its log, `kill`, wait for the port to clear and the
+> process to exit, then relaunch detached (`restartBare` → `waitHealthy` →
+> `clearPendingRestart`, `sshconn/version.go`) — instead of refusing with
+> `ErrRestart`. The label is still never interpolated into the remote shell,
+> and a detected supervisor is still preferred whenever its restart command can
+> be built. The identification/signal PID-reuse window described under
+> §"Stop/restart mechanics" ("Limit: identification and signal are separate
+> host commands") is **accepted**: the shipped path validates at identification
+> time only, and neither a compare-and-kill nor any signal-time re-read is
+> implemented. The cold-bootstrap **start** (`bootstrapHub`) is unchanged.
+> Superseded text below is retained for history. Shipped by #2450, reversing
+> #2410.
+
 ## Purpose
 
 Turn one `[[hosts]]` entry (component 03) into a live, owned AppWire channel to
@@ -1370,8 +1390,9 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   plus the "refuse to start when a hub already owns the address" pre-check
   (`runningKnown`) is the substitute.
 
-  **Limit: identification and signal are separate host commands, so there is a
-  PID-reuse window.** Every check above is its own command over the ssh seam —
+  **Limit (accepted 2026-09-26 — see the partial-supersession note at the top of
+  this spec): identification and signal are separate host commands, so there is
+  a PID-reuse window.** Every check above is its own command over the ssh seam —
   `lsof` for the listener, `ps` for the argv, further probes for user and
   socket — and the `kill` is one more command issued after them. Nothing binds
   the identified process to the signal atomically: between the `ps` read and
@@ -1852,12 +1873,18 @@ with the remote hub and its daemons still running.
     (symlinks resolved with `resolvePathScript`) compared to the host's single
     resolved `run_path` / unit `ExecStart`, so a valid custom `evener_path`
     basename restarts; a non-hub executable still refuses.
-19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
+19. **(Reversed 2026-09-26 — see the partial-supersession note at the top of
+    this spec: an unsafe label now falls through to the guarded ad hoc path,
+    which never interpolates the label.)** The supervised darwin restart passes
+    `gui/<numeric-uid>/<label>` as one
     bare-safe word (uid from preflight), and a label outside the bare-safe set
     **refuses with `ErrRestart` (no signal, no relaunch)** instead of falling
     through to an unmanaged ad hoc launch; no `$(id -u)` reaches the remote
     shell.
-20. Restart safety is hardened against the identification/signal PID-reuse
+20. **(Reversed 2026-09-26 — see the partial-supersession note at the top of
+    this spec: the guarded ad hoc restart is restored and the
+    identification/signal window below is accepted; no compare-and-kill is
+    implemented.)** Restart safety is hardened against the identification/signal PID-reuse
     window. The signal is a **guarded compare-and-kill**: the pid, recovered
     argv (with `--config`/`--addr` agreeing with the entry's configured
     `config_path`/`addr` after loopback normalization), effective user, and
