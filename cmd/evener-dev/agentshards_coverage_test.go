@@ -579,6 +579,36 @@ func TestReplaySurveyFailuresKeepsFullOrdinaryTailWithoutParentDiagnostic(t *tes
 	}
 }
 
+func TestReplaySurveyFailuresKeepsFullOrdinaryTailWithoutFailedChildDiagnostic(t *testing.T) {
+	const parentDiagnostic = "    parent_test.go:10: parent assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/sibling\n")
+	log.WriteString("    sibling_test.go:1: older sibling diagnostic\n")
+	log.WriteString("--- PASS: TestParent/sibling (0.00s)\n")
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString("--- PASS: TestParent/child (0.00s)\n")
+	log.WriteString(parentDiagnostic + "\n")
+	for i := 1; i < surveyContextBefore; i++ {
+		fmt.Fprintf(&log, "    output line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if strings.Contains(got, "older sibling diagnostic") {
+		t.Fatalf("older sibling diagnostic was substituted into the ordinary tail: %q", got)
+	}
+	if !strings.Contains(got, parentDiagnostic) {
+		t.Fatalf("parent diagnostic was omitted from the ordinary tail: %q", got)
+	}
+	for i := 1; i < surveyContextBefore; i++ {
+		line := fmt.Sprintf("output line %d", i)
+		if !strings.Contains(got, line) {
+			t.Fatalf("ordinary parent output line %q was omitted from the full tail: %q", line, got)
+		}
+	}
+}
+
 func TestReplaySurveyFailuresFindsFailedChildBeyondAfterWindow(t *testing.T) {
 	const childDiagnostic = "    child_test.go:5: child failure"
 	var log strings.Builder
