@@ -17,7 +17,7 @@ import (
 func fuzzScenarioBuildTree_CarriesTaskProgressOnEveryRow(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	progress := func(description string) *appwire.TaskAggregate {
-		return &appwire.TaskAggregate{Total: 7, Done: 3, Remaining: 4, Current: &appwire.TaskSummary{ID: 4, Description: description}}
+		return taskProgress(7, 3, 0, &appwire.TaskSummary{ID: 4, Description: description})
 	}
 	workingDir := schema.EnvironmentInfo{WorkingDir: "/projects/evener"}
 	metas := []schema.SessionMeta{
@@ -45,12 +45,7 @@ func fuzzScenarioBuildTree_CarriesTaskProgressOnEveryRow(t *testing.T) {
 	if len(projectRow.Children) != 1 || projectRow.Children[0].ID != "01HELPER" || projectRow.Children[0].Tasks != nil {
 		t.Errorf("subagent rows = %+v, want 01HELPER without its parent's task progress", projectRow.Children)
 	}
-	unindexed, found := TreeNode{}, false
-	for _, node := range tree.Live {
-		if node.ID == "01UNINDEXED" {
-			unindexed, found = node, true
-		}
-	}
+	unindexed, found, _, _ := liveAndProjectRowsFor(tree, "01UNINDEXED")
 	if !found || !reflect.DeepEqual(unindexed.Tasks, progress("Land the fix")) {
 		t.Errorf("Live leaf of the unindexed session = %+v (found %v), want its own task progress", unindexed, found)
 	}

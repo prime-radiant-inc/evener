@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -67,20 +66,13 @@ func TestNavigationProjectionCarriesTaskProgress(t *testing.T) {
 		t.Fatalf("long current task = %+v, want it cut to %d runes", cut, maxNavigationLabelRunes)
 	}
 
-	encoded, err := json.Marshal(rows["session-planned"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wire := `"tasks":{"total":7,"done":2,"cancelled":1,"current_id":4,"current":"Fix the settle/drain race"}`; !strings.Contains(string(encoded), wire) {
-		t.Errorf("planned row on the wire = %s, want it to carry %s", encoded, wire)
+	planned := navigationSummaryJSONFields(t, rows["session-planned"])
+	if got, want := string(planned["tasks"]), `{"total":7,"done":2,"cancelled":1,"current_id":4,"current":"Fix the settle/drain race"}`; got != want {
+		t.Errorf("planned row tasks on the wire = %s, want %s", got, want)
 	}
 	for _, id := range []string{"session-empty", "session-unknown"} {
-		encoded, err := json.Marshal(rows[id])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(encoded), `"tasks"`) {
-			t.Errorf("%s row on the wire = %s, want no tasks key", id, encoded)
+		if tasks, ok := navigationSummaryJSONFields(t, rows[id])["tasks"]; ok {
+			t.Errorf("%s row carries tasks %s on the wire, want no tasks key", id, tasks)
 		}
 	}
 }

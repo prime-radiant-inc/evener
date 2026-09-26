@@ -277,10 +277,7 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 // (S13a). A daemon that cannot read its task state reports no aggregate, and
 // the probe must not stand in an empty list for it.
 func TestStatusProberCarriesTaskProgress(t *testing.T) {
-	tasks := &appwire.TaskAggregate{
-		Total: 7, Done: 2, Cancelled: 1, Remaining: 4,
-		Current: &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"},
-	}
+	tasks := taskProgress(7, 2, 1, &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"})
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "th_wire_tasks",
 		state:     appwire.ThreadStatusActive,
