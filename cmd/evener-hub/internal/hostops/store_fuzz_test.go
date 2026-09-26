@@ -50,6 +50,17 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":0,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":9}]}`,
+		// A file missing a required top-level field, a file with a null record
+		// list, and a file whose record set is not in the allocator's canonical
+		// ascending id order: all schema-invalid, never an empty or reordered
+		// store.
+		`{"version":1,"records":[]}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":null}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"1","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 	}
 	for _, seed := range seeds {
 		f.Add(seed)
@@ -58,6 +69,12 @@ func FuzzLoadStore(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body string) {
 		fs := afero.NewMemMapFs()
 		path := StorePath("/state")
+		// Every input stands for a fresh process: drop the path's shared cell so
+		// the open below reads this input's file rather than the previous
+		// iteration's in-memory state.
+		if err := forgetStore(path); err != nil {
+			t.Fatalf("forgetStore: %v", err)
+		}
 		if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
 		}
@@ -139,6 +156,9 @@ func FuzzLoadStore(f *testing.F) {
 			t.Fatalf("second boot pass moved the sequence to %d\nstore: %s", got, body)
 		}
 
+		if err := forgetStore(path); err != nil {
+			t.Fatalf("forgetStore before the reload: %v", err)
+		}
 		reloaded, err := openFS(fs, path, storeFaults{})
 		if err != nil {
 			t.Fatalf("reload after the boot pass: %v\nstore: %s", err, body)

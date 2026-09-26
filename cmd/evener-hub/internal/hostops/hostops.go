@@ -170,6 +170,11 @@ var ErrInvalidRecord = errors.New("hostops: invalid record")
 // ErrRecordNotFound reports a transition target that names no stored record.
 var ErrRecordNotFound = errors.New("hostops: record not found")
 
+// ErrRecordTerminal reports a transition out of a terminal state. A terminal
+// record is finished: allowing it to move again would let an operation's
+// outcome be rewritten and its sequence stamp replaced.
+var ErrRecordTerminal = errors.New("hostops: record is already terminal")
+
 // ErrInvalidState reports a transition to a state outside the closed set.
 var ErrInvalidState = errors.New("hostops: invalid state")
 

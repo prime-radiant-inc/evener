@@ -74,10 +74,7 @@ func TestSequenceAndStampsSurviveReload(t *testing.T) {
 		t.Fatalf("Transition(failed): %v", err)
 	}
 
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	reopened := reopenFresh(t, path)
 	if got := reopened.Sequence(); got != 2 {
 		t.Fatalf("reloaded sequence = %d, want the persisted 2", got)
 	}
@@ -117,10 +114,7 @@ func TestControllerAssignedIdsAreUniqueAndMonotonic(t *testing.T) {
 		t.Fatalf("ids do not ascend in string order: %q then %q", first.ID, second.ID)
 	}
 
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	reopened := reopenFresh(t, path)
 	third := createTestRecord(t, reopened, "h3")
 	if second.ID >= third.ID {
 		t.Fatalf("a reload reallocated an id: %q then %q", second.ID, third.ID)
@@ -164,5 +158,71 @@ func TestRefusedTransitionsLeaveTheStoreUntouched(t *testing.T) {
 	}
 	if temps := leftoverTemps(t, filepath.Dir(path)); len(temps) > 0 {
 		t.Fatalf("a refused transition left temp files behind: %v", temps)
+	}
+}
+
+// TestTransitionRefusesAFurtherMoveFromATerminalState pins terminal states as
+// final. Spec §4 advances the state-transition sequence for "every atomic store
+// write that moves a record into a terminal state" and stamps the moved record;
+// a second move would advance it again and replace the stamp, letting a finished
+// operation's outcome be rewritten under the race scans that compare sequence
+// values only.
+func TestTransitionRefusesAFurtherMoveFromATerminalState(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	done, err := store.Transition(record.ID, StateComplete, nil)
+	if err != nil {
+		t.Fatalf("Transition(complete): %v", err)
+	}
+	before := mustReadFile(t, path)
+
+	for _, to := range []State{StateFailed, StateInterrupted, StateRunning, StatePending, StateComplete} {
+		if _, err := store.Transition(record.ID, to, nil); !errors.Is(err, ErrRecordTerminal) {
+			t.Fatalf("Transition(%q) out of a terminal state: err = %v, want ErrRecordTerminal", to, err)
+		}
+	}
+	if got := store.Sequence(); got != done.Sequence {
+		t.Fatalf("sequence = %d after refused transitions, want the terminal state's %d", got, done.Sequence)
+	}
+	stored, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q disappeared", record.ID)
+	}
+	if stored.State != StateComplete || stored.Sequence != done.Sequence {
+		t.Fatalf("a refused transition rewrote the finished record: %+v", stored)
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a refused transition rewrote the store file:\nbefore: %s\nafter:  %s", before, got)
+	}
+}
+
+// TestTransitionResolvesOrphanUnverifiedToInterrupted pins the one resolution
+// spec §4 names into a terminal state from a non-terminal one: "the
+// `orphan-unverified`→`interrupted` resolution", which advances the sequence
+// like every other terminal transition.
+func TestTransitionResolvesOrphanUnverifiedToInterrupted(t *testing.T) {
+	store, _ := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
+		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","kind":"local-linux"}]`)
+	}); err != nil {
+		t.Fatalf("Transition(orphan-unverified): %v", err)
+	}
+	resolved, err := store.Transition(record.ID, StateInterrupted, func(r *Record) {
+		// The boundary belongs to the orphan state; the fencing slice clears it
+		// with the resolution, and the schema requires exactly that pairing.
+		r.OrphanBoundary = nil
+	})
+	if err != nil {
+		t.Fatalf("resolving orphan-unverified: %v", err)
+	}
+	if resolved.Sequence != 1 {
+		t.Fatalf("the resolution was stamped %d, want 1", resolved.Sequence)
+	}
+	if got := store.Sequence(); got != 1 {
+		t.Fatalf("sequence = %d after the resolution, want 1", got)
+	}
+	if resolved.State != StateInterrupted {
+		t.Fatalf("resolved state = %q, want %q", resolved.State, StateInterrupted)
 	}
 }

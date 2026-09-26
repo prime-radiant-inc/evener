@@ -95,10 +95,7 @@ func TestBootPassMovesPendingAndRunningToInterrupted(t *testing.T) {
 		t.Fatalf("the running record's fencing epoch = %s, want it carried verbatim", got)
 	}
 
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	reopened := reopenFresh(t, path)
 	if got := reopened.Sequence(); got != before+2 {
 		t.Fatalf("reloaded sequence = %d, want the persisted %d", got, before+2)
 	}
@@ -180,7 +177,5 @@ func TestBootPassLeavesOrphanUnverifiedAlone(t *testing.T) {
 	if got := store.Sequence(); got != 0 {
 		t.Fatalf("sequence = %d, want 0", got)
 	}
-	if _, err := Open(path); err != nil {
-		t.Fatalf("the store file did not survive the orphan-unverified transition: %v", err)
-	}
+	reopenFresh(t, path)
 }

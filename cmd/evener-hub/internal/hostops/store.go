@@ -31,7 +31,9 @@ const (
 	// with. Spec §8 sorts and resumes records by `id` ascending, and the wire
 	// carries the id as a string, so allocation order has to equal string order:
 	// fixed-width decimal is the one format where it does, for every consumer,
-	// without a later slice having to know the id is a number.
+	// without a later slice having to know the id is a number. The loader accepts
+	// only this form (parseAllocatorID), because any other width breaks that
+	// order.
 	allocatorIDWidth = 20
 )
 
@@ -39,12 +41,30 @@ const (
 // the repo's other durable stores expose to their tests.
 type storeFaults struct {
 	beforeRename func() error
+	// syncDir, when set, replaces the directory sync that follows the rename —
+	// the one failure point at which the write has already replaced the store
+	// file, so a test can drive the post-rename path deterministically.
+	syncDir func(afero.Fs, string) error
 }
+
+// postRenameError marks a write failure that followed the rename replacing the
+// store file: the new state is already the file's contents, and only the
+// directory sync that makes the rename durable failed. A caller must treat it as
+// a write that landed — never as a refusal that wrote nothing — because a store
+// whose in-memory state is left behind the file would rewrite the file from the
+// stale snapshot on its next write, silently reverting what the rename
+// committed. The repo's host sidecar store handles the same class the same way.
+type postRenameError struct{ err error }
+
+func (e *postRenameError) Error() string { return e.err.Error() }
+func (e *postRenameError) Unwrap() error { return e.err }
 
 // snapshot is the store file: the version, the durable state-transition
 // sequence (§4), the controller-assigned row id allocator's high-water mark,
 // and every live record. Retention and compaction (§4) are a later slice, so
-// nothing here yet removes a record or bounds the set.
+// nothing here yet removes a record or bounds the set. Every field is required
+// in the file: the kernel of the store is that a file missing one is
+// schema-invalid, never silently an empty store.
 type snapshot struct {
 	Version                uint64   `json:"version"`
 	Sequence               uint64   `json:"sequence"`
@@ -52,22 +72,35 @@ type snapshot struct {
 	Records                []Record `json:"records"`
 }
 
-// Store is the operation store: one file, one in-process mutex, one atomic
-// write discipline.
+// storeCell is the lock-and-state cell one store file's handlers share.
 //
 // mu is the spec §4 store mutex: it serializes every read-modify-write of the
 // store within the process, so two racing writers cannot interleave on the same
-// temp path or drop each other's record. Lock order is fixed and this package
-// only ever holds the innermost lock: the process-wide mutation lock is
-// outermost, the store mutex innermost, and no path holding the store mutex
-// acquires the mutation lock (this package has no access to it at all).
+// temp path or drop each other's record. It is per file, not per handle:
+// separate handles for one file would each serialize only their own writes over
+// their own snapshot, and the whole-file rewrite every write performs would then
+// drop the other handle's records. Lock order is fixed and this package only
+// ever holds the innermost lock: the process-wide mutation lock is outermost,
+// the store mutex innermost, and no path holding the store mutex acquires the
+// mutation lock (this package has no access to it at all).
+type storeCell struct {
+	mu    sync.Mutex
+	state snapshot
+}
+
+// storeCells holds the process's one cell per store file path. The key is the
+// canonical path: Open is the real-filesystem entry point, and one path has one
+// filesystem in a process. The afero seam beneath Open serves tests, which drop
+// the cell to model the process restart a fresh load belongs to.
+var storeCells sync.Map
+
+// Store is a handle on the operation store: one file, one shared cell, one
+// atomic write discipline.
 type Store struct {
 	path   string
 	fs     afero.Fs
 	faults storeFaults
-
-	mu    sync.Mutex
-	state snapshot
+	cell   *storeCell
 }
 
 // StorePath is the operation store's file under stateRoot, beside the hub's
@@ -78,6 +111,9 @@ func StorePath(stateRoot string) string {
 
 // Open loads the operation store at path. A missing file is an empty store: a
 // fresh install has nothing to recover, and Open writes nothing.
+//
+// A second Open of a path in the same process shares the first handle's store
+// mutex and state, so both handles serialize on one lock over one snapshot.
 //
 // The call refuses a store file readable beyond its owner, and refuses a file
 // that is corrupt or schema-invalid (ErrStoreCorrupt) rather than serving a
@@ -90,15 +126,53 @@ func Open(path string) (*Store, error) {
 // injected afero.Fs so tests can drive persistence and the write's failure
 // paths.
 func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
+	key, err := canonicalStorePath(path)
+	if err != nil {
+		return nil, err
+	}
+	if existing, held := storeCells.Load(key); held {
+		return &Store{path: path, fs: fs, faults: faults, cell: existing.(*storeCell)}, nil
+	}
 	state, err := loadFS(fs, path)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{path: path, fs: fs, state: state, faults: faults}, nil
+	cell := &storeCell{state: state}
+	// Two racing first opens of one path must adopt one cell, never two.
+	if existing, loaded := storeCells.LoadOrStore(key, cell); loaded {
+		cell = existing.(*storeCell)
+	}
+	return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
+}
+
+// canonicalStorePath is the key two handles for one store file collide on.
+func canonicalStorePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("hostops: resolve store path %s: %w", path, err)
+	}
+	return filepath.Clean(absolute), nil
+}
+
+// forgetStore forgets a path's shared cell, so the next Open loads the file from
+// disk again. It models a process restart; the package's own tests use it to
+// keep their reload assertions honest.
+func forgetStore(path string) error {
+	key, err := canonicalStorePath(path)
+	if err != nil {
+		return err
+	}
+	storeCells.Delete(key)
+	return nil
 }
 
 // Path is the file the store reads and writes.
-func (s *Store) Path() string { return s.path }
+func (s *Store) Path() string {
+	if s == nil {
+		return ""
+	}
+	return s.path
+}
 
 // Sequence is the durable state-transition sequence: the value every terminal
 // transition advances, persisted in the store file in the same write.
@@ -106,9 +180,9 @@ func (s *Store) Sequence() uint64 {
 	if s == nil {
 		return 0
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state.Sequence
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+	return s.cell.state.Sequence
 }
 
 // Record returns a copy of the stored record with that controller-assigned id.
@@ -116,13 +190,13 @@ func (s *Store) Record(id string) (Record, bool) {
 	if s == nil {
 		return Record{}, false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	index := slices.IndexFunc(s.state.Records, func(record Record) bool { return record.ID == id })
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+	index := slices.IndexFunc(s.cell.state.Records, func(record Record) bool { return record.ID == id })
 	if index < 0 {
 		return Record{}, false
 	}
-	return cloneRecord(s.state.Records[index]), true
+	return cloneRecord(s.cell.state.Records[index]), true
 }
 
 // Records returns copies of every stored record, in stored order: ascending id
@@ -131,9 +205,9 @@ func (s *Store) Records() []Record {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return cloneSnapshot(s.state).Records
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+	return cloneSnapshot(s.cell.state).Records
 }
 
 // Create assigns the next controller-assigned id and persists a fresh `pending`
@@ -147,11 +221,11 @@ func (s *Store) Create(newRecord NewRecord) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("hostops: store is not configured")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
 
 	now := nowUTC()
-	next := cloneSnapshot(s.state)
+	next := cloneSnapshot(s.cell.state)
 	next.AllocatorHighWaterMark++
 	record := Record{
 		ID:                formatAllocatorID(next.AllocatorHighWaterMark),
@@ -179,12 +253,18 @@ func (s *Store) Create(newRecord NewRecord) (Record, error) {
 // read-modify-write, so progress, the terminal result, the fencing epoch and
 // the host-removed mark land with the state that makes them meaningful.
 //
+// A terminal record is finished: no transition leaves a terminal state, so an
+// operation's outcome can never be rewritten and its sequence stamp can never be
+// replaced. The one resolution the spec defines into a terminal state from a
+// non-terminal one — `orphan-unverified`→`interrupted` (§4) — is an ordinary
+// allowed transition.
+//
 // Entering a terminal state advances the durable state-transition sequence and
 // stamps the record with the value it advanced to (spec §4). A transition to
 // any other state stamps nothing.
 //
-// A refusal — an unknown record, an unknown state, or a change that takes the
-// record outside the schema — leaves the store untouched.
+// A refusal — an unknown record, an unknown state, a finished record, or a
+// change that takes the record outside the schema — leaves the store untouched.
 func (s *Store) Transition(id string, to State, change func(*Record)) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("hostops: store is not configured")
@@ -192,15 +272,18 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if !to.Valid() {
 		return Record{}, fmt.Errorf("%w: %q", ErrInvalidState, to)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
 
-	next := cloneSnapshot(s.state)
+	next := cloneSnapshot(s.cell.state)
 	index := slices.IndexFunc(next.Records, func(record Record) bool { return record.ID == id })
 	if index < 0 {
 		return Record{}, fmt.Errorf("%w: %q", ErrRecordNotFound, id)
 	}
 	record := &next.Records[index]
+	if record.State.Terminal() {
+		return Record{}, fmt.Errorf("%w: record %q is already %q", ErrRecordTerminal, id, record.State)
+	}
 	if change != nil {
 		change(record)
 	}
@@ -218,15 +301,17 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	return cloneRecord(*record), nil
 }
 
-// commitLocked persists next and adopts it in memory, but only once the write
-// landed: memory that leads the file would answer a later read with a record
-// the durable store does not hold. Callers must hold mu.
+// commitLocked persists next and adopts it in memory in step with the file.
+// Adoption follows the rename, not the whole call: a failure before the rename
+// wrote nothing and leaves memory exactly as it was, while a postRenameError
+// means the rename already replaced the file, so memory adopts next and follows
+// the file even though the write reports the failure. Callers must hold mu.
 func (s *Store) commitLocked(next snapshot) error {
-	if err := saveFS(s.fs, s.path, next, s.faults); err != nil {
-		return err
+	renamed, err := saveFS(s.fs, s.path, next, s.faults)
+	if renamed {
+		s.cell.state = next
 	}
-	s.state = next
-	return nil
+	return err
 }
 
 // advanceSequence moves the durable state-transition sequence forward by one and
@@ -236,6 +321,18 @@ func (s *Store) commitLocked(next snapshot) error {
 func (next *snapshot) advanceSequence(record *Record) {
 	next.Sequence++
 	record.Sequence = next.Sequence
+}
+
+// storeFile is the decode shape of the store file's top level. Every field is a
+// pointer so a file that omits one — or carries null — is refused rather than
+// decoded as a zero-valued store: a truncated or hand-edited file must never be
+// read as "no records", because the next write would then replace real history
+// with nothing.
+type storeFile struct {
+	Version                *uint64   `json:"version"`
+	Sequence               *uint64   `json:"sequence"`
+	AllocatorHighWaterMark *uint64   `json:"allocatorHighWaterMark"`
+	Records                *[]Record `json:"records"`
 }
 
 // loadFS reads and validates the store file. A missing file is an empty store;
@@ -259,10 +356,10 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	if err != nil {
 		return snapshot{}, fmt.Errorf("hostops: read store %s: %w", path, err)
 	}
-	var state snapshot
+	var file storeFile
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
+	if err := decoder.Decode(&file); err != nil {
 		return snapshot{}, fmt.Errorf("%w: decode %s: %w", ErrStoreCorrupt, path, err)
 	}
 	var trailing any
@@ -271,6 +368,22 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 			return snapshot{}, fmt.Errorf("%w: %s carries a trailing JSON value", ErrStoreCorrupt, path)
 		}
 		return snapshot{}, fmt.Errorf("%w: decode %s trailing data: %w", ErrStoreCorrupt, path, err)
+	}
+	switch {
+	case file.Version == nil:
+		return snapshot{}, fmt.Errorf("%w: %s carries no version", ErrStoreCorrupt, path)
+	case file.Sequence == nil:
+		return snapshot{}, fmt.Errorf("%w: %s carries no state-transition sequence", ErrStoreCorrupt, path)
+	case file.AllocatorHighWaterMark == nil:
+		return snapshot{}, fmt.Errorf("%w: %s carries no allocator high-water mark", ErrStoreCorrupt, path)
+	case file.Records == nil:
+		return snapshot{}, fmt.Errorf("%w: %s carries no record list", ErrStoreCorrupt, path)
+	}
+	state := snapshot{
+		Version:                *file.Version,
+		Sequence:               *file.Sequence,
+		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
+		Records:                *file.Records,
 	}
 	if err := validateSnapshot(state); err != nil {
 		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
@@ -283,24 +396,28 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 // in fsynced — the discipline every durable store in this repo follows. The
 // temp file is created owner-only and is removed on every path that does not
 // rename it.
-func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (err error) {
+//
+// The rename is the write's commit point, so the return value says whether it
+// landed: a caller must adopt the state it passed in whenever renamed is true,
+// even when err is non-nil (a postRenameError whose file already holds that
+// state).
+func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renamed bool, err error) {
 	if err := validateSnapshot(state); err != nil {
-		return err
+		return false, err
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("hostops: marshal store: %w", err)
+		return false, fmt.Errorf("hostops: marshal store: %w", err)
 	}
 	dir := filepath.Dir(path)
 	if err := fs.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("hostops: create store directory: %w", err)
+		return false, fmt.Errorf("hostops: create store directory: %w", err)
 	}
 	temp, err := afero.TempFile(fs, dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("hostops: create temp store: %w", err)
+		return false, fmt.Errorf("hostops: create temp store: %w", err)
 	}
 	tempPath := temp.Name()
-	renamed := false
 	defer func() {
 		if temp != nil {
 			_ = temp.Close()
@@ -310,13 +427,13 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (err e
 		}
 	}()
 	if _, err := temp.Write(data); err != nil {
-		return fmt.Errorf("hostops: write temp store: %w", err)
+		return false, fmt.Errorf("hostops: write temp store: %w", err)
 	}
 	if err := temp.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
-		return fmt.Errorf("hostops: sync temp store: %w", err)
+		return false, fmt.Errorf("hostops: sync temp store: %w", err)
 	}
 	if err := temp.Close(); err != nil {
-		return fmt.Errorf("hostops: close temp store: %w", err)
+		return false, fmt.Errorf("hostops: close temp store: %w", err)
 	}
 	temp = nil
 	// Spec §4: "Replacements preserve the mode." The temp file is created 0600;
@@ -324,18 +441,34 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (err e
 	// owner-readable mode, that mode is what the replacement lands with.
 	if perm, ok := preservedMode(fs, path); ok {
 		if err := fs.Chmod(tempPath, perm); err != nil {
-			return fmt.Errorf("hostops: preserve store mode: %w", err)
+			return false, fmt.Errorf("hostops: preserve store mode: %w", err)
 		}
 	}
 	if faults.beforeRename != nil {
 		if err := faults.beforeRename(); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := fs.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("hostops: rename store: %w", err)
+		return false, fmt.Errorf("hostops: rename store: %w", err)
 	}
 	renamed = true
+	sync := syncDirFS
+	if faults.syncDir != nil {
+		sync = faults.syncDir
+	}
+	if err := sync(fs, dir); err != nil {
+		return true, &postRenameError{err: err}
+	}
+	return true, nil
+}
+
+// syncDirFS opens dir, syncs it and closes it: the durability half of the
+// atomic-rename idiom, so a crash right after the rename cannot lose it. Some
+// filesystems cannot sync a directory at all, and failing the whole store there
+// would turn a durability nicety into a hard outage; every other sync failure is
+// real and reported.
+func syncDirFS(fs afero.Fs, dir string) error {
 	directory, err := fs.Open(dir)
 	if err != nil {
 		return fmt.Errorf("hostops: open store directory: %w", err)
@@ -372,15 +505,18 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 func ownerOnly(perm os.FileMode) bool { return perm&0o077 == 0 }
 
 // validateSnapshot checks the store file as a whole. Besides the per-record
-// schema it holds the two cross-record invariants the durable sequence and the
-// id allocator rest on: a record never carries a sequence value the store has
-// not reached, and no record carries an id above the allocator's high-water
-// mark (fresh operations allocate above it and never reuse an id).
+// schema it holds the invariants the durable sequence, the id allocator and
+// spec §8's ordering rest on: records are stored in strictly ascending id order
+// (the order §8 sorts and resumes by, and the order Records documents), a record
+// never carries a sequence value the store has not reached, and no record
+// carries an id above the allocator's high-water mark (fresh operations allocate
+// above it and never reuse an id).
 func validateSnapshot(state snapshot) error {
 	if state.Version != storeVersion {
 		return fmt.Errorf("%w: unsupported store version %d", ErrInvalidRecord, state.Version)
 	}
 	seen := make(map[string]struct{}, len(state.Records))
+	previous := ""
 	for _, record := range state.Records {
 		if err := validateRecord(record); err != nil {
 			return err
@@ -389,6 +525,11 @@ func validateSnapshot(state snapshot) error {
 			return fmt.Errorf("%w: duplicate record id %q", ErrInvalidRecord, record.ID)
 		}
 		seen[record.ID] = struct{}{}
+		if previous != "" && record.ID <= previous {
+			return fmt.Errorf("%w: record %q is out of ascending id order after %q",
+				ErrInvalidRecord, record.ID, previous)
+		}
+		previous = record.ID
 		if record.Sequence > state.Sequence {
 			return fmt.Errorf("%w: record %q carries sequence %d above the store's %d",
 				ErrInvalidRecord, record.ID, record.Sequence, state.Sequence)
@@ -422,11 +563,21 @@ func formatAllocatorID(n uint64) string {
 	return fmt.Sprintf("%0*d", allocatorIDWidth, n)
 }
 
-// parseAllocatorID reads a controller-assigned id back. Any string that is not
-// one of this store's allocation ids is refused, which is what keeps a
-// hand-edited or foreign record out of the store.
+// parseAllocatorID reads a controller-assigned id back. Only the store's own
+// allocation form is accepted — exactly the allocator width, and nonzero —
+// because string order equals allocation order only for that form, and §8's
+// pagination sorts and resumes by the id string. A record whose id is any other
+// width is not one this store assigned, and accepting it would let the store
+// hold a record set whose stored order is not id order.
 func parseAllocatorID(id string) (uint64, error) {
-	return strconv.ParseUint(id, 10, 64)
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 || id != formatAllocatorID(n) {
+		return 0, fmt.Errorf("not a controller-assigned id: %q", id)
+	}
+	return n, nil
 }
 
 // nowUTC is the one clock the store reads: display-only timestamps.

@@ -1,6 +1,7 @@
 package hostops
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -45,6 +46,21 @@ func createTestRecord(t *testing.T, store *Store, host string) Record {
 		t.Fatalf("Create(%s): %v", host, err)
 	}
 	return record
+}
+
+// reopenFresh opens a store at path the way a process restart does: it forgets
+// the path's shared cell first, so what the test reads next comes from the file
+// rather than from a live handle's in-memory state.
+func reopenFresh(t *testing.T, path string) *Store {
+	t.Helper()
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore(%s): %v", path, err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen %s: %v", path, err)
+	}
+	return store
 }
 
 // leftoverTemps lists the store's temp files still present in dir. The atomic
@@ -124,10 +140,7 @@ func TestCreateWritesOwnerOnlyStoreAtomically(t *testing.T) {
 		t.Fatalf("store file records = %+v, want the one created record %q", onDisk.Records, record.ID)
 	}
 
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	reopened := reopenFresh(t, path)
 	reloaded, ok := reopened.Record(record.ID)
 	if !ok {
 		t.Fatalf("record %q did not survive the reload", record.ID)
@@ -201,6 +214,14 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		"orphan state without boundary": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"state":"pending"`, `"state":"orphan-unverified"`, 1) + `]}`,
 		"empty file": ``,
+		// A file that omits a top-level field is not a store the writer ever
+		// produced, and reading it as an empty store would let the next write
+		// replace real history with nothing.
+		"missing sequence":                  `{"version":1,"allocatorHighWaterMark":0,"records":[]}`,
+		"missing allocator high-water mark": `{"version":1,"sequence":0,"records":[]}`,
+		"missing record list":               `{"version":1,"sequence":0,"allocatorHighWaterMark":0}`,
+		"null record list":                  `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":null}`,
+		"null sequence":                     `{"version":1,"sequence":null,"allocatorHighWaterMark":0,"records":[]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -259,10 +280,7 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("store mode = %04o after the retry, want 0600", got)
 	}
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	reopened := reopenFresh(t, path)
 	if _, ok := reopened.Record(record.ID); !ok {
 		t.Fatalf("the record the retry created %q did not survive the reload", record.ID)
 	}
@@ -340,10 +358,7 @@ func TestStoreSerializesConcurrentReadModifyWrite(t *testing.T) {
 	if got := len(store.Records()); got != writers {
 		t.Fatalf("store holds %d records after %d concurrent creates, want %d", got, writers, writers)
 	}
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	reopened := reopenFresh(t, path)
 	if got := len(reopened.Records()); got != writers {
 		t.Fatalf("store file holds %d records after %d concurrent creates, want %d", got, writers, writers)
 	}
@@ -390,5 +405,260 @@ func writeRawStore(t *testing.T, path string, mode os.FileMode, body string) {
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatalf("Chmod(%s, %04o): %v", path, mode, err)
+	}
+}
+
+// recordJSON renders one pending record in the store file's shape with the given
+// controller-assigned id, for the fixtures that pin the id rules.
+func recordJSON(id, state string) string {
+	return `{"id":"` + id + `","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"` + state + `",` +
+		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z",` +
+		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}`
+}
+
+// TestOpenAcceptsALegitimatelyEmptyStore pins the other side of the presence
+// rule: a store with no records yet is a normal store, not a corrupt one.
+func TestOpenAcceptsALegitimatelyEmptyStore(t *testing.T) {
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, validStoreJSON)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("a legitimately empty store was refused: %v", err)
+	}
+	if got := store.Sequence(); got != 0 {
+		t.Fatalf("sequence = %d, want 0", got)
+	}
+	if got := store.Records(); len(got) != 0 {
+		t.Fatalf("records = %d, want none", len(got))
+	}
+}
+
+// TestOpenRefusesIdsOutsideTheAllocatorForm pins the id form the store's own
+// allocator emits, which spec §8's ordering depends on: the controller-assigned
+// id is a fixed-width decimal string, and a record carrying any other width —
+// or a record set stored out of id order — is not a store this writer produced.
+// Accepting one would let string order (what §8 sorts and resumes by) disagree
+// with allocation order.
+func TestOpenRefusesIdsOutsideTheAllocatorForm(t *testing.T) {
+	cases := map[string]string{
+		"plain decimal id": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			recordJSON("1", "pending") + `]}`,
+		"over-wide id": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			recordJSON("000000000000000000001", "pending") + `]}`,
+		"reverse id order": `{"version":1,"sequence":0,"allocatorHighWaterMark":2,"records":[` +
+			recordJSON("00000000000000000002", "pending") + `,` + recordJSON("00000000000000000001", "pending") + `]}`,
+		"duplicate id order": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			recordJSON("00000000000000000001", "pending") + `,` + recordJSON("00000000000000000001", "pending") + `]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, body)
+			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("Open on %s: err = %v, want ErrStoreCorrupt", name, err)
+			}
+		})
+	}
+}
+
+// TestAllocatorIdsAreCanonicalAndAscending is the positive control for the id
+// rules: what the allocator emits is exactly the form the loader accepts, and
+// what it stores is ascending, across a reload.
+func TestAllocatorIdsAreCanonicalAndAscending(t *testing.T) {
+	store, path := openTestStore(t)
+	first := createTestRecord(t, store, "h1")
+	second := createTestRecord(t, store, "h2")
+	for _, record := range []Record{first, second} {
+		parsed, err := parseAllocatorID(record.ID)
+		if err != nil {
+			t.Fatalf("the allocator emitted id %q the loader refuses: %v", record.ID, err)
+		}
+		if record.ID != formatAllocatorID(parsed) {
+			t.Fatalf("id %q is not in the allocator's canonical form", record.ID)
+		}
+	}
+	reloaded := reopenFresh(t, path)
+	records := reloaded.Records()
+	if len(records) != 2 {
+		t.Fatalf("reloaded %d records, want 2", len(records))
+	}
+	if records[0].ID >= records[1].ID {
+		t.Fatalf("stored order is not ascending: %q then %q", records[0].ID, records[1].ID)
+	}
+}
+
+// readStoreSnapshot reads the store file the way a fresh process would, so a
+// test can hold the durable state beside a handle's in-memory state.
+func readStoreSnapshot(t *testing.T, path string) snapshot {
+	t.Helper()
+	var state snapshot
+	raw := mustReadFile(t, path)
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("store file is not valid JSON: %v\n%s", err, raw)
+	}
+	return state
+}
+
+// TestAPostRenameFailureKeepsMemoryInStepWithTheFile pins spec §4's durability
+// paragraph where the rename is the commit point: a failure behind it (here the
+// directory sync that makes the rename durable) is not a refusal that wrote
+// nothing. The store must adopt the state the file already holds — otherwise its
+// next write would rewrite the whole file from a stale snapshot and silently
+// revert the transition the rename committed, un-advancing the sequence with it.
+func TestAPostRenameFailureKeepsMemoryInStepWithTheFile(t *testing.T) {
+	path := StorePath(t.TempDir())
+	var syncErr error
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(afero.Fs, string) error {
+		return syncErr
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+	record := createTestRecord(t, store, "h1")
+	running, err := store.Transition(record.ID, StateRunning, nil)
+	if err != nil {
+		t.Fatalf("Transition(running): %v", err)
+	}
+
+	// Only this write fails behind its rename.
+	syncErr = errors.New("directory sync fault")
+	if _, err := store.Transition(running.ID, StateComplete, nil); err == nil {
+		t.Fatalf("a write whose directory sync failed reported success")
+	} else if _, ok := errors.AsType[*postRenameError](err); !ok {
+		t.Fatalf("the post-rename failure is not classified: %v", err)
+	}
+
+	// (a) The transition the rename committed is the durable one.
+	onDisk := readStoreSnapshot(t, path)
+	if onDisk.Sequence != 1 {
+		t.Fatalf("on-disk sequence = %d, want the committed 1", onDisk.Sequence)
+	}
+	// (b) Memory and the file hold the same thing.
+	stored, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q disappeared", record.ID)
+	}
+	if stored.State != StateComplete || stored.Sequence != onDisk.Sequence {
+		t.Fatalf("in-memory record = %+v, file holds sequence %d: memory is behind the file", stored, onDisk.Sequence)
+	}
+	if got := store.Sequence(); got != onDisk.Sequence {
+		t.Fatalf("in-memory sequence = %d, file = %d: memory is behind the file", got, onDisk.Sequence)
+	}
+	if got, want := marshalRecords(t, store.Records()), marshalRecords(t, onDisk.Records); !bytes.Equal(got, want) {
+		t.Fatalf("in-memory records differ from the file:\nmemory: %s\nfile:   %s", got, want)
+	}
+
+	// (c) The next write does not revert the committed transition.
+	syncErr = nil
+	second := createTestRecord(t, store, "h2")
+	stored, ok = store.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q disappeared", record.ID)
+	}
+	if stored.State != StateComplete || stored.Sequence != onDisk.Sequence {
+		t.Fatalf("the next write reverted the committed transition: %+v", stored)
+	}
+	reloaded := reopenFresh(t, path)
+	again, ok := reloaded.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q did not survive the reload", record.ID)
+	}
+	if again.State != StateComplete || again.Sequence != onDisk.Sequence {
+		t.Fatalf("the committed transition was lost from the file: %+v", again)
+	}
+	if got := len(reloaded.Records()); got != 2 {
+		t.Fatalf("the file holds %d records, want the committed transition plus %q", got, second.ID)
+	}
+}
+
+// TestTwoHandlesForOneStoreShareTheOneStoreMutex pins spec §4's "one store-wide
+// mutex": every read-modify-write of a store holds it. Two handles for one path
+// must therefore serialize on the same lock over the same state; two independent
+// locks over two stale snapshots would let each handle rewrite the whole file
+// from its own view and drop the other's records.
+func TestTwoHandlesForOneStoreShareTheOneStoreMutex(t *testing.T) {
+	path := StorePath(t.TempDir())
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+
+	if _, err := first.Create(NewRecord{ClientOperationID: "via-first", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1"}); err != nil {
+		t.Fatalf("Create through the first handle: %v", err)
+	}
+	if _, err := second.Create(NewRecord{ClientOperationID: "via-second", Host: "h1", Kind: KindRestart, Generation: 7, IncarnationID: "inc-1"}); err != nil {
+		t.Fatalf("Create through the second handle: %v", err)
+	}
+	if got := len(first.Records()); got != 2 {
+		t.Fatalf("the first handle sees %d records, want 2: the handles do not share one store", got)
+	}
+	if got := len(second.Records()); got != 2 {
+		t.Fatalf("the second handle sees %d records, want 2", got)
+	}
+
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		handle := first
+		if i%2 == 1 {
+			handle = second
+		}
+		wg.Go(func() {
+			_, errs[i] = handle.Create(NewRecord{ClientOperationID: "concurrent", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1"})
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Create %d: %v", i, err)
+		}
+	}
+	records := first.Records()
+	if len(records) != writers+2 {
+		t.Fatalf("the two handles hold %d records, want %d: a record was lost", len(records), writers+2)
+	}
+	seen := make(map[string]bool, len(records))
+	for _, record := range records {
+		if seen[record.ID] {
+			t.Fatalf("id %q was handed out twice", record.ID)
+		}
+		seen[record.ID] = true
+	}
+	reloaded := reopenFresh(t, path)
+	if got := len(reloaded.Records()); got != writers+2 {
+		t.Fatalf("the store file holds %d records, want %d", got, writers+2)
+	}
+}
+
+// TestANilStoreAnswersSafely pins the nil-handle guards: every method answers
+// without dereferencing the handle, so a caller that wires the store up lazily
+// cannot panic the hub.
+func TestANilStoreAnswersSafely(t *testing.T) {
+	var store *Store
+	if got := store.Path(); got != "" {
+		t.Fatalf("Path() = %q, want empty", got)
+	}
+	if got := store.Sequence(); got != 0 {
+		t.Fatalf("Sequence() = %d, want 0", got)
+	}
+	if got := store.Records(); got != nil {
+		t.Fatalf("Records() = %v, want nil", got)
+	}
+	if _, ok := store.Record("00000000000000000001"); ok {
+		t.Fatalf("Record on a nil store found a record")
+	}
+	if _, err := store.Create(NewRecord{ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"}); err == nil {
+		t.Fatalf("Create on a nil store succeeded")
+	}
+	if _, err := store.Transition("00000000000000000001", StateComplete, nil); err == nil {
+		t.Fatalf("Transition on a nil store succeeded")
+	}
+	if _, err := store.RecoverInterrupted(); err == nil {
+		t.Fatalf("RecoverInterrupted on a nil store succeeded")
 	}
 }

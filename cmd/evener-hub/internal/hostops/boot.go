@@ -27,10 +27,10 @@ func (s *Store) RecoverInterrupted() (int, error) {
 	if s == nil {
 		return 0, errors.New("hostops: store is not configured")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
 
-	next := cloneSnapshot(s.state)
+	next := cloneSnapshot(s.cell.state)
 	moved := 0
 	// One clock read for the pass: the whole pass is one atomic write, and
 	// these timestamps are display-only.
