@@ -1692,6 +1692,16 @@ describe("one coordinator's subagent tree", () => {
 		expect(listed(tree)).toEqual(["a"]);
 		expect(tree.getSnapshot().loading).toBe(false);
 	});
+
+	it("takes the new connection's tree even when its revision is lower, as after a daemon restart", async () => {
+		const tree = new SubagentTree("local:coord", "coord");
+		await tree.setClient(hub(() => ({ revision: 7, root: session([subagent("a")]) })));
+		await tree.setClient(hub(() => whole));
+		expect(tree.getSnapshot().tree?.revision).toBe(1);
+		expect(listed(tree)).toEqual(["a"]);
+		await tree.setClient(hub(() => ({ revision: 1, root: session([subagent("a"), subagent("b")]) })));
+		expect(listed(tree)).toEqual(["a", "b"]);
+	});
 });
 
 describe("the shared tree", () => {
@@ -1796,7 +1806,13 @@ export class SubagentTree {
 
 	/** Binds to the hub's current client, or null while disconnected. The last
 	 * tree stays on screen until the new client's read lands. Resolves when
-	 * that first read settles. */
+	 * that first read settles.
+	 *
+	 * The new list starts empty rather than from the last tree: ActivityList
+	 * refuses a root older than the tree it holds, and a restarted daemon can
+	 * count revisions from lower down, which would pin the screen to the tree
+	 * from before the restart. The screen keeps showing `this.tree` until the
+	 * new list has its own. */
 	setClient(client: ConversationClientLike | null): Promise<void> {
 		if (client === this.client) return this.reloading ?? Promise.resolve();
 		this.detachList?.();
@@ -1805,7 +1821,7 @@ export class SubagentTree {
 		this.client = client;
 		let read: Promise<void> = Promise.resolve();
 		if (client) {
-			const list = new ActivityList(client, this.ref, this.threadId, this.tree);
+			const list = new ActivityList(client, this.ref, this.threadId);
 			const stopState = list.subscribe(() => {
 				const tree = list.getSnapshot().tree;
 				if (tree) this.tree = tree;
@@ -4230,7 +4246,7 @@ Open PR 4: "feat(native): the Reader's document foundations (phase 4, PR 4)". Th
    - Trailing: the outline button (`list.bullet.indent`) when the document has two or more headings, and ⋯ (`ellipsis.circle`) with "Open session", "Copy path" and "Copy text". Both are `unstable_headerRightItems` entries, and ⋯ is a native menu, as phase 3's session menu is (its ruling 9).
    - "Open session" is `returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle })`. The copies go through MarkdownResponse's `copy`, which announces "Copied".
    - Back is the system back. Phase 6 holds in-app alerts on this screen and puts their count on Back (13.3); nothing here builds that.
-4. **Caption.** The first line above the document, 13/18 `inkLow` with 16pt margins: the kind; then " · updated 3m ago" when the route has `updatedAt` (`compactDuration(now - updatedAt)`); then " · " and `changesCaption(...)` in `accentInk` when there are changes. Under it, `truncationNote` when the document was cut.
+4. **Caption.** The first line above the document, 13/18 `inkLow` with 16pt margins: the kind; then " · updated 3m ago" when the route has an `updatedAt` that parses (`compactDuration(now - Date.parse(updatedAt))`; an unparseable one is left out, like a missing one); then " · " and `changesCaption(...)` in `accentInk` when there are changes. Under it, `truncationNote` when the document was cut.
 5. **Blocks (`ReaderBlock`), in a virtualized `FlatList`** (`initialNumToRender` 12), 16pt side margins, 14pt between blocks:
    - headings: `EnrichedMarkdownText`, serif semibold 24/20/18 for h1, h2 and h3 or deeper, in `inkHi`;
    - paragraphs, list items, quotes and HTML: `EnrichedMarkdownText` in `typeRoles.document` and `palette.prose`, flavor `github`, `enableTaskListItemToggle={false}`, `allowFontScaling`;
@@ -4665,7 +4681,7 @@ export function documentReferences(turns: readonly TurnModel[], cwd: string): Do
 1. **Which chips.** Each screen computes `writes = fileWrites(conversation.turns, conversation.cwd)` once per turns change (`useMemo`) and passes `documentChips`, which draws one `DocumentChip` per path `messageDocuments(message.markdown, cwd, writes)` returns (memoized by the message's id and text). A message still streaming shows its chips once it settles. The chips are the row's own content, so the reading position logic treats them as part of the message.
 2. **The chip.** An `inset` box with a 12pt radius, 12pt by 14pt padding, 16pt side margins and 8pt above, at least 44pt tall:
    - line 1: the kind (`documentKind(path)`, 12pt semibold `inkMid`), then the title in the reading serif, semibold 15/20 `inkHi`, one line with tail truncation;
-   - line 2: the file name in Menlo 12 `inkLow`, then " · 142 lines" and " · 3m ago" (13/18 `inkLow`, tabular figures): the line count once the summary has it, and the age (`compactDuration(now - updatedAt)`) only when the session wrote the file;
+   - line 2: the file name in Menlo 12 `inkLow`, then " · 142 lines" and " · 3m ago" (13/18 `inkLow`, tabular figures): the line count once the summary has it, and the age (`compactDuration(now - Date.parse(updatedAt))`) only when the session wrote the file (`fileWrites` keeps only times that parse);
    - before its summary loads, the title is the file name; nothing on it moves when the summary lands but the title's words and the count;
    - VoiceOver reads one label: "Plan, Fix the settle/drain race, settle-race.md, 142 lines, 3 minutes ago".
 3. **The summary.** `useDocumentSummary` loads each (session, path, write time) once with `loadDocument` and shares the answer across every chip and every Files row on the hub (Task 19): the document's own title for markdown, else the file name, and `lines` for markdown and code. A failed load leaves the file name, and loads again when the chip mounts next. The cache is per hub and `ConnectionProvider.removeHub` forgets it.
@@ -4894,7 +4910,7 @@ export function documentFreshness(lastRead: LastRead | null, updatedAt: string |
 2. **The sheet.** A page sheet (ruling 26) titled "Files & artifacts", with Done trailing. The Files chip and the ⋯ menu's "Files & artifacts" open it.
 3. **Rows**, one per document, newest write first. Each row has:
    - the kind (13pt semibold `inkMid`) and the title (the summary's title, else the file name; serif semibold 15/20 `inkHi`);
-   - beneath, the path in Menlo 12 `inkLow` (middle truncation), then " · 142 lines · 3m ago" (13/18 `inkLow`; the age is `compactDuration(now - updatedAt)`, left out without a write time);
+   - beneath, the path in Menlo 12 `inkLow` (middle truncation), then " · 142 lines · 3m ago" (13/18 `inkLow`; the age is `compactDuration(now - Date.parse(updatedAt))`, left out without a write time that parses);
    - an 8pt `circle.fill` in `accent` when `documentFreshness(memory.lastRead({ sessionRef: ref, path }), updatedAt)` is "new" or "changed" (spec 10.1).
    The title and the line count come from `useDocumentSummary` (Task 18), so the sheet and the chips share one read per document.
 4. **Tapping a row** closes the sheet, then opens the Reader over the session: `{ hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: title, updatedAt }`.
