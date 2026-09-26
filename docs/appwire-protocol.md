@@ -216,17 +216,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `thread/model/changed` | `ThreadModelChangedParams` | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
 | `thread/reasoning-effort/changed` | `ThreadReasoningEffortChangedParams` | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
 | `thread/vision-model/changed` | `ThreadVisionModelChangedParams` | The session's vision side-channel routing changed mid-session (thread/vision-model/set). |
-| `turn/started` | `TurnStartedParams` | A new turn began (inProgress). |
-| `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
-| `item/started` | `ItemLifecycleParams` | A thread item began streaming. |
-| `item/completed` | `ItemLifecycleParams` | A thread item finished. |
-| `item/agentMessage/delta` | `AgentMessageDeltaParams` | Incremental assistant-message text chunk for an item. |
-| `item/agentMessage/reset` | `AgentMessageResetParams` | Discard the in-progress streamed item (assistant or reasoning — a retry replaces it). |
-| `item/reasoning/summaryTextDelta` | `ReasoningSummaryDeltaParams` | Incremental reasoning-summary text chunk for a reasoning item. |
-| `item/toolOutput/delta` | `ToolOutputDeltaParams` | Incremental tool-output chunk for a tool-call item. |
 | `warning` | `WarningParams` | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |
 | `evener/thread/modelRetry` | `ThreadModelRetryParams` | A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item. |
-| `evener/steering/injected` | `EvenerSteeringInjectedParams` | A steering message was injected into the active turn. |
 | `evener/job/started` | `EvenerJobParams` | A background job started. |
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
@@ -258,27 +249,6 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 
 JSON fields of each params/result/payload type, reflected from the Go structs.
 An embedded type contributes its own fields inline.
-
-
-### `AgentMessageDeltaParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
-| `delta` | `string` |  |  |
-
-
-### `AgentMessageResetParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
 
 
 ### `AgentsDocResponse`
@@ -689,20 +659,6 @@ _(no fields)_
 | `layer` | `string` |  |  |
 
 
-### `EvenerSteeringInjectedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `startedAt` | `*int64` | yes |  |
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `text` | `string` | yes |  |
-| `images` | `[]appwire.InputItem` | yes |  |
-| `source` | `string` | yes |  |
-| `kind` | `string` | yes |  |
-| `clientMutationId` | `string` | yes |  |
-
-
 ### `EvenerSubagentPreviewParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1107,17 +1063,6 @@ _(no fields)_
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
 | `originClientId` | `string` | yes |  |
-
-
-### `ItemLifecycleParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `item` | `appwire.ThreadItem` |  |  |
-| `failedToolCalls` | `*int` | yes |  |
 
 
 ### `JobActivityBranchState`
@@ -1749,18 +1694,6 @@ _(no fields)_
 | `data` | `[]string` |  |  |
 
 
-### `ReasoningSummaryDeltaParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
-| `summaryIndex` | `int` |  |  |
-| `delta` | `string` |  |  |
-
-
 ### `SandboxEscalationRequested`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2278,18 +2211,6 @@ _(no fields)_
 | `visionModel` | `string` |  |  |
 
 
-### `ToolOutputDeltaParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` | yes |  |
-| `itemId` | `string` |  |  |
-| `callId` | `string` |  |  |
-| `delta` | `string` |  |  |
-
-
 ### `TranscriptDisplayChangedParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2343,15 +2264,6 @@ _(no fields)_
 | `removedText` | `string` |  |  |
 | `removedImages` | `int` | yes |  |
 | `receipt` | `appwire.MutationReceipt` |  |  |
-
-
-### `TurnCompletedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turn` | `appwire.Turn` |  |  |
 
 
 ### `TurnDrainAsSteerParams`
@@ -2441,15 +2353,6 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `turn` | `appwire.Turn` |  |  |
 | `receipt` | `appwire.MutationReceipt` |  |  |
-
-
-### `TurnStartedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turn` | `appwire.Turn` |  |  |
 
 
 ### `TurnSteerParams`

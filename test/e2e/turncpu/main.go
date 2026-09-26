@@ -550,8 +550,10 @@ func driveServe(ctx context.Context, addr string, turns int, exited <-chan error
 		if err != nil {
 			return count, fmt.Errorf("turn %d start: %w", turn, err)
 		}
-		// The thread leaves "active" only after the turn's turn/completed;
-		// the next turn/start is refused until it does.
+		// The thread leaves "active" only after the turn's completion is
+		// recorded (history/updated carrying this turn's id at a terminal
+		// status — turn/completed's read-model replacement); the next
+		// turn/start is refused until it does.
 		for completed, settled := false, false; !completed || !settled; {
 			select {
 			case n, ok := <-client.Notifications():
@@ -560,9 +562,15 @@ func driveServe(ctx context.Context, addr string, turns int, exited <-chan error
 				}
 				count++
 				switch n.Method {
-				case appwire.NotifyTurnCompleted:
-					var params appwire.TurnCompletedParams
-					completed = completed || (json.Unmarshal(n.Params, &params) == nil && params.Turn.ID == started.Turn.ID)
+				case appwire.NotifyHistoryUpdated:
+					var params appwire.HistoryUpdatedParams
+					if json.Unmarshal(n.Params, &params) == nil {
+						for _, turn := range params.Turns {
+							if turn.ID == started.Turn.ID && turn.Status != appwire.TurnStatusInProgress {
+								completed = true
+							}
+						}
+					}
 				case appwire.NotifyThreadStatusChanged:
 					var params appwire.ThreadStatusChangedParams
 					settled = completed && json.Unmarshal(n.Params, &params) == nil && params.Status.Type != appwire.ThreadStatusActive

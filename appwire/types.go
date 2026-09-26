@@ -203,14 +203,6 @@ const (
 	// NotifyThreadVisionModelChanged pushes a mid-session vision-model change.
 	// See ThreadVisionModelChangedParams.
 	NotifyThreadVisionModelChanged    = "thread/vision-model/changed"
-	NotifyTurnStarted                 = "turn/started"
-	NotifyTurnCompleted               = "turn/completed"
-	NotifyItemStarted                 = "item/started"
-	NotifyItemCompleted               = "item/completed"
-	NotifyAgentMessageDelta           = "item/agentMessage/delta"
-	NotifyAgentMessageReset           = "item/agentMessage/reset"
-	NotifyReasoningSummaryDelta       = "item/reasoning/summaryTextDelta"
-	NotifyToolOutputDelta             = "item/toolOutput/delta"
 	NotifyWarning                     = "warning"
 	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
@@ -219,7 +211,6 @@ const (
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerNotesUpdated          = "evener/notes/updated"
 	NotifyEvenerUrlsUpdated           = "evener/urls/updated"
-	NotifyEvenerSteeringInjected      = "evener/steering/injected"
 	NotifyEvenerJobStarted            = "evener/job/started"
 	NotifyEvenerJobFinished           = "evener/job/finished"
 	NotifyEvenerDelegateUpdated       = "evener/delegate/updated"
@@ -960,14 +951,6 @@ type UrlsUpdatedParams struct {
 	ThreadID string       `json:"threadId"`
 	Ref      string       `json:"ref"`
 	URLs     []SessionURL `json:"urls,omitempty"`
-}
-
-// TurnCompletedParams is the payload of a turn/completed notification: the
-// completed turn.
-type TurnCompletedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	Turn     Turn   `json:"turn"`
 }
 
 // SandboxEscalationRequested is the payload of a
@@ -2794,39 +2777,6 @@ type ThreadStatusChangedParams struct {
 	ActiveTurnID string `json:"activeTurnId,omitempty"`
 }
 
-type AgentMessageDeltaParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-	Delta    string `json:"delta"`
-}
-
-// ReasoningSummaryDeltaParams is the params shape for the
-// item/reasoning/summaryTextDelta notification: an incremental chunk of the
-// model's reasoning summary for the named reasoning item. The hub preserves
-// source-provided compatible fields without claiming a Codex bridge, so the web
-// UI can render thinking live.
-type ReasoningSummaryDeltaParams struct {
-	ThreadID     string `json:"threadId"`
-	Ref          string `json:"ref"`
-	TurnID       string `json:"turnId"`
-	ItemID       string `json:"itemId"`
-	SummaryIndex int    `json:"summaryIndex"`
-	Delta        string `json:"delta"`
-}
-
-// AgentMessageResetParams is the params shape for the item/agentMessage/reset
-// notification: the named in-progress assistant item should be discarded so a
-// retried model call's output replaces, rather than appends to, the partial
-// that was already streamed.
-type AgentMessageResetParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-}
-
 // ThreadModelRetryParams is the params shape for the evener/thread/modelRetry
 // notification: the session's model call failed with a retryable error and will
 // be tried again after DelayMS.
@@ -2864,18 +2814,6 @@ type ThreadModelRetryParams struct {
 	AttemptCap     int    `json:"attemptCap"`
 }
 
-// ToolOutputDeltaParams is the params shape for the item/toolOutput/delta
-// notification. ItemID identifies the tool-call item; CallID is the legacy
-// alias kept for clients that still key on it.
-type ToolOutputDeltaParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId,omitempty"`
-	ItemID   string `json:"itemId"`
-	CallID   string `json:"callId"`
-	Delta    string `json:"delta"`
-}
-
 // ThreadStartedParams is the params shape for the thread/started
 // notification: the new session's initial Thread snapshot, so a client can
 // render the session without a follow-up thread/read.
@@ -2905,42 +2843,6 @@ type ThreadResyncParams struct {
 	Epoch uint64 `json:"epoch,omitempty"`
 }
 
-// TurnStartedParams is the params shape for the turn/started notification:
-// the newly opened (inProgress) turn.
-type TurnStartedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	Turn     Turn   `json:"turn"`
-}
-
-// ItemLifecycleParams is the params shape shared by the item/started and
-// item/completed notifications — one thread item entering or leaving its
-// streaming state. Both carry the identical envelope, so they share one type
-// rather than two copies that could drift; consumers distinguish them by the
-// notification method, not by shape.
-type ItemLifecycleParams struct {
-	ThreadID string     `json:"threadId"`
-	Ref      string     `json:"ref"`
-	TurnID   string     `json:"turnId"`
-	Item     ThreadItem `json:"item"`
-	// FailedToolCalls carries the session's running failure count (kata 895d),
-	// same field and meaning as ThreadStatusChangedParams.FailedToolCalls —
-	// only ever populated on item/completed (never item/started: a failure
-	// lands at completion), and only on the item whose completion actually
-	// moved the figure since the last one that carried it. thread/status/
-	// changed already carries the count unconditionally at every turn
-	// boundary, but a live watcher on a long turn sees nothing move however
-	// many tool calls fail inside it; this rides the finer-grained
-	// per-item notification instead so the count moves the instant a failure
-	// lands. Gating on "changed since last stamp" is what keeps this from
-	// resending an unchanged figure on the many item/completed notifications
-	// a turn with no new failures still produces.
-	//
-	// Absent means "no change" here, same as on ThreadStatusChangedParams —
-	// never "nobody counted".
-	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
-}
-
 // WarningParams is the params shape for the warning notification: a
 // non-fatal diagnostic, also used for cancelled turns and relay-attach
 // failures. Message/Source/Title/Hint are the human-facing diagnostic;
@@ -2960,23 +2862,6 @@ type WarningParams struct {
 	Hint     string           `json:"hint,omitempty"`
 	Warning  any              `json:"warning,omitempty"`
 	Cause    *DiagnosticCause `json:"cause,omitempty"`
-}
-
-// EvenerSteeringInjectedParams is the params shape for the
-// evener/steering/injected notification. Text is pre-substituted server-side
-// with an image placeholder when a steer carries only images. Source is
-// "user" for human-sent steering (rendered as a user message) and omitted
-// entirely for daemon-originated steering (issue #24).
-type EvenerSteeringInjectedParams struct {
-	// StartedAt is the server event timestamp in epoch milliseconds.
-	StartedAt        *int64      `json:"startedAt,omitempty"`
-	ThreadID         string      `json:"threadId"`
-	Ref              string      `json:"ref"`
-	Text             string      `json:"text,omitempty"`
-	Images           []InputItem `json:"images,omitempty"`
-	Source           string      `json:"source,omitempty"`
-	Kind             string      `json:"kind,omitempty"`
-	ClientMutationID string      `json:"clientMutationId,omitempty"`
 }
 
 // EvenerJobParams is the params shape shared by the evener/job/started and

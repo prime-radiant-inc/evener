@@ -17,36 +17,6 @@ func (p ThreadStartedParams) WithNotificationTarget(threadID, ref string) Notifi
 	return p
 }
 
-func (p TurnStartedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
-func (p ItemLifecycleParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
-func (p AgentMessageDeltaParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
-func (p AgentMessageResetParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
-func (p ReasoningSummaryDeltaParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
-func (p ToolOutputDeltaParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
 func (p ThreadStatusChangedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
 	p.ThreadID, p.Ref = threadID, ref
 	return p
@@ -132,17 +102,7 @@ func (p ThreadClosedParams) WithNotificationTarget(threadID, ref string) Notific
 	return p
 }
 
-func (p TurnCompletedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
 func (p WarningParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
-	p.ThreadID, p.Ref = threadID, ref
-	return p
-}
-
-func (p EvenerSteeringInjectedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
 	p.ThreadID, p.Ref = threadID, ref
 	return p
 }
