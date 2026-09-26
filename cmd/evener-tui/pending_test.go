@@ -330,21 +330,21 @@ func TestPendingCoordinator_TryReconcileScopesByRef(t *testing.T) {
 	}
 }
 
-func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
+func TestReconcilePendingFromNotification_HistoryUpdatedImageOnlyUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register(appwire.MethodTurnStart, "[image]", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
-	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-		"item": appwire.ThreadItem{
+	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Items: []appwire.ThreadItem{{
 			Type: "userMessage",
 			Images: []appwire.InputItem{{
 				Type:      "image",
 				MediaType: "image/png",
 			}},
-		},
+		}},
 	}).Notification)
 
 	got := drainMessages(msgs, 1, 100*time.Millisecond)
@@ -356,52 +356,19 @@ func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
 	}
 }
 
-func TestReconcilePendingFromNotification_TurnCompletedUserMessage(t *testing.T) {
+func TestReconcilePendingFromNotification_HistoryUpdatedUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register(appwire.MethodTurnStart, "completed only", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
-	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
-		"turn": appwire.Turn{
-			ID: "turn_1",
-			Items: []appwire.ThreadItem{{
-				Type: "userMessage",
-				ID:   "item_user",
-				Text: "completed only",
-			}},
-		},
-	}).Notification)
-
-	got := drainMessages(msgs, 1, 100*time.Millisecond)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
-	}
-	if _, ok := got[0].(pendingpkg.PendingConfirmedMsg); !ok {
-		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
-	}
-}
-
-func TestReconcilePendingFromNotification_TurnCompletedImageOnlyUserMessage(t *testing.T) {
-	clock := &fakeClock{now: time.Unix(0, 0)}
-	msgs := make(chan tea.Msg, 8)
-	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register(appwire.MethodTurnStart, "[image]", "", "")
-	drainMessages(msgs, 1, 100*time.Millisecond)
-
-	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
-		"turn": appwire.Turn{
-			ID: "turn_1",
-			Items: []appwire.ThreadItem{{
-				Type: "userMessage",
-				ID:   "item_user",
-				Images: []appwire.InputItem{{
-					Type:      "image",
-					MediaType: "image/png",
-				}},
-			}},
-		},
+	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Items: []appwire.ThreadItem{{
+			Type: "userMessage",
+			ID:   "item_user",
+			Text: "completed only",
+		}},
 	}).Notification)
 
 	got := drainMessages(msgs, 1, 100*time.Millisecond)
