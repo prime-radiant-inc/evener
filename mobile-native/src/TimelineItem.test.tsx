@@ -78,13 +78,20 @@ it("renders an ask's option rows without a duplicate-key report when the bounded
 	expect(errors.filter((line) => /same key/.test(line))).toEqual([]);
 });
 
-function userBubbleStyle() {
+function renderUserRow() {
 	const row: MobileTimelineItem = { kind: "user", id: "u-1", text: "Ship it" };
-	const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
-	const [bubble] = tree.root.findAll(
+	return render(<TimelineItem item={row} hubId="hub" sessionRef="session" />).root;
+}
+
+function userBubbleStyle() {
+	const [bubble] = renderUserRow().findAll(
 		(node) => String(node.type) === "View" && Array.isArray(node.props.style),
 	);
 	return bubble.props.style;
+}
+
+function userMessageTextProps() {
+	return renderUserRow().findByType("Text" as never).props;
 }
 
 it("fills your message bubble with the accent tint in both themes", () => {
@@ -97,4 +104,21 @@ it("fills your message bubble with the accent tint in both themes", () => {
 	expect(userBubbleStyle()).toEqual(
 		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#2A343D" })]),
 	);
+});
+
+it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keeping the text and label", () => {
+	mode.scheme = "light";
+	const light = userMessageTextProps();
+	expect(light.style).toMatchObject({
+		fontFamily: "SourceSerif4-Regular",
+		fontSize: 17,
+		lineHeight: 25,
+		color: "#252521",
+	});
+	expect(light.children).toBe("Ship it");
+	expect(light.accessibilityLabel).toBe("You: Ship it");
+
+	mode.scheme = "dark";
+	const dark = userMessageTextProps();
+	expect(dark.style).toMatchObject({ color: "#E0DED6" });
 });
