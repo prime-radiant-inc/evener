@@ -11,7 +11,7 @@ import {
 	useWindowDimensions,
 	View,
 } from "react-native";
-import { useColors } from "./ui";
+import { styles, useColors } from "./ui";
 
 export interface ToastAction {
 	label: string;
@@ -95,10 +95,13 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 					accessibilityRole="button"
 					accessibilityLabel={action.label}
 					onPress={() => {
-						action.run();
+						// dismiss() first: if run() shows a follow-up toast synchronously
+						// (an Undo that confirms with its own toast), that toast must
+						// survive this batch instead of being cleared by our own dismiss.
 						dismiss();
+						action.run();
 					}}
-					style={{ minHeight: 44, justifyContent: "center" }}
+					style={styles.action}
 				>
 					<Text
 						allowFontScaling={Platform.OS !== "ios"}
