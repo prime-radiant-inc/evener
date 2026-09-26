@@ -11,6 +11,7 @@ import {
 } from "react";
 import { AppState } from "react-native";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
+import { forgetBoardForHub } from "./board/nativeBoardMemory";
 import {
 	type HubInput,
 	type HubProfile,
@@ -135,6 +136,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 					drafts.removeHub(hubId);
 					readerPositions.removeHub(hubId);
 					removeOrganizationData(hubId);
+					forgetBoardForHub(hubId);
 				},
 			}),
 		[selection],
