@@ -2,7 +2,8 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent failures), S4 (seen marker), S5 (activity), S13 (tasks).
+// flag), S3 (subagent failures), S5 (activity), S13 (tasks). S4 replaces the
+// seen marker, which lives in boardMemory.ts.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -196,8 +197,10 @@ export function whyLine(item: ClassifiedRow): WhyLine | null {
  * current step and quiet spells). */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const subagents = row.children.filter((child) => child.state === "active").length;
-	// The hub caps a row's children; until S3 tallies the whole tree, say how
-	// many more there are rather than undercounting (spec 18, S3's fallback).
+	// The hub caps a row's children; until S3 tallies the whole tree, the
+	// waiting line says how many more there are rather than undercounting
+	// (spec 18, S3's fallback). With no loaded child active, nothing says the
+	// session is waiting on subagents, so it falls through.
 	const more = row.more_subagents ?? 0;
 	if (subagents > 0)
 		return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}${more > 0 ? ` (+${more} more)` : ""}`;
