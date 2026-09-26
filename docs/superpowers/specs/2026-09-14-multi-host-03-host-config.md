@@ -90,9 +90,11 @@ key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolut
   rewrite (component 08, §6). Shape rules, matching the shipped behavior: it is
   optional, trimmed, and empty-after-trim is absent (`hostreg.Normalize` trims;
   `validateHostConfigs` then validates the normalized value, so a padded value
-  never reaches a consumer untrimmed). Validation requires an absolute path: a
-  relative or `~`-prefixed value is refused with `hostreg.ErrInvalidKeyPath`,
-  nothing stored, because the hub performs no `~` or environment expansion and
+  never reaches a consumer untrimmed). **Correction (this series):** validation
+  requires an absolute path — a relative or `~`-prefixed value is refused with
+  `hostreg.ErrInvalidKeyPath` (the registry PR adds the sentinel and the check
+  to `hostreg.ValidateEntry`; the tree this spec lands on has no such check
+  yet), nothing stored. The hub performs no `~` or environment expansion, and
   the value travels to ssh verbatim as `["-i", key_path]` before the `--`
   destination terminator (component 04, §"SSH channel argv") — a relative path
   would otherwise resolve against whatever working directory the hub happened

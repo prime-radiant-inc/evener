@@ -97,9 +97,10 @@ renders, a staged-but-unpersisted change) is never an intent.
   the finalized receipt (§5).
 - Finalizing claim (`finalizingMutation`): the same entry under a
   server-generated opaque attempt token while a foreign path finalizes it (§5).
-- Reconcile marker: the (re-read whole-document content hash, about-to-drop staged
-  entry) pair the post-rename reconcile stages in the same write as its
-  cleanup (§6).
+- Reconcile marker: the (re-read whole-document content hash, `reconcile_applied`
+  flag) pair the post-rename reconcile stages in the same write as its
+  cleanup (§6); the staged entry a reconcile drops lives on the
+  `collision-dropped` receipt's `droppedEntry`, never in the marker.
 - Pruned marker (`prunedReceipts`): the scoped key plus `{prunedAt}` a
   count/TTL compaction persists when it drops a superseded receipt (§6).
 - Cleared-remnant marker (a typed resolved-remnant record in `teardownRemnants`,
@@ -741,11 +742,13 @@ there is no
 entry. The set-aside rename either already landed or is retried. The
 `.migrated` archive is durable state, not debris: a boot that finds it with the
 marker absent re-merges it (and logs what it did), and only a completed
-migration's marker retires it for good; a boot with no `hub.toml` at all is a
-fresh hub and never imports the archive, so an operator resetting the hub to a
-clean slate deletes `hub.toml` and `hub.hosts.json.migrated` together — a reset
-that leaves the archive can be re-imported once a new `hub.toml` lacks the
-marker. Field conversion is a carry, not a translation: the retired sidecar's JSON used the
+migration's marker retires it for good. Precedence at boot, stated explicitly:
+with the marker absent the archive wins — no `hub.toml` plus an archive is the
+lost-rename crash state, so the recovery runs and its merged write re-creates
+`hub.toml` — while the fresh-hub rule applies only to a boot with no `hub.toml`
+AND no archive. An operator resetting the hub to a clean slate therefore
+deletes `hub.toml` and `hub.hosts.json.migrated` together; a reset that leaves
+the archive is re-imported by design, never silently. Field conversion is a carry, not a translation: the retired sidecar's JSON used the
 same snake_case names as the file's TOML tables for every stored field (`name`,
 `ssh`, `user`, `evener_path`, `config_path`, `addr`, `roots`, `key_path`), so
 the migration is field-for-field — `address`/`keyPath` are the AppWire
@@ -840,7 +843,13 @@ edit to the bound host's own entry still refuses the token as drift
 (deploy-pipeline spec §3). The whole-document content hash is a distinct value
 the write path uses for its own staging, final, and post-rename checks, where
 any byte change — host set or not — must retry the read-modify-write before it
-lands. (Write-path prose that names a `hub.toml` fingerprint a commit staged
+lands. A file that fails host validation — invalid TOML, a duplicate name, an
+invalid field — has no host-set fingerprint: the cached fingerprint stays at
+its last valid value, the read serves the last published snapshot unfiltered
+(never a view derived from a file the hub cannot validate), and the invalid
+state surfaces as the typed `concurrent-edit` configuration error on the paths
+that need the file while the reconcile keeps retrying until the file validates
+again. (Write-path prose that names a `hub.toml` fingerprint a commit staged
 against, observed, or won by means this whole-document content hash; reads use
 the host-set fingerprint; token and restart bindings use the host's entry
 fingerprint.) Config-path retention: the hub
@@ -929,7 +938,12 @@ outcome literal is retained from the retired two-file design and names the
 reconciliation drop, not a cross-file collision; the receipt names the winning
 `hub.toml` fingerprint plus the dropped staged entry), and a
 replay carrying the same key returns that `collision-dropped` receipt, so a
-suppressed retry can never read it as a live commit.
+suppressed retry can never read it as a live commit. When the adoption's re-read
+finds the name gone from the file — a hand-edit deletion — the winning arm is
+the deletion: the response carries `removed: true` and no `host` (the same
+marker a tombstone row uses, without minting a tombstone), the receipt records
+`droppedEntry` and the winning fingerprint the same way, and a replay returns
+the deletion, never a fabricated live row.
 
 The retired sidecar's cross-file boot-collision machinery goes with it: with
 one file there is no cross-file collision to reconcile, and a `hub.toml` that
@@ -1536,7 +1550,11 @@ documents and are cited, never restated):
   mutation kind — when the post-rename reconcile finds the file no longer carries the
   just-committed staged entry, the authoritative result is the winning `hub.toml` live
   entry, never a tombstone, so a remove whose name was re-added through
-  `hub.toml` mid-remove returns the live row — the arm names the staged entry
+  `hub.toml` mid-remove returns the live row, and when the re-read instead finds
+  the name gone entirely (a hand-edit deletion) the arm carries no `host` and
+  sets `removed: true` — the winning arm is the deletion, with the marker
+  tombstone rows use and no tombstone minted, never a fabricated live row — the
+  arm names the staged entry
   the post-rename reconcile dropped plus the winning `hub.toml` fingerprint
   the receipt carries, so a replay returning it can never read as a live
   commit) or the keyless-ambiguous arm `{outcome: "ambiguous", observedRow:
