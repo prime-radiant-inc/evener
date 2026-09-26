@@ -35,6 +35,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnDormancy,
 		fuzzScenarioBuildTree_UnnamedSessionTitleSurvivesItsMetaLanding,
 		fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts,
+		fuzzScenarioBuildTree_CarriesTaskProgressOnEveryRow,
 		fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent,
 		fuzzScenarioBuildTree_ClustersRepeatedIdleTitles,
 		fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles,
