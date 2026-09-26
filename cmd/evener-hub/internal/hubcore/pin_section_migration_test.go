@@ -241,3 +241,39 @@ func TestPinSectionStoreLegacyTableMigrationSharesOneTransaction(t *testing.T) {
 		t.Fatalf("session_pin rows after section delete = %d, want cascade to remove both", remaining)
 	}
 }
+
+// TestIndexSchemaMigrationRunsFromAnyStoreOpen pins that the shared upgrade
+// is not the pin store's private step: whichever store reaches index.db first
+// upgrades the whole file, so a store that later reads the pin table (or the
+// pin store itself) never meets a pre-source schema.
+func TestIndexSchemaMigrationRunsFromAnyStoreOpen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	seedLegacyIndexStore(t, dbPath)
+
+	// The archive store owns neither pin table; opening it must still migrate
+	// the legacy session_pin rows.
+	if _, err := NewArchiveStore(dbPath).Decisions(); err != nil {
+		t.Fatalf("archive store open: %v", err)
+	}
+	columns := readTableColumns(t, dbPath, "session_pin")
+	if _, ok := columns["source"]; !ok {
+		t.Fatalf("session_pin columns after an archive-store open = %+v, want the source column", columns)
+	}
+	store := NewPinSectionStore(dbPath)
+	assignments, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 3 {
+		t.Fatalf("assignments after an archive-store open = %+v, want every legacy pin", assignments)
+	}
+	for _, key := range []ArchiveKey{
+		{Kind: "session", ID: "th_1"},
+		{Kind: "session", ID: "th_2"},
+		{Kind: "session", ID: "th_1", Source: "host-a"},
+	} {
+		if _, ok := assignments[key]; !ok {
+			t.Fatalf("assignments after an archive-store open = %+v, want %+v", assignments, key)
+		}
+	}
+}
