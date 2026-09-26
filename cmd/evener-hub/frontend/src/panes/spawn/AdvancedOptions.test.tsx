@@ -6,6 +6,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import { enterText } from "../../textEntryTestUtils";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
 
@@ -106,8 +107,8 @@ async function typePath(user: ReturnType<typeof userEvent.setup>, trigger: HTMLE
   await user.click(trigger);
   const input = await screen.findByLabelText("Path", { selector: "input" });
   await user.clear(input);
-  await user.paste(path);
-  await user.keyboard("{Enter}");
+  await enterText(user, input, path);
+  await user.type(input, "{Enter}");
   const confirm = screen.queryByRole("button", { name: "Use this folder" });
   if (confirm) {
     await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));

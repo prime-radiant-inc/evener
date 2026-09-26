@@ -34,6 +34,7 @@ import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { enterText } from "../../textEntryTestUtils";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
@@ -327,8 +328,8 @@ async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: str
   await user.click(workingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
-  await user.paste(path);
-  await user.keyboard("{Enter}");
+  await enterText(user, input, path);
+  await user.type(input, "{Enter}");
   const confirm = screen.getByRole("button", { name: "Use this folder" });
   await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
   await user.click(confirm);
@@ -338,8 +339,7 @@ async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: str
  * keystroke re-renders the whole pane. Tests about per-keystroke prompt
  * behavior (the slash menu) type with `user.type` instead. */
 async function fillPrompt(user: ReturnType<typeof userEvent.setup>, text: string): Promise<void> {
-  await user.click(promptField());
-  await user.paste(text);
+  await enterText(user, promptField(), text);
 }
 
 /** Waits for the mount-time catalogs to land. The Advanced-options toggle is
@@ -4175,7 +4175,7 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string
   // The panel's input survives between opens with its last query, so a second
   // pick must clear before entering or the new query appends to the old one.
   await user.clear(combo);
-  await user.paste(query);
+  await enterText(user, combo, query);
   await user.click(await screen.findByText(qualified));
 }
 
