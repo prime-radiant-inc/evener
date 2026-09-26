@@ -8,6 +8,8 @@ import {
   groupByProvider,
   keylessByDesign,
   renameLeavesEnvironmentRow,
+  safeCredentialTestMessage,
+  safeCredentialTestResult,
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
@@ -591,5 +593,29 @@ describe("fromEnvironment against the hub's own instance list", () => {
       expect(fromEnvironment(instance), `${instance.name} is an authored instance`).toBe(false);
     }
     expect(fromEnvironment(hubInstance("authored"))).toBe(false);
+  });
+});
+
+// A credential test's rendered result comes only from this table: the
+// provider's own message never reaches the screen, and a status the table does
+// not know reads as an endpoint failure.
+describe("safeCredentialTestResult", () => {
+  const endpointFailure = "The provider endpoint could not be reached. Check the endpoint and network connection.";
+  test.each([
+    ["success", "success", "Credentials verified."],
+    ["missing", "missing", "No credentials are configured for this instance. Add a key or sign in first."],
+    ["auth_rejected", "auth_rejected", "The provider rejected these credentials. Replace the key or sign in again."],
+    ["endpoint_failure", "endpoint_failure", endpointFailure],
+    [
+      "configuration_failure",
+      "configuration_failure",
+      "Provider configuration could not be loaded. Check the instance settings.",
+    ],
+    ["unsupported", "unsupported", "This provider does not support harmless credential verification."],
+    ["an unknown status", "endpoint_failure", endpointFailure],
+  ])("maps %s to its safe status and message", (label, status, message) => {
+    const raw = { provider: "raw-provider", status: label, message: "raw provider message" };
+    expect(safeCredentialTestResult("work", raw)).toEqual({ provider: "work", status, message });
+    expect(safeCredentialTestMessage(label)).toBe(message);
   });
 });

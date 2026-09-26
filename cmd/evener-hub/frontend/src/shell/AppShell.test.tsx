@@ -312,25 +312,17 @@ test("keeps the desktop shell full-bleed contract in AppShell.module.css", () =>
 // already paid by the time a test measures it. The module cache is only the
 // first half: React.lazy keeps a payload of its own that stays uninitialized
 // until React first RENDERS the component, so a warm module cache still
-// leaves the first render suspending, committing its Suspense fallback, and
-// then waiting out react-dom's FALLBACK_THROTTLE_MS (300ms, react-dom 19.2)
-// before it will commit the revealed content - a flicker guard that is pure
-// wall clock and does not shrink on a fast machine. The welcome route
-// crosses two nested boundaries (AppShell's lazy DockHost, then PaneHost's
-// lazy Welcome); each other pane crosses one more of its own. Measured here:
-// ~654ms for the two-boundary welcome route and ~310-380ms per additional
-// pane the first time, ~10-20ms every time after. Mirrors App.test.tsx's own
-// warmRoute (commit c1a8616ea) for the same reason.
+// leaves the first render suspending. The welcome route crosses two nested
+// boundaries (AppShell's lazy DockHost, then PaneHost's lazy Welcome); each
+// other pane crosses one more of its own. Rendering inside an awaited act
+// lets each reveal commit as soon as its already-imported chunk resolves;
+// outside act, react-dom holds every reveal for FALLBACK_THROTTLE_MS (300ms,
+// react-dom 19.2) on a real timer. Mirrors App.test.tsx's own warmRoute.
 //
 // The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than findBy's 1000ms
 // default. That default is an assertion window - it exists to hold a test to a
-// responsiveness bar - and a warm-up has no such bar to hold: its whole job is
-// to absorb the variable cost so the real assertions don't. At ~654ms of a
-// 1000ms budget the warm-up had under 40% headroom and failed roughly one full
-// suite run in two. The awaitable half of the cost is already awaited (the
-// beforeAll imports below); what remains is react-dom's fixed per-boundary
-// flicker throttle, which publishes no completion signal to wait on, so a
-// deadline here can only ever be a tripwire for a hung render.
+// responsiveness bar - and a warm-up has no such bar to hold, so the deadline
+// here is a tripwire for a hung render.
 const WARM_ROUTE_TRIPWIRE_MS = 10_000;
 
 async function warmRoute(
@@ -359,7 +351,9 @@ async function warmRoute(
       },
     });
   }
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
   // Unmounting also clears DockHost's pending debounced layout save (its own
   // effect cleanup), so no warm render leaks a write into a later test.
@@ -2189,17 +2183,7 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
 
 // --- settings routing (this task) -------------------------------------
 
-test("deep-linking to /settings/{section} opens the settings pane showing that section", async () => {
-  window.history.pushState({}, "", "/settings/theme");
-  render(<AppShell client={new FakeClient("ready")} />);
-
-  expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Theme" }).getAttribute("aria-current")).toBe("page");
-  const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Theme"]);
-});
-
-test("navigating to /settings/{section} replaces main settings and removes secondary settings", async () => {
+test("navigating to /settings/{section} shows that section, replacing main settings and removing secondary settings", async () => {
   workspaceStore.setState({
     panes: [
       {
@@ -2222,6 +2206,9 @@ test("navigating to /settings/{section} replaces main settings and removes secon
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Theme" }).getAttribute("aria-current")).toBe("page");
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Theme"]);
   const mainSettingsPane = workspaceStore.getState().mainPane();
   expect(mainSettingsPane).not.toBeNull();
   expect(mainSettingsPane!.id).toBe("settings-main");
@@ -2400,96 +2387,53 @@ function installMobileViewport(): void {
   );
 }
 
-// These cases differ only at the browser viewport boundary: Back must use
-// retained immediate-parent context even when Open ran before StackHost mounted.
-// A fresh host falling through to Welcome instead of that parent is the bug.
-test.each([
-  { origin: "desktop", initialWidth: 1280, nested: false, parentRef: "local:owner" },
-  { origin: "phone", initialWidth: 390, nested: false, parentRef: "local:owner" },
-  { origin: "desktop", initialWidth: 1440, nested: true, parentRef: "local:child" },
-  { origin: "phone", initialWidth: 390, nested: true, parentRef: "local:child" },
-])(
-  "responsive Back: $origin origin, nested=$nested returns to $parentRef",
-  async ({ initialWidth, nested, parentRef }) => {
-    // jsdom has no matchMedia. Keep a live EventTarget at that external browser
-    // boundary so the real useIsMobile subscription swaps DockHost for StackHost.
-    let width = initialWidth;
-    const queries = new Map<string, EventTarget & { readonly matches: boolean; media: string }>();
-    vi.stubGlobal("innerWidth", width);
-    vi.stubGlobal("matchMedia", (media: string) => {
-      let query = queries.get(media);
-      if (!query) {
-        query = new (class extends EventTarget {
-          media = media;
-          get matches() {
-            return media === "(max-width: 899px)" && width < 900;
-          }
-        })();
-        queries.set(media, query);
-      }
-      return query;
-    });
-    const client = navClient();
-    client.on("thread/read", ({ ref }) => {
-      if (ref !== "local:owner" && ref !== "local:child" && ref !== "local:grandchild") {
-        throw new Error(`Unexpected transcript ref: ${ref}`);
-      }
-      return { thread: { ...threadStartResponse(ref).thread, name: ref } };
-    });
-    window.history.pushState({}, "", "/s/local%3Aowner");
-    const user = userEvent.setup();
-    render(
-      <>
-        <AppShell client={client} />
-        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
-        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
-      </>,
-    );
-    await screen.findByRole("textbox", { name: "Message" });
-    const owner = paneFor("local:owner");
-    expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
-    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id));
-    expect(getDockviewApi() !== null).toBe(initialWidth >= 900);
+// Back from a child opened on phone uses StackHost's own history. The walk
+// below covers children opened on desktop, where the host swap discards it.
+test("phone Back from an opened child returns to its owner", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  const client = navClient();
+  client.on("thread/read", ({ ref }) => {
+    if (ref !== "local:owner" && ref !== "local:child") {
+      throw new Error(`Unexpected transcript ref: ${ref}`);
+    }
+    return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+  });
+  window.history.pushState({}, "", "/s/local%3Aowner");
+  const user = userEvent.setup();
+  render(
+    <>
+      <AppShell client={client} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+    </>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  const owner = paneFor("local:owner");
+  expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id));
+  expect(getDockviewApi()).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Open child" }));
-    const child = paneFor("local:child");
-    expect(child).toMatchObject({ type: "transcript", params: { ref: "local:child", parentRef: "local:owner" } });
-    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
-    if (nested) await user.click(screen.getByRole("button", { name: "Open grandchild" }));
-    const target = paneFor(nested ? "local:grandchild" : "local:child");
-    const parent = paneFor(parentRef);
-    expect(parent).toBeDefined();
-    expect(target).toMatchObject({ type: "transcript", params: { parentRef } });
-    expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
-    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+  await user.click(screen.getByRole("button", { name: "Open child" }));
+  const child = paneFor("local:child");
+  expect(child).toMatchObject({ type: "transcript", params: { ref: "local:child", parentRef: "local:owner" } });
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+  expect(workspaceStore.getState().mainPane()).toEqual(owner);
+  const back = await screen.findByRole("button", { name: "Back" });
+  await waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:child"));
+  expect(window.location.pathname).toBe("/s/local%3Aowner");
 
-    act(() => {
-      width = 390;
-      vi.stubGlobal("innerWidth", width);
-      for (const query of queries.values()) {
-        query.dispatchEvent(Object.assign(new Event("change"), { matches: query.matches, media: query.media }));
-      }
-    });
-    const back = await screen.findByRole("button", { name: "Back" });
-    await waitFor(() =>
-      expect(screen.getByTestId("topbar-title").textContent).toBe(nested ? "local:grandchild" : "local:child"),
-    );
-    expect(getDockviewApi()).toBeNull();
-    expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
-    expect(paneFor(parentRef)).toEqual(parent);
-    expect(workspaceStore.getState().mainPane()).toEqual(owner);
-    expect(window.location.pathname).toBe("/s/local%3Aowner");
+  await user.click(back);
+  expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id);
+  expect(screen.getByTestId("topbar-title").textContent).toBe("local:owner");
+  expect(paneFor("local:owner")).toEqual(owner);
+  expect(workspaceStore.getState().mainPane()).toEqual(owner);
+  expect(window.location.pathname).toBe("/s/local%3Aowner");
+  expect(screen.queryByText("No session open")).toBeNull();
+});
 
-    await user.click(back);
-    expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id);
-    expect(screen.getByTestId("topbar-title").textContent).toBe(parentRef);
-    expect(paneFor(parentRef)).toEqual(parent);
-    expect(workspaceStore.getState().mainPane()).toEqual(owner);
-    expect(window.location.pathname).toBe("/s/local%3Aowner");
-    expect(screen.queryByText("No session open")).toBeNull();
-  },
-);
-
+// Back must use retained immediate-parent context even when Open ran before
+// StackHost mounted. A fresh host falling through to Welcome instead of that
+// parent is the bug.
 test.each(["local:owner", "local:child"])(
   "responsive retained-parent walk: mixed chain from routed session %s keeps exact parents and owner",
   async (routeRef) => {
@@ -2763,7 +2707,6 @@ test.each([
     messages: observeReturn().messages,
     mainOwnerId: workspaceStore.getState().mainPane()?.id,
   };
-  console.info("mixed-origin Back evidence", JSON.stringify({ origin, openHost, retained, returns, terminal }));
   expect(returns).toEqual(expectedReturns);
   expect(terminal).toEqual({ type: "welcome", welcome: true, messages: 0, mainOwnerId: owner.id });
 });
@@ -4344,4 +4287,7 @@ test("a popstate into a host-scoped settings URL selects the host before the pan
   }
 
   expect(hostAtDispatch).toBe("beta");
+  // The pane mounts for beta and settles on the registry's answer (this client
+  // scripts none, so the read fails) before the test ends.
+  expect(await screen.findByText("Couldn't check beta's registration")).toBeTruthy();
 });
