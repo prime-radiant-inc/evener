@@ -1224,3 +1224,16 @@ rather than resolved in prose here:
   and a crash between adoption and fsync.
 - **Minting delivery turn IDs.** Name which component mints them: the registry
   entry, under the append lock.
+
+## Known gap in the phase 1 index (PR #2303 roborev)
+
+- **Unpaired-communicate flush.** `internal/transcriptindex`'s `Window`/
+  `Latest`/`Before` reads do not run `apptranscript.FlushUnpairedCommunicates`
+  the way every production reader does, so a transcript ending on a
+  communicate call with no result yet silently omits the delivered message —
+  unlike the full-file projection and the bounded `turn_index.go` reader.
+  Closing this needs the flushed item(s) to participate in the index's rank/
+  pagination as a persisted item does (`Before` anchored at a flushed
+  position, limit-aware truncation across the real/flushed boundary), which
+  is unimplemented. Track it as a blocker before phase 3 wires this index
+  into reads; it does not block phase 1 (the index is not read from yet).
