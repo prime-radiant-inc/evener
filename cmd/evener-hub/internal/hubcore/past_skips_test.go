@@ -16,8 +16,10 @@ import (
 // captureSkipReport runs fn with os.Stderr redirected to a pipe and returns the
 // past-index lines written to it. Other hubcore machinery logs to the same
 // stream from background goroutines, so the result is filtered to this
-// reporter's prefix rather than returned raw. Output is small enough to fit the
-// pipe buffer, so fn never blocks on a reader.
+// reporter's prefix rather than returned raw. The pipe is drained while fn
+// runs: macOS shrinks a new pipe's buffer to 512 bytes under kernel memory
+// pressure, less than one skip report, and a writer with no reader would
+// block fn forever.
 func captureSkipReport(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr
@@ -26,6 +28,15 @@ func captureSkipReport(t *testing.T, fn func()) string {
 		t.Fatalf("Pipe: %v", err)
 	}
 	os.Stderr = w
+	type drained struct {
+		raw []byte
+		err error
+	}
+	done := make(chan drained, 1)
+	go func() {
+		raw, err := io.ReadAll(r)
+		done <- drained{raw, err}
+	}()
 
 	fn()
 
@@ -33,10 +44,11 @@ func captureSkipReport(t *testing.T, fn func()) string {
 	if err := w.Close(); err != nil {
 		t.Fatalf("close pipe writer: %v", err)
 	}
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("ReadAll: %v", result.err)
 	}
+	raw := result.raw
 
 	var report strings.Builder
 	for line := range strings.SplitSeq(string(raw), "\n") {
