@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -284,5 +285,34 @@ func checkPromptInput(t *testing.T, name string, got, want bool) {
 	t.Helper()
 	if got != want {
 		t.Errorf("%s = %v, want %v", name, got, want)
+	}
+}
+
+// TestSystemPromptCarriesEachOperatorInputOnce proves each operator input
+// crosses into the rendered prompt exactly once, using opaque sentinels, so a
+// dropped input and a doubled one both fail.
+func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
+	t.Parallel()
+	root := buildRootInteractiveAnthropicSession(t)
+	root.pluginAgents["sentinel-agent"] = plugin.Agent{Name: "sentinel-agent", Description: sentinelAgent}
+	cases := []struct {
+		name      string
+		session   *Session
+		sentinels []string
+	}{
+		{"root inputs", root, []string{sentinelProjectDoc, sentinelPersonalDoc, sentinelSkill, sentinelAgent}},
+		{"root overrides", buildRootWithOverridesSession(t), []string{sentinelBaseInstructions, sentinelAppend, sentinelUserInstructions}},
+		{"delegate spawn inputs", buildDelegateWithRoleOverrideSession(t), []string{sentinelRole, sentinelActivatedSkill}},
+	}
+	for _, tc := range cases {
+		prompt, warning := tc.session.renderSystemPrompt(tc.session.env)
+		if warning != "" {
+			t.Fatalf("%s: render failed: %s", tc.name, warning)
+		}
+		for _, sentinel := range tc.sentinels {
+			if got := strings.Count(prompt, sentinel); got != 1 {
+				t.Errorf("%s: %s appears %d times in the rendered prompt, want 1", tc.name, sentinel, got)
+			}
+		}
 	}
 }
