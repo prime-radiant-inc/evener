@@ -203,14 +203,18 @@ ownership (generation high-water marks plus incarnation ids). The custody file
 schema is `{quarantineEpoch: number, quarantinedFile: string,
 custodiedAt: string (RFC3339), recordIds: {recordId: string, host: string}[],
 allocatorHighWaterMark: number,
-fences: {host: string, quarantine: bool,
+fences: {recordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, incarnationId: string, quarantine: bool,
 boundary: BoundaryEntry[]}[], ownership: {quarantineRecordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, highWaterMark: number,
 incarnationId: string}[]}` — `recordIds` carries every imported record's original
 controller-assigned id verbatim so the replacement store imports by id, and
 `allocatorHighWaterMark` carries the pre-quarantine maximum so the replacement
 allocator starts above it; one fence entry per fenced host carrying the
 quarantined record's persisted boundary verbatim (element type in the
-crash-fencing spec §9), one ownership entry per name the corrupt file
+crash-fencing spec §9) plus the full record identity that entry imports under —
+`recordId`, host, kind, client operation ID, and the pinned (generation,
+incarnation id) pair — so a fence import builds its `OperationRecord` from the
+entry itself and never joins an ambiguous per-host `recordIds` row; one
+ownership entry per name the corrupt file
 yielded. Each ownership entry carries a stable `quarantineRecordId` (server-generated, unique in the custody file) plus the full record identity a replacement `OperationRecord` requires: host, kind (`restart`; custody never invents a `deploy` plan the corrupt file did not hold), client operation ID (server-minted `quarantine-<name>` when the corrupt file yields none), and the pinned (generation, incarnation id) pair with the generation high-water mark. Every custody entry is resolvable: boot imports each fence entry as
 an `orphan-unverified` record carrying the custodial boundary under its original
 record id, and each

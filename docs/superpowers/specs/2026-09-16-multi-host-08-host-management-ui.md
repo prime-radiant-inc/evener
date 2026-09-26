@@ -258,7 +258,7 @@ explicit `SourceID`. The sanctioned non-user paths are the operation-owned
 `attachUnderGate` attach/reattach (restart's reattach and attach-first, plus
 deploy's planned restart — §4; the primitive ships here, the pipeline consumes
 it) and the two deliberate non-attach SSH uses, both defined in the
-deploy-pipeline spec §6: `plan`'s gated preflight refresh (run with no gate
+deploy-pipeline spec §6: `plan`'s ungated preflight refresh (run with no gate
 held, the gate acquired only after it completes) and the deploy/restart
 worker's post-operation preflight (the same one-shot preflight). Both are bounded one-shot
 preflight command executions over the manager's transport that never initialize
@@ -1090,8 +1090,9 @@ when the remnant's own pinned target fails to resolve through its own handle
 pinned target unresolvable) is recoverable only through the authenticated
 auditable `evener/host/teardown-recover` recovery mutation — a mutation
 admitted like every other `evener/host/*` request (origin-guarded per §3,
-never in `remoteHostAdminMethods` per §3, fenced by the remnant and orphan
-fences per the crash-fencing spec §8: an open orphan fence on the name
+never in `remoteHostAdminMethods` per §3, fenced by the orphan and quarantine
+fences per the crash-fencing spec §8 (never the remnant fence —
+`teardown-recover` is the path that clears an unresolvable remnant): an open orphan fence on the name
 refuses it with `orphan-fenced-busy`, never a clearance past an unverified
 orphan) — (params
 `{remnantId, attestation: {operator: string, statement: "teardown-verified-absent", observedAt: string (RFC3339)}}`;
