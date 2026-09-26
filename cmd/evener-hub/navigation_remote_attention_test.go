@@ -12,9 +12,9 @@ import (
 // parity: a remote host's session reaches the controller's navigation with its
 // question and its approval, as a local one does. The asking row carries
 // ask_pending and sorts into NeedsYou's question band. The row blocked on an
-// approval joins NeedsYou and keeps its real state, active: promotion changes
-// membership, not state. A working remote row does neither, and the attention
-// summary counts the two that need the user.
+// approval carries approval_pending, joins NeedsYou and keeps its real state,
+// active: promotion changes membership, not state. A working remote row does
+// none of this, and the attention summary counts the two that need the user.
 func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
 	cache.Store([]appwire.Thread{
@@ -44,8 +44,8 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 	if !needsYou[0].AskPending {
 		t.Fatalf("asking needs-you row = %#v, want ask_pending", needsYou[0])
 	}
-	if needsYou[1].State != "active" || needsYou[1].AskPending {
-		t.Fatalf("approval needs-you row = %#v, want its real state active and no question", needsYou[1])
+	if !needsYou[1].ApprovalPending || needsYou[1].State != "active" || needsYou[1].AskPending {
+		t.Fatalf("approval needs-you row = %#v, want approval_pending, its real state active and no question", needsYou[1])
 	}
 	if attention := captured.Inputs.AttentionSummary; attention.NeedsYou != 2 || attention.Working != 1 {
 		t.Fatalf("attention summary = %+v, want two needing you and one working", attention)
@@ -58,6 +58,16 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 		row := navigationProjectedSummary(t, projection, ref)
 		if _, carried := navigationSummaryJSONFields(t, row)["ask_pending"]; carried {
 			t.Fatalf("row %s carries ask_pending; want the key absent: %#v", ref, row)
+		}
+	}
+	approving := navigationProjectedSummary(t, projection, "devbox:approving")
+	if raw := navigationSummaryJSONFields(t, approving)["approval_pending"]; string(raw) != "true" {
+		t.Fatalf("approval row JSON approval_pending = %q, want true (row = %#v)", raw, approving)
+	}
+	for _, ref := range []string{"devbox:asking", "devbox:working"} {
+		row := navigationProjectedSummary(t, projection, ref)
+		if _, carried := navigationSummaryJSONFields(t, row)["approval_pending"]; carried {
+			t.Fatalf("row %s carries approval_pending; want the key absent: %#v", ref, row)
 		}
 	}
 }
