@@ -28,7 +28,7 @@ import { Action, Copy, styles, useColors } from "../ui";
 import { type Band, type ClassifiedRow, liveBands, liveSummary, summaryText, usualPlace } from "./attention";
 import { BoardRow } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
-import { type BoardController, createBoardController } from "./boardData";
+import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
 import { PulseMeter } from "./PulseMeter";
 
@@ -95,8 +95,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	useEffect(() => {
 		board.setClient(state === "ready" ? client : null);
 	}, [board, client, state]);
-	const firstReadFailed = connected && !snapshot.loaded && snapshot.error !== null;
-	useFirstReadRetry(board, client, firstReadFailed);
+	const firstReadFailed = connected && !snapshot.loaded && snapshot.live.error !== null;
+	useLiveReadRetry(board, connected ? client : null, snapshot.live);
 
 	const bands = useMemo(
 		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row)),
@@ -360,13 +360,27 @@ function useFirstRun(
 	}, [board, markers, snapshot]);
 }
 
-/** While the Board's first read has failed on a ready connection, rebind
- * the client after a backoff that grows with each failed attempt; a new
- * connection starts the count over. Nothing else would retry it: an idle
- * fleet sends no invalidations. */
-function useFirstReadRetry(board: BoardController, client: ConversationClientLike | null, failed: boolean) {
+/** While a Live read has failed on a ready connection, first page or later,
+ * rebind the client after a backoff that grows with each failed attempt.
+ * Nothing else would retry it: an idle fleet sends no invalidations, and
+ * resuming re-reads only stale pages. Rebinding is the reconnect path: the
+ * loaded rows stay on screen until the fresh reads land, and the screen's
+ * load-more pages Live back out. A read that lands, or a new connection,
+ * starts the count over. */
+function useLiveReadRetry(
+	board: BoardController,
+	client: ConversationClientLike | null,
+	live: Pick<BoardSnapshot["live"], "error" | "loading">,
+) {
 	const [retries, setRetries] = useState({ client, count: 0 });
 	const count = retries.client === client ? retries.count : 0;
+	const failed = live.error !== null;
+	// A retry in flight clears a never-loaded page's error too, so only a
+	// read that finished without one counts as success.
+	const succeeded = !failed && !live.loading;
+	useEffect(() => {
+		if (succeeded && count > 0) setRetries({ client, count: 0 });
+	}, [client, count, succeeded]);
 	useEffect(() => {
 		if (!failed || !client) return;
 		const timer = setTimeout(() => {

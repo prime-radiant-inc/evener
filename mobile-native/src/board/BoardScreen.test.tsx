@@ -565,9 +565,118 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
+	// Blurred, the row-age ticker stops, leaving the retry the only timer.
+	setFocused(false);
+	expect(vi.getTimerCount()).toBe(1);
 	act(() => tree.unmount());
+	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
+});
+
+it("neither says a first read failed nor retries while Live loads and only the pin catalog failed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(
+		fleet,
+		(read) => read.section === "live",
+		(read) => read.resource === "pin_catalog",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(skeletonRows(tree)).toHaveLength(3);
+	await advance(60_000);
+	expect(liveReads(fake)).toEqual([0]);
+	fake.release();
+	await settle();
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	act(() => tree.unmount());
+});
+
+/** Reports a 700pt viewport over a 300pt Live block by layout alone, which
+ * reads Live's next page while there is one. */
+async function layOut(tree: ReactTestRenderer) {
+	// The Board's scroller, not the chips' horizontal one.
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const liveBlock = tree.root.find((node) => node.props.testID === "live-block");
+	act(() => {
+		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		liveBlock.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } });
+		scroller.props.onContentSizeChange?.(390, 400);
+	});
+	await settle();
+}
+const writing = session("local:write", { title: "Write tests", state: "active", updated_at: minutesAgo(1) });
+
+it("reads a failed later Live page again after the backoff, keeping the loaded rows on screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let lastPageFails = true;
+	let holdLive = false;
+	const fake = hub(
+		{ ...fleet, live: [[failing, working], [finished], [writing]] },
+		(read) => holdLive && read.section === "live",
+		(read) => lastPageFails && read.section === "live" && read.offset === 3,
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	await layOut(tree);
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 2, 3]);
+	const loadedRowsShown = () => ["Fix retry loop", "Build docs", "Ship it"].every((title) => hasRow(tree, title));
+	expect(loadedRowsShown()).toBe(true);
+	expect(hasRow(tree, "Write tests")).toBe(false);
+	// Loaded once, a failure keeps the rows and says nothing.
+	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	// Layout alone never re-reads a failed page.
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 2, 3]);
+	lastPageFails = false;
+	holdLive = true;
+	await advance(999);
+	expect(liveReads(fake)).toEqual([0, 2, 3]);
+	await advance(1);
+	// The retry rebinds: Live starts over from its first page.
+	expect(liveReads(fake)).toEqual([0, 2, 3, 0]);
+	expect(loadedRowsShown()).toBe(true);
+	holdLive = false;
+	fake.release();
+	await settle();
+	await layOut(tree);
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 2, 3, 0, 2, 3]);
+	expect(loadedRowsShown()).toBe(true);
+	expect(hasRow(tree, "Write tests")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("starts the backoff over once a Live read succeeds", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let firstPageFails = true;
+	let secondPageFails = false;
+	const fake = hub(
+		{ ...fleet, live: [[failing, working], [finished]] },
+		undefined,
+		(read) => read.section === "live" && ((read.offset ?? 0) === 0 ? firstPageFails : secondPageFails),
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	firstPageFails = false;
+	await advance(1000);
+	expect(liveReads(fake)).toEqual([0, 0]);
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	secondPageFails = true;
+	await layOut(tree);
+	expect(liveReads(fake)).toEqual([0, 0, 2]);
+	// A second failure in a row would wait two seconds; this one waits one.
+	await advance(999);
+	expect(liveReads(fake)).toEqual([0, 0, 2]);
+	await advance(1);
+	expect(liveReads(fake)).toEqual([0, 0, 2, 0]);
+	act(() => tree.unmount());
 });
 
 it("shows neither skeleton rows nor the failed-read sentence beside Update needed before anything loaded", async () => {
