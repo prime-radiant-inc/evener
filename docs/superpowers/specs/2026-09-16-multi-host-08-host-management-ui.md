@@ -1291,8 +1291,10 @@ documents and are cited, never restated):
   under different spellings — `address` for this contract's `ssh`, an extra
   `keyPath` (an SSH key path that is not a `HostConfig` field, recorded in
   `2026-09-20-multi-host-host-edit-slice.md`), and the live-state names
-  `midAttach`, `os`, `arch`, `hubVersion`, and `serverVersion` — and the shipped
-  Add/Edit dialog and `stores/hosts.ts` consume exactly those. The registry PR
+  `midAttach`, `os`, `arch`, `hubVersion`, `serverVersion`, and `serverName` —
+  and the shipped
+  Add/Edit dialog and `stores/hosts.ts` consume exactly those names (the target
+  contract has no `serverName`, so the reshape drops it). The registry PR
   reshapes the shipped wire and dialog to this contract (`ssh`, `midEnsure`,
   `osArch`, `installedVersion`) and adds `generation`/`incarnationId`,
   regenerating the client it ships (§2); the shipped `keyPath` is retained as

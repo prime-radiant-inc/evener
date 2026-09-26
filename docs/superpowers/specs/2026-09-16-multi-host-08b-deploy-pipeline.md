@@ -969,8 +969,10 @@ This spec's paths emit:
   names which value fired.
 - `host-busy-operation` (busy class; data names the operation id) when a
   deploy/restart record — including an Ensure-triggered deploy — holds the gate.
-- `host-busy-transient` (busy class; no operation reference) only for `plan`'s
-  validation-plus-mint window, which holds no operation-store record.
+- `host-busy-transient` (busy class; no operation reference) for `plan`'s
+  validation-plus-mint window, which holds no operation-store record, and for an
+  open `orphan-unverified` fence's non-teardown refusals (crash-fencing spec §8;
+  `teardown-retry`/`teardown-recover` carry `orphan-fenced-busy` instead).
 - `host-detached` (unavailable class). Deploy's channel-gone refusal. Token
   unconsumed, no record. The UI Connects and re-plans.
 - `probe-failed` (unavailable class). Deploy step (3)'s running re-probe read failed,
