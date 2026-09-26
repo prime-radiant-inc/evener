@@ -17,6 +17,15 @@ describe("seen markers", () => {
 		expect(seen.isSeen({ ref: "a", updated_at: at(5) })).toBe(true);
 	});
 
+	it("says whether first run is done, and remembers it across a relaunch", () => {
+		const storage = memoryStorage();
+		const seen = new SeenMarkers(storage, "hub-a");
+		expect(seen.adopted).toBe(false);
+		seen.adoptEpoch([{ updated_at: at(0) }]);
+		expect(seen.adopted).toBe(true);
+		expect(new SeenMarkers(storage, "hub-a").adopted).toBe(true);
+	});
+
 	it("on first run, adopts the newest row as the epoch so nothing past floods Finished", () => {
 		const seen = new SeenMarkers(memoryStorage(), "hub-a");
 		seen.adoptEpoch([{ updated_at: at(5) }, { updated_at: at(9) }, {}]);
