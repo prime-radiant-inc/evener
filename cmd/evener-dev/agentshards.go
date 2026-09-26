@@ -794,6 +794,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	lines := strings.Split(trimmed, "\n")
 	matched := false
 	emitted := 0 // exclusive end of the last block written
+	emittedLines := make(map[int]struct{})
 	for i := 0; i < len(lines) && maxBlocks > 0; {
 		if !surveyRedLine.MatchString(lines[i]) {
 			i++
@@ -810,12 +811,15 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 			end++
 		}
 		if start == i || surveyFailureHasMismatchedOwner(lines, i, emitted) {
-			if expanded, ok := expandSurveyFailure(lines, i, emitted, start); ok {
+			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines); ok {
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
 				}
 				for _, excerpt := range lines[i+1 : end] {
 					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for index := i; index < end; index++ {
+					emittedLines[index] = struct{}{}
 				}
 				emitted = end
 				i = end
@@ -824,6 +828,9 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		}
 		for _, excerpt := range lines[start:end] {
 			_, _ = fmt.Fprintln(w, excerpt)
+		}
+		for index := start; index < end; index++ {
+			emittedLines[index] = struct{}{}
 		}
 		// Scanning resumes past this block and the next block cannot reach
 		// back into it: adjacent failures would otherwise print the lines
@@ -862,7 +869,7 @@ func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
 	if name == "" {
 		return false
 	}
-	for index := marker - 1; index >= emitted; index-- {
+	for index := marker - 1; index >= 0; index-- {
 		if owner := surveyPhaseOwner(lines[index]); owner != "" {
 			return owner != name
 		}
@@ -882,8 +889,9 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // already-selected ordinary context. Selection priority is owned ordinary
 // output, the newest parent diagnostic, descendant diagnostics, other owned
 // output, then unindented output after a foreign frame as lowest-priority
-// backfill. An empty ordinary window reserves space for both parent and
-// descendant diagnostics when both exist. Source diagnostics are associated
+// backfill. When the ordinary window has no lines owned by the failing test or
+// its descendants, it reserves space for both parent and descendant diagnostics
+// when both exist. Source diagnostics are associated
 // with the most recent go test RUN/CONT/NAME frame; a verdict returns ownership
 // to the failing test. If ordinary context owned by the failing test or its
 // descendants exists, expansion requires a parent-owned source diagnostic.
@@ -891,13 +899,13 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
 // marker.
-func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]string, bool) {
+func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines map[int]struct{}) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
 		return nil, false
 	}
 	run := -1
-	for i := marker - 1; i >= emitted; i-- {
+	for i := marker - 1; i >= 0; i-- {
 		if lines[i] == "=== RUN   "+name {
 			run = i
 			break
@@ -936,8 +944,11 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 		if surveyFrameworkLine(line) || trimmed == "" {
 			continue
 		}
-		diagnostic := surveyDiagnosticLine.MatchString(line)
 		lineIndex := run + 1 + index
+		if _, alreadyEmitted := emittedLines[lineIndex]; alreadyEmitted {
+			continue
+		}
+		diagnostic := surveyDiagnosticLine.MatchString(line)
 		if diagnostic && owner == name {
 			parentDiagnostic = true
 			appendNewest(&parentDiagnosticCandidates, lineIndex)
@@ -1006,6 +1017,9 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 
 	result := make([]string, 0, len(selected)+1)
 	result = append(result, selected...)
+	for index := range keep {
+		emittedLines[index] = struct{}{}
+	}
 	result = append(result, lines[marker])
 	return result, true
 }
@@ -1014,17 +1028,11 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 // rather than taking fields[2] so subtest names containing spaces remain
 // associated with the right owner.
 func surveyPhase(line string) (string, string, bool) {
+	if !surveyPhaseLine(line) {
+		return "", "", false
+	}
 	fields := strings.Fields(line)
-	if len(fields) < 3 || fields[0] != "===" {
-		return "", "", false
-	}
 	phase := fields[1]
-	if !strings.HasPrefix(line, "=== "+phase+" ") {
-		return "", "", false
-	}
-	if phase != "RUN" && phase != "PAUSE" && phase != "CONT" && phase != "NAME" {
-		return "", "", false
-	}
 	return phase, strings.Join(fields[2:], " "), true
 }
 
@@ -1044,8 +1052,24 @@ func surveyPhaseOwner(line string) string {
 // closes it off from the test name, so a test's own line that merely begins
 // with one of the words (`=== PAUSED ...`) is output.
 func surveyPhaseLine(line string) bool {
-	_, _, ok := surveyPhase(line)
-	return ok
+	if !strings.HasPrefix(line, "=== ") {
+		return false
+	}
+	line = line[len("=== "):]
+	var owner string
+	switch {
+	case strings.HasPrefix(line, "RUN "):
+		owner = line[len("RUN "):]
+	case strings.HasPrefix(line, "PAUSE "):
+		owner = line[len("PAUSE "):]
+	case strings.HasPrefix(line, "CONT "):
+		owner = line[len("CONT "):]
+	case strings.HasPrefix(line, "NAME "):
+		owner = line[len("NAME "):]
+	default:
+		return false
+	}
+	return strings.TrimSpace(owner) != ""
 }
 
 // surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,

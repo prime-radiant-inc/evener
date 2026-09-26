@@ -346,6 +346,22 @@ func TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics(t *tes
 	}
 }
 
+func TestReplaySurveyFailuresExpandsAfterEarlierFailureBlock(t *testing.T) {
+	const assertion = "    parent_test.go:99: parent assertion before sibling failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("    sibling_test.go:1: sibling output\n")
+	log.WriteString("--- FAIL: TestSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted after an earlier failure block: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
 // top-level parallel shape from go test -v: a sibling resumes after the
 // parent's assertion, emits source-located diagnostics, passes, and the
@@ -642,10 +658,12 @@ func TestReplaySurveyFailuresExpandsChildDiagnosticWithEmptyWindow(t *testing.T)
 }
 
 // TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup covers
-// an empty ordinary window where a sibling verdict sits immediately before
-// the parent failure. The child's diagnostic must outrank older parent setup.
+// an ordinary window with no lines owned by the failing test or descendant,
+// where a sibling verdict sits immediately before the parent failure. The
+// child's diagnostic must outrank older parent setup.
 func TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup(t *testing.T) {
 	const childDiagnostic = "    child_test.go:5: child failure"
+	const newestParentSetup = "    setup_test.go:11: parent setup diagnostic"
 	var log strings.Builder
 	log.WriteString("=== RUN   TestParent\n")
 	for i := range surveyContextBefore + 1 {
@@ -661,6 +679,9 @@ func TestReplaySurveyFailuresKeepsChildDiagnosticAfterVerboseParentSetup(t *test
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
 	if !strings.Contains(got, childDiagnostic) {
 		t.Fatalf("child diagnostic was omitted after verbose parent setup: %q", got)
+	}
+	if !strings.Contains(got, newestParentSetup) {
+		t.Fatalf("newest parent setup diagnostic was omitted: %q", got)
 	}
 }
 
