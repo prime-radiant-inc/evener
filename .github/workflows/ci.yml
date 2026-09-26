@@ -385,7 +385,7 @@ jobs:
 
       - name: "EXPERIMENT: keep the raw test stream"
         if: matrix.scope == 'agent'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: agent-race-json
           path: /tmp/race.json
