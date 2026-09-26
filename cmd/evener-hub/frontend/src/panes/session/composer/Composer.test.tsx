@@ -1987,10 +1987,10 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
 
 // enterToSend on makes Shift+Enter a literal newline rather than a steer (see
 // handleKeyDown), so Steer's tooltip must stop advertising a chord that no
-// longer reaches it. controlTooltips.test.ts pins every Send and Steer label;
-// this is Steer's one real hover, proving the preference and the label reach
-// the bubble.
-test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter away from it", async () => {
+// longer reaches it, and Send's names the bare Enter that now submits.
+// controlTooltips.test.ts pins every Send and Steer label; these hovers prove
+// the preference (and, mid-turn, Send's queue timing) reach each bubble.
+test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare Enter", async () => {
   prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
   await mountComposer("ref_a", {
@@ -2001,6 +2001,11 @@ test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter awa
   const tip = await screen.findByRole("tooltip");
   expect(tip.textContent).toMatch(/interrupt and redirect now/i);
   expect(tip.textContent).not.toMatch(/Shift/);
+
+  // getByRole throws while two bubbles show, so this waits for Steer's to go.
+  await user.unhover(steerButton());
+  await user.hover(submitButton());
+  await waitFor(() => expect(screen.getByRole("tooltip").textContent).toBe("Queue until the agent stops · Enter"));
 });
 
 // --- steer / drain-as-steer routing -----------------------------------------
