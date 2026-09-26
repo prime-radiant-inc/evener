@@ -2384,8 +2384,8 @@ func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
 		name         string
 		notification appwire.Notification
 	}{
-		{"turn/completed of the previous turn", *appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted}}).Notification},
-		{"turn/started of the next turn", *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress}}).Notification},
+		{"history/updated recording the previous turn's completion", *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted}}}).Notification},
+		{"thread/status/changed naming the next turn active", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, ActiveTurnID: "turn_2"}).Notification},
 		{"the status frame", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}).Notification},
 	}
 	for _, frame := range frames {
@@ -2527,7 +2527,7 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Interrupt = true
 	m.session.processing = true
-	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
+	failed := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}}})
 	m.applyHubNotification(*failed.Notification)
 
 	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
@@ -2550,7 +2550,7 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m = newSessionHubModel(nil)
 	m.detail.State = appwire.ThreadStatusActive
 	m.detail.ActiveTurnID = "turn_2"
-	late := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}})
+	late := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}}})
 	m.applyHubNotification(*late.Notification)
 	if m.detail.State != appwire.ThreadStatusActive || m.detail.ActiveTurnID != "turn_2" {
 		t.Fatalf("a failed completion for a superseded turn changed the session: state=%q active=%q", m.detail.State, m.detail.ActiveTurnID)

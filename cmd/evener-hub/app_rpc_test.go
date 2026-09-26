@@ -3230,17 +3230,15 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
-	daemon.Broadcast("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	daemon.Broadcast("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
 		ThreadID: "th_1",
 		Ref:      "local:th_1",
-		TurnID:   "turn_1",
-		ItemID:   "item_1",
 		Delta:    "hi",
 	})
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -3488,19 +3486,17 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	}
 
 	sourceB.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex-b:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "from source b",
 		}),
 	}
 
 	select {
 	case got := <-clientB.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("clientB method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -3511,18 +3507,16 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	// first (it was broadcast before the sentinel), so receiving the sentinel
 	// as the first notification structurally proves no cross-source leak.
 	sourceA.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex-a:" + threadID,
-			TurnID:   "turn_sentinel",
-			ItemID:   "item_sentinel",
 			Delta:    "sentinel",
 		}),
 	}
 	select {
 	case got := <-clientA.Notifications():
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("clientA: unmarshal params: %v", err)
 		}
@@ -3566,19 +3560,17 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 	expectRelaySubscription(t, source.subscribed)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "from codex",
 		}),
 	}
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -3633,12 +3625,10 @@ func TestHubRPCThreadUnsubscribeDropsDownstreamSubscription(t *testing.T) {
 
 	// The relay's notifications no longer reach this connection.
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after unsubscribe",
 		}),
 	}
@@ -3928,12 +3918,10 @@ func TestHubRPCThreadUnsubscribeDropsStableRefRelay(t *testing.T) {
 	}
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "current",
 			Ref:      stableRef,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after unsubscribe",
 		}),
 	}
@@ -3994,12 +3982,10 @@ func TestHubRPCThreadUnsubscribeDropsStableRefRelayWhenReadAlsoNamedThreadID(t *
 	}
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "current",
 			Ref:      stableRef,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after unsubscribe",
 		}),
 	}
@@ -6806,12 +6792,10 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 	expectRelaySubscription(t, sourceB.subscribed)
 
 	sourceA.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_a",
 			Ref:      "codex-a:th_a",
-			TurnID:   "turn_a",
-			ItemID:   "item_a",
 			Delta:    "from source a",
 		}),
 	}
@@ -6819,21 +6803,19 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 	// subscription leaked, sourceA's notification would arrive first; the
 	// client must receive sourceB's as the first notification.
 	sourceB.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_b",
 			Ref:      "codex-b:th_b",
-			TurnID:   "turn_b",
-			ItemID:   "item_b",
 			Delta:    "from source b",
 		}),
 	}
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("notification method=%q", got.Method)
 		}
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("unmarshal params: %v", err)
 		}
@@ -6898,22 +6880,18 @@ func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
 	expectRelaySubscription(t, sourceB.subscribed)
 
 	sourceA.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_a",
 			Ref:      "codex-a:th_a",
-			TurnID:   "turn_a",
-			ItemID:   "item_a",
 			Delta:    "from source a",
 		}),
 	}
 	sourceB.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_b",
 			Ref:      "codex-b:th_b",
-			TurnID:   "turn_b",
-			ItemID:   "item_b",
 			Delta:    "from source b",
 		}),
 	}
@@ -6922,10 +6900,10 @@ func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
 	for len(gotRefs) < 2 {
 		select {
 		case got := <-client.Notifications():
-			if got.Method != appwire.NotifyAgentMessageDelta {
+			if got.Method != appwire.NotifyOverlayDelta {
 				continue
 			}
-			var params appwire.AgentMessageDeltaParams
+			var params appwire.OverlayDeltaParams
 			if err := json.Unmarshal(got.Params, &params); err != nil {
 				t.Fatalf("unmarshal params: %v", err)
 			}
@@ -7108,19 +7086,17 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	close(releaseIdle)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_1",
 			Ref:      "codex:th_1",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "still live",
 		}),
 	}
 
 	select {
 	case got := <-client2.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-source.canceled:
@@ -7409,18 +7385,16 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 		t.Fatalf("ThreadRead okClient: %v", err)
 	}
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after retry",
 		}),
 	}
 	select {
 	case got := <-okClient.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("okClient method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -7432,12 +7406,10 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 	// received from the first broadcast is already in its buffer, because
 	// Broadcast enqueues to all subscribers synchronously before moving on.
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_sentinel",
-			ItemID:   "item_sentinel",
 			Delta:    "sentinel",
 		}),
 	}
@@ -7764,12 +7736,10 @@ func awaitRelaySubscribeCall(t *testing.T, calls <-chan struct{}) {
 func relayDeltaNotification(t *testing.T, threadID, delta string) appwire.Notification {
 	t.Helper()
 	return appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: threadID,
 			Ref:      "codex:" + threadID,
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    delta,
 		}),
 	}
@@ -7824,7 +7794,7 @@ func expectRelayDelta(t *testing.T, notifications <-chan appwire.Notification, w
 	t.Helper()
 	select {
 	case got := <-notifications:
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("unmarshal relay notification: %v", err)
 		}
@@ -10549,18 +10519,16 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	expectRelaySubscription(t, source.subscribed)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_start_relay",
 			Ref:      "codex:th_start_relay",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after start",
 		}),
 	}
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -10645,18 +10613,16 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 	expectRelaySubscription(t, source.subscribed)
 
 	source.notifications <- appwire.Notification{
-		Method: appwire.NotifyAgentMessageDelta,
-		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+		Method: appwire.NotifyOverlayDelta,
+		Params: testRawJSON(t, appwire.OverlayDeltaParams{
 			ThreadID: "th_resume_relay",
 			Ref:      "codex:th_resume_relay",
-			TurnID:   "turn_1",
-			ItemID:   "item_1",
 			Delta:    "after resume",
 		}),
 	}
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):
@@ -11025,17 +10991,15 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 		t.Fatalf("TurnStart: %v", err)
 	}
 
-	daemon.Broadcast(sessionID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	daemon.Broadcast(sessionID, appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
 		ThreadID: sessionID,
 		Ref:      "local:" + sessionID,
-		TurnID:   "turn_4",
-		ItemID:   "item_1",
 		Delta:    "live update",
 	})
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
+		if got.Method != appwire.NotifyOverlayDelta {
 			t.Fatalf("method=%q", got.Method)
 		}
 	case <-time.After(time.Second):

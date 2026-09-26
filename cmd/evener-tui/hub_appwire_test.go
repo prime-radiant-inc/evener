@@ -209,10 +209,9 @@ func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) 
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
 
-	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"threadId": "th_1",
-		"turnId":   "turn_1",
-		"item": appwire.ThreadItem{
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "th_1",
+		Items: []appwire.ThreadItem{{
 			Type:          "commandExecution",
 			ID:            "item_delegate",
 			TurnID:        "turn_1",
@@ -221,7 +220,7 @@ func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) 
 			ArgumentsJSON: `{"task":"inspect billing"}`,
 			Output:        `{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`,
 			Status:        appwire.TurnStatusCompleted,
-		},
+		}},
 	}).Notification})
 
 	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyEvenerDelegateUpdated, map[string]any{

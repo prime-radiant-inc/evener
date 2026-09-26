@@ -556,9 +556,9 @@ func TestCovRunCommandPaletteCommand(t *testing.T) {
 // TestCovHubFrameFeedObserveNotification exercises notification observation.
 func TestCovHubFrameFeedObserveNotification(t *testing.T) {
 	f := newHubFrameFeed()
-	n := appwire.Notification{Method: appwire.NotifyTurnStarted}
+	n := appwire.Notification{Method: appwire.NotifyThreadStatusChanged}
 	f.Observe(appwire.Message{Notification: &n}, nil)
-	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnStarted {
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyThreadStatusChanged {
 		t.Fatalf("notification = %#v, ok=%v", got, ok)
 	}
 }
@@ -571,13 +571,13 @@ func TestCovHubFrameFeedObserveError(t *testing.T) {
 		closed = true
 		return nil
 	})
-	n := appwire.Notification{Method: appwire.NotifyItemStarted}
+	n := appwire.Notification{Method: appwire.NotifyOverlayUpserted}
 	f.Observe(appwire.Message{Notification: &n}, nil)
 	f.Observe(appwire.Message{}, errors.New("connection lost"))
 	if !closed {
 		t.Fatal("transport closer was not called when the feed ended")
 	}
-	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyItemStarted {
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyOverlayUpserted {
 		t.Fatalf("queued notification = %#v, ok=%v", got, ok)
 	}
 	if _, ok := takeHubNotification(f); ok {
@@ -593,7 +593,7 @@ func TestCovHubFrameFeedBeginCapture(t *testing.T) {
 		t.Fatal("should return capture")
 	}
 
-	n := appwire.Notification{Method: appwire.NotifyItemStarted}
+	n := appwire.Notification{Method: appwire.NotifyOverlayUpserted}
 	f.Observe(appwire.Message{Notification: &n}, nil)
 
 	// Second capture supersedes the first and inherits its held frames.
@@ -602,7 +602,7 @@ func TestCovHubFrameFeedBeginCapture(t *testing.T) {
 		t.Fatal("should return second capture")
 	}
 	frames := c2.BeforeCut()
-	if len(frames) != 1 || frames[0].Method != appwire.NotifyItemStarted {
+	if len(frames) != 1 || frames[0].Method != appwire.NotifyOverlayUpserted {
 		t.Fatalf("inherited frames = %#v", frames)
 	}
 	if frames := c.BeforeCut(); frames != nil {
@@ -616,20 +616,20 @@ func TestCovHubReadCaptureCutOn(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
 	c.CutOn(appwire.NewIntID(42))
-	beforeWrongResponse := appwire.Notification{Method: appwire.NotifyTurnStarted}
-	betweenResponses := appwire.Notification{Method: appwire.NotifyItemStarted}
-	postCut := appwire.Notification{Method: appwire.NotifyTurnCompleted}
+	beforeWrongResponse := appwire.Notification{Method: appwire.NotifyThreadStatusChanged}
+	betweenResponses := appwire.Notification{Method: appwire.NotifyOverlayUpserted}
+	postCut := appwire.Notification{Method: appwire.NotifyHistoryUpdated}
 	f.Observe(appwire.Message{Notification: &beforeWrongResponse}, nil)
 	f.Observe(appwire.Message{Response: &appwire.Response{ID: appwire.NewIntID(7)}}, nil)
 	f.Observe(appwire.Message{Notification: &betweenResponses}, nil)
 	f.Observe(appwire.Message{Response: &appwire.Response{ID: appwire.NewIntID(42)}}, nil)
 	f.Observe(appwire.Message{Notification: &postCut}, nil)
 	frames := c.BeforeCut()
-	if len(frames) != 2 || frames[0].Method != appwire.NotifyTurnStarted || frames[1].Method != appwire.NotifyItemStarted {
+	if len(frames) != 2 || frames[0].Method != appwire.NotifyThreadStatusChanged || frames[1].Method != appwire.NotifyOverlayUpserted {
 		t.Fatalf("before-cut frames = %#v", frames)
 	}
 	c.Release()
-	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnCompleted {
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyHistoryUpdated {
 		t.Fatalf("released post-cut notification = %#v, ok=%v", got, ok)
 	}
 	if got, ok := takeHubNotification(f); ok {
@@ -650,10 +650,10 @@ func TestCovHubReadCaptureBeforeCut(t *testing.T) {
 func TestCovHubReadCaptureRelease(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
-	n := appwire.Notification{Method: appwire.NotifyItemCompleted}
+	n := appwire.Notification{Method: appwire.NotifyOverlayDelta}
 	f.Observe(appwire.Message{Notification: &n}, nil)
 	c.Release()
-	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyItemCompleted {
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("released notification = %#v, ok=%v", got, ok)
 	}
 }
@@ -662,10 +662,10 @@ func TestCovHubReadCaptureRelease(t *testing.T) {
 func TestCovHubReadCaptureAbandon(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
-	n := appwire.Notification{Method: appwire.NotifyItemStarted}
+	n := appwire.Notification{Method: appwire.NotifyOverlayUpserted}
 	f.Observe(appwire.Message{Notification: &n}, nil)
 	c.Abandon()
-	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyItemStarted {
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyOverlayUpserted {
 		t.Fatalf("abandoned notification = %#v, ok=%v", got, ok)
 	}
 }
@@ -674,13 +674,13 @@ func TestCovHubReadCaptureAbandon(t *testing.T) {
 func TestCovHubFrameFeedObserveWithCapture(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
-	n := appwire.Notification{Method: appwire.NotifyTurnStarted}
+	n := appwire.Notification{Method: appwire.NotifyThreadStatusChanged}
 	f.Observe(appwire.Message{Notification: &n}, nil)
 	if _, ok := takeHubNotification(f); ok {
 		t.Fatal("captured notification escaped before release")
 	}
 	c.Release()
-	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnStarted {
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyThreadStatusChanged {
 		t.Fatalf("released captured notification = %#v, ok=%v", got, ok)
 	}
 }
@@ -1106,7 +1106,7 @@ func TestCovHubModelInit(t *testing.T) {
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.frames = newHubFrameFeed()
-	notification := appwire.Notification{Method: appwire.NotifyTurnStarted}
+	notification := appwire.Notification{Method: appwire.NotifyThreadStatusChanged}
 	m.frames.Observe(appwire.Message{Notification: &notification}, nil)
 	cmd := m.Init()
 	if cmd == nil {
@@ -1125,7 +1125,7 @@ func TestCovHubModelInit(t *testing.T) {
 			}
 			seenTree = true
 		case hubNotificationMsg:
-			if !msg.ok || msg.notification.Method != appwire.NotifyTurnStarted {
+			if !msg.ok || msg.notification.Method != appwire.NotifyThreadStatusChanged {
 				t.Fatalf("notification result = %#v", msg)
 			}
 			seenNotification = true
