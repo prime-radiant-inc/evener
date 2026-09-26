@@ -50,7 +50,16 @@ vi.mock("@react-navigation/native", async () => {
 			}, []);
 			useEffect(() => (focused ? effect() : undefined), [focused, effect]);
 		},
-		useIsFocused: () => true,
+		useIsFocused: () => {
+			const [focused, setFocused] = useState(harness.focused);
+			useEffect(() => {
+				harness.focusListeners.add(setFocused);
+				return () => {
+					harness.focusListeners.delete(setFocused);
+				};
+			}, []);
+			return focused;
+		},
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
@@ -565,13 +574,27 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// Blurred, the row-age ticker stops, leaving the retry the only timer.
-	setFocused(false);
-	expect(vi.getTimerCount()).toBe(1);
+	// The row-age ticker and the retry.
+	expect(vi.getTimerCount()).toBe(2);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
+});
+
+it("schedules no retry while the Board is out of view", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, undefined, (read) => read.section === "live");
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(liveReads(fake)).toEqual([0]);
+	setFocused(false);
+	await settle();
+	expect(vi.getTimerCount()).toBe(0);
+	await advance(60_000);
+	expect(liveReads(fake)).toEqual([0]);
+	act(() => tree.unmount());
 });
 
 it("neither says a first read failed nor retries while Live loads and only the pin catalog failed", async () => {
@@ -709,6 +732,36 @@ it("starts the backoff over once a Live read succeeds", async () => {
 	act(() => tree.unmount());
 });
 
+it("keeps its backoff when a blur cancels a retry's read", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let live: "fail" | "hold" = "fail";
+	const fake = hub(
+		fleet,
+		(read) => live === "hold" && read.section === "live",
+		(read) => live === "fail" && read.section === "live",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	live = "hold";
+	await advance(1000);
+	expect(liveReads(fake)).toEqual([0, 0]);
+	// Leaving the Board pauses it, which cancels the retry's read.
+	setFocused(false);
+	await settle();
+	live = "fail";
+	setFocused(true);
+	await settle();
+	expect(liveReads(fake)).toEqual([0, 0, 0]);
+	// Two failures in a row: the next retry waits two seconds, not one.
+	await advance(1999);
+	expect(liveReads(fake)).toEqual([0, 0, 0]);
+	await advance(1);
+	expect(liveReads(fake)).toEqual([0, 0, 0, 0]);
+	act(() => tree.unmount());
+});
+
 it("shows neither skeleton rows nor the failed-read sentence beside Update needed before anything loaded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -727,25 +780,14 @@ it("keeps reading Live's pages while they don't fill the screen, without any scr
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The Board's scroller, not the chips' horizontal one.
-	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
-	const liveBlock = tree.root.find((node) => node.props.testID === "live-block");
 	// A 700pt viewport over a 300pt Live block, reported by layout alone.
-	const lay = async () => {
-		act(() => {
-			scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
-			liveBlock.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } });
-			scroller.props.onContentSizeChange?.(390, 400);
-		});
-		await settle();
-	};
-	await lay();
+	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2]);
-	await lay();
+	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 3]);
 	expect(hasRow(tree, "Ship it")).toBe(true);
 	// Remaining is 0: nothing more to read.
-	await lay();
+	await layOut(tree);
 	expect(liveReads(fake)).toEqual([0, 2, 3]);
 	act(() => tree.unmount());
 });

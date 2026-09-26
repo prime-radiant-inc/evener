@@ -1,5 +1,5 @@
 import { humanizeState, type NavigationSessionSummary } from "@evener/appwire-client";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -65,6 +65,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const { client, state, fatal } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
+	const focused = useIsFocused();
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -96,7 +97,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		board.setClient(state === "ready" ? client : null);
 	}, [board, client, state]);
 	const firstReadFailed = connected && !snapshot.loaded && snapshot.live.error !== null;
-	useLiveReadRetry(board, connected ? client : null, snapshot.live);
+	// The retry rests while the Board is out of view: the controller is
+	// paused then, and a paused read is cancelled, not answered.
+	useLiveReadRetry(board, connected && focused ? client : null, snapshot);
 
 	const bands = useMemo(
 		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row)),
@@ -366,21 +369,23 @@ function useFirstRun(
  * resuming re-reads only stale pages. Rebinding is the reconnect path: the
  * loaded rows stay on screen until the fresh reads land, and the screen's
  * load-more pages Live back out. A read that lands, or a new connection,
- * starts the count over. */
+ * starts the count over; with no client (disconnected or out of view) the
+ * hook holds its count and schedules nothing. */
 function useLiveReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,
-	live: Pick<BoardSnapshot["live"], "error" | "loading">,
+	snapshot: Pick<BoardSnapshot, "live" | "loaded" | "retained">,
 ) {
 	const [retries, setRetries] = useState({ client, count: 0 });
 	const count = retries.client === client ? retries.count : 0;
-	const failed = live.error !== null;
-	// A retry in flight shows no error while it loads (the controller gives
-	// retained rows the fresh read's status), so only a read that finished
-	// without one counts as success.
-	const succeeded = !failed && !live.loading;
+	const failed = snapshot.live.error !== null;
+	// Only a fresh read that settled counts as success: the Board has loaded
+	// and shows nothing retained, with no error and no read in flight. A read
+	// a pause cancelled leaves no error and no loading flag, but it never
+	// lands, so its page stays unloaded or retained.
+	const succeeded = snapshot.loaded && !snapshot.retained && !failed && !snapshot.live.loading;
 	useEffect(() => {
-		if (succeeded && count > 0) setRetries({ client, count: 0 });
+		if (client && succeeded && count > 0) setRetries({ client, count: 0 });
 	}, [client, count, succeeded]);
 	useEffect(() => {
 		if (!failed || !client) return;
