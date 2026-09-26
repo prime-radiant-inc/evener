@@ -579,25 +579,20 @@ type Connection struct {
 	initialized       bool
 	recoveryRunning   bool
 	// recoveryClearID is the requestIDKey of the in-flight force-stop
-	// response whose transmission should clear recoveryRunning. It is set
-	// before that response is enqueued (recoveryRunning must survive the
-	// enqueue itself, to bound in-flight force stops to one) and read by
-	// beforeSend and afterSend, keyed the same way, to drive the two-stage
-	// handoff below.
+	// response, from the moment its handler finishes (markRecoveryClear)
+	// through the moment its transport.Send call actually returns
+	// (afterSend). It is the single source of truth for "some force-stop
+	// response still has to reach the wire": beforeSend does not clear it
+	// (only recoveryRunning, so the client-visible guarantee — recoveryRunning
+	// is already false before any byte of the response reaches the wire — is
+	// unchanged), so admission below can check recoveryClearID != "" the same
+	// way it checks recoveryRunning, covering enqueue and the transport write
+	// with one field instead of a second bool that could drift from it.
 	recoveryClearID string
-	// recoverySendPending covers the span beforeSend's clear of
-	// recoveryRunning cannot: it is set the moment beforeSend clears
-	// recoveryRunning (so the client-visible guarantee — recoveryRunning is
-	// already false before any byte of the response reaches the wire — is
-	// unchanged) and cleared by afterSend, once the send loop's Send call for
-	// that same response actually returns. Admission checks both flags, so a
-	// force stop is refused for the whole span from claim through actual
-	// transport delivery, not just through enqueue.
-	recoverySendPending bool
-	cancel              context.CancelFunc
-	responseMu          sync.Mutex
-	hydrationMu         sync.Mutex
-	hydrations          map[string]*hydrationResponseFinalizer
+	cancel          context.CancelFunc
+	responseMu      sync.Mutex
+	hydrationMu     sync.Mutex
+	hydrations      map[string]*hydrationResponseFinalizer
 	// afterWrite holds the AfterResponseWritten callbacks, keyed the same way
 	// hydrations is (requestIDKey). afterWriteDrained records that
 	// runPendingAfterWrite has already run, so a callback arriving after the
@@ -806,11 +801,11 @@ func (c *Connection) clearRecoveryOnPanic(fn func()) {
 // strictly before it in program order, so the client cannot observe the
 // response before recoveryRunning is already false.
 //
-// It also sets recoverySendPending in the same step (recoveryClearID is left
-// set, not cleared, so afterSend below can still match this response) so a
-// force stop is still refused for as long as Send is actually in flight — a
-// blocked write, not just a full outbound buffer, is otherwise a second gap
-// this same flag needs to cover.
+// recoveryClearID is deliberately left set (not cleared here): admission
+// checks it the same way it checks recoveryRunning, so a force stop is still
+// refused for as long as Send is actually in flight — a blocked write, not
+// just a full outbound buffer, is otherwise a second gap this same
+// admission check needs to cover. afterSend clears it once Send returns.
 func (c *Connection) beforeSend(msg appwire.Message) {
 	c.mu.RLock()
 	clearID := c.recoveryClearID
@@ -825,16 +820,15 @@ func (c *Connection) beforeSend(msg appwire.Message) {
 	c.mu.Lock()
 	if c.recoveryClearID == id {
 		c.recoveryRunning = false
-		c.recoverySendPending = true
 	}
 	c.mu.Unlock()
 }
 
 // afterSend runs on the send loop immediately after a successful transport
-// call, the send-loop half of beforeSend: it clears recoverySendPending (and
-// recoveryClearID, done with this response) once Send has actually returned
-// for the response beforeSend marked. It is wired in beside responseWritten,
-// which already runs at this exact point for an unrelated purpose (the
+// call, the send-loop half of beforeSend: it clears recoveryClearID once
+// Send has actually returned for the response beforeSend marked, ending
+// admission's refusal window. It is wired in beside responseWritten, which
+// already runs at this exact point for an unrelated purpose (the
 // AfterResponseWritten callback), rather than adding a third send-loop
 // callback parameter for one more single-purpose hook.
 func (c *Connection) afterSend(msg appwire.Message) {
@@ -851,7 +845,6 @@ func (c *Connection) afterSend(msg appwire.Message) {
 	c.mu.Lock()
 	if c.recoveryClearID == id {
 		c.recoveryClearID = ""
-		c.recoverySendPending = false
 	}
 	c.mu.Unlock()
 }
@@ -1519,19 +1512,27 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodEvenerThreadForceStop && c.isInitialized() {
 		c.mu.Lock()
-		// recoverySendPending covers the gap between beforeSend clearing
+		// recoveryClearID != "" covers the gap between beforeSend clearing
 		// recoveryRunning and afterSend confirming the response actually
 		// reached the transport: without it, a force stop whose write is
 		// merely slow (not blocked behind a full buffer, which
 		// recoveryRunning alone already covers) would be admitted while the
 		// prior one is still being transmitted.
-		busy := c.recoveryRunning || c.recoverySendPending
+		busy := c.recoveryRunning || c.recoveryClearID != ""
 		if !busy {
 			c.recoveryRunning = true
 		}
 		c.mu.Unlock()
 		if busy {
-			c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
+			// This enqueue runs directly in the receive loop's goroutine, with
+			// no handler and so no handleRecovered call to barrier it — recoverPanic
+			// is the barrier here, the same one handleRecovered uses internally,
+			// so a panic enqueueing the refusal can't crash this goroutine (and,
+			// since nothing above it recovers either, the whole process) any more
+			// than a panic enqueueing an admitted force stop's real response can.
+			c.recoverPanic(msg, func() {
+				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
+			})
 			return true
 		}
 		// Recovery must reach ownership cancellation even when the serial worker
@@ -1942,12 +1943,7 @@ func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) 
 // uncaught.
 func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message, onResponse func(appwire.Message)) {
 	deliver := func(resp appwire.Message) {
-		defer func() {
-			if r := recover(); r != nil {
-				c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
-			}
-		}()
-		onResponse(resp)
+		c.recoverPanic(msg, func() { onResponse(resp) })
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -1958,6 +1954,22 @@ func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message, o
 		}
 	}()
 	deliver(c.HandleMessage(ctx, msg))
+}
+
+// recoverPanic runs fn, logging and swallowing any panic instead of letting
+// it escape to fn's caller. It is the shared panic barrier every dispatch
+// path in this file uses outside HandleMessage's own coverage in
+// handleRecovered: handleRecovered's deliver uses it for onResponse, and the
+// force-stop busy-refusal path (which never reaches handleRecovered — there
+// is no handler response to deliver) uses it directly, so an enqueue panic
+// on either path is contained identically.
+func (c *Connection) recoverPanic(msg appwire.Message, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
+		}
+	}()
+	fn()
 }
 
 // methodOf names a message's method for the panic log; a frame that is

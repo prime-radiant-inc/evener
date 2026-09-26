@@ -121,6 +121,46 @@ func TestHandleRecoveredCoversPanicFromRecoveryPathOnResponse(t *testing.T) {
 	}
 }
 
+// TestRecoverPanicLogsAndContainsAnyPanic pins a roborev finding: the
+// force-stop busy-refusal path (taken when a second force stop arrives while
+// one is already running) called enqueueDispatched directly, with no
+// handleRecovered call around it — there is no handler response to
+// deliver, so it never went through that barrier at all. A panic there
+// (enqueueDispatched touches hydration bookkeeping beyond the plain channel
+// send, the same real failure mode the admitted-request path was already
+// hardened against) would escape straight out of the receive loop's
+// goroutine and crash the process.
+//
+// recoverPanic is the shared barrier now used by both handleRecovered's
+// deliver (for the admitted-request path) and the busy-refusal path
+// directly. This test exercises it standalone, the same way
+// TestHandleRecoveredCoversOnResponsePanic exercises deliver: the mechanism
+// is identical either way, so testing it once here covers both call sites.
+func TestRecoverPanicLogsAndContainsAnyPanic(t *testing.T) {
+	server, logged := captureLogfServer()
+	conn := server.NewConnection("c1")
+	msg := rawRequest(t, 12, "test/busyRefusalPanic", appwire.EmptyParams{})
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped recoverPanic: %v", r)
+			}
+		}()
+		conn.recoverPanic(msg, func() { panic("boom enqueueing the busy refusal") })
+	}()
+
+	output := logged()
+	for _, want := range []string{
+		"panic handling test/busyRefusalPanic",
+		"boom enqueueing the busy refusal",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("panic log missing %q in:\n%s", want, output)
+		}
+	}
+}
+
 // TestClearRecoveryOnPanicRollsBackBusyFlagBeforeRepanicking pins a second
 // roborev finding: markRecoveryClear runs before enqueueDispatched, so if
 // enqueueDispatched panics before the response ever reaches the send
