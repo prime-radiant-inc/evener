@@ -391,6 +391,29 @@ func TestReplaySurveyFailuresDoesNotRepeatEarlierExpandedContext(t *testing.T) {
 	}
 }
 
+func TestReplaySurveyFailuresKeepsFallbackContextAtBlockLimit(t *testing.T) {
+	const assertion = "    parent_test.go:5: parent assertion at block limit"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent\n"+
+			assertion+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"=== NAME  TestParent\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 1)
+	count := 0
+	for _, line := range got {
+		if line == assertion {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("parent assertion occurred %d times at the block limit: %q", count, got)
+	}
+}
+
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
 // top-level parallel shape from go test -v: a sibling resumes after the
 // parent's assertion, emits source-located diagnostics, passes, and the

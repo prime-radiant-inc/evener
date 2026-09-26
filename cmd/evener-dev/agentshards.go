@@ -796,6 +796,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	matched := false
 	emitted := 0 // exclusive end of the last block written
 	emittedLines := make(map[int]struct{})
+	deferredLines := make(map[string][]int)
 	for i := 0; i < len(lines) && maxBlocks > 0; {
 		if !surveyRedLine.MatchString(lines[i]) {
 			i++
@@ -803,6 +804,9 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		}
 		maxBlocks--
 		matched = true
+		name := surveyFailureName(lines[i])
+		deferred := deferredLines[name]
+		delete(deferredLines, name)
 		start := i
 		for n := 0; n < surveyContextBefore && start > emitted && !surveyFrameworkLine(lines[start-1]); n++ {
 			start--
@@ -811,8 +815,8 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
-		if start == i || surveyFailureHasMismatchedOwner(lines, i) {
-			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines); ok {
+		if len(deferred) > 0 || start == i || surveyFailureHasMismatchedOwner(lines, i) {
+			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines, deferred); ok {
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
 				}
@@ -827,8 +831,18 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 				continue
 			}
 		}
+		for _, index := range deferred {
+			_, _ = fmt.Fprintln(w, lines[index])
+			emittedLines[index] = struct{}{}
+		}
 		for index := start; index < end; index++ {
-			if index < i && surveyFallbackLineBelongsToLaterFailure(lines, index, i) {
+			if index < i {
+				if owner := surveyFallbackLineLaterFailureOwner(lines, index, i, maxBlocks); owner != "" {
+					deferredLines[owner] = append(deferredLines[owner], index)
+					continue
+				}
+			}
+			if _, alreadyEmitted := emittedLines[index]; alreadyEmitted {
 				continue
 			}
 			_, _ = fmt.Fprintln(w, lines[index])
@@ -902,27 +916,42 @@ func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 	return false
 }
 
-func surveyFallbackLineBelongsToLaterFailure(lines []string, index, marker int) bool {
+// surveyFallbackLineLaterFailureOwner returns the owner of an ordinary fallback
+// line when that owner has a later top-level failure marker within the remaining
+// block budget. The caller defers only those lines, so maxBlocks exhaustion
+// cannot silently discard context. Ownership follows RUN/CONT/NAME frames and
+// test verdicts, matching expandSurveyFailure; later markers are top-level
+// because surveyRedLine is anchored.
+func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlocks int) string {
 	if surveyFrameworkLine(lines[index]) {
-		return false
+		return ""
 	}
 	current := surveyFailureName(lines[marker])
-	for frame := index; frame >= 0; frame-- {
-		owner := surveyPhaseOwner(lines[frame])
-		if owner == "" {
+	owner := ""
+	for frame := 0; frame < index; frame++ {
+		if frameOwner := surveyPhaseOwner(lines[frame]); frameOwner != "" {
+			owner = frameOwner
+		}
+		if verdict := strings.TrimSpace(lines[frame]); surveyTestVerdictLine.MatchString(verdict) {
+			owner = surveyFailureName(verdict)
+		}
+	}
+	if owner == "" || owner == current {
+		return ""
+	}
+	for later, failures := marker+1, 0; later < len(lines); later++ {
+		if !surveyRedLine.MatchString(lines[later]) {
 			continue
 		}
-		if owner == current {
-			return false
-		}
-		for later := marker + 1; later < len(lines); later++ {
-			if surveyRedLine.MatchString(lines[later]) && surveyFailureName(lines[later]) == owner {
-				return true
+		failures++
+		if surveyFailureName(lines[later]) == owner {
+			if failures <= maxBlocks {
+				return owner
 			}
+			return ""
 		}
-		return false
 	}
-	return false
+	return ""
 }
 
 // surveyDiagnosticLine matches the source location that testing prefixes on
@@ -950,7 +979,7 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
 // marker.
-func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines map[int]struct{}) ([]string, bool) {
+func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines map[int]struct{}, deferredLines []int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
 		return nil, false
@@ -1075,6 +1104,13 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	ordinaryBudget := ordinaryBudgetForReservations()
 	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
+	for i := len(deferredLines) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+		if _, exists := emittedLines[deferredLines[i]]; exists {
+			continue
+		}
+		keep[deferredLines[i]] = struct{}{}
+		selectedCount++
+	}
 	selectNewest := func(candidates []int, limit int) {
 		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
 			if _, exists := keep[candidates[i]]; exists {
