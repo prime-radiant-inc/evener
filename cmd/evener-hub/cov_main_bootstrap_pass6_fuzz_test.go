@@ -47,7 +47,7 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 		served := false
 		deps := mainDeps{
 			loadRegistry:    hermeticRegistryLoader,
-			loadConfig:      func(string) (Config, error) { return cfg, nil },
+			loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 			ensureDirs:      func() error { return nil },
 			acquireLock:     func(string) (func(), error) { return func() {}, nil },
 			newToken:        func() (string, error) { return "hub-token", nil },
@@ -95,13 +95,13 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			deps.loadRegistry = hermeticRegistryLoader
 		case 5:
 			cfg.RunDir, cfg.StateGlob, cfg.PastIndexDB = "", "", ""
-			deps.loadConfig = func(string) (Config, error) { return cfg, nil }
+			deps.loadConfig = func(string, bool) (Config, error) { return cfg, nil }
 		case 6:
 			cfg.Addr = "0.0.0.0:0"
-			deps.loadConfig = func(string) (Config, error) { return cfg, nil }
+			deps.loadConfig = func(string, bool) (Config, error) { return cfg, nil }
 		case 7:
 			cfg.Addr = "[::]:0"
-			deps.loadConfig = func(string) (Config, error) { return cfg, nil }
+			deps.loadConfig = func(string, bool) (Config, error) { return cfg, nil }
 		case 8:
 			// Complete bootstrap on a registry that loads cleanly.
 		case 9:

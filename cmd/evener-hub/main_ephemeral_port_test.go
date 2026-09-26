@@ -54,7 +54,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	served := make(chan struct{})
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
