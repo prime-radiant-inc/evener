@@ -270,6 +270,7 @@ func TestCovValidateStructuredResultWithAddResource_Panic(t *testing.T) {
 // TestCovRearmTerminalNotificationDecision covers
 // rearmTerminalNotificationDecision (jobs.go lines 2082-2092).
 func TestCovRearmTerminalNotificationDecision(t *testing.T) {
+	t.Parallel()
 	sessionID := "sess_1"
 
 	// Non-terminal status — no rearm.
@@ -437,6 +438,7 @@ func TestCovArmPendingTerminalNotifications(t *testing.T) {
 // TestCovValidatedOutputStatsForRecord covers validatedOutputStatsForRecord
 // (jobs.go lines 2175-2184): the mismatch path and the nil-record path.
 func TestCovValidatedOutputStatsForRecord(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
 	if err := os.WriteFile(path, []byte("hello world\n"), 0o644); err != nil {

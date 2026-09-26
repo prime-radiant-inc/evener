@@ -21,6 +21,7 @@ import (
 // ~16 MiB slice to keep 200 runes, defeating the memory bound the cap exists
 // for.
 func TestTruncateActivityText_DoesNotMaterializeTheInput(t *testing.T) {
+	t.Parallel()
 	// Not parallel: it measures process-wide allocation.
 	input := strings.Repeat("a", activityMaxEncodedBytes) // 4 MiB
 	var before, after runtime.MemStats
