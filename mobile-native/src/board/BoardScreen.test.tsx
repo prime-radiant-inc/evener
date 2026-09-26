@@ -3,7 +3,9 @@
 // params, and the device memory is the real SeenMarkers over an in-memory
 // kv-store.
 import type {
+	AnyNotification,
 	ConnectionState,
+	NavigationInvalidationTarget,
 	NavigationReadParams,
 	NavigationSessionSummary,
 } from "@evener/appwire-client";
@@ -21,6 +23,8 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	kv: new Map<string, string>(),
 	drafts: new Map<string, Set<string>>(),
+	focused: true,
+	focusListeners: new Set<(focused: boolean) => void>(),
 }));
 
 vi.mock("react-native", async () => ({
@@ -31,10 +35,21 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+// Focus follows harness.focused, which setFocused changes on demand; like
+// the real hook, the effect runs on focus and its cleanup on blur.
 vi.mock("@react-navigation/native", async () => {
-	const { useEffect } = await import("react");
+	const { useEffect, useState } = await import("react");
 	return {
-		useFocusEffect: (effect: () => undefined | (() => void)) => useEffect(effect, []),
+		useFocusEffect: (effect: () => undefined | (() => void)) => {
+			const [focused, setFocused] = useState(harness.focused);
+			useEffect(() => {
+				harness.focusListeners.add(setFocused);
+				return () => {
+					harness.focusListeners.delete(setFocused);
+				};
+			}, []);
+			useEffect(() => (focused ? effect() : undefined), [focused, effect]);
+		},
 		useIsFocused: () => true,
 	};
 });
@@ -52,13 +67,22 @@ vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => harness.connection,
 }));
 
+const INCOMPATIBLE_TEXT =
+	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 const NOW = Date.UTC(2026, 8, 26, 12, 0);
 const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
 
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
+	harness.focused = true;
 });
+function setFocused(focused: boolean) {
+	harness.focused = focused;
+	act(() => {
+		for (const listener of harness.focusListeners) listener(focused);
+	});
+}
 afterEach(() => {
 	vi.useRealTimers();
 });
@@ -118,9 +142,14 @@ const fleet: Fleet = {
 };
 
 /** A hub that answers navigation reads by params; `hold` keeps a read
- * unanswered until the test releases it. */
-function hub(shape: Fleet, hold: (params: NavigationReadParams) => boolean = () => false) {
+ * unanswered until the test releases it, and `fail` rejects it. */
+function hub(
+	shape: Fleet,
+	hold: (params: NavigationReadParams) => boolean = () => false,
+	fail: (params: NavigationReadParams) => boolean = () => false,
+) {
 	const requests: NavigationReadParams[] = [];
+	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
 		const offset = params.offset ?? 0;
@@ -140,10 +169,14 @@ function hub(shape: Fleet, hold: (params: NavigationReadParams) => boolean = () 
 	};
 	const client: ConversationClientLike = {
 		request: (method, params) =>
-			new Promise((resolve) => {
+			new Promise((resolve, reject) => {
 				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
 				const read = params as NavigationReadParams;
 				requests.push(read);
+				if (fail(read)) {
+					reject(new Error("request timed out"));
+					return;
+				}
 				const respond = () =>
 					resolve(
 						wireV2(
@@ -157,11 +190,21 @@ function hub(shape: Fleet, hold: (params: NavigationReadParams) => boolean = () 
 				if (hold(read)) held.push(respond);
 				else respond();
 			}),
-		onNotification: () => () => {},
+		onNotification: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
 	};
 	return {
 		client,
 		requests,
+		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
+			for (const listener of listeners)
+				listener({
+					method: "evener/navigation/invalidated",
+					params: { generationId: "generation-test", sequence, targets },
+				});
+		},
 		release: () => {
 			for (const respond of held.splice(0)) respond();
 		},
@@ -471,5 +514,122 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(0);
 	act(() => search.onPress());
 	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+const liveReads = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.section === "live").map((read) => read.offset ?? 0);
+const skeletonRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "skeleton-row");
+const FIRST_READ_FAILED = "Couldn't load this hub's sessions. Trying again shortly.";
+async function advance(ms: number) {
+	act(() => {
+		vi.advanceTimersByTime(ms);
+	});
+	await settle();
+}
+
+it("says a failed first read will be retried, and retries it with a growing backoff until it loads", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let liveFails = true;
+	const fake = hub(fleet, undefined, (read) => liveFails && read.section === "live");
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	expect(renderedText(tree)).not.toContain("request timed out");
+	expect(skeletonRows(tree)).toHaveLength(0);
+	expect(liveReads(fake)).toEqual([0]);
+	// The first retry waits a second, the second two.
+	await advance(999);
+	expect(liveReads(fake)).toEqual([0]);
+	await advance(1);
+	expect(liveReads(fake)).toEqual([0, 0]);
+	expect(texts(tree)).toContain(FIRST_READ_FAILED);
+	liveFails = false;
+	await advance(1999);
+	expect(liveReads(fake)).toEqual([0, 0]);
+	await advance(1);
+	expect(liveReads(fake)).toEqual([0, 0, 0]);
+	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	// Loaded, the Board schedules no more retries.
+	await advance(120_000);
+	expect(liveReads(fake)).toEqual([0, 0, 0]);
+	act(() => tree.unmount());
+});
+
+it("stops retrying a failed first read when it unmounts", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, undefined, (read) => read.section === "live");
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(liveReads(fake)).toEqual([0]);
+	act(() => tree.unmount());
+	await advance(60_000);
+	expect(liveReads(fake)).toEqual([0]);
+});
+
+it("shows neither skeleton rows nor the failed-read sentence beside Update needed before anything loaded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, null, "closed", { fatal: true });
+	const tree = await mount(navigation());
+	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
+	expect(skeletonRows(tree)).toHaveLength(0);
+	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	act(() => tree.unmount());
+});
+
+it("keeps reading Live's pages while they don't fill the screen, without any scrolling", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, live: [[failing, working], [finished], [idleOne, idleTwo]] });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(liveReads(fake)).toEqual([0]);
+	// The Board's scroller, not the chips' horizontal one.
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const liveBlock = tree.root.find((node) => node.props.testID === "live-block");
+	// A 700pt viewport over a 300pt Live block, reported by layout alone.
+	const lay = async () => {
+		act(() => {
+			scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+			liveBlock.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 300 } } });
+			scroller.props.onContentSizeChange?.(390, 400);
+		});
+		await settle();
+	};
+	await lay();
+	expect(liveReads(fake)).toEqual([0, 2]);
+	await lay();
+	expect(liveReads(fake)).toEqual([0, 2, 3]);
+	expect(hasRow(tree, "Ship it")).toBe(true);
+	// Remaining is 0: nothing more to read.
+	await lay();
+	expect(liveReads(fake)).toEqual([0, 2, 3]);
+	act(() => tree.unmount());
+});
+
+it("reads nothing while blurred, and on refocus catches up and re-reads drafts", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const manifestReads = () => fake.requests.filter((read) => read.resource === "manifest").length;
+	const draftTags = () =>
+		rowTitled(tree, "Build docs").findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft");
+	expect(manifestReads()).toBe(1);
+	expect(draftTags()).toHaveLength(0);
+	setFocused(false);
+	act(() => fake.invalidate(1, [{ kind: "manifest", revision: 2 }]));
+	await settle();
+	expect(manifestReads()).toBe(1);
+	harness.drafts.set(id, new Set(["local:work"]));
+	setFocused(true);
+	await settle();
+	expect(manifestReads()).toBe(2);
+	expect(draftTags()).toHaveLength(1);
 	act(() => tree.unmount());
 });

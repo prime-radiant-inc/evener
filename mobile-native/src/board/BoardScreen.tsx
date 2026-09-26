@@ -20,6 +20,7 @@ import {
 import { createRosterService } from "../../../mobile/src/services/roster";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
+import { reconnectDelay } from "../hubConnection";
 import { drafts } from "../nativeDrafts";
 import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
@@ -94,6 +95,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	useEffect(() => {
 		board.setClient(state === "ready" ? client : null);
 	}, [board, client, state]);
+	const firstReadFailed = connected && !snapshot.loaded && snapshot.error !== null;
+	useFirstReadRetry(board, client, firstReadFailed);
 
 	const bands = useMemo(
 		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row)),
@@ -147,12 +150,19 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (band === "idle") foldIdle(false);
 		scrollTo(band, true);
 	};
-	// Within about a screen of the end of Live, read its next page.
+	// Within about a screen of the end of Live, read its next page. Layout
+	// checks too, so a first page too short to scroll keeps reading.
+	const viewport = useRef({ offset: 0, height: 0 });
+	const readMoreLiveIfNear = () => {
+		const page = board.getSnapshot().live;
+		if (liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
+		const { offset, height } = viewport.current;
+		if (offset + 2 * height >= liveEnd.current) void board.loadMoreLive();
+	};
 	const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
-		const page = board.getSnapshot().live;
-		if (liveEnd.current === null || page.remaining === 0 || page.loading || page.stale) return;
-		if (contentOffset.y + 2 * layoutMeasurement.height >= liveEnd.current) void board.loadMoreLive();
+		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
+		readMoreLiveIfNear();
 	};
 
 	const manifest = snapshot.manifest;
@@ -224,7 +234,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const summary = liveSummary(bands);
 
 	let live: ReactNode;
-	if (!snapshot.loaded) live = <Skeleton />;
+	// Update needed says everything there is to say until something loads.
+	if (!snapshot.loaded && fatal) live = null;
+	else if (firstReadFailed) live = <FirstReadFailed />;
+	else if (!snapshot.loaded) live = <Skeleton />;
 	else if (liveTotal === 0) live = <EmptyBoard disabled={!connected} onNewSession={newSession} />;
 	else
 		live = (
@@ -255,14 +268,21 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 						style={{ flex: 1 }}
 						contentContainerStyle={{ paddingBottom: 24 }}
 						onScroll={onScroll}
+						onLayout={(event) => {
+							viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+							readMoreLiveIfNear();
+						}}
+						onContentSizeChange={readMoreLiveIfNear}
 						scrollEventThrottle={100}
 					>
 						{fatal ? <Notice text={INCOMPATIBLE} /> : null}
 						<View
+							testID="live-block"
 							onLayout={(event) => {
 								const { y, height } = event.nativeEvent.layout;
 								offsets.current.live = y;
 								liveEnd.current = y + height;
+								readMoreLiveIfNear();
 							}}
 						>
 							{live}
@@ -338,6 +358,23 @@ function useFirstRun(
 		if (!needsYou.loaded || needsYou.loading || needsYou.stale || needsYou.remaining > 0) return;
 		markers.adoptEpoch([...live.rows, ...needsYou.rows]);
 	}, [board, markers, snapshot]);
+}
+
+/** While the Board's first read has failed on a ready connection, rebind
+ * the client after a backoff that grows with each failed attempt; a new
+ * connection starts the count over. Nothing else would retry it: an idle
+ * fleet sends no invalidations. */
+function useFirstReadRetry(board: BoardController, client: ConversationClientLike | null, failed: boolean) {
+	const [retries, setRetries] = useState({ client, count: 0 });
+	const count = retries.client === client ? retries.count : 0;
+	useEffect(() => {
+		if (!failed || !client) return;
+		const timer = setTimeout(() => {
+			board.setClient(client);
+			setRetries({ client, count: count + 1 });
+		}, reconnectDelay(count + 1));
+		return () => clearTimeout(timer);
+	}, [board, client, failed, count]);
 }
 
 function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, toggleSearch: () => void) {
@@ -644,6 +681,21 @@ function Skeleton() {
 			{["first", "second", "third"].map((key) => (
 				<View key={key} testID="skeleton-row" style={{ height: 64, borderRadius: 10, backgroundColor: palette.inset }} />
 			))}
+		</View>
+	);
+}
+
+function FirstReadFailed() {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
+			<Text
+				allowFontScaling={Platform.OS !== "ios"}
+				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
+			>
+				Couldn't load this hub's sessions. Trying again shortly.
+			</Text>
 		</View>
 	);
 }
