@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 7: Server additions (Implementation Plan)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. Every later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
 
 **Goal:** The hub gives the phone (and the web and the TUI) the facts the redesign's Board, Session and Hub screens need, item by item in the roadmap's value order, so the phone can switch from each fallback as its addition lands.
 
@@ -51,9 +51,9 @@
 | 10-11 | Last agent message excerpt (S1d: daemon and meta, then hub) | S1 | design | PR 1 |
 | 12 | Task progress for live local sessions (S13a) | S13 | task | PR 1 |
 | 13 | Task progress for remote-host sessions (S13b) | S13 | design | PR 12, PR 5 |
-| 14-15 | Activity pulse (S5a daemon counters, S5b hub read) | S5 | design | none |
-| 16-17 | Seen-through marker (S4a turn-ended time, S4b store and method) | S4 | design | PR 1 |
-| 18-19 | Subagent tallies (S3a daemon counts, S3b rows) | S3 | design | PR 1 |
+| 14-15 | Activity pulse (S5a daemon counters, S5b hub read) | S5 | full, in the S4-S5-S3 plan | none |
+| 16-17 | Seen-through marker (S4a turn-ended time, S4b store and method) | S4 | full, in the S4-S5-S3 plan | PR 1 |
+| 18-19 | Subagent tallies (S3a daemon counts, S3b rows) | S3 | full, in the S4-S5-S3 plan | PR 1 |
 | 20-21 | Scoped approvals (S12a daemon grants, S12b wire and hub) | S12 | design | none |
 | 22-23 | Hub notices feed (S11a derived notices, S11b sign-in state) | S11 | design | PR 9 |
 | 24-25 | Message-text search (S14a index, S14b results) | S14 | design | none |
@@ -1353,37 +1353,28 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S5: Activity pulse (PRs 14-15, design level)
+## S5: Activity pulse (PRs 14-15, full plan elsewhere)
 
-- **Adds.** The pulse meter's seven one-minute bars ("transcript items and tool output events", spec 16.4) and the last activity time behind "Quiet 4m" (3 to 10 minutes) and "May be stuck" (10 minutes or more). Jesse's ruling: an agent waiting on subagents is never stuck, so a session with running subagents never shows either label, and its pulse meter reflects the whole tree's activity. Counting descendant events is not enough to keep that promise: a subagent inside one long model call emits nothing for minutes, so the Quiet and May be stuck labels are suppressed outright while the session has running subagents. The hub already knows each live root's running subagents (`runningSubagentStates`, `cmd/evener-hub/internal/hubcore/tree.go` about line 932), so S5 does not wait for S3's tallies.
-- **Why not on the row.** Buckets change every minute. On the revisioned navigation resource they would move the fingerprint on every probe, bump revisions and broadcast invalidations about once a minute per working session (`navigation_service.go:957-1064`), and `NextBoundary` has no minute schedule (`:1370-1399`).
-- **Daemon (PR 14).** A per-root counter in the server, incremented from `RecordAppEvent` (`server/appwire_runtime.go:413`) and `RecordDescendantAppEvent` (`:692`) for item events and tool-output events, so the counter already reflects the whole tree, per Jesse's ruling. It is a plain increment outside the envelope, which must not sample on deltas (`server/thread_envelope.go:166-176`). A ring of one-minute buckets on the server's clock, plus the last event time. The StatusOnly root row carries `EvenerThread.Activity *ThreadActivity{minutes []int (oldest first, seven entries, the current minute last), lastActivityAt int64 (ms)}`; deep copy in `appwire/clone.go`.
-- **Hub (PR 15).** The probe keeps it on `LiveEntry`, deliberately left out of `rosterFingerprint`. A new method `evener/activity/read` returns `{sessions: [{ref, minutes, lastActivityAt, runningSubagents}]}` (`runningSubagents` is the count of the root's running subagents, from `runningSubagentStates`, so the phone suppresses Quiet and May be stuck whenever it is above zero) for live top-level sessions; the phone polls it while the Board is on screen. Catalog row, handler, `TestHubRouterMatchesCatalog`, `TestHubRPCRegistersExpectedHandlerSet`.
+- **Plan.** Written in full, with its rulings, in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md` (PRs 14 and 15, rulings 1 to 9).
+- **Adds.** The pulse meter's seven one-minute bars ("transcript items and tool output events", spec 16.4) and the quiet time behind "Quiet 4m" (3 to 10 minutes) and "May be stuck" (10 minutes or more), through a polled method, `evener/activity/read`, that never touches navigation.
+- **Jesse's ruling.** An agent waiting on subagents is never stuck, so a session with running subagents never shows either label, and its pulse meter reflects the whole tree's activity. Counting descendant events is not enough to keep that promise: a subagent inside one long model call emits nothing for minutes, so the Quiet and May be stuck labels are suppressed outright while the session has running subagents. The hub already knows each live root's running subagents (`runningSubagentStates`, `cmd/evener-hub/internal/hubcore/tree.go`), so S5 does not wait for S3's tallies. The read carries `runningSubagents` and withholds the quiet time while it is above zero, and a session with a running subagent and no events for 15 minutes reports no Quiet or May be stuck label.
 - **Fallback.** `updated_at`, and a single bar.
-- **Tests.** Server counter with an injected clock (minute rollover, a quiet minute is zero, descendants counted so the meter reflects the whole tree); the StatusOnly row carries it; the prober decodes it; the fingerprint does not move when only activity moves; the method handler, including remote rows. Also: a session with a running subagent and no events for 15 minutes reports no Quiet or May be stuck label.
-- **Open questions.** Poll or push: polling keeps the cost with the viewer; a push would be one broadcast per probe tick per client. Remote hosts: fan the read out to attached hosts, or carry `Activity` on the remote hub's list rows (they refresh through `RemoteThreadCache` on their own cadence).
 
 ---
 
-## S4: Seen-through marker (PRs 16-17, design level)
+## S4: Seen-through marker (PRs 16-17, full plan elsewhere)
 
-- **Adds.** A per-session "seen through" marker shared by the phone and the web, so Finished (blue dot) and Idle agree across devices (spec 7.1: "A blue dot marks the ones you haven't opened since").
-- **Daemon (PR 16).** "Finished" needs the time the last turn ended; `SessionMeta.UpdatedAt` also moves on writes that are not turns. Stamp `EvenerThread.LastTurnEndedAt int64` (ms) at `EventTurnEnded`, on the StatusOnly row and in `SessionMeta`. The summary gains `turn_ended_at *time.Time` with JSON `turn_ended_at,omitempty`.
-- **Hub (PR 17).** A `SeenStore` in `index.db` beside the archive, favorite and pin stores, modeled on `PinSectionStore` (`hubcore/pin_section.go:48-68`): rows `(source_id, session_id, seen_through_ms)`. Method `evener/session/seen/set` with params `{refs: string[], seenThrough?: int64}` (an absent `seenThrough` clears, which is "Mark as unread"), returning a `NavigationMutation` receipt like `evener/archive/set` (`app_archive.go:14-18`); the store's `SetOnChange` invalidates navigation (`main.go:631-646`). A decoration map in `navigationBuildInputs` (`navigation_projection.go:94-114`), assembled in `navigationBuildInputsFromTreeSnapshot` (`web_api_tree.go:233`); the summary gains `seen_through *time.Time`. A row is unseen-finished when `turn_ended_at` is after `seen_through`.
+- **Plan.** Written in full, with its rulings, in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md` (PRs 16 and 17, rulings 10 to 18).
+- **Adds.** A per-session seen-through marker shared by the phone and the web, so Finished (blue dot) and Idle agree across devices (spec 7.1: "A blue dot marks the ones you haven't opened since"). The daemon stamps when each turn ends; the hub keeps the marker in `index.db`, serves `evener/session/seen/set`, and puts `turn_ended_at` and `unseen` on live rows; the web marks a session seen when its pane opens.
 - **Fallback.** A phone-local marker.
-- **Tests.** Store (set, clear, read, reopen), handler, catalog tests, the navigation test, invalidation on change, the daemon stamp and its restore, the prober.
-- **Open questions.** "Per-user" is per hub: the hub has no user identity (`initialize` carries only `clientInfo.name`), which is the same thing on a personal hub. The web marks a session seen when it opens one, so the phone's dot clears; whether the web also shows dots is a web design question for later. Clustering: `clusterable` (`tree.go:1808-1816`) folds same-titled idle or ended rows that have no children, jobs or watches. Most finished turns rest `awaiting` and never fold, but a turn that ended with no output rests `idle`, so an unseen one could vanish into a cluster; the marker has to reach `BuildTree` so `clusterable` can skip unseen rows.
 
 ---
 
-## S3: Subagent tallies (PRs 18-19, design level)
+## S3: Subagent tallies (PRs 18-19, full plan elsewhere)
 
-- **Adds.** Per top-level session: running, failed and done subagents over the whole tree, omitted descendants included, "as the hub's job counts are (active, failed, completed)" (spec 9). It drives the row's "2 subagents failed" and the Subagents chip's strip on 500-node trees.
-- **Daemon (PR 18).** The hub cannot count failures of ended subagents: `SessionMeta` has no outcome, the StatusOnly probe drops delegate outcomes, and a root's delegate list holds only its direct children (explorer report section 7). The daemon already aggregates `JobActivityCounts` over the delegate tree for `evener/jobs/list` (`aggregateActivity`, `agent/jobs_activity.go:1519-1571`). Put the same type on the StatusOnly root row: `EvenerThread.SubagentCounts *JobActivityCounts`, memoized by the session's job-tree revision (`SessionMeta.JobTreeRevision`) so the five-second probe does not re-walk an unchanged tree.
-- **Hub (PR 19).** The probe keeps it (clone, fingerprint); `TreeNode`; the summary gains `subagents *NavigationSubagentCounts{running, failed, done, complete}`; schema bounds, codec, fixture. The counts move on subagent lifecycle events, so navigation revisions follow real events and never a clock.
+- **Plan.** Written in full, with its rulings, in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md` (PRs 18 and 19, rulings 19 to 23).
+- **Adds.** Per live top-level session: running, failed and done subagents over the whole tree, omitted descendants included (spec 9), counted from the daemon's delegate journal and carried on its rows as `subagents`. It drives the row's "2 subagents failed" and the Subagents chip's strip on 500-node trees.
 - **Fallback.** Tally the loaded children; "+N more".
-- **Tests.** Daemon aggregation over a nested tree with failed, done and running delegates past the per-parent cap; the StatusOnly row; memoization (an unchanged revision does not re-walk); prober, fingerprint, navigation, schema, codec.
-- **Open questions.** The cost of `aggregateActivity` on a 500-node tree, to be measured before choosing memoization over a daemon-side cache.
 
 ---
 
