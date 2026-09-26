@@ -8,7 +8,7 @@ import {
 	useColorScheme,
 	useWindowDimensions,
 } from "react-native";
-import { paletteFor } from "./design/tokens";
+import { paletteFor, typeRoles } from "./design/tokens";
 
 /** The app's colors: the redesign palette (src/design/tokens.ts) under the
  * keys every existing screen already reads, plus the full palette for new
@@ -133,12 +133,14 @@ export function Copy({
 	label,
 	numberOfLines,
 	ellipsizeMode,
+	variant = "ui",
 }: {
 	children: ReactNode;
 	muted?: boolean;
 	label?: string;
 	numberOfLines?: number;
 	ellipsizeMode?: TextProps["ellipsizeMode"];
+	variant?: "ui" | "yourMessage";
 }) {
 	const colors = useColors();
 	const { fontScale } = useWindowDimensions();
@@ -150,11 +152,20 @@ export function Copy({
 			accessibilityLabel={label}
 			numberOfLines={numberOfLines}
 			ellipsizeMode={ellipsizeMode}
-			style={{
-				color: muted ? colors.secondary : colors.text,
-				fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,
-				lineHeight: (muted ? 19 : 25) * textScale,
-			}}
+			style={
+				variant === "yourMessage"
+					? {
+							fontFamily: typeRoles.yourMessage.fontFamily,
+							fontSize: 17 * textScale,
+							lineHeight: 25 * textScale,
+							color: colors.palette.prose,
+						}
+					: {
+							color: muted ? colors.secondary : colors.text,
+							fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,
+							lineHeight: (muted ? 19 : 25) * textScale,
+						}
+			}
 		>
 			{children}
 		</Text>
