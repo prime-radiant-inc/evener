@@ -1004,11 +1004,52 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			appendNewest(&ordinaryContextCandidates, lineIndex)
 		}
 	}
-	parentDiagnosticOutsideWindow := len(parentDiagnosticCandidates) > 0 && parentDiagnosticCandidates[len(parentDiagnosticCandidates)-1] < ordinaryStart
-	failedChildDiagnosticOutsideWindow := len(failedChildDiagnosticCandidates) > 0 && failedChildDiagnosticCandidates[len(failedChildDiagnosticCandidates)-1] < ordinaryStart
 	hasFailureDiagnostic := len(parentDiagnosticCandidates) > 0 || len(failedChildDiagnosticCandidates) > 0
 	if len(ordinaryOwnedCandidates) > 0 && !hasFailureDiagnostic {
 		return nil, false
+	}
+	reserveParentDiagnostic := len(parentDiagnosticCandidates) > 0 && parentDiagnosticCandidates[len(parentDiagnosticCandidates)-1] < ordinaryStart
+	reserveFailedChildDiagnostic := len(failedChildDiagnosticCandidates) > 0 && failedChildDiagnosticCandidates[len(failedChildDiagnosticCandidates)-1] < ordinaryStart
+	candidateInOrdinaryTail := func(candidates []int, ordinaryBudget int) bool {
+		if len(candidates) == 0 || ordinaryBudget <= 0 {
+			return false
+		}
+		candidate := candidates[len(candidates)-1]
+		if candidate < ordinaryStart {
+			return false
+		}
+		start := len(ordinaryOwnedCandidates) - ordinaryBudget
+		if start < 0 {
+			start = 0
+		}
+		for _, ordinaryCandidate := range ordinaryOwnedCandidates[start:] {
+			if ordinaryCandidate == candidate {
+				return true
+			}
+		}
+		return false
+	}
+	for {
+		reservedDiagnostics := 0
+		if reserveParentDiagnostic {
+			reservedDiagnostics++
+		}
+		if reserveFailedChildDiagnostic {
+			reservedDiagnostics++
+		}
+		ordinaryBudget := maxExpandedLines - reservedDiagnostics
+		changed := false
+		if !reserveParentDiagnostic && !candidateInOrdinaryTail(parentDiagnosticCandidates, ordinaryBudget) {
+			reserveParentDiagnostic = true
+			changed = true
+		}
+		if !reserveFailedChildDiagnostic && !candidateInOrdinaryTail(failedChildDiagnosticCandidates, ordinaryBudget) {
+			reserveFailedChildDiagnostic = true
+			changed = true
+		}
+		if !changed {
+			break
+		}
 	}
 	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
@@ -1022,10 +1063,10 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 	}
 	reservedDiagnostics := 0
-	if parentDiagnosticOutsideWindow {
+	if reserveParentDiagnostic {
 		reservedDiagnostics++
 	}
-	if failedChildDiagnosticOutsideWindow {
+	if reserveFailedChildDiagnostic {
 		reservedDiagnostics++
 	}
 	ordinaryBudget := maxExpandedLines - reservedDiagnostics
@@ -1036,7 +1077,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	}
 	if len(parentDiagnosticCandidates) > 0 {
 		parentBudget := maxExpandedLines
-		if failedChildDiagnosticOutsideWindow {
+		if reserveFailedChildDiagnostic {
 			parentBudget--
 		}
 		selectNewest(parentDiagnosticCandidates, parentBudget)

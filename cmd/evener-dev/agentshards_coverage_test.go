@@ -516,12 +516,15 @@ func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
 }
 
 func TestReplaySurveyFailuresKeepsOrdinaryChildDiffWhenReservingDiagnostics(t *testing.T) {
-	const parentDiagnostic = "    parent_test.go:3: parent assertion"
+	const (
+		parentDiagnostic = "    parent_test.go:3: parent assertion"
+		childDiagnostic  = "    child_test.go:10: mismatch (-want +got)"
+	)
 	var log strings.Builder
 	log.WriteString("=== RUN   TestParent\n")
 	log.WriteString(parentDiagnostic + "\n")
 	log.WriteString("=== RUN   TestParent/child\n")
-	log.WriteString("    child_test.go:10: mismatch (-want +got)\n")
+	log.WriteString(childDiagnostic + "\n")
 	for i := 1; i <= surveyContextBefore-1; i++ {
 		fmt.Fprintf(&log, "    diff line %d\n", i)
 	}
@@ -532,11 +535,17 @@ func TestReplaySurveyFailuresKeepsOrdinaryChildDiffWhenReservingDiagnostics(t *t
 	if !strings.Contains(got, parentDiagnostic) {
 		t.Fatalf("parent diagnostic was omitted from replay: %q", got)
 	}
-	for i := 1; i <= surveyContextBefore-1; i++ {
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("failed-child diagnostic was omitted from replay: %q", got)
+	}
+	for i := 2; i <= surveyContextBefore-1; i++ {
 		line := fmt.Sprintf("diff line %d", i)
 		if !strings.Contains(got, line) {
 			t.Fatalf("ordinary child diff line %q was omitted from replay: %q", line, got)
 		}
+	}
+	if strings.Contains(got, "diff line 1") {
+		t.Fatalf("oldest child diff line should yield to the parent and child diagnostics: %q", got)
 	}
 }
 
