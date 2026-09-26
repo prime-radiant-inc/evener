@@ -1543,7 +1543,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
 		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
-			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
+			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
@@ -2030,6 +2030,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	defer func() { s.releaseRunningTurnID(runningTurnID) }()
 
 	if kind == EntryNotification {
+		// A Stop parked this rail: stand down BEFORE minting or consuming
+		// any wake state — the same ordering the name refusal below keeps.
+		// Job notifications are not the user's to stop mid-delivery, so a
+		// wake that carries any still runs.
+		if s.rootAttentionRailParked() && s.peekNotifications() == 0 {
+			s.finishNotificationNoop()
+			return "", false, nil
+		}
 		// Take the name first, and in ONE atomic take-or-refuse against the
 		// durable store. Asking whether the name is free and then taking it
 		// are two operations with a gap, and a turn/start running on an RPC
@@ -2857,7 +2865,13 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
-	if len(jobNotifs) == 0 && !hasSteering && !hasRootAttention {
+	// A parked rail stands down here too, even with attention pending: the
+	// outer gate's carve-out reads the RAW queue depth, so a stale watch tick
+	// (a token whose watch died, a cleared timer) phantom-opens it. The park
+	// defers the attention, and a turn carrying nothing deliverable runs
+	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
+	// and unpark re-arms them.
+	if len(jobNotifs) == 0 && !hasSteering && (!hasRootAttention || s.rootAttentionRailParked()) {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}
