@@ -1354,6 +1354,32 @@ it("lets go of a target it can't settle, and still sends the others", async () =
 	await outbox.stop();
 });
 
+it("looks again for a record that landed while a settle it then lost was in flight", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const client = new FakeClient("ready");
+	const firstRead: { reject?: (error: Error) => void } = {};
+	let reads = 0;
+	client.on("thread/read", () => {
+		reads += 1;
+		if (reads > 1) return read("ref-1");
+		return new Promise<never>((_resolve, reject) => {
+			firstRead.reject = reject;
+		});
+	});
+	client.on("turn/start", applied);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(firstRead.reject).toBeDefined());
+
+	await outbox.submit(message({ input: [{ type: "text", text: "and this one" }] }));
+	firstRead.reject?.(new Error("the connection dropped the answer"));
+
+	await vi.waitFor(() => expect(methods(client).filter((method) => method === "turn/start")).toHaveLength(2));
+	flush.dispose();
+	await outbox.stop();
+});
+
 it("sends only the active hub's messages, and nothing while the connection isn't ready", async () => {
 	const outbox = runtime();
 	await outbox.submit(message({ hubId: "hub-2" }));
@@ -1394,7 +1420,7 @@ it("reads the hub and ref out of a composite target key", () => {
 });
 ```
 
-The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails without the `hasTarget` check, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, the fifth without the storage watch, and the seventh when one target's failure stops the rest.
+The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails without the `hasTarget` check, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, the fifth without the storage watch, the seventh when one target's failure stops the rest, and the eighth when a record that landed during a settle that then failed is left behind.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -1460,6 +1486,8 @@ export class OutboxFlush {
 	private client: AppwireClientLike | null = null;
 	private generation = 0;
 	private readonly owned = new Map<string, () => void>();
+	/** Targets the flush holds whose records changed while it held them. */
+	private readonly touched = new Set<string>();
 	private unsubscribe: (() => void) | null = null;
 
 	/** `runtime` is read at the first ready connection: a message kept from an
@@ -1472,6 +1500,7 @@ export class OutboxFlush {
 	bind(hubId: string | null, client: AppwireClientLike | null): void {
 		if (hubId === this.hubId && client === this.client) return;
 		this.releaseAll();
+		this.touched.clear();
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		this.hubId = hubId;
@@ -1501,7 +1530,7 @@ export class OutboxFlush {
 				// A read or storage failure leaves this target's records where
 				// they are, for the next ready connection or the next record,
 				// and the other targets still go.
-				this.release(key);
+				this.letGo(key);
 			}
 		}
 	}
@@ -1529,10 +1558,20 @@ export class OutboxFlush {
 			return;
 		}
 		this.owned.set(key, runtime.registerTarget(hubId, ref, client));
+		this.touched.delete(key);
 		const settled = await runtime.settleTarget(hubId, ref, client);
 		if (generation !== this.generation) return;
 		if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key);
-		else this.release(key);
+		else this.letGo(key);
+	}
+
+	/** Lets go of a target the flush couldn't settle. A record that landed on
+	 * it meanwhile was left to that settle, so look again for it; a failure
+	 * with nothing new waits for the next record or connection, so a failing
+	 * read never spins. */
+	private letGo(key: string): void {
+		this.release(key);
+		if (this.touched.delete(key)) void this.flush().catch(() => undefined);
 	}
 
 	/** A target the flush holds may be done; a record for one nobody holds is
@@ -1545,6 +1584,7 @@ export class OutboxFlush {
 		let unclaimed = false;
 		for (const key of keys) {
 			if (this.owned.has(key)) {
+				this.touched.add(key);
 				void this.releaseIfDone(runtime, key).catch(() => undefined);
 				continue;
 			}
