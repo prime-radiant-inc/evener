@@ -290,6 +290,8 @@
   EV.resolveAsk = function (s, ask, qa, text, how) {
     const S = EV.S;
     delete S.composeOpen[s.id];
+    delete S.dockMin[s.id];
+    delete S.answers[ask.id];
     const tr = S.transcripts[s.id];
     const i = tr.indexOf(ask);
     tr[i] = { t: "qhist", qs: qa };

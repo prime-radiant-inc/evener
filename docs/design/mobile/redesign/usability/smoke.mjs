@@ -173,6 +173,21 @@ async function runChecks(page, scheme) {
     await tapRole('radio', 'Drop them'); await tapRole('button', 'Next question'); await tapRole('checkbox', 'Job tools'); await tapRole('button', 'Send answers');
     await logHas(page, 'answer', (e) => e.answers[0] === 'Drop them');
   });
+  // The moderator can ask s-gateway's question again once it is answered, and
+  // the new ask must not inherit the last one's selection or collapsed dock.
+  await check(S('flow-reask-starts-fresh'), page, async () => {
+    await reset(page); await ev(page, `window.__proto.trigger('question')`); await sleep(300);
+    await ev(page, `EV.openSession('s-gateway')`); await sleep(400);
+    await tapRole('radio', 'System keychain'); await tapRole('button', 'Send answer');
+    await ev(page, `window.__proto.trigger('question')`); await sleep(400);
+    if (await page.locator('.dock [aria-checked="true"]').count()) throw new Error('the question asked again arrives with the last answer selected');
+    await tapRole('button', 'Collapse question');
+    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Keychain, with a file fallback');
+    await page.getByRole('button', { name: 'Send', exact: true }).tap(); await sleep(300);
+    await logHas(page, 'answer', (e) => e.how === 'typed');
+    await ev(page, `window.__proto.trigger('question')`); await sleep(400);
+    if (await page.locator('.dock-min').count()) throw new Error('the question asked again arrives collapsed');
+  });
   await check(S('flow-other-answer-brings-composer'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-audit')`); await sleep(400);
     if (await page.locator('textarea[aria-label="Message"]').count()) throw new Error('the composer shows while the question dock is open');
