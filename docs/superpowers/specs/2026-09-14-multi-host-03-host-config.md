@@ -4,11 +4,12 @@ Parent: `2026-09-14-multi-host-evener-design.md` (§3, §4 item 3, §5 item 1).
 Sibling: `2026-09-14-multi-host-02-attach-bridge.md`.
 Spikes: `2026-09-14-multi-host-spikes-findings.md`.
 
-**Implementation status.** Everything this spec describes is on `main`: the
-`hostreg` package, `validateHostConfigs`, and the `hub.toml` `[[hosts]]`
-decoding (`cmd/evener-hub/config.go`; `cmd/evener-hub/internal/hostreg`), the
-`sshconn` connection manager (`cmd/evener-hub/internal/sshconn`), and the
-`hubcore.WebConfig` `RemoteHost*` wiring (`cmd/evener-hub/main.go:549-581`).
+**Implementation status.** The `hostreg` package, `validateHostConfigs`, the
+`hub.toml` `[[hosts]]` decoding (`cmd/evener-hub/config.go`;
+`cmd/evener-hub/internal/hostreg`), the `sshconn` connection manager
+(`cmd/evener-hub/internal/sshconn`), and the `hubcore.WebConfig` `RemoteHost*`
+wiring (`cmd/evener-hub/main.go:549-581`) are all on `main`. The deltas this
+spec still lists as requirements are marked inline.
 
 ## Purpose
 
