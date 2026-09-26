@@ -64,7 +64,7 @@ func TestStampAppNotificationTargetPassesThroughUnknownParams(t *testing.T) {
 // the method is not ThreadStatusChanged.
 func TestStampFailureCountOnStatusChangeNotStatusChanged(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	params := appwire.AgentMessageDeltaParams{ThreadID: "th_1"}
+	params := appwire.OverlayDeltaParams{ThreadID: "th_1"}
 	got := s.stampFailureCountOnStatusChange("some.other.method", params)
 	if got != params {
 		t.Fatal("should return params unchanged for non-status-changed method")
@@ -84,7 +84,7 @@ func TestStampFailureCountOnStatusChangeWrongType(t *testing.T) {
 // TestStampCapabilitiesOnStatusChangeNotStatusChanged covers the non-status-changed path.
 func TestStampCapabilitiesOnStatusChangeNotStatusChanged(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	params := appwire.AgentMessageDeltaParams{ThreadID: "th_1"}
+	params := appwire.OverlayDeltaParams{ThreadID: "th_1"}
 	got := s.stampCapabilitiesOnStatusChange("some.other.method", params)
 	if got != params {
 		t.Fatal("should return params unchanged for non-status-changed method")

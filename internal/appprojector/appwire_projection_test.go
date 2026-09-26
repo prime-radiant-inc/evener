@@ -448,7 +448,7 @@ func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {
 		out := p.Project(ev)
 		for _, n := range out {
 			switch n.Method {
-			case appwire.NotifyItemStarted, appwire.NotifyItemCompleted, appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted:
+			case appwire.NotifyHistoryUpdated, appwire.NotifyOverlayUpserted, appwire.NotifyOverlayDelta, appwire.NotifyOverlayReset, appwire.NotifyOverlayEnd:
 				t.Fatalf("%s must not project a turn/item (transcript) notification, got %s", ev.Kind, n.Method)
 			}
 		}

@@ -206,14 +206,6 @@ func notificationParams[T any](t *testing.T, n appserver.SequencedNotification) 
 	return params
 }
 
-// retiredHistoryMethods are the notifications v6 no longer sends: history
-// comes from recorded entries only.
-var retiredHistoryMethods = []string{
-	appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted,
-	appwire.NotifyItemStarted, appwire.NotifyItemCompleted,
-	appwire.NotifyAgentMessageDelta, appwire.NotifyEvenerSteeringInjected,
-}
-
 // newScriptedSession is a session answered by a parityProvider script, with
 // its own state and work directories, ready for bridgeParitySession.
 func newScriptedSession(t *testing.T) (sess *agent.Session, script *parityProvider, workDir, stateDir string) {
@@ -291,9 +283,6 @@ func TestHistorySwitchPublishesRecordedHistoryAndTheOverlay(t *testing.T) {
 	var overlayEnds []string
 	for _, n := range notifications {
 		method := n.Notification.Method
-		if slices.Contains(retiredHistoryMethods, method) {
-			t.Fatalf("committed retired notification %s: %s", method, n.Notification.Params)
-		}
 		switch method {
 		case appwire.NotifyThreadStatusChanged:
 			params := notificationParams[appwire.ThreadStatusChangedParams](t, n)
