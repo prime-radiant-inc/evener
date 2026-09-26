@@ -61,6 +61,7 @@ func pointInstalledSkill(t *testing.T, store, root string) {
 }
 
 func TestSkillActivation_UpdatedPluginRevision(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, route string
 		alias       bool
@@ -123,6 +124,7 @@ func TestSkillActivation_UpdatedPluginRevision(t *testing.T) {
 }
 
 func TestSkillActivation_UpdatedPluginGuards(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, route, controls, code string
 		keepSource, continuation    bool
@@ -169,6 +171,7 @@ func TestSkillActivation_UpdatedPluginGuards(t *testing.T) {
 }
 
 func TestSkillActivation_UpdatedPluginUnavailable(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"removed skill", "renamed skill", "renamed plugin", "removed install", "unreadable original", "unrelated broken hooks"} {
 		t.Run(change, func(t *testing.T) {
 			store := t.TempDir()

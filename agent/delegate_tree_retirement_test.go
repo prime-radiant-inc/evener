@@ -42,6 +42,7 @@ func newRetirementDelegateController(t *testing.T) (*Session, *delegateTreeContr
 }
 
 func TestRetirementColdDelegatePendingOutcomeBlocks(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	seedDelegateReclaimRuntime(t, tree, "cold-pending", "", time.Unix(1, 0), false, false)
@@ -64,6 +65,7 @@ func TestRetirementColdDelegatePendingOutcomeBlocks(t *testing.T) {
 }
 
 func TestRetirementDelegateCreateClaimFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	claim, state, err := c.TryClaim(true)
@@ -84,6 +86,7 @@ func TestRetirementDelegateCreateClaimFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateReservationClaimFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	claim, _, err := c.TryClaim(true)
@@ -101,6 +104,7 @@ func TestRetirementDelegateReservationClaimFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateCloseClaimFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	before, err := tree.store.Load()
@@ -128,6 +132,7 @@ func TestRetirementDelegateCloseClaimFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateCreatedChildInheritsController(t *testing.T) {
+	t.Parallel()
 	root, _, c := newRetirementDelegateController(t)
 	defer root.Close()
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "inherit-controller-sentinel"})
@@ -144,6 +149,7 @@ func TestRetirementDelegateCreatedChildInheritsController(t *testing.T) {
 }
 
 func TestRetirementDelegateWatchReceiptOrders(t *testing.T) {
+	t.Parallel()
 	t.Run("claim first", func(t *testing.T) {
 		root, tree, c := newRetirementDelegateController(t)
 		defer root.Close()
@@ -258,6 +264,7 @@ func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult
 }
 
 func TestRetirementDelegateRealIdleSource(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	result := retirementIdleDelegate(t, root)
@@ -324,6 +331,7 @@ func TestRetirementAfterIdleReleaseCoversReleasedMember(t *testing.T) {
 }
 
 func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
+	t.Parallel()
 	for name, enter := range map[string]func(*Session, *delegateTreeController, delegateResult) error{
 		"attention open": func(_ *Session, tree *delegateTreeController, d delegateResult) error {
 			_, err := tree.openDelegateAttention(d.DelegateID, "original-attention-sentinel")
@@ -423,6 +431,7 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 }
 
 func TestRetirementColdDelegateEvidence(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"healthy", "descriptor", "wrong transcript ref", "transcript", "corrupt transcript", "recovery", "reservation", "open run", "shell work"} {
 		t.Run(fault, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -522,6 +531,7 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 }
 
 func TestRetirementDelegateReclaimOwnsExactRuntime(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -644,6 +654,7 @@ func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string
 }
 
 func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
+	t.Parallel()
 	for _, family := range []string{"outcome", "watch"} {
 		t.Run(family, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -784,10 +795,12 @@ func retirementAwait(t *testing.T, ready <-chan struct{}) {
 }
 
 func TestRetirementDelegateCreateBeforeReservation(t *testing.T) {
+	t.Parallel()
 	retirementCreateListingBarrier(t, true)
 }
 
 func TestRetirementDelegateCreateAfterReservationBeforeInstall(t *testing.T) {
+	t.Parallel()
 	retirementCreateListingBarrier(t, false)
 }
 
@@ -864,6 +877,7 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 }
 
 func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -924,6 +938,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -998,6 +1013,7 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateEvidenceLeafFirstExactPointers(t *testing.T) {
+	t.Parallel()
 	root, tree, _ := newRetirementDelegateController(t)
 	defer root.Close()
 	parent := seedDelegateReclaimRuntime(t, tree, "parent", "", time.Unix(1, 0), true, false)
@@ -1010,6 +1026,7 @@ func TestRetirementDelegateEvidenceLeafFirstExactPointers(t *testing.T) {
 }
 
 func TestRetirementDelegateStaleClaimCannotClearTreeFence(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	retirementIdleDelegate(t, root)
@@ -1038,6 +1055,7 @@ func TestRetirementDelegateStaleClaimCannotClearTreeFence(t *testing.T) {
 }
 
 func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1101,6 +1119,7 @@ func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
 }
 
 func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1208,6 +1227,7 @@ func retirementPauseFileRead(t *testing.T, path string, run func() error) func()
 }
 
 func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1276,6 +1296,7 @@ func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	cold := retirementIdleDelegate(t, root)
@@ -1354,6 +1375,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 // source is pending the tree must deny a claim, and only the real owner's
 // settlement of that exact source restores eligibility.
 func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1402,6 +1424,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 }
 
 func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1486,6 +1509,7 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 }
 
 func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1565,6 +1589,7 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 }
 
 func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"stop driver"} {
 		t.Run(mode, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -1650,6 +1675,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 }
 
 func TestRetirementDelegateTerminalCloseHandoff(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1690,6 +1716,7 @@ func TestRetirementDelegateTerminalCloseHandoff(t *testing.T) {
 }
 
 func TestRetirementDelegateReconcileReturnedOwner(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1768,6 +1795,7 @@ func retirementDelegateDurableState(t *testing.T, tree *delegateTreeController) 
 }
 
 func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"no fence", "exact", "replacement"} {
 		t.Run(mode, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -1820,6 +1848,7 @@ func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
 }
 
 func TestRetirementDelegateStopAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)

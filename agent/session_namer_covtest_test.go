@@ -10,6 +10,7 @@ import (
 
 // TestPtrString covers ptrString (line 210).
 func TestPtrString(t *testing.T) {
+	t.Parallel()
 	s := "hello"
 	p := new(s)
 	if p == nil || *p != s {
@@ -20,6 +21,7 @@ func TestPtrString(t *testing.T) {
 // TestSessionNamerEnabled covers sessionNamerEnabled with nil and non-nil
 // profiles (lines 91-95).
 func TestSessionNamerEnabled(t *testing.T) {
+	t.Parallel()
 	if sessionNamerEnabled(nil) {
 		t.Fatal("expected false for nil profile")
 	}
@@ -28,6 +30,7 @@ func TestSessionNamerEnabled(t *testing.T) {
 // TestSessionNamerModel covers sessionNamerModel with nil profile (line
 // 116-117).
 func TestSessionNamerModel_NilProfile(t *testing.T) {
+	t.Parallel()
 	if got := sessionNamerModel(nil); got != "" {
 		t.Fatalf("expected empty for nil profile, got %q", got)
 	}
@@ -36,6 +39,7 @@ func TestSessionNamerModel_NilProfile(t *testing.T) {
 // TestConfiguredSessionNamerModel_NilProfile covers the nil path (line
 // 126-127).
 func TestConfiguredSessionNamerModel_NilProfile(t *testing.T) {
+	t.Parallel()
 	if got := configuredSessionNamerModel(nil); got != "" {
 		t.Fatalf("expected empty for nil profile, got %q", got)
 	}
@@ -44,6 +48,7 @@ func TestConfiguredSessionNamerModel_NilProfile(t *testing.T) {
 // TestNormalizeSessionNameSource covers the source normalization (lines
 // 169-175).
 func TestNormalizeSessionNameSource(t *testing.T) {
+	t.Parallel()
 	// Compaction source preserved.
 	if got := normalizeSessionNameSource(sessionNameSourceCompaction); got != sessionNameSourceCompaction {
 		t.Fatalf("got %q, want %q", got, sessionNameSourceCompaction)
@@ -64,6 +69,7 @@ func TestNormalizeSessionNameSource(t *testing.T) {
 
 // TestTrimForSessionNamer covers the trimming function (lines 178-186).
 func TestTrimForSessionNamer(t *testing.T) {
+	t.Parallel()
 	// Short text — returned as-is.
 	short := "hello world"
 	if got := trimForSessionNamer(short); got != short {
@@ -80,6 +86,7 @@ func TestTrimForSessionNamer(t *testing.T) {
 
 // TestSanitizeSessionName covers the sanitization function (lines 188+).
 func TestSanitizeSessionName(t *testing.T) {
+	t.Parallel()
 	// Empty string.
 	if got := sanitizeSessionName(""); got != "" {
 		t.Fatalf("expected empty, got %q", got)
@@ -96,6 +103,7 @@ func TestSanitizeSessionName(t *testing.T) {
 
 // TestSessionNameSchema covers the schema function (lines 153-166).
 func TestSessionNameSchema(t *testing.T) {
+	t.Parallel()
 	schema := sessionNameSchema()
 	if schema["type"] != "object" {
 		t.Fatalf("type = %v, want object", schema["type"])
@@ -115,6 +123,7 @@ func TestSessionNameSchema(t *testing.T) {
 
 // TestSessionNamerUserPrompt covers the prompt builder (lines 142-150).
 func TestSessionNamerUserPrompt(t *testing.T) {
+	t.Parallel()
 	// Prompt source.
 	got := sessionNamerUserPrompt(sessionNameSourcePrompt, "test input", "")
 	if !strings.Contains(got, "initial user prompt") {
@@ -142,6 +151,7 @@ func TestSessionNamerUserPrompt(t *testing.T) {
 // TestIsSessionNameCompactionTurn covers the turn kind check (lines
 // 329-330).
 func TestIsSessionNameCompactionTurn(t *testing.T) {
+	t.Parallel()
 	// Summary turn.
 	if !isSessionNameCompactionTurn(schema.Turn{Kind: schema.TurnSummary}) {
 		t.Fatal("expected true for TurnSummary")
@@ -162,6 +172,7 @@ func TestIsSessionNameCompactionTurn(t *testing.T) {
 // TestSuppressSessionNamerIfQuotaExhausted_NonQuota covers the non-quota
 // error path (line 251-252).
 func TestSuppressSessionNamerIfQuotaExhausted_NonQuota(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.suppressSessionNamerIfQuotaExhausted(nil) {
 		t.Fatal("expected false for nil error")
@@ -174,6 +185,7 @@ func TestSuppressSessionNamerIfQuotaExhausted_NonQuota(t *testing.T) {
 // TestContextPressure_NilContextMgr covers the nil contextMgr path (line
 // 200-201).
 func TestContextPressure_NilContextMgr(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if got := s.ContextPressure(); got != 0 {
 		t.Fatalf("expected 0, got %f", got)
@@ -182,6 +194,7 @@ func TestContextPressure_NilContextMgr(t *testing.T) {
 
 // TestClosingOrClosedLocked covers the closing/closed check.
 func TestClosingOrClosedLocked(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.closingOrClosedLocked() {
 		t.Fatal("expected false for non-closing, non-closed session")
@@ -200,6 +213,7 @@ func TestClosingOrClosedLocked(t *testing.T) {
 // TestSetStateIfOpenLocked covers the setStateIfOpenLocked function (lines
 // 213-218).
 func TestSetStateIfOpenLocked(t *testing.T) {
+	t.Parallel()
 	s := &Session{state: SessionIdle}
 	s.setStateIfOpenLocked(SessionProcessing)
 	if s.state != SessionProcessing {
@@ -216,6 +230,7 @@ func TestSetStateIfOpenLocked(t *testing.T) {
 
 // TestSessionNamerEnabled checks the enabled function.
 func TestSessionNamerEnabled_NilProfile(t *testing.T) {
+	t.Parallel()
 	if sessionNamerEnabled(nil) {
 		t.Fatal("expected false for nil profile")
 	}

@@ -11,6 +11,7 @@ import (
 // "turn_11" spelling carries no reserved sequence to compare, so only the
 // explicit priority orders it ahead of a follow-up admitted behind it.
 func TestClaimOrdersALegacyInheritedTurnBeforeTheFollowUp(t *testing.T) {
+	t.Parallel()
 	restored, _, deadMutationID := recoveredTurnSession(t)
 
 	const legacy = "turn_11"
@@ -59,6 +60,7 @@ func TestClaimOrdersALegacyInheritedTurnBeforeTheFollowUp(t *testing.T) {
 // puts a genuinely inherited turn first (it was reserved earlier), so the
 // priority must apply only when the inherited id has no sequence to compare.
 func TestClaimOrdersTheOlderFollowUpWhenANewerOneIsCapturedAsInherited(t *testing.T) {
+	t.Parallel()
 	restored, _, deadMutationID := recoveredTurnSession(t)
 
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
@@ -99,6 +101,7 @@ func TestClaimOrdersTheOlderFollowUpWhenANewerOneIsCapturedAsInherited(t *testin
 // a predicate that answered from the map's iteration order could name the queue
 // turn instead, arming cancellation for a turn the claim does not take.
 func TestRunnableNamesTheStartTheClaimTakesWhenAQueueEntryIsAlsoClaimable(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	t.Cleanup(sess.Close)
 

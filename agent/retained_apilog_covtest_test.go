@@ -13,6 +13,7 @@ import (
 
 // TestReadRetainedPage_NilReader covers the nil-reader guard (line 46-47).
 func TestReadRetainedPage_NilReader(t *testing.T) {
+	t.Parallel()
 	_, err := readRetainedPage(nil, 0, 10, 0)
 	if err == nil {
 		t.Fatal("expected error for nil reader")
@@ -22,6 +23,7 @@ func TestReadRetainedPage_NilReader(t *testing.T) {
 // TestReadRetainedPage_InvalidBounds covers the invalid-bounds guard (line
 // 49-50): retainedStart < 0 and total < retainedStart.
 func TestReadRetainedPage_InvalidBounds(t *testing.T) {
+	t.Parallel()
 	// retainedStart < 0
 	_, err := readRetainedPage(bytes.NewReader([]byte("x")), -1, 10, 0)
 	if err == nil {
@@ -37,6 +39,7 @@ func TestReadRetainedPage_InvalidBounds(t *testing.T) {
 // TestReadRetainedPage_ReadError covers the ReadAt error path (line 66-68)
 // using a failingReader that always returns an error.
 func TestReadRetainedPage_ReadError(t *testing.T) {
+	t.Parallel()
 	_, err := readRetainedPage(failingReaderAt{}, 0, 10, 0)
 	if err == nil {
 		t.Fatal("expected error for read failure")
@@ -46,6 +49,7 @@ func TestReadRetainedPage_ReadError(t *testing.T) {
 // TestReadRetainedPage_ShortRead covers the short-read path (line 70-71)
 // using a shortReaderAt that returns fewer bytes than requested.
 func TestReadRetainedPage_ShortRead(t *testing.T) {
+	t.Parallel()
 	_, err := readRetainedPage(shortReaderAt{}, 0, 100, 0)
 	if err == nil {
 		t.Fatal("expected error for short read")
@@ -55,6 +59,7 @@ func TestReadRetainedPage_ShortRead(t *testing.T) {
 // TestReadRetainedPage_NegativeOffset covers the negative-offset guard
 // (line 52-53).
 func TestReadRetainedPage_NegativeOffset(t *testing.T) {
+	t.Parallel()
 	_, err := readRetainedPage(bytes.NewReader([]byte("x")), 0, 10, -5)
 	if !errors.Is(err, errRetainedOffsetOutOfRange) {
 		t.Fatalf("expected errRetainedOffsetOutOfRange, got %v", err)
@@ -64,6 +69,7 @@ func TestReadRetainedPage_NegativeOffset(t *testing.T) {
 // TestReadRetainedPage_OffsetBeforeRetainedStart covers the
 // offset < retainedStart guard (line 55-56).
 func TestReadRetainedPage_OffsetBeforeRetainedStart(t *testing.T) {
+	t.Parallel()
 	_, err := readRetainedPage(bytes.NewReader([]byte("tail")), 10, 14, 5)
 	if !errors.Is(err, errRetainedOffsetUnavailable) {
 		t.Fatalf("expected errRetainedOffsetUnavailable, got %v", err)
@@ -73,6 +79,7 @@ func TestReadRetainedPage_OffsetBeforeRetainedStart(t *testing.T) {
 // TestReadRetainedPage_OffsetBeyondTotal covers the offset > total guard
 // (line 58-59).
 func TestReadRetainedPage_OffsetBeyondTotal(t *testing.T) {
+	t.Parallel()
 	_, err := readRetainedPage(bytes.NewReader([]byte("abc")), 0, 3, 100)
 	if !errors.Is(err, errRetainedOffsetOutOfRange) {
 		t.Fatalf("expected errRetainedOffsetOutOfRange, got %v", err)
@@ -82,6 +89,7 @@ func TestReadRetainedPage_OffsetBeyondTotal(t *testing.T) {
 // TestReadRetainedPage_EmptyContent covers the n=0 case (line 64-65) where
 // offset equals total.
 func TestReadRetainedPage_EmptyContent(t *testing.T) {
+	t.Parallel()
 	page, err := readRetainedPage(bytes.NewReader([]byte("abc")), 0, 3, 3)
 	if err != nil {
 		t.Fatalf("readRetainedPage at EOF: %v", err)
@@ -94,6 +102,7 @@ func TestReadRetainedPage_EmptyContent(t *testing.T) {
 // TestSearchRetainedOutput_NilSource covers the nil-source guard (line
 // 123-124).
 func TestSearchRetainedOutput_NilSource(t *testing.T) {
+	t.Parallel()
 	_, err := searchRetainedOutput(nil, retainedSearchOptions{Regexp: regexp.MustCompile("x")})
 	if err == nil {
 		t.Fatal("expected error for nil source")
@@ -103,6 +112,7 @@ func TestSearchRetainedOutput_NilSource(t *testing.T) {
 // TestSearchRetainedOutput_NilRegexp covers the nil-regexp guard (line
 // 126-127).
 func TestSearchRetainedOutput_NilRegexp(t *testing.T) {
+	t.Parallel()
 	src := &mockSearchSource{}
 	_, err := searchRetainedOutput(src, retainedSearchOptions{})
 	if err == nil {
@@ -113,6 +123,7 @@ func TestSearchRetainedOutput_NilRegexp(t *testing.T) {
 // TestSearchRetainedOutput_NegativeStartOffset covers the negative
 // StartOffset guard (line 129-130).
 func TestSearchRetainedOutput_NegativeStartOffset(t *testing.T) {
+	t.Parallel()
 	src := &mockSearchSource{}
 	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), StartOffset: -1}
 	_, err := searchRetainedOutput(src, opts)
@@ -124,6 +135,7 @@ func TestSearchRetainedOutput_NegativeStartOffset(t *testing.T) {
 // TestSearchRetainedOutput_NegativeMaxMatches covers the negative
 // MaxMatches guard (line 132-133).
 func TestSearchRetainedOutput_NegativeMaxMatches(t *testing.T) {
+	t.Parallel()
 	src := &mockSearchSource{}
 	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), MaxMatches: -1}
 	_, err := searchRetainedOutput(src, opts)
@@ -135,6 +147,7 @@ func TestSearchRetainedOutput_NegativeMaxMatches(t *testing.T) {
 // TestSearchRetainedOutput_NegativeMaxSerializedBytes covers the negative
 // MaxSerializedBytes guard (line 135-136).
 func TestSearchRetainedOutput_NegativeMaxSerializedBytes(t *testing.T) {
+	t.Parallel()
 	src := &mockSearchSource{}
 	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), MaxSerializedBytes: -1}
 	_, err := searchRetainedOutput(src, opts)
@@ -146,6 +159,7 @@ func TestSearchRetainedOutput_NegativeMaxSerializedBytes(t *testing.T) {
 // TestSearchRetainedOutput_InvalidContextLines covers the out-of-range
 // ContextLines guard (line 138-139).
 func TestSearchRetainedOutput_InvalidContextLines(t *testing.T) {
+	t.Parallel()
 	src := &mockSearchSource{}
 	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), ContextLines: -1}
 	if _, err := searchRetainedOutput(src, opts); err == nil {
@@ -160,6 +174,7 @@ func TestSearchRetainedOutput_InvalidContextLines(t *testing.T) {
 // TestAppendRetainedHistory covers the history-append function with various
 // context-line settings.
 func TestAppendRetainedHistory(t *testing.T) {
+	t.Parallel()
 	// contextLines == 0: history is truncated to empty.
 	h := []string{"a", "b"}
 	h = appendRetainedHistory(h, "c", 0)
@@ -178,6 +193,7 @@ func TestAppendRetainedHistory(t *testing.T) {
 
 // TestRetainedAfterContext covers the after-context builder.
 func TestRetainedAfterContext(t *testing.T) {
+	t.Parallel()
 	// contextLines == 0: returns nil.
 	if got := retainedAfterContext(nil, 0, false); got != nil {
 		t.Fatalf("expected nil for contextLines=0, got %v", got)
@@ -217,6 +233,7 @@ func TestRetainedAfterContext(t *testing.T) {
 
 // TestValidateRetainedWindow covers the window validation function.
 func TestValidateRetainedWindow(t *testing.T) {
+	t.Parallel()
 	// Valid window.
 	w := jobstore.OutputWindowSnapshot{
 		RetainedStart: 0, TotalBytes: 100, Start: 0, End: 10, Content: make([]byte, 10),
@@ -274,6 +291,7 @@ func TestValidateRetainedWindow(t *testing.T) {
 
 // TestRetainedMatchesSerializedSize covers the serialized size calculator.
 func TestRetainedMatchesSerializedSize(t *testing.T) {
+	t.Parallel()
 	// Empty matches with a candidate byte count.
 	size := retainedMatchesSerializedSize(nil, 100)
 	if size <= 0 {
@@ -292,6 +310,7 @@ func TestRetainedMatchesSerializedSize(t *testing.T) {
 
 // TestRetainedLineScanner_Next covers the line scanner for edge cases.
 func TestRetainedLineScanner_Next(t *testing.T) {
+	t.Parallel()
 	// Empty input — returns false, no error.
 	s := &retainedLineScanner{
 		r:      bufio.NewReader(bytes.NewBuffer(nil)),
@@ -344,6 +363,7 @@ func TestNextRetainedSearchLine_PendingAndEOF(t *testing.T) {
 
 // TestFinishRetainedSearchLine covers the line-finishing function.
 func TestFinishRetainedSearchLine(t *testing.T) {
+	t.Parallel()
 	// Oversized line returns as-is.
 	line := retainedSearchLine{oversized: true}
 	if got := finishRetainedSearchLine(line, []byte("x")); !got.oversized {

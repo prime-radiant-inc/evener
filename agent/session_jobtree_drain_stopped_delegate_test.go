@@ -87,6 +87,7 @@ func newWedgedDelegateFixtureIn(t *testing.T, delegateID string, turnEndsProcess
 }
 
 func TestRetryActivityDoesNotRefreshDrainLiveness(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_retry")
 	bindStableDelegateActivityToOwner(f.child, f.root.delegateController, f.lease, f.root)
 	f.child.mu.Lock()
@@ -165,6 +166,7 @@ func TestRetryActivityRemainsParentVisible(t *testing.T) {
 }
 
 func TestRetryActivityRejectsStaleLeaseWithoutMutation(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_retry_stale")
 	f.root.delegateController.mu.Lock()
 	beforeAt := f.root.delegateController.live[f.delegateID].activityAt
@@ -282,6 +284,7 @@ func (f *wedgedDelegateFixture) pendingStopSeq(t *testing.T) uint64 {
 // than time-since-activity: the activity clock cannot move after a stop, so
 // reading it was reading the last PRE-stop stamp and calling it liveness.
 func TestStopRequestedDelegateCannotReportActivity(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_fenced")
 	c := f.root.delegateController
 
@@ -319,6 +322,7 @@ func TestStopRequestedDelegateCannotReportActivity(t *testing.T) {
 // is what stamps the abandonment, off the real snapshot, from the real stop
 // request — rather than asking a predicate a question production never asks it.
 func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_wedged")
 	f.requestStop(t)
 
@@ -411,6 +415,7 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 // completing it only arms window two, and the still-open run may be abandoned
 // only after the second complete continuous window.
 func TestDrainNeverStoppedDelegateNeedsTwoContinuousWindows(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_never_stopped")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: fake-clock single-step driver; only a broken drain can consume wall time.
 	defer cancel()
@@ -454,6 +459,7 @@ func TestDrainNeverStoppedDelegateNeedsTwoContinuousWindows(t *testing.T) {
 }
 
 func TestDrainOldStopRequestStillGetsAFullSecondWindow(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_old_stop")
 	f.requestStop(t)
 	// Window one may complete before the root reaches its terminal communicate;
@@ -484,6 +490,7 @@ func TestDrainOldStopRequestStillGetsAFullSecondWindow(t *testing.T) {
 }
 
 func TestDrainNeverStoppedDelegateActivityRestartsFirstWindow(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_activity_resets_grace")
 	drainStartedAt := f.clk.Now()
 
@@ -515,6 +522,7 @@ func TestDrainNeverStoppedDelegateActivityRestartsFirstWindow(t *testing.T) {
 }
 
 func TestDrainProgressRestartsSecondContinuousWindow(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_progress_resets_second")
 	progressed := make(chan struct{}, 1)
 	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
@@ -560,6 +568,7 @@ func TestDrainProgressRestartsSecondContinuousWindow(t *testing.T) {
 }
 
 func TestDrainTerminalEvidenceCancelsSecondWindow(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_terminal_cancels_grace")
 	drainStartedAt := f.clk.Now()
 	f.clk.Advance(DrainStallTimeout)
@@ -583,6 +592,7 @@ func TestDrainTerminalEvidenceCancelsSecondWindow(t *testing.T) {
 }
 
 func TestDrainGraceDoesNotLeakAcrossDrainInvocations(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_new_drain_phase")
 	priorDrainStartedAt := f.clk.Now()
 	f.clk.Advance(DrainStallTimeout)
@@ -612,6 +622,7 @@ func TestDrainGraceDoesNotLeakAcrossDrainInvocations(t *testing.T) {
 // inside the bound settles, and the drain must never have abandoned it, however
 // far past the bound the clock then runs.
 func TestDrainKeepsWaitingOnADelegateWhoseStopCompletes(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_winding_down")
 	f.requestStop(t)
 	if f.pendingStopSeq(t) == 0 {
@@ -664,6 +675,7 @@ func TestDrainKeepsWaitingOnADelegateWhoseStopCompletes(t *testing.T) {
 // once the delegate stops counting, the shell IS the sole reason to wait and the
 // announce ladder runs.
 func TestDrainArmsBothEscapesWithAShellAndAWedgedDelegate(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_wedged_beside_shell")
 	f.requestStop(t)
 	seedRunningBackgroundShell(t, f.root.jobManager, "shell_bg", f.clk.Now())
@@ -709,6 +721,7 @@ func TestDrainArmsBothEscapesWithAShellAndAWedgedDelegate(t *testing.T) {
 // clause is asserted at ten bounds past the stop request, where nothing but
 // currentRunOpen can be keeping the answer false.
 func TestDrainNeverAbandonsADelegateWhoseRunFinished(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_finished_under_stop")
 	f.requestStop(t)
 	drainStartedAt := f.clk.Now()
@@ -742,6 +755,7 @@ func TestDrainNeverAbandonsADelegateWhoseRunFinished(t *testing.T) {
 // synchronously on a successful handoff: a forwarded pending left NotifyPending
 // is proof no drive was launched.
 func TestDrainDoesNotDriveAChildItHasAbandoned(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_abandoned_but_driven")
 	f.requestStop(t)
 	// The parent's row goes idle while the delegate's run is still open — the
@@ -777,6 +791,7 @@ func TestDrainDoesNotDriveAChildItHasAbandoned(t *testing.T) {
 // one-shot-only fallback for a delegate the root never stopped remains covered
 // by the one-shot control below.
 func TestServeSessionAbandonsAStopRequestedDelegateAfterBound(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixtureIn(t, "dlg_serve_wedged", false)
 	f.requestStop(t)
 
@@ -812,6 +827,7 @@ func TestServeSessionAbandonsAStopRequestedDelegateAfterBound(t *testing.T) {
 }
 
 func TestDrainGraceDoesNotFenceSuccessorGeneration(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_grace_successor")
 	f.requestStop(t)
 	drainStartedAt := f.clk.Now()
@@ -868,6 +884,7 @@ func TestDrainGraceDoesNotFenceSuccessorGeneration(t *testing.T) {
 }
 
 func TestDrainAbandonmentDoesNotFenceSuccessorGeneration(t *testing.T) {
+	t.Parallel()
 	f := newWedgedDelegateFixture(t, "dlg_abandonment_successor")
 	f.requestStop(t)
 	drainStartedAt := f.clk.Now()

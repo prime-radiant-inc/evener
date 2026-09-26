@@ -13,6 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestCloneAPILogHeaders(t *testing.T) {
+	t.Parallel()
 	t.Run("empty returns nil", func(t *testing.T) {
 		if got := cloneAPILogHeaders(nil); got != nil {
 			t.Fatalf("expected nil, got %#v", got)
@@ -42,6 +43,7 @@ func TestCloneAPILogHeaders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateAPILogAttemptEnvelopeSize(t *testing.T) {
+	t.Parallel()
 	t.Run("small envelope ok", func(t *testing.T) {
 		env := apiLogAttemptEnvelope{
 			TranscriptRef: "local:abc",
@@ -73,6 +75,7 @@ func TestValidateAPILogAttemptEnvelopeSize(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundAPILogRequestHeaders(t *testing.T) {
+	t.Parallel()
 	t.Run("small headers not paged", func(t *testing.T) {
 		env := apiLogAttemptEnvelope{
 			TranscriptRef: "local:abc",
@@ -143,6 +146,7 @@ func TestBoundAPILogRequestHeaders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFitAPILogBodyPage(t *testing.T) {
+	t.Parallel()
 	t.Run("utf8 body fits", func(t *testing.T) {
 		env := apiLogAttemptEnvelope{
 			TranscriptRef: "local:abc",
@@ -225,6 +229,7 @@ func TestFitAPILogBodyPage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundedAPILogMetadata(t *testing.T) {
+	t.Parallel()
 	t.Run("short value unchanged", func(t *testing.T) {
 		got, trunc := boundedAPILogMetadata("hello", false)
 		if got != "hello" || trunc {
@@ -332,6 +337,7 @@ func TestSelectAPILogRange(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogAttemptSettlementLookup(t *testing.T) {
+	t.Parallel()
 	t.Run("no group selected ignores settlement", func(t *testing.T) {
 		l := apiLogAttemptSettlementLookup{}
 		l.consider(apilog.APIAttemptGroupSettlement{AttemptGroupID: "g1"})
@@ -495,6 +501,7 @@ func TestSummarizeAPILogRecord(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFindAPILogAttemptErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -516,6 +523,7 @@ func TestFindAPILogAttemptErrors(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDecodeAPILogSummariesErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -537,6 +545,7 @@ func TestDecodeAPILogSummariesErrors(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogPathForTranscript(t *testing.T) {
+	t.Parallel()
 	got := apiLogPathForTranscript("/state/sessions/s1/s1.transcript.jsonl")
 	want := "/state/sessions/s1/s1.api.jsonl"
 	if got != want {

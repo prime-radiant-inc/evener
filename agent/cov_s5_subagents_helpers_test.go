@@ -9,6 +9,7 @@ import (
 )
 
 func TestS5Cov_CloneMaps(t *testing.T) {
+	t.Parallel()
 	if cloneMap(nil) != nil {
 		t.Error("cloneMap(nil) should be nil")
 	}
@@ -31,6 +32,7 @@ func TestS5Cov_CloneMaps(t *testing.T) {
 }
 
 func TestS5Cov_LocalEnvPolicyName(t *testing.T) {
+	t.Parallel()
 	cases := map[execenv.EnvVarPolicy]string{
 		execenv.EnvPolicyAll:      "all",
 		execenv.EnvPolicyNone:     "none",
@@ -51,6 +53,7 @@ func TestS5Cov_LocalEnvPolicyName(t *testing.T) {
 }
 
 func TestS5Cov_LocalEnvPolicyFromName(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"all", "none", "core_only", "default"} {
 		if _, ok := localEnvPolicyFromName(name); !ok {
 			t.Errorf("localEnvPolicyFromName(%q) should be recognized", name)
@@ -62,6 +65,7 @@ func TestS5Cov_LocalEnvPolicyFromName(t *testing.T) {
 }
 
 func TestS5Cov_FrozenSubagentToolNames(t *testing.T) {
+	t.Parallel()
 	if got := frozenSubagentToolNames(true, nil, nil); len(got) != 1 || got[0] != "*" {
 		t.Errorf("allTools → %v, want [*]", got)
 	}
@@ -77,6 +81,7 @@ func TestS5Cov_FrozenSubagentToolNames(t *testing.T) {
 }
 
 func TestS5Cov_RestoreFrozenSkillBodies(t *testing.T) {
+	t.Parallel()
 	// No names, no bodies → (nil, nil).
 	if bodies, err := restoreFrozenSkillBodies(nil, nil); err != nil || bodies != nil {
 		t.Errorf("empty → %v, %v", bodies, err)
@@ -105,6 +110,7 @@ func TestS5Cov_RestoreFrozenSkillBodies(t *testing.T) {
 }
 
 func TestS5Cov_SubagentNeedsCommunicateNudge(t *testing.T) {
+	t.Parallel()
 	if !subagentNeedsCommunicateNudge(nil) {
 		t.Error("nil agent should need the nudge")
 	}
@@ -129,6 +135,7 @@ type uncomparableEnv struct {
 // — so the comparison has to answer for any environment a session can run on,
 // including a double whose dynamic type `==` refuses to compare.
 func TestS5Cov_SameEnvironment(t *testing.T) {
+	t.Parallel()
 	first := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	second := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	if !sameEnvironment(first, first) {

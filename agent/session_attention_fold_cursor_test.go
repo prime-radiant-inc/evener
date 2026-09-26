@@ -88,6 +88,7 @@ func BenchmarkRootDelegateAttentionDelivery(b *testing.B) {
 // from byte zero fails on it, while a fold that resumes from where the last
 // one stopped never looks at those bytes again.
 func TestRootDelegateAttentionDeliveryDoesNotRedecodeTranscriptPrefix(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),

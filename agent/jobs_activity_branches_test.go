@@ -1170,6 +1170,7 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 // Revision check in loadActivitySnapshotForParams actually
 // fires, not just that continuations carry the field.
 func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -1248,6 +1249,7 @@ func bumpFoldGeneration(t *testing.T, path string, observe func()) {
 // folded. Comparing the two rejects a continuation minted seconds earlier
 // against journals nobody touched, and the branch becomes unreachable.
 func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -1323,6 +1325,7 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 // out of band — so the generations the token carries are the only evidence,
 // and they are the target's own.
 func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritten(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -1416,6 +1419,7 @@ func seedRetainedActivityDelegate(t *testing.T, s *Session, delegateID string) {
 // stepping over another. The continuation has to be refused, the same as for
 // any other mutation the live fence exists to catch.
 func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -1463,6 +1467,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 // continuation minted against the old delegate list be accepted against the
 // new one — the very reordering the fence exists to catch.
 func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -1505,6 +1510,7 @@ func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
 // refuses. A token nobody can submit is worse than none: the reader gets the
 // session to request instead.
 func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(t *testing.T) {
+	t.Parallel()
 	budget := newBoundedActivityBudget("root", time.Unix(10, 0).UTC(), 7)
 	longest := make([]string, activityMaxContinuationPathLength)
 	for i := range longest {
@@ -1545,6 +1551,7 @@ func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(
 // the right shape because it is the answer the client already handles:
 // restart pagination once.
 func TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale(t *testing.T) {
+	t.Parallel()
 	legacy := encodeActivityContinuation(activityContinuation{
 		Version:     activityContinuationVersion - 1,
 		RootID:      "root",

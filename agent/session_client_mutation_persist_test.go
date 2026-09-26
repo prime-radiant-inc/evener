@@ -28,6 +28,7 @@ import (
 // A regression deadlocks rather than failing an assertion: the parked writer
 // holds the serializer this read would have wanted.
 func TestClientMutationSnapshotAnswersDuringAnotherMutationsDurableWrite(t *testing.T) {
+	t.Parallel()
 	writing := make(chan struct{})
 	release := make(chan struct{})
 	store, err := newClientMutationStoreFS(afero.NewMemMapFs(), "/state", "session-1", clientMutationFaults{
@@ -64,6 +65,7 @@ func TestClientMutationSnapshotAnswersDuringAnotherMutationsDurableWrite(t *test
 }
 
 func TestClientMutationPersist_UnseenPreparationIsAtomicAndRunsOnce(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	injected := errors.New("after reservation")
 	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{
@@ -173,6 +175,7 @@ func TestClientMutationPersist_UnseenPreparationIsAtomicAndRunsOnce(t *testing.T
 }
 
 func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
 	if err != nil {
@@ -264,6 +267,7 @@ func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 }
 
 func TestClientMutationPersist_FailedEffectWriteRetainsReservation(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	injected := errors.New("before effect rename")
 	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{
@@ -329,6 +333,7 @@ func TestClientMutationPersist_FailedEffectWriteRetainsReservation(t *testing.T)
 }
 
 func TestClientMutationPersist_RestartRecoversUnownedReservation(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	first, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
 	if err != nil {
@@ -362,6 +367,7 @@ func TestClientMutationPersist_RestartRecoversUnownedReservation(t *testing.T) {
 }
 
 func TestClientMutationPersist_AfterEffectRenamePublishesDurableClone(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	injected := errors.New("after effect rename")
 	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{
@@ -395,6 +401,7 @@ func TestClientMutationPersist_AfterEffectRenamePublishesDurableClone(t *testing
 }
 
 func TestClientMutationPersist_RejectsIncompleteSnapshot(t *testing.T) {
+	t.Parallel()
 	request := testClientMutationRequest(t, "turn/start", "mutation-1", appwire.TurnStartParams{
 		ClientMutationID: "mutation-1",
 	})
@@ -486,6 +493,7 @@ func TestClientMutationPersist_RejectsIncompleteSnapshot(t *testing.T) {
 }
 
 func TestNewSessionMutationSnapshotUsesSnakeCaseStorageKeys(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sess := newQueuePersistTestSession(t, stateDir)
 	defer sess.Close()
@@ -607,6 +615,7 @@ func assertSnakeCaseStorageKeys(t *testing.T, scope string, object map[string]an
 }
 
 func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})

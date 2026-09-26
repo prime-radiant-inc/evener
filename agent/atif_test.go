@@ -21,6 +21,7 @@ import (
 )
 
 func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *testing.T) {
+	t.Parallel()
 	const credential = "endpoint-path-credential-sentinel"
 	const communicateArgs = `{\"message\":\"done\",\"end_turn\":true,\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +117,7 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 }
 
 func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	transcriptPath := filepath.Join(dir, "sessions", "test-sess.transcript.jsonl")
 	const (
@@ -186,6 +188,7 @@ func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 }
 
 func TestExportATIF_SanitizesTranscriptResponseEndpoints(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	transcriptPath := filepath.Join(dir, "sessions", "test-sess.transcript.jsonl")
 	const (
@@ -311,6 +314,7 @@ func TestExportATIF_WritesFile(t *testing.T) {
 }
 
 func TestExportATIF_ProviderHandleModes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	transcriptPath := filepath.Join(dir, "sessions", "test-sess.transcript.jsonl")
 

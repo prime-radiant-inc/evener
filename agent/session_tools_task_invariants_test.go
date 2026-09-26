@@ -10,6 +10,7 @@ import (
 // Invariant battery for the presence-based task_list handler: one test per
 // contract invariant, each seeded to expose exactly that invariant.
 func TestTaskTool_SingleInProgressUnderCombinedBatch(t *testing.T) {
+	t.Parallel()
 	// Two pre-existing tasks; try to start both in one combined call.
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "a", Prompt: "p"}, {Description: "b", Prompt: "p"}})
 	res := h.call(t, map[string]any{
@@ -24,6 +25,7 @@ func TestTaskTool_SingleInProgressUnderCombinedBatch(t *testing.T) {
 }
 
 func TestTaskTool_AutoAdvanceFiresOnceWithSteering(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "a", Prompt: "p"}, {Description: "b", Prompt: "p"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
@@ -45,6 +47,7 @@ func TestTaskTool_AutoAdvanceFiresOnceWithSteering(t *testing.T) {
 }
 
 func TestTaskTool_EventsPayloadShapeUnchanged(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, nil)
 	h.call(t, map[string]any{
 		"add": []any{map[string]any{"type": "implement", "description": "x", "prompt": "p"}},
@@ -67,6 +70,7 @@ func TestTaskTool_EventsPayloadShapeUnchanged(t *testing.T) {
 }
 
 func TestTaskTool_AddDepOnUnknownRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, nil)
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{"type": "implement", "description": "x", "prompt": "p", "depends_on": []any{99}}},
@@ -80,6 +84,7 @@ func TestTaskTool_AddDepOnUnknownRejected(t *testing.T) {
 }
 
 func TestTaskTool_SameBatchAddDepsAllowed(t *testing.T) {
+	t.Parallel()
 	// Intra-batch: second add may depend on the first add in the same call
 	// (store validates against existing + pending).
 	h := newTaskToolHarness(t, nil)

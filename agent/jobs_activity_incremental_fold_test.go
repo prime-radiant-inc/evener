@@ -68,6 +68,7 @@ func writeJobLogFast(t *testing.T, stateDir, sessID string, n int) string {
 // TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget
 // covers the same property at roughly 1% the scale.
 func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "tuesdayroot"
 	totalJobs := 200_000
@@ -204,6 +205,7 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 // the correct result for the NEW content — not a stale view, and not a
 // broken merge of old and new.
 func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessID := "rewriteroot"
 	started := time.Unix(3_000_000_000, 0).UTC()

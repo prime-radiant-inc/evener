@@ -1855,6 +1855,7 @@ func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
 // strand an entry no wake will ever run again. It runs, awaiting or not, and
 // outranks a pending notification the way a text entry does.
 func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   drainInputs
@@ -1881,6 +1882,7 @@ func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
 // is still live. The seam runs on the joining goroutine just before it blocks,
 // so ending the second admission there is the only way the join returns.
 func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	first, ok := s.beginEnvWork("first")
@@ -1917,6 +1919,7 @@ func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
 // warning, while a join that fired the seam and then walked on would return
 // with the work still held and say nothing.
 func TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	held, ok := s.beginEnvWork("held work")

@@ -34,6 +34,7 @@ import (
 // stop join stopped honouring its half — do not "fix" it by widening the
 // ceiling in cmd/evener/run_drain_wedged_delegate_test.go.
 func TestCloseStopJoin_HopelessStopLeavesHalfBudget(t *testing.T) {
+	t.Parallel()
 	shortenCloseCascadeBudget(t, 3*time.Second)
 	// The initiating close mints the cascade budget from Background, exactly
 	// as Session.Close does.
@@ -68,6 +69,7 @@ func TestCloseStopJoin_HopelessStopLeavesHalfBudget(t *testing.T) {
 // process-wide test override. No t.Parallel: this is deliberately testing the
 // same process-global policy that close readers sample in the background.
 func TestSetLaneClosePassBudgetRestoresOutOfOrder(t *testing.T) {
+	t.Parallel()
 	base := laneClosePassBudget()
 	outerRestore := SetLaneClosePassBudget(200 * time.Millisecond)
 	innerRestore := SetLaneClosePassBudget(100 * time.Millisecond)
@@ -90,6 +92,7 @@ func TestSetLaneClosePassBudgetRestoresOutOfOrder(t *testing.T) {
 }
 
 func TestEnsureCloseBudgetCapturesBudget(t *testing.T) {
+	t.Parallel()
 	initialRestore := SetLaneClosePassBudget(200 * time.Millisecond)
 	cascade, cancel := ensureCloseBudget(context.Background())
 	defer cancel()

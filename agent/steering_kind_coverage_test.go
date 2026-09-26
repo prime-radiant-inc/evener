@@ -17,6 +17,7 @@ import (
 // deleted read-only classifier rule showed, where the UI kept a rule for a
 // message the daemon had stopped sending and nothing noticed.
 func TestEverySteeringKindHasAProducer(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +53,7 @@ func TestEverySteeringKindHasAProducer(t *testing.T) {
 }
 
 func TestSteeringKindProducerReferencesRequireEventsSelector(t *testing.T) {
+	t.Parallel()
 	file, err := parser.ParseFile(token.NewFileSet(), "producer.go", []byte(`package agent
 
 // events.SteeringKindTasksDone
@@ -115,6 +117,7 @@ func steeringKindConstName(kind string) string {
 // kind, the shape that renders unlabelled with no way to tell live or on
 // reload.
 func TestNoProducerPassesEmptySourceAndEmptyKindToTrySteerEnqueue(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +162,7 @@ func isEmptyStringLiteral(e ast.Expr) bool {
 }
 
 func TestMaybeInjectTaskReminderReturnsItsKind(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	// Trigger 3: task_list never used, 10+ rounds in.
 	s.mu.Lock()

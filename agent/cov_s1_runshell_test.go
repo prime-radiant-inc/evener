@@ -24,6 +24,7 @@ func (s1cov_instantExitExecutor) StreamCommand(_ context.Context, _ string, _ st
 // A closing job manager can't stand up the delayed shell, so runShell fails to
 // start.
 func TestS1Cov_runShell_ClosingFailsToStart(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.mu.Lock()
 	jm.closing = true
@@ -37,6 +38,7 @@ func TestS1Cov_runShell_ClosingFailsToStart(t *testing.T) {
 // The foreground settle closure discards the job when its deferred durable start
 // commit fails.
 func TestS1Cov_runShell_SettleCommitFailureDiscards(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, s1cov_instantExitExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})
 	if res.settle == nil {
@@ -53,6 +55,7 @@ func TestS1Cov_runShell_SettleCommitFailureDiscards(t *testing.T) {
 // The foreground settle closure still returns the job id when the terminal write
 // fails, handing the retry to a durable finalize goroutine.
 func TestS1Cov_runShell_SettleFinalizeFailureRetries(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, s1cov_instantExitExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})
 	if res.settle == nil {
