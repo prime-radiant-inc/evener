@@ -77,10 +77,11 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   systemd unit or launchd label where one is identified) with the ad hoc path
   for a supervisorless hub: a target whose identity cannot be verified is
   refused `ErrRestart` rather than signaled. The residual check-then-act window
-  is acknowledged, **not** closed, and no host-side atomic-signal helper is
-  planned — a `pidfd` is unreachable through the component's only host interface,
-  `ssh <dest> <command>`. (The [04] tracked-follow-up entry carries the same
-  record.)
+  is acknowledged, **not** closed, and no host-side restart-identity pin helper
+  is planned — a `pidfd` is unreachable through the component's only host
+  interface, `ssh <dest> <command>` (the crash-fencing `evener-fence` lease
+  wrapper is a fencing helper, not a restart-identity pin). (The [04]
+  tracked-follow-up entry carries the same record.)
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -457,15 +458,17 @@ implementing — several have landed without their entry being re-marked.
   by Jesse, 2026-09-26:** verify-then-signal is the accepted answer, and the
   atomic `pidfd` handle the round-17 correction demanded is **withdrawn** as a
   requirement — no atomic form is reachable through this component's only host
-  interface (`ssh <dest> <command>`), and no host-side pin helper is specified,
-  installed, or invoked. The residual check-then-act window in the ad hoc path
+  interface (`ssh <dest> <command>`), and no host-side restart-identity pin
+  helper is specified, installed, or invoked (the crash-fencing `evener-fence`
+  lease wrapper is a fencing helper, not a restart-identity pin). The residual check-then-act window in the ad hoc path
   remains: the re-read narrows it and does not close it. The refusal rule
   stands, never a fallback to a bare unguarded `kill`: an identity field that
   cannot be re-read refuses `ErrRestart` with no signal, and a supervisor label
   outside the bare-safe set is refused likewise (the label case is a separate
-  fix in flight). The shipped `restartBare` re-validates the target before
-  signaling and accepts the window the re-read leaves. Mirrors component-04
-  acceptance criterion 20.
+  fix in flight). The shipped `restartBare` validates the target at
+  identification time; the at-signal re-read is the required contract
+  (implementation status, component 04 check 5), and the residual window is the
+  accepted one. Mirrors component-04 acceptance criterion 20.
 - **[05/06] remote-originated `thread/start` resolution (round 17; landed,
   `1e4018fa5d`)** — at the **receiving** hub, `hubThreadStart`
   (`app_threadlifecycle.go`) and the request-context `origin` plumbing

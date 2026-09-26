@@ -340,7 +340,7 @@ update). `status` reads the same two snapshots for its single row.
 `evener/host/add` is a mutation: params are one full host entry (all seven
 `HostConfig` fields; `name` required) plus optional `mutationId`. It validates
 with the component-03 rules (name validation, the `[[hosts]]` field validation
-at `cmd/evener-hub/config.go:177`). The component-03 host-count cap was
+at `cmd/evener-hub/config.go:247` — `validateHostConfigs`). The component-03 host-count cap was
 withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
 "Host-count cap: withdrawn"): no add, boot, or registry path enforces it, and
 `ErrTooManyHosts` is not a sentinel. A `[[hosts]]` list larger than the
@@ -665,8 +665,8 @@ Persistence target: the controller's `hub.toml` is hand-authored with
 comments; a TOML re-marshal would strip them. The UI writes a managed sidecar
 in the same config dir (e.g. `hub.hosts.json`), loaded after `hub.toml`. The
 sidecar is the UI's only writable source. Config-path retention: the hub
-supports `--config` paths (`cmd/evener-hub/main.go:186` —
-`deps.loadConfig(opts.configPath)`), but neither the runtime `Config` nor
+supports `--config` paths (`cmd/evener-hub/main.go:203` —
+`deps.loadConfig(opts.configPath, opts.configExplicit)`), but neither the runtime `Config` nor
 `WebConfig` retains the selected path, so the registry carries the canonical config
 path (absolute, resolved at startup) through startup into the web
 configuration; both the sidecar path (same dir as the selected `hub.toml`) and

@@ -1253,9 +1253,15 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      already replaced. The same normalization applies to the supervisor "owns the
      configured address" check below.
   5. the identity is **re-validated at signal time**: the pid, argv, effective
-     user, and socket from checks 1–4 are re-read before the signal is issued,
-     and the signal goes out only on a full match. A mismatch — including any field that cannot be
-     re-read — refuses with `ErrRestart`, no kill, no relaunch. This shrinks the
+     user, and socket from checks 1–4 are re-read at signal time, in the step
+     immediately before the signal, and the signal goes out only on a full
+     match. A mismatch — including any field that cannot be re-read — refuses
+     with `ErrRestart`, no kill, no relaunch. **Implementation status:** the
+     shipped `restartBare` (`sshconn/version.go`) runs these checks at
+     *identification* time and does not yet re-read at signal time; the
+     at-signal re-read is the required contract for this check, exactly as the
+     effective-user rule above is, and the residual identification/signal window
+     is the one the 2026-09-26 decision accepts (design §2). This shrinks the
      PID-reuse window but does **not** close it: it is still check-then-act, so
      the process can exit and its PID be reused between the re-read and the
      signal. **Decided by Jesse, 2026-09-26** (design §2 "Restart identity pin:
@@ -1270,7 +1276,9 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      platform.** A `pidfd` must be opened and signaled by a process running on
      the host, and this component's only host interface is `ssh <dest>
      <command>` shell execution (`Runner`, §"SSH channel argv"); this series
-     specifies, provisions, and invokes no host-side pin helper. Under the
+     specifies, provisions, and invokes no host-side restart-identity pin
+     helper (the crash-fencing `evener-fence` lease wrapper is a fencing helper,
+     not a restart-identity pin). Under the
      withdrawn pin that is no longer a refusal: a **supervisorless** host
      restarts through the guarded verify-then-signal ad hoc path. A
      **restart-capable deployment still prefers a supervisor** — the supervised
@@ -1355,18 +1363,20 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   the `kill`, the hub can exit and its PID can be reused by an unrelated
   process, which then receives the SIGTERM. The argv and address checks narrow
   the window but cannot close it, because they describe the process at
-  *identification* time, not at *signal* time. Re-checking identity in the same
-  remote command immediately before signaling (a guarded compare-and-kill
-  shell expression) shrinks the race but is still check-then-act — re-reading
-  the start time at signal time is no better, because the process can still
-  exit and its PID be reused between that read and the signal. **This residual
-  window is accepted** (design §2 "Restart identity pin: verify-then-signal
-  accepted", Jesse 2026-09-26): the shutdown preference is a supervisor restart
-  by unit/label, and a supervisorless hub uses the guarded verify-then-signal
-  path, which refuses a target it cannot verify rather than signaling it. The
-  shipped `restartBare` (`sshconn/version.go`) takes that path: it recovers the
-  listener's argv and bound address and refuses `ErrRestart` on any mismatch
-  before signaling, and it never issues a bare `kill` on an unverified target.
+  *identification* time, not at *signal* time. Re-checking identity immediately
+  before signaling (a guarded compare-and-kill) shrinks the race but is still
+  check-then-act — re-reading the start time at signal time is no better,
+  because the process can still exit and its PID be reused between that read
+  and the signal; the earlier same-remote-command variant was considered and is
+  not required. **This residual window is accepted** (design §2 "Restart
+  identity pin: verify-then-signal accepted", Jesse 2026-09-26): the shutdown
+  preference is a supervisor restart by unit/label, and a supervisorless hub
+  uses the guarded verify-then-signal path, which refuses a target it cannot
+  verify rather than signaling it. The shipped `restartBare`
+  (`sshconn/version.go`) validates the target at identification time — it
+  recovers the listener's argv and bound address and refuses `ErrRestart` on
+  mismatch before signaling — and never issues a bare `kill` on an unverified
+  target.
 
   The restart path is then:
   1. **Supervised hub** — restart it the way its supervisor expects:
@@ -1406,7 +1416,8 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      relaunches. No atomic process handle is reachable through this component's
      interfaces — a `pidfd` must be opened and signaled by a process on the
      host, the only host interface here is `ssh <dest> <command>`, and no
-     host-side pin helper is specified, installed, or invoked (check 5) — so the
+     host-side restart-identity pin helper is specified, installed, or invoked
+     (check 5) — so the
      residual identification/signal window is accepted, and the manager never
      issues a bare unguarded `kill` on an unverified target (check 5; the limit
      above). The recipe above remains the *operator's* documented procedure for
@@ -1843,9 +1854,11 @@ with the remote hub and its daemons still running.
     residual check-then-act window is acknowledged, not closed. The restart
     still prefers a supervisor (the supervised paths pin by systemd unit /
     launchd label, not by PID), and a supervisorless host restarts through the
-    guarded ad hoc path (`restartBare`), which re-validates the target before
-    signaling. This criterion makes checks 1–5 of §"Stop/restart mechanics"
-    testable end to end.
+    guarded ad hoc path (`restartBare`), which must re-read the target at signal
+    time per check 5 (implementation status there: the shipped path validates
+    at identification time only, and the residual window is the accepted one).
+    This criterion makes checks 1–5 of §"Stop/restart mechanics" testable end
+    to end.
 21. A fresh host whose `run_path` does not exist is a **verified missing
     executable** preflight result (`ErrExecutableMissing`), recognized from the
     **dedicated executable probe's stable sentinel** — `test -x <run_path>`
