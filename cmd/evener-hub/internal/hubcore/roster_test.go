@@ -707,13 +707,14 @@ func TestRosterFingerprintMovesWhenAnEscalationCardIsReplaced(t *testing.T) {
 	entry := func(ids ...string) map[string]LiveEntry {
 		return map[string]LiveEntry{"parent": {Status: "active", PendingEscalation: true, PendingEscalations: cards(ids...)}}
 	}
-	if rosterFingerprint(entry("esc_1", "esc_2")) != rosterFingerprint(entry("esc_1", "esc_2")) {
+	base := rosterFingerprint(entry("esc_1", "esc_2"))
+	if again := rosterFingerprint(entry("esc_1", "esc_2")); again != base {
 		t.Fatal("the same cards must hash the same")
 	}
-	if rosterFingerprint(entry("esc_1", "esc_2")) == rosterFingerprint(entry("esc_2", "esc_3")) {
+	if replaced := rosterFingerprint(entry("esc_2", "esc_3")); replaced == base {
 		t.Fatal("roster fingerprint must change when the first card is replaced while another stays pending")
 	}
-	if rosterFingerprint(entry("esc_1")) == rosterFingerprint(entry("esc_1", "esc_2")) {
+	if rosterFingerprint(entry("esc_1")) == base {
 		t.Fatal("roster fingerprint must change when a second card is raised behind the first")
 	}
 }
