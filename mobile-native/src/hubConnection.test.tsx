@@ -10,7 +10,12 @@ import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
 import { clientServesHub } from "./connectionIdentity";
-import { type HubConnection, type HubTokenSource, useHubConnection } from "./hubConnection";
+import {
+	type HubConnection,
+	type HubTokenSource,
+	reconnectDelay,
+	useHubConnection,
+} from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
@@ -221,6 +226,10 @@ it("does not report fatal for an ordinary transport close", async () => {
 		state: "closed",
 		fatal: false,
 	});
+	// An ordinary close is one the reconnect wall retries: unmount before this
+	// test ends so its real backoff timer never fires later, against whichever
+	// client a later test's `harness.client` names by then.
+	hook.unmount();
 });
 
 it("releases the client's listener on unmount", async () => {
@@ -270,6 +279,10 @@ it("does not record a client that never proved ready", async () => {
 	expect(hook.result.current.state).toBe("closed");
 	// A failed dial establishes nothing either — the client stays unknown.
 	expect(clientServesHub(fake, "hub-b")).toBe(true);
+	// This close is one the reconnect wall retries: unmount before this test
+	// ends so its real backoff timer never fires later, against whichever
+	// client a later test's `harness.client` names by then.
+	hook.unmount();
 });
 
 // Round 85's follow-up: a token fetch that fails outright is this attempt's
@@ -301,4 +314,138 @@ it("reports closed, not connecting, when token acquisition fails", async () => {
 	await act(async () => {});
 	act(() => fake.succeed());
 	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
+});
+
+it("waits at once, then 1, 2, 4, 8 and 16 seconds, then every 30 seconds", () => {
+	expect([0, 1, 2, 3, 4, 5, 6, 12].map(reconnectDelay)).toEqual([
+		0, 1000, 2000, 4000, 8000, 16000, 30000, 30000,
+	]);
+});
+
+it("tries a closed connection again on its own, backing off between attempts", async () => {
+	vi.useFakeTimers();
+	try {
+		const first = new FakeHubClient();
+		harness.client = first;
+		const { hook } = mount();
+		await act(async () => {});
+		const second = new FakeHubClient();
+		harness.client = second;
+		await act(async () => {
+			first.fail();
+		});
+		expect(hook.result.current.state).toBe("closed");
+		await act(async () => {
+			vi.advanceTimersByTime(0);
+		});
+		await act(async () => {});
+		expect(second.state).toBe("connecting");
+		const third = new FakeHubClient();
+		harness.client = third;
+		await act(async () => {
+			second.fail();
+		});
+		await act(async () => {
+			vi.advanceTimersByTime(999);
+		});
+		await act(async () => {});
+		expect(third.state).toBe("idle");
+		await act(async () => {
+			vi.advanceTimersByTime(1);
+		});
+		await act(async () => {});
+		expect(third.state).toBe("connecting");
+		await act(async () => {
+			third.succeed();
+		});
+		expect(hook.result.current.state).toBe("ready");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("starts the backoff over once a connection reaches ready", async () => {
+	vi.useFakeTimers();
+	try {
+		const first = new FakeHubClient();
+		harness.client = first;
+		mount();
+		await act(async () => {});
+		const second = new FakeHubClient();
+		harness.client = second;
+		await act(async () => {
+			first.fail();
+		});
+		await act(async () => {
+			vi.advanceTimersByTime(0);
+		});
+		await act(async () => {});
+		await act(async () => {
+			second.succeed();
+		});
+		const third = new FakeHubClient();
+		harness.client = third;
+		await act(async () => {
+			second.fail();
+		});
+		await act(async () => {
+			vi.advanceTimersByTime(0);
+		});
+		await act(async () => {});
+		expect(third.state).toBe("connecting");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("never retries a connection no retry can fix", async () => {
+	vi.useFakeTimers();
+	try {
+		const first = new FakeHubClient();
+		harness.client = first;
+		const { hook } = mount();
+		await act(async () => {});
+		const second = new FakeHubClient();
+		harness.client = second;
+		await act(async () => {
+			first.fail("protocol");
+		});
+		expect(hook.result.current.fatal).toBe(true);
+		await act(async () => {
+			vi.advanceTimersByTime(60_000);
+		});
+		await act(async () => {});
+		expect(second.state).toBe("idle");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("leaves a backgrounded app alone and tries at once on returning", async () => {
+	vi.useFakeTimers();
+	try {
+		const first = new FakeHubClient();
+		harness.client = first;
+		const { hook, input } = mount();
+		await act(async () => {});
+		const second = new FakeHubClient();
+		harness.client = second;
+		await act(async () => {
+			first.fail();
+		});
+		// rerender() runs its own act(), so it stays outside the async ones.
+		input.foreground = false;
+		hook.rerender();
+		await act(async () => {
+			vi.advanceTimersByTime(60_000);
+		});
+		await act(async () => {});
+		expect(second.state).toBe("idle");
+		input.foreground = true;
+		hook.rerender();
+		await act(async () => {});
+		expect(second.state).toBe("connecting");
+	} finally {
+		vi.useRealTimers();
+	}
 });

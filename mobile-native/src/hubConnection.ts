@@ -19,6 +19,13 @@ export interface HubConnection {
 	fatal: boolean;
 }
 
+/** How long the connection waits before trying again after `failures`
+ * attempts in a row closed without reaching ready (spec 14): at once, then
+ * 1, 2, 4, 8 and 16 seconds, then every 30 seconds. */
+export function reconnectDelay(failures: number): number {
+	return failures <= 0 ? 0 : Math.min(1000 * 2 ** (failures - 1), 30_000);
+}
+
 /** The one HubProfiles method this hook needs; HubProfiles itself satisfies
  * it, and a test can hand in a lighter fake without building a real one. */
 export interface HubTokenSource {
@@ -42,6 +49,11 @@ export function useHubConnection(
 	setError: (message: string | null) => void,
 ): HubConnection {
 	const [store] = useState(() => createConnectionStore());
+	// The hook's own attempts, on top of the caller's `attempt`: each one
+	// reopens the connection exactly as a bumped `attempt` does.
+	const [retry, setRetry] = useState(0);
+	// Attempts in a row that closed without reaching ready.
+	const failures = useRef(0);
 	const coreState = useSyncExternalStore(store.subscribe, store.getState);
 	// The generation (every input the effect below depends on except
 	// store/repository, which are structurally invariant for the hook's
@@ -66,8 +78,11 @@ export function useHubConnection(
 	const connectedFor = useRef<{ key: string; client: AppwireClient } | undefined>(
 		undefined,
 	);
-	const targetKey = JSON.stringify([activeId, activeOrigin, foreground, attempt]);
+	const targetKey = JSON.stringify([activeId, activeOrigin, foreground, attempt, retry]);
 	const [fatal, setFatal] = useState(false);
+	useEffect(() => {
+		failures.current = 0;
+	}, [activeId, activeOrigin, foreground, attempt]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
 	useEffect(() => {
 		let cancelled = false;
@@ -117,6 +132,7 @@ export function useHubConnection(
 						recordClientReadyHub(currentConnection, activeId);
 						setError(null);
 						setFatal(false);
+						failures.current = 0;
 					}
 					if (next === "closed") {
 						const failure = connectionFailure(currentConnection.terminalReason);
@@ -149,7 +165,7 @@ export function useHubConnection(
 			// run there is nothing to reset (the store starts at client: null).
 			store.setState({ client: null });
 		};
-	}, [activeId, activeOrigin, foreground, attempt, store, repository, targetKey]);
+	}, [activeId, activeOrigin, foreground, attempt, retry, store, repository, targetKey]);
 	const client = connectedFor.current?.key === targetKey ? connectedFor.current.client : null;
 	// Round 85's follow-up: a failed token fetch leaves no client and a
 	// terminal "closed" verdict in the core (the catch above), so the
@@ -162,15 +178,23 @@ export function useHubConnection(
 	// synchronously, so the verdict never outlives its generation.
 	const closedWithoutClient =
 		!client && activeId && foreground && coreState.state === "closed";
-	return {
-		client,
-		state: client
-			? coreState.state
-			: closedWithoutClient
-				? "closed"
-				: activeId && foreground
-					? "connecting"
-					: "idle",
-		fatal,
-	};
+	const state: ConnectionState = client
+		? coreState.state
+		: closedWithoutClient
+			? "closed"
+			: activeId && foreground
+				? "connecting"
+				: "idle";
+	// A connection that closed for a reason a retry can fix tries again on its
+	// own while the app is in front (spec 14), so no screen needs a Reconnect
+	// button. A protocol mismatch (fatal) is left alone: retrying can't fix it.
+	useEffect(() => {
+		if (state !== "closed" || fatal || !activeId || !activeOrigin || !foreground) return;
+		const timer = setTimeout(() => {
+			failures.current += 1;
+			setRetry((value) => value + 1);
+		}, reconnectDelay(failures.current));
+		return () => clearTimeout(timer);
+	}, [state, fatal, activeId, activeOrigin, foreground]);
+	return { client, state, fatal };
 }
