@@ -26,7 +26,7 @@
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
-import { useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -381,3 +381,8 @@ export function SessionChrome({
     </>
   );
 }
+
+// For hosts that re-render far more often than the chrome's own inputs change:
+// the composer re-renders on every draft keystroke, and nothing in the chrome
+// reads the draft.
+export const MemoizedSessionChrome = memo(SessionChrome);
