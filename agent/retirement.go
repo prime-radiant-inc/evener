@@ -525,20 +525,25 @@ func RealRetirementClock() RetirementClock { return clock.Real() }
 // responsibility (it owns Abort/Commit), not the loop's.
 func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error) error {
 	var timer RetirementTimer
+	var armedDeadline time.Time
 	disarm := func() {
 		if timer != nil {
 			timer.Stop()
 		}
+		armedDeadline = time.Time{}
 	}
-	arm := func(d time.Duration) {
+	arm := func(deadline time.Time, d time.Duration) {
 		if d < 0 {
 			d = 0
 		}
 		if timer == nil {
 			timer = c.clock.NewTimer(d)
-		} else {
+		} else if !armedDeadline.Equal(deadline) {
 			timer.Reset(d)
+		} else {
+			return
 		}
+		armedDeadline = deadline
 	}
 	evaluate := func() {
 		// The injected clock is a callback boundary; never call it under mu.
@@ -561,9 +566,10 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 			disarm()
 			return
 		}
-		remaining := c.eligibleSince.Add(c.timeout).Sub(now)
+		deadline := c.eligibleSince.Add(c.timeout)
+		remaining := deadline.Sub(now)
 		c.mu.Unlock()
-		arm(remaining)
+		arm(deadline, remaining)
 	}
 	defer disarm()
 	evaluate()
@@ -578,6 +584,7 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 		case <-c.changed:
 			evaluate()
 		case <-tick:
+			armedDeadline = time.Time{}
 			claim, _, err := c.TryClaim(false)
 			if err == nil && claim != nil {
 				_ = retire(ctx, claim)

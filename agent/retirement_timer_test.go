@@ -20,11 +20,15 @@ import (
 // instead of trusting the tick.
 type retirementAckClock struct {
 	*agenttest.FakeClock
-	mu      sync.Mutex
-	arms    chan time.Duration
-	disarms chan struct{}
-	timers  []*retirementAckTimer
-	creates int
+	mu         sync.Mutex
+	arms       chan time.Duration
+	disarms    chan struct{}
+	timers     []*retirementAckTimer
+	creates    int
+	gateMu     sync.Mutex
+	gateNext   bool
+	nowEntered chan struct{}
+	nowRelease chan struct{}
 }
 
 func newRetirementAckClock() *retirementAckClock {
@@ -36,13 +40,76 @@ func newRetirementAckClock() *retirementAckClock {
 }
 
 func (c *retirementAckClock) NewTimer(d time.Duration) clock.Timer {
-	tm := &retirementAckTimer{clk: c, c: make(chan time.Time, 1)}
+	now := c.FakeClock.Now()
+	tm := &retirementAckTimer{clk: c, c: make(chan time.Time, 1), deadline: now.Add(d)}
 	c.mu.Lock()
 	c.creates++
 	c.timers = append(c.timers, tm)
 	c.mu.Unlock()
 	c.arms <- d
 	return tm
+}
+
+func (c *retirementAckClock) Now() time.Time {
+	now := c.FakeClock.Now()
+	c.gateMu.Lock()
+	gate := c.gateNext
+	if gate {
+		c.gateNext = false
+	}
+	entered := c.nowEntered
+	release := c.nowRelease
+	c.gateMu.Unlock()
+	if gate {
+		close(entered)
+		<-release
+	}
+	return now
+}
+
+func (c *retirementAckClock) gateNextNow() {
+	c.gateMu.Lock()
+	c.gateNext = true
+	c.nowEntered = make(chan struct{})
+	c.nowRelease = make(chan struct{})
+	c.gateMu.Unlock()
+}
+
+func (c *retirementAckClock) awaitNow(t *testing.T) {
+	t.Helper()
+	c.gateMu.Lock()
+	entered := c.nowEntered
+	c.gateMu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second): // TRIPWIRE: the gate is released by the controller's next evaluation.
+		t.Fatal("controller did not reach the gated Now call")
+	}
+}
+
+func (c *retirementAckClock) releaseNow() {
+	c.gateMu.Lock()
+	release := c.nowRelease
+	c.gateMu.Unlock()
+	close(release)
+}
+
+func (c *retirementAckClock) Advance(d time.Duration) {
+	c.FakeClock.Advance(d)
+	now := c.FakeClock.Now()
+	c.mu.Lock()
+	for _, tm := range c.timers {
+		if !now.Before(tm.deadline) {
+			tm.fired = true
+		}
+	}
+	c.mu.Unlock()
+}
+
+func (c *retirementAckClock) timerFired() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers) != 0 && c.timers[len(c.timers)-1].fired
 }
 
 func (c *retirementAckClock) timerCreates() int {
@@ -107,14 +174,30 @@ func (c *retirementAckClock) assertNoArmWithin(t *testing.T, grace time.Duration
 	}
 }
 
+func (c *retirementAckClock) assertNoArm(t *testing.T) {
+	t.Helper()
+	select {
+	case d := <-c.arms:
+		t.Fatalf("unexpected timer arm %v", d)
+	default:
+	}
+}
+
 type retirementAckTimer struct {
-	clk *retirementAckClock
-	c   chan time.Time
+	clk      *retirementAckClock
+	c        chan time.Time
+	deadline time.Time
+	fired    bool
 }
 
 func (t *retirementAckTimer) C() <-chan time.Time { return t.c }
 
 func (t *retirementAckTimer) Reset(d time.Duration) bool {
+	now := t.clk.FakeClock.Now()
+	t.clk.mu.Lock()
+	t.deadline = now.Add(d)
+	t.fired = false
+	t.clk.mu.Unlock()
 	t.clk.arms <- d
 	return true
 }
@@ -434,6 +517,61 @@ func TestRetirementTimerStaleTickRecomputes(t *testing.T) {
 	h.awaitPhase(t, "retiring")
 }
 
+// TestRetirementTimerAdvanceAfterEvaluationSnapshot preserves the absolute
+// eligibility deadline when virtual time advances between clock.Now and the
+// timer Reset. The current relative timer seam fails this intentionally gated
+// interleaving by anchoring the stale one-hour duration at the later time.
+func TestRetirementTimerAdvanceAfterEvaluationSnapshot(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	if d := clk.awaitArm(t); d != time.Hour {
+		t.Fatalf("initial arm = %v, want 1h", d)
+	}
+
+	// The second evaluation snapshots t0 and stops before it can reset the
+	// timer. The test then advances to t0+30m, exactly between those calls.
+	clk.gateNextNow()
+	ctrl.Changed()
+	clk.awaitNow(t)
+	clk.Advance(30 * time.Minute)
+	clk.releaseNow()
+
+	// A third gated evaluation is the completion barrier for the raced one:
+	// Run cannot reach this Now call until it has finished computing and
+	// arming (or deliberately retaining) the previous deadline. A duplicate
+	// Reset is therefore observable before the barrier is released, while a
+	// correct unchanged-deadline path leaves no arm event behind.
+	clk.gateNextNow()
+	ctrl.Changed()
+	clk.awaitNow(t)
+	clk.assertNoArm(t)
+	clk.releaseNow()
+
+	// Let the barrier evaluation complete before checking the absolute
+	// deadline. This keeps the assertion independent of wall-clock scheduling.
+	clk.gateNextNow()
+	ctrl.Changed()
+	clk.awaitNow(t)
+	clk.assertNoArm(t)
+	clk.releaseNow()
+
+	// The eligibility deadline is t0+1h. A correct absolute-deadline
+	// implementation therefore fires after this second 30-minute advance.
+	clk.Advance(30 * time.Minute)
+	if !clk.timerFired() {
+		t.Fatalf("timer did not fire at the absolute eligibility deadline")
+	}
+}
+
 // TestRetirementTimerPreparationFailureRearmsFreshInterval proves a REAL
 // preparation failure (a canceled preparation context rejected by
 // validateRetirementRestore) is survivable: the consumer aborts the claim,
@@ -557,6 +695,7 @@ func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
 	root.mu.Lock()
 	root.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
 	root.mu.Unlock()
+	clk.Advance(time.Minute)
 
 	claim, state, err := h.ctrl.TryClaim(true)
 	if err != nil {
