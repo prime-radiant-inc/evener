@@ -355,8 +355,8 @@ concurrent swap can never tear a row — and cross-half skew is resolved by the
 snapshot's current pair for the name render absent, exactly as after an
 update). `status` reads the same two snapshots for its single row.
 
-`evener/host/add` is a mutation: params are one full host entry (all seven
-`HostConfig` fields; `name` required) plus optional `mutationId`. It validates
+`evener/host/add` is a mutation: params are one full host entry (all eight
+`HostConfig` fields — the component-03 set plus `key_path`; `name` required) plus optional `mutationId`. It validates
 with the component-03 rules (name validation, the `[[hosts]]` field validation
 at `cmd/evener-hub/config.go:247` — `validateHostConfigs`). The component-03 host-count cap was
 withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
@@ -381,8 +381,8 @@ Every host lives in the machine-managed `hub.toml`, and the hub is its writer,
 so a hand-declared host is as editable as a UI-added one — the storage decision
 (§19) retired the split's "declared in `hub.toml`; edit the file" refusal; a
 name absent from the file — or present solely as a tombstone —
-is refused as not-found. Params are `{name, entry (the six non-name
-HostConfig fields), mutationId, expectedGeneration, expectedIncarnationId}` —
+is refused as not-found. Params are `{name, entry (the seven non-name
+`HostConfig` fields, key_path included), mutationId, expectedGeneration, expectedIncarnationId}` —
 the idempotency key and the (generation, incarnation id) guard, all three
 required together. Presence of all three is validated before the dedup check
 (missing any is a validation refusal committing nothing). The pair is checked
@@ -697,19 +697,24 @@ blank lines, key order, and formatting do not survive a rewrite, so the file
 says so before the first one. Hand edits are still read (the external-edit
 reconciliation below and in §15 still applies), but they are unsupported: the
 next rewrite replaces the file's bytes wholesale — the banner is re-emitted at the top of every rewrite. The
-migration path is one-time and lossless: a `hub.hosts.json` sidecar left by an
-earlier version merges into `hub.toml` exactly once, at boot — its entries fold
-into the `hub.toml` host set (a name already declared in `hub.toml` wins — the
-sidecar's entry is dropped in favor of it, exactly as the retired boot merge
-resolved that collision), boot rewrites
-`hub.toml` once with the merged set and the banner, and the retired sidecar is
-renamed aside (`hub.hosts.json.migrated` beside it) rather than deleted, so its
-bytes remain for recovery while a later removal of a name it carried can never
-resurrect through it. A sidecar that fails to parse or validate is not
-migrated: boot logs the refusal loudly, leaves both files untouched, and
-refuses host mutations, so no `hub.toml` rewrite (and no UI mutation) can land
-before the sidecar's entries are folded in or the operator fixes the file — the
-posture the shipped store already takes for an unreadable sidecar. The file's stored host fields are the component-03 set plus `key_path` (the
+migration path is one-time and lossless, and its order is its crash-safety
+story: (1) `hub.toml` is rewritten once with the merged set and the banner —
+atomically, directory synced, so the merged state is durable first; (2) the
+retired sidecar is renamed aside (`hub.hosts.json.migrated` beside it) rather
+than deleted and the directory synced, so the retirement is durable before
+anything can act on the merged state. The retired split made a live name in
+both files a hard startup error, so the collision rule here is the migration's
+own: a name `hub.toml` already declares wins and the sidecar's duplicate is
+dropped. While an unmigrated sidecar remains, mutations are refused — no
+`hub.toml` rewrite (and no UI mutation) can land before the sidecar's entries
+are folded in or the operator fixes the file — so a name removed through the
+UI after a completed migration can never be resurrected by a rename that a
+power loss undid: no write could have acted on the merged state first. A crash
+at any point re-runs the whole migration on the next boot and converges, since
+already-merged names collide and are skipped and the set-aside rename either
+already landed or is retried. A sidecar that fails to parse or validate is not
+migrated at all: boot logs the refusal loudly and leaves both files untouched
+(the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set plus `key_path` (the
 SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
 with), so a UI host with a key path round-trips through a rewrite; component
 03's schema carries the field. `hub.toml` also carries the per-host records the
@@ -1286,7 +1291,7 @@ documents and are cited, never restated):
 
 - `evener/host/list`: params `{}`; response `{hosts: HostRow[]}`. `HostRow` is
   the full effective `HostConfig` fields (`name`, `ssh`, `user`, `evenerPath`,
-  `configPath`, `addr`, `roots`) plus live state — wire JSON is lowerCamel
+  `configPath`, `addr`, `roots`, `keyPath`) plus live state — wire JSON is lowerCamel
   throughout (`evenerPath`, `configPath`); snake_case (`evener_path`,
   `config_path`) is the TOML-file spelling only (`config.go` TOML tags), never
   the wire: `attached: bool`, `installedVersion?: string`,
@@ -1316,24 +1321,24 @@ documents and are cited, never restated):
   under different spellings — `address` for this contract's `ssh`, an extra
   `keyPath` (an SSH key path recorded in
   `2026-09-20-multi-host-host-edit-slice.md`; the storage decision makes it a
-  stored file field — `key_path` in the machine-managed `hub.toml`, §6 — so a
-  UI host with a key path round-trips through a rewrite; component 03's
-  hand-authored schema does not list it), and the live-state names
+  stored schema field — `key_path` in `hub.toml`, §6, and in component 03's
+  schema — so a UI host with a key path round-trips through a rewrite), and the
+  live-state names
   `midAttach`, `os`, `arch`, `hubVersion`, `serverVersion`, and `serverName` —
   and the shipped
   Add/Edit dialog and `stores/hosts.ts` consume exactly those names (the target
   contract has no `serverName`, so the reshape drops it). The registry PR
   reshapes the shipped wire and dialog to this contract (`ssh`, `midEnsure`,
   `osArch`, `installedVersion`) and adds `generation`/`incarnationId`,
-  regenerating the client it ships (§2); the shipped `keyPath` is retained as
-  the documented non-schema field. Until that lands, the shipped spellings are
-  the wire.
-- `evener/host/add`: params are one full host entry (all seven `HostConfig`
-  fields; `name` required) plus optional `mutationId: string` (opaque,
+  regenerating the client it ships (§2); the shipped `keyPath` is the stored
+  schema field of §6, retained under that name. Until that lands, the shipped
+  spellings are the wire.
+- `evener/host/add`: params are one full host entry (all eight `HostConfig`
+  fields — the component-03 set plus `key_path`; `name` required) plus optional `mutationId: string` (opaque,
   non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every `hub.toml` mutation and every boot compacting past either bound in the same atomic write — so keyless-add spam against one name cannot grow `hub.toml` without limit; the §15 tombstone cap is tombstone-scoped and does not cover these records, so across names `hub.toml` size scales with the operator's host list, the same accepted bound as the withdrawn host-count cap); response is the
   mutation-result union below.
-- `evener/host/update`: params `{name: string, entry: <the six non-name
-  `HostConfig` fields>, mutationId: string, expectedGeneration: number,
+- `evener/host/update`: params `{name: string, entry: <the seven non-name
+  `HostConfig` fields, key_path included>, mutationId: string, expectedGeneration: number,
   expectedIncarnationId: string}` — the idempotency key and the (generation,
   incarnation id) guard, all three required together, with the
   check-and-refusal semantics in §4 (presence of all three validated before
@@ -1559,9 +1564,9 @@ affordance, and an orphan-fenced row showing the resolve-first affordance.
 Add / Edit dialog: fields exactly the `HostConfig` schema — `name`, `ssh`,
 `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
 `config.go:32-46` — TOML-file spellings; the wire carries `evenerPath` /
-`configPath` per §11) — all seven fields, none invented, none hidden, plus the
-shipped `keyPath` SSH-key field, which the machine-managed file stores as
-`key_path` (§6, §11 shipped-wire reconciliation); each
+`configPath` per §11) — all eight fields, none invented, none hidden, `key_path`
+(`keyPath` on the wire) included, since the machine-managed file stores it and a
+rewrite must round-trip it (§6, §11 shipped-wire reconciliation); each
 with its validation message mapped from the backend response. Edit does not
 offer `name` (immutable).
 
@@ -1683,7 +1688,7 @@ mutable module state.
 `refreshRemoteThreadSnapshot` enumerates the registered sources; removing one
 would otherwise drop its rows from the next snapshot. Removal instead writes
 an explicit tombstone record for the source (name, the removed entry's
-effective `HostConfig` — all seven fields `HostRow` requires, so `list` can
+effective `HostConfig` — all eight fields `HostRow` requires, so `list` can
 render the removed row without a live entry — last-known-good rows, removal
 timestamp, the removed incarnation's id persisted alongside the generation
 high-water mark — boot reconciles on the exact persisted (generation,

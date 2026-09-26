@@ -75,9 +75,10 @@ key_path    = "~/.ssh/id_m4"              # optional; SSH identity file for this
   (design §5, `appwire/refs.go`).
 - `ssh` is the destination token passed to `ssh`; component 04 owns how it is
   used. If `user` is set and `ssh` already carries a user, that is a validation
-  error (ambiguous authority) — see "Error handling". Non-default ports,
-  identity files, and jump hosts are expressed through the user's `ssh_config`,
-  never by smuggling options into `ssh` (component 04, §"SSH channel argv"):
+  error (ambiguous authority) — see "Error handling". Non-default ports and
+  jump hosts — and identity files, unless the entry sets `key_path` — are
+  expressed through the user's `ssh_config`, never by smuggling options into
+  `ssh` (component 04, §"SSH channel argv"):
   `ssh` is a destination, not an option string.
 - `evener_path` and `roots` are advisory inputs to components 04/05; this
   component only stores and validates their shape (`roots` entries must be
