@@ -879,7 +879,6 @@ func surveyFailedChildNames(lines []string, marker int, parent string) map[strin
 				}
 				failed[child] = struct{}{}
 			}
-			continue
 		}
 	}
 	return failed
@@ -915,9 +914,10 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // output or, when that window has no lines owned by the failing test or its
 // descendants, descendant diagnostics. Either path reserves one slot for each
 // present diagnostic kind: the parent and the failed child each get priority.
-// Newest parent diagnostics are selected first, followed by failed-child
-// diagnostics; remaining slots are then backfilled from owned diagnostics, then
-// owned output, then unindented ordinary-window lines owned by other tests.
+// Newest parent diagnostics then fill up to all but the failed-child reservation,
+// followed by failed-child diagnostics; remaining slots are backfilled from
+// owned diagnostics, then owned output, then unindented ordinary-window lines
+// owned by other tests.
 // Source diagnostics are associated with the most recent go test RUN/CONT/NAME
 // frame; a verdict returns ownership to the failing test. If ordinary context
 // owned by the failing test or its descendants exists, expansion requires a
