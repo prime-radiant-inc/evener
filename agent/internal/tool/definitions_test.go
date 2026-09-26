@@ -2,7 +2,6 @@ package tool
 
 import (
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -992,7 +991,7 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 		if !ok {
 			t.Fatalf("model_list missing %s property; got properties: %v", tc.param, props)
 		}
-		if max, ok := prop["maximum"].(int); !ok || max != tc.deflt {
+		if bound, ok := prop["maximum"].(int); !ok || bound != tc.deflt {
 			t.Errorf("model_list %s maximum = %v (%T), want the enforced bound %d", tc.param, prop["maximum"], prop["maximum"], tc.deflt)
 		}
 		desc, _ := prop["description"].(string)
@@ -1023,33 +1022,10 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
 		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
 	}
-	var missing []string
-	var walk func(prefix string, schema map[string]any)
-	walk = func(prefix string, schema map[string]any) {
-		props, ok := schema["properties"].(map[string]any)
-		if !ok {
-			return
-		}
-		for _, name := range slices.Sorted(maps.Keys(props)) {
-			pm, ok := props[name].(map[string]any)
-			if !ok {
-				continue
-			}
-			path := prefix + name
-			if desc, _ := pm["description"].(string); desc == "" {
-				missing = append(missing, path)
-			}
-			walk(path+".", pm)
-			if items, ok := pm["items"].(map[string]any); ok {
-				walk(path+"[].", items)
-			}
-		}
-	}
 	for _, def := range defs {
-		walk("", def.Parameters)
-	}
-	if len(missing) > 0 {
-		t.Errorf("%d parameters carry no description: %s", len(missing), strings.Join(missing, ", "))
+		if missing := UndocumentedProperties(def); len(missing) > 0 {
+			t.Errorf("%s parameters carry no description: %s", def.Name, strings.Join(missing, ", "))
+		}
 	}
 }
 
