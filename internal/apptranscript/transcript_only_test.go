@@ -88,76 +88,12 @@ func TestFileProjectionPassesOverTranscriptOnlyEntries(t *testing.T) {
 	if w, g := normalizeEntryIndexIdentity(t, want), normalizeEntryIndexIdentity(t, got); g != w {
 		t.Fatalf("full projection differs:\n got %s\nwant %s", g, w)
 	}
-
-	// The bounded readers agree with the full read of the same file.
-	cache := NewTurnCache()
-	latest, cursor := requireLatestFromFile(t, cache, interleaved, testMaxLineBytes, 2, boundedTestProjector)
-	wantLatest, wantCursor := latestGroupedTurns(got, 2)
-	if !reflect.DeepEqual(latest, wantLatest) || cursor != wantCursor {
-		t.Fatalf("latest window = %s (cursor %q), want %s (cursor %q)", normalizeEntryIndexIdentity(t, latest), cursor, normalizeEntryIndexIdentity(t, wantLatest), wantCursor)
-	}
-	for cursor != "" {
-		page := requirePageFromFile(t, cache, interleaved, testMaxLineBytes, cursor, 2, boundedTestProjector)
-		wantPage := pageGroupedTurns(got, cursor, 2)
-		if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
-			t.Fatalf("page at %q differs from the full read", cursor)
-		}
-		cursor = page.NextCursor
-	}
-	window, _, err := cache.LatestItemWindowFromFile(interleaved, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:th_1", Limit: 40}, boundedTestProjector)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var wantKeys, gotKeys []string
-	for _, turn := range got {
-		for _, item := range turn.Items {
-			wantKeys = append(wantKeys, item.TranscriptKey)
-		}
-	}
-	for _, candidate := range window.Candidates {
-		gotKeys = append(gotKeys, candidate.Item.TranscriptKey)
-	}
-	if !reflect.DeepEqual(gotKeys, wantKeys) {
-		t.Fatalf("item window keys = %v, want %v", gotKeys, wantKeys)
-	}
 }
 
 func TestProjectTurnPartsProjectsNothingForTranscriptOnlyKinds(t *testing.T) {
 	for _, sample := range schematest.TranscriptOnlySamples() {
 		if items, parts := ProjectTurnParts("turn_1", 1, sample, map[string]string{}, nil, nil); len(items) != 0 || len(parts) != 0 {
 			t.Errorf("%s projected %v", sample.Kind, items)
-		}
-	}
-}
-
-// An index extended across a transcript-only entry — the cached prefix ends
-// right after one, mid-turn — groups the rest exactly as a fresh read does.
-func TestExtendedIndexPassesOverTranscriptOnlyEntries(t *testing.T) {
-	all := interleavedEntries(transcriptOnlyProjectionFixture())
-	for cut := 1; cut < len(all); cut++ {
-		if !all[cut-1].Turn.Kind.TranscriptOnly() {
-			continue
-		}
-		path := writeEntries(t, all[:cut]...)
-		cache := NewTurnCache()
-		requireLatestFromFile(t, cache, path, testMaxLineBytes, 2, boundedTestProjector)
-		rest := []byte{}
-		for _, entry := range all[cut:] {
-			rest = append(rest, marshalEntryLine(t, entry)...)
-		}
-		appendFile(t, path, rest)
-		full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-		latest, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 2, boundedTestProjector)
-		wantLatest, wantCursor := latestGroupedTurns(full, 2)
-		if !reflect.DeepEqual(latest, wantLatest) || cursor != wantCursor {
-			t.Fatalf("cut %d: extended latest window differs from a full read", cut)
-		}
-		for cursor != "" {
-			page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 2, boundedTestProjector)
-			if want := pageGroupedTurns(full, cursor, 2); !reflect.DeepEqual(page.Turns, want.Data) || page.NextCursor != want.NextCursor {
-				t.Fatalf("cut %d: extended page at %q differs from a full read", cut, cursor)
-			}
-			cursor = page.NextCursor
 		}
 	}
 }

@@ -1055,6 +1055,24 @@ func positionProjectedItemsAt(items []appwire.ThreadItem, turnID string, entryOr
 	return positioned, nil
 }
 
+// positionPreludeItems assigns the prelude turn's items their fixed entry-0
+// positions and transcript keys: the prelude holds content from before the
+// session's first real entry, so it is pinned at entry 0 regardless of when
+// (or whether) a later reducer inserts it.
+func positionPreludeItems(items []appwire.ThreadItem) ([]appwire.ThreadItem, error) {
+	positioned := make([]appwire.ThreadItem, len(items))
+	for i, item := range items {
+		if uint64(i) > uint64(^uint32(0)) {
+			return nil, fmt.Errorf("prelude item index exceeds uint32")
+		}
+		position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
+		item.Position = &position
+		item.TranscriptKey = appitempaging.TranscriptItemKey(appwire.SystemPreludeTurnID, position)
+		positioned[i] = item
+	}
+	return positioned, nil
+}
+
 func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
 	return scanSemanticTranscriptContext(context.Background(), path, maxLineBytes, visit)
 }
