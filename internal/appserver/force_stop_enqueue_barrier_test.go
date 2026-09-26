@@ -52,6 +52,89 @@ func TestHandleRecoveredCoversOnResponsePanic(t *testing.T) {
 	}
 }
 
+// TestHandleRecoveredCoversPanicFromRecoveryPathOnResponse pins a roborev
+// finding against this fix's first version: handleRecovered's own recover
+// branch (taken when HandleMessage itself panics) called onResponse directly,
+// with no protection of its own. If that call panicked too — the exact
+// enqueue-panic failure mode the barrier exists to contain — the second
+// panic replaced the first mid-recover and propagated out of handleRecovered
+// uncaught, since nothing above it in the force-stop dispatch goroutine (or
+// runWorker, for the inline ping path) recovers a second time. An unrecovered
+// panic in any goroutine crashes the whole process.
+//
+// handleRecovered now routes every onResponse call — the normal-path call and
+// the synthesized-error call from the recover branch — through one small
+// closure that recovers its own panics, so a panic from onResponse can never
+// re-enter (and escape) the outer barrier.
+func TestHandleRecoveredCoversPanicFromRecoveryPathOnResponse(t *testing.T) {
+	server, logged := captureLogfServer()
+	HandleTyped(server.Router(), "test/handlerPanics", func(context.Context, appwire.EmptyParams) (appwire.EmptyResponse, error) {
+		panic("handler blew up")
+	})
+	conn := server.NewConnection("c1")
+	conn.setInitialized()
+	msg := rawRequest(t, 11, "test/handlerPanics", appwire.EmptyParams{})
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped handleRecovered: %v", r)
+			}
+		}()
+		conn.handleRecovered(context.Background(), msg, func(appwire.Message) {
+			panic("onResponse blew up delivering the synthesized error")
+		})
+	}()
+
+	output := logged()
+	for _, want := range []string{
+		"panic handling test/handlerPanics",
+		"handler blew up",
+		"onResponse blew up delivering the synthesized error",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("panic log missing %q in:\n%s", want, output)
+		}
+	}
+}
+
+// TestClearRecoveryOnPanicRollsBackBusyFlagBeforeRepanicking pins a second
+// roborev finding: markRecoveryClear runs before enqueueDispatched, so if
+// enqueueDispatched panics before the response ever reaches the send
+// channel, beforeSend — the only thing that clears recoveryRunning and
+// recoveryClearID — never runs for it, and the connection would be stuck
+// refusing every future force stop.
+//
+// clearRecoveryOnPanic wraps the force-stop dispatch's enqueue step: on a
+// panic, it rolls the busy flag back itself (best effort, since nothing else
+// ever will) before letting the panic continue up to handleRecovered's own
+// barrier, which still logs it and — since a request ID is present — this
+// wraps the same onResponse continuation, so no follow-up response is
+// expected; the flag rollback is what matters here.
+func TestClearRecoveryOnPanicRollsBackBusyFlagBeforeRepanicking(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	conn := server.NewConnection("c1")
+	conn.mu.Lock()
+	conn.recoveryRunning = true
+	conn.recoveryClearID = "some-response-id"
+	conn.mu.Unlock()
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("clearRecoveryOnPanic swallowed the panic instead of letting it continue to the caller's own barrier")
+			}
+		}()
+		conn.clearRecoveryOnPanic(func() { panic("enqueue blew up before reaching the send channel") })
+	}()
+
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	if conn.recoveryRunning || conn.recoveryClearID != "" {
+		t.Fatal("busy flag/clear id were not rolled back before the panic propagated: the connection would refuse every future force stop")
+	}
+}
+
 // TestServeWebSocketForceStopBackpressureHoldsAcrossEnqueue pins the second
 // roborev finding against #2469: the fix that clears recoveryRunning before
 // the response is enqueued (rather than after the handler goroutine returns)

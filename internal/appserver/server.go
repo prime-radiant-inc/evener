@@ -760,6 +760,31 @@ func (c *Connection) markRecoveryClear(resp appwire.Message) {
 	c.mu.Unlock()
 }
 
+// clearRecoveryOnPanic runs fn, and if fn panics, rolls back the force-stop
+// busy flag before letting the panic continue to fn's own caller. It exists
+// for the one gap markRecoveryClear/beforeSend otherwise leaves: fn is the
+// enqueue step, and beforeSend — the thing that normally clears the flag —
+// only ever runs once the send loop dequeues the response fn was supposed to
+// place on the send channel. If fn panics first, that response never gets
+// there, beforeSend never runs for it, and without this rollback the
+// connection would refuse every force stop from then on. The panic itself
+// is deliberately not recovered here — handleRecovered's own barrier (fn
+// runs from inside its onResponse continuation) still logs it and answers
+// the request — this only repairs the connection-local state a panic mid
+// enqueue would otherwise strand.
+func (c *Connection) clearRecoveryOnPanic(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.mu.Lock()
+			c.recoveryClearID = ""
+			c.recoveryRunning = false
+			c.mu.Unlock()
+			panic(r)
+		}
+	}()
+	fn()
+}
+
 // beforeSend runs on the send loop immediately before the transport call for
 // every outbound frame, so it stays cheap for the common case (no force stop
 // in flight) via the RLock check below: when msg is the response
@@ -1481,10 +1506,17 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 		// that pipelines a second force stop right behind the first can never
 		// observe the flag still set for a recovery that has already been
 		// handed to the transport.
+		//
+		// clearRecoveryOnPanic covers the gap that leaves: if enqueueDispatched
+		// panics before the response ever reaches the send channel, beforeSend
+		// — the only other thing that clears the flag — never runs for it, and
+		// the connection would refuse every force stop from then on. The panic
+		// itself is still handleRecovered's to log and contain; this only
+		// rolls the flag back first.
 		go func() {
 			c.handleRecovered(ctx, msg, func(resp appwire.Message) {
 				c.markRecoveryClear(resp)
-				c.enqueueDispatched(ctx, resp)
+				c.clearRecoveryOnPanic(func() { c.enqueueDispatched(ctx, resp) })
 			})
 		}()
 		return true
@@ -1845,11 +1877,14 @@ func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) 
 // onResponse runs from inside the same defer/recover that covers
 // HandleMessage, so whatever onResponse does with the response — enqueue it,
 // or the force-stop dispatch's clear-then-enqueue — is covered by the
-// barrier exactly like the handler itself. A panic from onResponse is caught,
-// logged, and (if the handler's own response was never delivered) answered
-// with an InternalError, the same as a panic from HandleMessage; onResponse
-// is never called twice for one message, so a panic after a successful
-// handoff is swallowed rather than risking a duplicate response.
+// barrier exactly like the handler itself. Every onResponse call, on either
+// path below, goes through deliver, which recovers its own panics: a panic
+// from onResponse is logged and swallowed there without a follow-up
+// response (retrying it risks a duplicate frame, and a client that gets
+// nothing back still has its own request timeout), and — because deliver
+// never lets that panic reach this function's own defer — it can never
+// re-enter (and escape) the outer barrier either, including when onResponse
+// panics while delivering the recover branch's synthesized error.
 //
 // This continuation shape is why onResponse exists at all rather than a
 // return value: an earlier version returned the response and left the caller
@@ -1859,19 +1894,23 @@ func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) 
 // beyond the plain channel send) could then escape the dispatch goroutine
 // uncaught.
 func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message, onResponse func(appwire.Message)) {
-	delivered := false
+	deliver := func(resp appwire.Message) {
+		defer func() {
+			if r := recover(); r != nil {
+				c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
+			}
+		}()
+		onResponse(resp)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
-			if !delivered && msg.Request != nil {
-				delivered = true
-				onResponse(appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
+			if msg.Request != nil {
+				deliver(appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
 			}
 		}
 	}()
-	resp := c.HandleMessage(ctx, msg)
-	delivered = true
-	onResponse(resp)
+	deliver(c.HandleMessage(ctx, msg))
 }
 
 // methodOf names a message's method for the panic log; a frame that is
