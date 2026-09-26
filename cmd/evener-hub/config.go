@@ -234,11 +234,11 @@ var (
 // validateHostConfigs normalizes and validates the [[hosts]] list by building a
 // throwaway registry, so name grammar, duplicate names, reserved "local", the
 // ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
-// checked by the single source of truth in hostreg. It also refuses a
-// half-specified config_path/addr pair and an addr the controller must never
-// probe or restart through (validateHostAddr), the load-time half of spec 03's
-// "config_path / addr" contract. No host is registered anywhere: this is pure
-// validation.
+// checked by the single source of truth in hostreg. Each entry also runs
+// validateHostEntry — the pair and addr rules spec 03's "config_path / addr"
+// contract requires, the same function the runtime add/update paths run — so a
+// hub.toml entry and a UI-added entry are validated by one code path. No host
+// is registered anywhere: this is pure validation.
 //
 // It rewrites hosts IN PLACE with the normalized values. hostreg trims before it
 // stores, so validating a copy would let ssh = "  m4.local  " pass here and then
@@ -259,7 +259,7 @@ func validateHostConfigs(hosts []HostConfig) error {
 			Addr:       h.Addr,
 			Roots:      h.Roots,
 		})
-		if err := validateHostAddr(entry); err != nil {
+		if err := validateHostEntry(entry); err != nil {
 			return err
 		}
 		hosts[i].SSH = entry.SSH
@@ -273,6 +273,19 @@ func validateHostConfigs(hosts []HostConfig) error {
 	}
 	_, err := hostreg.New(entries)
 	return err
+}
+
+// validateHostEntry runs every entry check the host surfaces share: hostreg's
+// own shape validation (name grammar, reserved name, ssh destination, user/ssh
+// agreement, non-empty roots) plus the config_path/addr pair and addr host
+// rules hub.toml loading applies (validateHostAddr). hub.toml loading and the
+// runtime evener/host/add and evener/host/update paths all call it, so an entry
+// one surface refuses can never be stored by another.
+func validateHostEntry(entry hostreg.Host) error {
+	if err := hostreg.ValidateEntry(entry); err != nil {
+		return err
+	}
+	return validateHostAddr(entry)
 }
 
 // validateHostAddr refuses an entry whose config_path/addr pair is
