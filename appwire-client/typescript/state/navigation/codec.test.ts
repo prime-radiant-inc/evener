@@ -106,6 +106,16 @@ test("codec accepts the offline source marker on a session row", () => {
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, malformed))).toThrow();
 });
 
+// approval_pending is an optional boolean like ask_pending: a non-boolean value
+// is a schema error. The value-records fixture test proves a valid one is kept.
+test("codec refuses a non-boolean approval flag on a session row", () => {
+  const snapshot = liveSnapshot();
+  const first = snapshot.entities[0];
+  if (!first) throw new Error("missing entity");
+  first.value = { ...(first.value as object), approval_pending: "private-body-value" };
+  expectContentFreeRejection(key, snapshot);
+});
+
 test("codec accepts stateless records and rejects obsolete entity and container revisions", () => {
   const stateless = structuredClone(liveSnapshot()) as unknown as {
     entities: Array<Record<string, unknown>>;

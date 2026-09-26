@@ -13,6 +13,7 @@
     "rename": true,
     "live": true,
     "ask_pending": true,
+    "approval_pending": true,
     "dormant": true,
     "offline": true,
     "updated_at": "2026-09-26T12:00:00Z",

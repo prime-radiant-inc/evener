@@ -432,6 +432,11 @@ type TreeNode struct {
 	Branch     string // git branch at session start; empty when unknown
 	State      string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
 	AskPending bool   // true while the daemon reports an unanswered ask_user question
+	// ApprovalPending is true while the daemon reports a blocked
+	// sandbox-exemption escalation (LiveEntry.PendingEscalation), the reason
+	// promotedAttentionLevel puts an active session in NeedsYou. The node
+	// keeps its real State.
+	ApprovalPending bool
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports
 	// State "idle" — the same word a session that ran and finished reports — so
@@ -1017,6 +1022,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return liveMap[id].PendingAsk
 	}
 
+	// approvalPendingFor resolves the pending-approval marker for a session ID
+	// from the same live map, for the same reason askPendingFor does.
+	approvalPendingFor := func(id string) bool {
+		return liveMap[id].PendingEscalation
+	}
+
 	// tasksFor resolves a session's task-list progress from its own live
 	// entry, the same live map stateFor reads, so every builder below puts the
 	// same progress on every row of one session and a child row never borrows
@@ -1186,9 +1197,11 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 		state := stateFor(m.ID)
 		askPending := askPendingFor(m.ID)
+		approvalPending := approvalPendingFor(m.ID)
 		if parentDead {
 			state = "ended"
 			askPending = false
+			approvalPending = false
 		}
 		// A subagent's state already resolved through stateFor above: its own
 		// live entry's status when it has one, else the parent's carried state
@@ -1198,22 +1211,23 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// for children WITH one (it overwrote the child's own daemon-reported
 		// status with the parent's projection).
 		node := TreeNode{
-			ID:            m.ID,
-			Ref:           liveRefMap[m.ID],
-			Title:         nodeTitle(m, kind),
-			Project:       acc.name,
-			Branch:        m.EnvInfo.GitBranch,
-			State:         state,
-			AskPending:    askPending,
-			Dormant:       dormantFor(m.ID),
-			Kind:          kind,
-			CreatedAt:     OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-			UpdatedAt:     OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-			Age:           AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
-			RunningJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
-			CompletedJobs: appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
-			Watches:       watchesFor(m.ID),
-			Tasks:         tasksFor(m.ID),
+			ID:              m.ID,
+			Ref:             liveRefMap[m.ID],
+			Title:           nodeTitle(m, kind),
+			Project:         acc.name,
+			Branch:          m.EnvInfo.GitBranch,
+			State:           state,
+			AskPending:      askPending,
+			ApprovalPending: approvalPending,
+			Dormant:         dormantFor(m.ID),
+			Kind:            kind,
+			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+			UpdatedAt:       OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+			Age:             AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+			RunningJobs:     appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
+			CompletedJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
+			Watches:         watchesFor(m.ID),
+			Tasks:           tasksFor(m.ID),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1442,20 +1456,21 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// has no lineage to recurse into.
 		if !hasMeta {
 			node := TreeNode{
-				ID:            le.SessionID,
-				Ref:           liveRefMap[le.SessionID],
-				State:         stateFor(le.SessionID),
-				AskPending:    askPendingFor(le.SessionID),
-				Dormant:       dormantFor(le.SessionID),
-				Kind:          "session",
-				Title:         ShortID(le.SessionID),
-				CreatedAt:     le.StartedAt,
-				UpdatedAt:     le.StartedAt,
-				Age:           AgeString(le.StartedAt),
-				RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
-				CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
-				Watches:       appwire.CloneEvenerWatches(le.Watches),
-				Tasks:         tasksFor(le.SessionID),
+				ID:              le.SessionID,
+				Ref:             liveRefMap[le.SessionID],
+				State:           stateFor(le.SessionID),
+				AskPending:      askPendingFor(le.SessionID),
+				ApprovalPending: approvalPendingFor(le.SessionID),
+				Dormant:         dormantFor(le.SessionID),
+				Kind:            "session",
+				Title:           ShortID(le.SessionID),
+				CreatedAt:       le.StartedAt,
+				UpdatedAt:       le.StartedAt,
+				Age:             AgeString(le.StartedAt),
+				RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
+				CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
+				Watches:         appwire.CloneEvenerWatches(le.Watches),
+				Tasks:           tasksFor(le.SessionID),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1546,15 +1561,16 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			continue
 		}
 		node := TreeNode{
-			ID:            le.SessionID,
-			State:         st,
-			Kind:          "session",
-			AskPending:    le.PendingAsk,
-			Dormant:       dormantFor(le.SessionID),
-			RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
-			CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
-			Watches:       appwire.CloneEvenerWatches(le.Watches),
-			Tasks:         tasksFor(le.SessionID),
+			ID:              le.SessionID,
+			State:           st,
+			Kind:            "session",
+			AskPending:      le.PendingAsk,
+			ApprovalPending: le.PendingEscalation,
+			Dormant:         dormantFor(le.SessionID),
+			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
+			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
+			Watches:         appwire.CloneEvenerWatches(le.Watches),
+			Tasks:           tasksFor(le.SessionID),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
