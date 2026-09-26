@@ -89,7 +89,8 @@ owner-adjustable. An owner-set TTL above the bound clamps to the bound at mint. 
 minted `expiresAt` already reflects the refresh-to-mint interval, because
 `factsCapturedAt` predates it. When the remaining freshness is exhausted at
 mint time (`factsCapturedAt + freshnessBound` at or before now) mint refuses
-without minting — the no-token `refresh-failed` arm, never an
+without minting — the no-token `refresh-failed` arm (stale facts at mint read
+as a refresh failure, and re-planning refreshes them), never an
 already-expired token. Deploy never recomputes `expiresAt`. Freshness is
 immutable for the token lifetime: deploy enforces the minted `expiresAt`
 only, never the live owner knob. Lowering the bound affects only tokens
@@ -692,10 +693,10 @@ boundary map would exceed the 8 KiB encoded cap refuses with typed `cursor-too-l
 (data carries `{capBytes: 8192}`), never a truncated cursor. No cursor was minted, so
 there is no `compactSeq` and no stored `bounds` entry to name. With the host-count
 cap withdrawn (registry spec §4; component 03 §Scope), the map is bounded only by
-the operator's host list, so `cursor-too-large` is reachable either from a
-sufficiently large host set or, with hand-minted ids, above the 128-byte
-incarnation-id bound: the generator pins 36-byte output (§1), so it is the host
-count, not id length alone, that can cross 8 KiB.
+the operator's host list, so `cursor-too-large` is reachable from a
+sufficiently large configured host set: incarnation ids are server-generated and
+36 bytes by construction (§1), so the encoded cursor grows only with host count
+and never with id length.
 `limit` defaults to 50 and caps at 200. Responses never exceed the cap. `limit` with no
 `cursor` starts the pinned first page. An unfiltered call pages instead of returning
 the whole store.
@@ -817,7 +818,9 @@ element type.
   rule). `outcome: "no-token"` is the top-level discriminator on the no-token arm; the
   token arm carries `outcome: "planned"` alongside `plan`/`token`. The `reason`
   discriminates the failure: `unattached` (host not attached — Connect first),
-  `refresh-failed` (attached, but the ungated preflight refresh failed or timed out),
+  `refresh-failed` (attached, but the ungated preflight refresh failed or timed
+  out, or the refreshed facts' freshness bound elapsed before mint — both
+  re-plan from fresh facts),
   `probe-failed` (attached, but the `evener/host/running` probe read failed or was
   unauthenticated), `handler-absent` (attached, but the remote predates the handler —
   take the one-time migration path), `remnant-open` (an open teardown remnant fences
