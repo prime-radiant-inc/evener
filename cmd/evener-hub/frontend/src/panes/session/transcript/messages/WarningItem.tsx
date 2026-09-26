@@ -16,6 +16,7 @@ import { hasWarningText, isInformationalWarning } from "@evener/appwire-client";
 import { memo } from "react";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./warningitem.module.css";
 
@@ -53,6 +54,10 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
     return (
       <div className={CLASS.quiet} data-testid="warning-quiet-line" title={hint}>
         {lineText}
+        {/* title on a non-focusable div is hover-only, so the hint also
+         * exists as content a screen reader announces — except when it IS the
+         * visible line (no message), where repeating it would read twice. */}
+        {hint !== undefined && hint !== lineText && <VisuallyHidden>{hint}</VisuallyHidden>}
       </div>
     );
   }

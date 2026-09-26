@@ -178,7 +178,9 @@ test("an informational warning renders one quiet line with the hint on the hover
     />,
   );
   const line = screen.getByTestId("warning-quiet-line");
-  expect(line.textContent).toBe("Output allocation reduced for inst/model: requested=100 admitted=50");
+  // The line leads with the message; its textContent also carries the
+  // hint once the a11y fix's visually-hidden span joined the row.
+  expect(line.textContent).toContain("Output allocation reduced for inst/model: requested=100 admitted=50");
   expect(screen.queryByText("Context budget")).toBeNull(); // no chip label
   expect(line.getAttribute("title")).toContain("No action needed");
 });
@@ -199,6 +201,31 @@ test("an informational warning with no message renders its hint as the quiet lin
     />,
   );
   expect(screen.getByTestId("warning-quiet-line").textContent).toBe("Compaction will manage the window.");
+});
+
+// A title attribute on a non-focusable div is hover-only: keyboard users and
+// most screen readers never reach it. The hint must also exist as content the
+// reader announces — a visually-hidden span inside the line (the same
+// VisuallyHidden widget HeldSteerAnnouncements uses) — so the "No action
+// needed" reassurance is not sighted-hover-only exactly where the notice is
+// shown.
+test("an informational warning keeps its hint reachable to non-visual readers, not only on hover", () => {
+  const hint = "The model's output allocation was reduced to fit its context window. No action needed.";
+  render(
+    <WarningItem
+      item={item({
+        text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+        warning: { title: "Context budget", hint, code: WarningCodeContextBudget },
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const line = screen.getByTestId("warning-quiet-line");
+  // The hover affordance stays for sighted readers...
+  expect(line.getAttribute("title")).toContain("No action needed");
+  // ...and the hint is in the announced content, not only the attribute.
+  expect(screen.getByText(hint)).toBeTruthy();
 });
 
 test("an actionable (uncoded) warning keeps the attention-chip rendering", () => {
