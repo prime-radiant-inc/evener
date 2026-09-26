@@ -280,6 +280,12 @@ const projectorTurn = { id: "turn1", status: "completed", items: [{ id: "item1",
 const projection = client.projectThread({ turns: [projectorTurn] }, displayConfig);
 assert.equal(projection.turns[0].entries[0].kind, "item");
 assert.equal(projection.turns[0].entries[0].id, "item1");
+// The informational-warning contract: the code a daemon stamps its
+// context-budget notices with, and the predicate consumers demote and
+// verbosity-gate those notices by.
+assert.equal(client.WarningCodeContextBudget, "context_budget");
+assert.equal(client.isInformationalWarning({ id: "warn1", turnId: "turn1", type: "warning", text: "Output allocation reduced", status: "completed", warning: { code: client.WarningCodeContextBudget } }), true);
+assert.equal(client.isInformationalWarning({ id: "warn2", turnId: "turn1", type: "warning", text: "provider degraded", status: "completed" }), false);
 assert.equal(typeof client.ACTION_SUMMARY_UNAVAILABLE, "string");
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
