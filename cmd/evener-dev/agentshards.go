@@ -53,7 +53,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -889,14 +888,14 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearest context. The lines from ordinaryStart up to marker are the
 // already-selected ordinary context. Selection starts with owned ordinary
 // output. When that window has no lines owned by the failing test or its
-// descendants, descendant diagnostics are selected first, with one slot
-// reserved for the newest parent diagnostic. With owned ordinary output,
-// newest parent diagnostics take
-// priority over other diagnostic and ordinary backfill. Source diagnostics are
-// associated with the most recent go test RUN/CONT/NAME frame; a verdict
-// returns ownership to the failing test. If ordinary context owned by the
-// failing test or its descendants exists, expansion requires a parent-owned
-// source diagnostic.
+// descendants, descendant diagnostics fill all but one slot when a parent
+// diagnostic exists, reserving one slot for the newest parent diagnostic. With
+// owned ordinary output, newest parent diagnostics take priority over other
+// owned diagnostics, owned output, then unindented lines after a foreign frame
+// as lowest-priority backfill. Source diagnostics are associated with the most
+// recent go test RUN/CONT/NAME frame; a verdict returns ownership to the failing
+// test. If ordinary context owned by the failing test or its descendants exists,
+// expansion requires a parent-owned source diagnostic.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
@@ -1010,18 +1009,12 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	if selectedCount == 0 {
 		return nil, false
 	}
-	selectedIndices := make([]int, 0, selectedCount)
-	for index := range keep {
-		selectedIndices = append(selectedIndices, index)
+	result := make([]string, 0, selectedCount+1)
+	for index := run + 1; index < marker; index++ {
+		if _, exists := keep[index]; exists {
+			result = append(result, lines[index])
+		}
 	}
-	sort.Ints(selectedIndices)
-	selected := make([]string, 0, selectedCount)
-	for _, index := range selectedIndices {
-		selected = append(selected, lines[index])
-	}
-
-	result := make([]string, 0, len(selected)+1)
-	result = append(result, selected...)
 	for index := range keep {
 		emittedLines[index] = struct{}{}
 	}
