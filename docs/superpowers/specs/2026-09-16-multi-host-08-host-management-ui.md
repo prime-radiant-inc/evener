@@ -619,8 +619,7 @@ while new keys stay open, so the clean-slate path holds for new keys only.
 
 A mutation sent without a key whose response is lost reconciles
 read-after-unknown through `list` before any retry — `add` compares the listed
-entry hash for the name, `update` compares the listed effective row only to
-observe its intended row (a keyed `update` replay returns its receipt by the
+entry hash for the name (a keyed `update` replay returns its receipt by the
 superseded-receipt rule; a missing name or a `removed: true` row means the
 keyed remove committed). The keyless-retry rule covers `add` only: a retry
 that carries no `mutationId` never carries `expectedGeneration` either —
@@ -1328,11 +1327,12 @@ documents and are cited, never restated):
   construct the guarded-mutation pair). A replay carrying a known key returns
   the recorded receipt without re-applying.
 - Mutation-result union (add/update/remove): every add/update/remove handler
-  returns either `{outcome: "committed", host: HostRow}` (remove's clean path
-  returns `{outcome: "committed", host: RemovedRow}`) or the failure arm
+  returns either `{outcome: "committed", host: HostRow | RemovedRow}`
+  (add/update carry `HostRow`; remove's clean path carries `RemovedRow`) or the
+  failure arm
   `{outcome: "committed-with-teardown-failure", seam: string, remnantId:
-  string, host: HostRow}` (remove's failure arm carries `host: RemovedRow`
-  for the same reason) or the dropped arm `{outcome: "collision-dropped",
+  string, host: HostRow | RemovedRow}` (remove's failure arm carries
+  `RemovedRow` for the same reason) or the dropped arm `{outcome: "collision-dropped",
   droppedEntry: <the staged effective config in the same lowerCamel shape as
   `HostRow`'s config fields — never a literal `HostConfig`, whose `toml`-only
   tags would generate `Name`/`SSH`/`EvenerPath`/… instead of

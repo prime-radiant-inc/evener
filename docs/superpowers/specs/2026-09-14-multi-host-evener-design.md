@@ -458,7 +458,8 @@ implementing — several have landed without their entry being re-marked.
   relaunch) on any mismatch or on a field it cannot re-read. The restart prefers the supervisor path wherever a
   supervisor is identified and safely restartable (`systemctl [--user] restart`;
   launchd `kickstart -k`, which pins by label rather than PID), and takes the ad
-  hoc verify-then-signal path only where no supervisor is identified. **Decided
+  hoc verify-then-signal path where no supervisor is identified, or where the
+  identified launchd label fails the bare-safe gate. **Decided
   by Jesse, 2026-09-26:** verify-then-signal is the accepted answer, and the
   atomic `pidfd` handle the round-17 correction demanded is **withdrawn** as a
   requirement — no atomic form is reachable through this component's only host
