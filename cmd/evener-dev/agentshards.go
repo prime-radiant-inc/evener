@@ -881,15 +881,16 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearest context. The lines from ordinaryStart up to marker are the
 // already-selected ordinary context. Owned ordinary lines from the failing
 // test or a descendant are selected first, reserving one slot for the newest
-// parent-owned diagnostic when one exists; remaining candidates from those
-// owners then fill the bound. An empty ordinary window may expand child
-// diagnostics without that reservation. Source diagnostics are associated
-// with the most recent go test RUN/CONT/NAME frame; a completed child or
-// sibling returns ownership to its parent. If ordinary context owned by the
-// failing test or its descendants exists, expansion requires a parent-owned
-// source diagnostic. When owned ordinary lines overflow their budget, the
-// newest budget-sized tail is kept
-// contiguously, dropping only older lines.
+// parent-owned diagnostic when one exists; unindented direct output is also
+// retained because it cannot be attributed to a sibling's t.Log/t.Error.
+// Remaining candidates from those owners fill the bound. An empty ordinary
+// window may expand child diagnostics without that reservation. Source
+// diagnostics are associated with the most recent go test RUN/CONT/NAME
+// frame; a verdict returns ownership to the failing test. If ordinary context
+// owned by the failing test or its descendants exists, expansion requires a
+// parent-owned source diagnostic. When ordinary context overflows its budget,
+// the newest budget-sized tail is kept contiguously, dropping only older
+// lines.
 // The result is still no larger than one block's existing before bound plus its
 // marker.
 func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]string, bool) {
@@ -946,10 +947,18 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	ordinaryOwned := func(candidate candidate) bool {
 		return candidate.ordinary && ownedByFailure(candidate)
 	}
+	ordinaryContext := func(candidate candidate) bool {
+		return candidate.ordinary && (ordinaryOwned(candidate) ||
+			(!strings.HasPrefix(candidate.line, " ") && !strings.HasPrefix(candidate.line, "\t")))
+	}
 	ordinaryCount := 0
+	ordinaryContextCount := 0
 	for _, candidate := range candidates {
 		if ordinaryOwned(candidate) {
 			ordinaryCount++
+		}
+		if ordinaryContext(candidate) {
+			ordinaryContextCount++
 		}
 	}
 	if len(candidates) == 0 || (ordinaryCount > 0 && !parentDiagnostic) {
@@ -972,16 +981,16 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	if parentDiagnostic {
 		ordinaryBudget--
 	}
-	if ordinaryCount <= ordinaryBudget {
+	if ordinaryContextCount <= ordinaryBudget {
 		for index, candidate := range candidates {
-			if ordinaryOwned(candidate) {
+			if ordinaryContext(candidate) {
 				keep[index] = true
 				selectedCount++
 			}
 		}
 	} else {
 		selectNewest(ordinaryBudget, func(candidate candidate) bool {
-			return ordinaryOwned(candidate)
+			return ordinaryContext(candidate)
 		})
 	}
 	if parentDiagnostic {

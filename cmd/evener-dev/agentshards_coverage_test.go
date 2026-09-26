@@ -701,6 +701,29 @@ func TestReplaySurveyFailuresKeepsUnindentedFailureOutput(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsUnindentedOutputAfterSiblingName covers direct
+// output after a sibling NAME frame when the parent already has an assertion.
+// The output is unindented, so it cannot be distinguished from the parent's
+// direct output and must remain in the bounded excerpt.
+func TestReplaySurveyFailuresKeepsUnindentedOutputAfterSiblingName(t *testing.T) {
+	const (
+		assertion = "    parent_test.go:42: parent assertion"
+		output    = "parent child-process stderr"
+	)
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	log.WriteString("    sibling_test.go:1: sibling log\n")
+	log.WriteString(output + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) || !strings.Contains(got, output) {
+		t.Fatalf("parent assertion or direct output was omitted after sibling NAME: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsVerdictLikeTestOutput is the review finding on
 // the D1 fix: the boundary predicate matched `FAIL`, `PASS`, and `ok` by
 // prefix, so a failing test's own `FAIL: ...`, `PASS: ...`, `FAILURE: ...`,
