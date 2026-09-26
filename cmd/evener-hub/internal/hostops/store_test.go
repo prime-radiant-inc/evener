@@ -253,6 +253,8 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			recordJSON("00000000000000000001", "pending") + `]}`,
 		"duplicate key inside a record": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"host":"h1"`, `"host":"h1","host":"h2"`, 1) + `]}`,
+		"duplicate key inside a raw field": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"fencingEpoch":{"bootId":"a","bootId":"b","opSeq":3}`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1192,4 +1194,30 @@ func TestRejectDuplicateObjectKeys(t *testing.T) {
 			t.Fatalf("clean document %s was refused: %v", body, err)
 		}
 	}
+}
+
+// TestTransitionRefusesARawFieldThatNamesAKeyTwice pins the write-path half of the
+// duplicate-key rule: the loader refuses a file that names any key twice, so the
+// write path must refuse a raw field that does — otherwise a transition would
+// commit a file the next boot cannot load, bricking the store.
+func TestTransitionRefusesARawFieldThatNamesAKeyTwice(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	before := mustReadFile(t, path)
+
+	if _, err := store.Transition(record.ID, StateRunning, func(r *Record) {
+		r.FencingEpoch = json.RawMessage(`{"bootId":"a","bootId":"b","opSeq":3}`)
+	}); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("Transition with a duplicated fencing-epoch key: err = %v, want ErrInvalidRecord", err)
+	}
+	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
+		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","host":"h2"}]`)
+	}); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("Transition with a duplicated boundary key: err = %v, want ErrInvalidRecord", err)
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a refused transition rewrote the store file")
+	}
+	// The store the refusals protected still loads.
+	reopenFresh(t, path)
 }

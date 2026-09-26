@@ -152,3 +152,39 @@ func TestAWriteRefusesWhenTheStorePathBecameANonRegularFile(t *testing.T) {
 		t.Fatalf("the refused write left temp files behind: %v", temps)
 	}
 }
+
+// TestAStoreBehindASymlinkedDirectoryIsWritable pins the directory half of the link
+// rule: a symlink that resolves to a directory is a directory this store can write
+// in — the temporary file and the rename both resolve through it and the link
+// itself is never replaced — so Open, Create and Transition all work and the file
+// lands in the real directory. (The store *file* is the opposite case: there the
+// rename would replace the link, so it is refused.)
+func TestAStoreBehindASymlinkedDirectoryIsWritable(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real-hostops")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "hostops")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	store, err := Open(StorePath(root))
+	if err != nil {
+		t.Fatalf("Open through a symlinked directory: %v", err)
+	}
+	record := createTestRecord(t, store, "h1")
+	if _, err := store.Transition(record.ID, StateRunning, nil); err != nil {
+		t.Fatalf("Transition through a symlinked directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(realDir, "operations.json")); err != nil {
+		t.Fatalf("the store file did not land in the real directory: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(root, "hostops"))
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the write replaced the directory link")
+	}
+}

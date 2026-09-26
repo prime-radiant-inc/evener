@@ -715,8 +715,10 @@ func ensureStoreDir(fs afero.Fs, dir string, sync func(afero.Fs, string) error) 
 		}
 	case err != nil:
 		return fmt.Errorf("hostops: stat store directory %s: %w", dir, err)
-	case !info.IsDir():
-		return fmt.Errorf("hostops: store parent %q is not a directory", dir)
+	default:
+		if err := ensureDirectory(fs, dir, info); err != nil {
+			return err
+		}
 	}
 	if parent != dir {
 		if err := sync(fs, parent); err != nil {
@@ -724,6 +726,27 @@ func ensureStoreDir(fs afero.Fs, dir string, sync func(afero.Fs, string) error) 
 		}
 	}
 	return nil
+}
+
+// ensureDirectory refuses a path that exists but is not a directory this store can
+// write in. A symlink that resolves to a directory counts as one: the temporary
+// file and the rename both resolve through it and the link itself is never
+// replaced — the difference between the store directory (allowed) and the store
+// file (refused, because there the rename would replace the link).
+func ensureDirectory(fs afero.Fs, dir string, info os.FileInfo) error {
+	if info.IsDir() {
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		followed, err := fs.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("hostops: store directory %s does not resolve to a directory", dir)
+		}
+		if followed.IsDir() {
+			return nil
+		}
+	}
+	return fmt.Errorf("hostops: store parent %q is not a directory", dir)
 }
 
 // syncDirFS opens dir, syncs it and closes it: the durability half of the
