@@ -410,6 +410,7 @@ afterEach(() => {
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 test("discovers a public provider without launch-ready instances and asks only for its masked key", async () => {
@@ -901,21 +902,31 @@ test("the originating client's own auth-update echo does not invalidate its save
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
 });
 test("the store's own post-save refresh does not invalidate the completed check", async () => {
+  // The store schedules its own listing refresh the moment the save succeeds
+  // (a 250ms debounce), while the flow sits in its result phase with Continue
+  // showing. That refresh is this client's own change - it must not read as
+  // "Connection or configuration changed" and yank the success away from the
+  // user. The fake-timer echo test above cannot observe this: its save runs
+  // under real timers, so the self-refresh is a timeout its fake clock never
+  // owns. Here the clock is fake before the save, so the refresh is a timer
+  // Testing Library's waitFor runs (through the stubbed `jest` global).
   const { user, client } = setup();
   scriptSave(client);
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "draft");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  // A plain click: `user` was set up on the real clock, and its delays would
+  // wait on a timer nothing advances now.
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  // Real timers on purpose: the store schedules its own listing refresh the
-  // moment the save succeeds (250ms debounce), and the flow is now sitting in
-  // its result phase with Continue showing. That refresh is this client's own
-  // change - it must not read as "Connection or configuration changed" and
-  // yank the success away from the user. The fake-timer echo test above cannot
-  // observe this: its save runs under real timers, so the self-refresh is a
-  // real timeout the fake clock never owns.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+  const listReads = () => client.calls.filter((c) => c.method === "evener/instance/list").length;
+  const reads = listReads();
+  // The self-refresh has been issued and its answer has landed: the store
+  // raises `loading` as it issues the read and clears it once the answer lands.
+  await waitFor(() => {
+    expect(listReads()).toBe(reads + 1);
+    expect(credentialsStore.getState().loading).toBe(false);
   });
   expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
