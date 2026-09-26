@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/hubapi"
 )
@@ -410,6 +411,38 @@ func TestNavigationSessionValueValidatesOmittedWatches(t *testing.T) {
 	session.OmittedArmedWatches = -1
 	if navigationSessionValueValid(session) {
 		t.Fatal("a negative armed omitted count must be rejected")
+	}
+}
+
+// The approval's tool is an identity and its target a label on the wire,
+// bounded as the codec's sessionValue bounds them: the tool within the identity
+// byte bound and the target within the label rune bound.
+func TestNavigationSessionValueValidatesApprovalDetail(t *testing.T) {
+	withApproval := func(tool, target string) hubapi.NavigationSessionSummary {
+		session := navigationSchemaSession("local:schema-session", "schema-session")
+		session.ApprovalPending = true
+		session.ApprovalTool = tool
+		session.ApprovalTarget = target
+		return session
+	}
+	for name, session := range map[string]hubapi.NavigationSessionSummary{
+		"a tool and its path":          withApproval("write_file", "/home/me/sites/docs/index.md"),
+		"a target at the rune bound":   withApproval("write_file", strings.Repeat("😀", maxNavigationLabelRunes)),
+		"a tool at the identity bound": withApproval(strings.Repeat("t", maxNavigationIdentityBytes), "/srv/docs"),
+		"no approval detail":           withApproval("", ""),
+	} {
+		if !navigationSessionValueValid(session) {
+			t.Errorf("%s rejected: tool %d bytes, target %d runes", name, len(session.ApprovalTool), utf8.RuneCountInString(session.ApprovalTarget))
+		}
+	}
+	for name, session := range map[string]hubapi.NavigationSessionSummary{
+		"an over-long target":      withApproval("write_file", strings.Repeat("t", maxNavigationLabelRunes+1)),
+		"an over-long tool":        withApproval(strings.Repeat("t", maxNavigationIdentityBytes+1), "/srv/docs"),
+		"a tool that is not UTF-8": withApproval("write\xff", "/srv/docs"),
+	} {
+		if navigationSessionValueValid(session) {
+			t.Errorf("%s accepted: tool %d bytes, target %d runes", name, len(session.ApprovalTool), utf8.RuneCountInString(session.ApprovalTarget))
+		}
 	}
 }
 
