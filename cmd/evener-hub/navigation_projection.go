@@ -277,6 +277,7 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	for i, entry := range in {
 		out[i] = entry
 		out[i].ActiveFlags = append([]string(nil), entry.ActiveFlags...)
+		out[i].PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), entry.PendingEscalations...)
 		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
 		out[i].RunningJobs = appwire.CloneEvenerJobs(entry.RunningJobs)
 		out[i].CompletedJobs = appwire.CloneEvenerJobs(entry.CompletedJobs)

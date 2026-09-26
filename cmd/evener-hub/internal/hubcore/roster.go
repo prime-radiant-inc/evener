@@ -33,6 +33,12 @@ type LiveEntry struct {
 	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
 	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	// PendingEscalations is the daemon's blocked escalation cards, in the order
+	// it raised them, so the oldest is first. Every producer sets it from the
+	// same read as PendingEscalation, which stays len(PendingEscalations) > 0.
+	// A card carries the full literal denied path for informed consent, so it
+	// reaches human clients only, as thread/read's cards already do.
+	PendingEscalations []appwire.SandboxEscalationRequested
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
 	// daemon's answer instead of a hand approximation (#1840's one-answer
@@ -89,6 +95,9 @@ type ProbeResult struct {
 	ActiveFlags       []string
 	PendingAsk        bool
 	PendingEscalation bool
+	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
+	// cards from the same root row, in raise order.
+	PendingEscalations []appwire.SandboxEscalationRequested
 	// Capabilities is the daemon's own Evener capability set from the same
 	// projection cut as Status. CapabilitiesKnown reports whether this probe
 	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
@@ -156,6 +165,7 @@ func cloneChildWatches(in map[string][]appwire.EvenerWatchInfo) map[string][]app
 func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
+	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -411,6 +421,15 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// its sibling ask flag, or onChange never invalidates.
 		if bySess[id].PendingEscalation {
 			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		// A row names the oldest card's action and target, and a card replaced
+		// while another stays pending holds the flag above still, so each card
+		// moves the fingerprint too. A card's ID names it for its whole life, so
+		// the IDs in raise order cover every card field.
+		for _, card := range bySess[id].PendingEscalations {
+			_, _ = h.Write([]byte(card.EscalationID))
+			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte{0})
 		// The daemon's capability answer is per-session observable state in
@@ -1276,6 +1295,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
+		PendingEscalations:    append([]appwire.SandboxEscalationRequested(nil), result.PendingEscalations...),
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
@@ -1348,7 +1368,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
-		RunningJobs: runningJobs, CompletedJobs: completedJobs,
+		PendingEscalations: root.Evener.PendingEscalations,
+		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		// The identity checks above already require a current-protocol daemon,
 		// and every current daemon stamps its capability set on the thread

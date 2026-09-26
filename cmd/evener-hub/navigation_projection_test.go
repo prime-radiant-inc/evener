@@ -1376,6 +1376,24 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 }
 
+// TestCloneNavigationLiveEntriesOwnsPendingEscalations: the navigation inputs
+// own their escalation cards, so a roster refresh that edits its copy cannot
+// change a projection built from the earlier one.
+func TestCloneNavigationLiveEntriesOwnsPendingEscalations(t *testing.T) {
+	original := []hubcore.LiveEntry{{
+		PendingEscalation:  true,
+		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}},
+	}}
+	clone := cloneNavigationLiveEntries(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, original)
+	}
+	original[0].PendingEscalations[0].DeniedPath = "mutated"
+	if clone[0].PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
+		t.Fatalf("clone card changed through the original: %+v", clone[0].PendingEscalations)
+	}
+}
+
 // The projection build must honor cancellation inside the duplicate-Key merge,
 // not only around it. navigationMergeProjectBucketsContext folds every tree
 // group that collides on a wire Key into one catalog row, and a tree whose
