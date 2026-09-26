@@ -451,12 +451,13 @@ func TestReplaySurveyFailuresKeepsNestedMultilineContinuation(t *testing.T) {
 	}
 }
 
-// TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict models the
-// Go 1.27 flushToParent shape: a sibling's top-level PASS precedes its
-// indented nested verdicts, then the parent's unframed output precedes its
-// FAIL. Nested verdicts are buffered output, not an ownership switch, so the
-// parent's assertion and output must retain parent ownership.
-func TestReplaySurveyFailuresKeepsSiblingOwnershipAfterNestedVerdict(t *testing.T) {
+// TestReplaySurveyFailuresHandlesBufferedNestedVerdicts is a source-order
+// smoke/contract test for the Go 1.27 flushToParent shape: a sibling's
+// top-level PASS precedes its indented nested verdicts, then the parent's
+// unframed output precedes its FAIL. It intentionally is not a discriminator
+// for the rejected nested-owner parser; it asserts that the parent's
+// assertion and output survive this buffered source order.
+func TestReplaySurveyFailuresHandlesBufferedNestedVerdicts(t *testing.T) {
 	const (
 		assertion = "    parent_test.go:110: parent assertion before sibling output"
 		parentLog = "parent buffered output after sibling verdicts"
