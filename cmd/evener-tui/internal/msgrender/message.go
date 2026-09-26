@@ -10,12 +10,14 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-tui/internal/toolsummary"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -484,7 +486,30 @@ func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
 					}
 					tc := p.ToolCall
 					if tc.Name == "communicate" {
+						// Raw-arguments-aware display, mirroring the hub projection
+						// (agent/transcript_render.go writeResultToolMessage): a
+						// healed communicate (result is "ok") with malformed raw
+						// bytes is repaired to recover the message it delivered live;
+						// a rejected (result is "error") or pending (no result)
+						// communicate with malformed raw bytes renders the raw bytes
+						// the model actually sent rather than the replay-safe {}
+						// placeholder. Before this, the TUI parsed tc.Arguments (the
+						// repaired/placeholder form) and silently dropped rejected
+						// communicates whose raw bytes could not parse.
+						result, hasResult := toolResults[tc.ID]
+						healed := hasResult && !result.IsError
 						msg := extractCommunicate(tc)
+						if msg == "" && healed && tc.RawArguments != "" {
+							msg = healedCommunicateMessage(tc)
+						}
+						if msg == "" && (!healed || tc.RawArguments == "") {
+							// Rejected or pending communicate with no recoverable
+							// message: show the model's raw bytes (SentArguments),
+							// matching the hub's raw-arguments fallback. Bound the
+							// fallback so a pathological one-line payload cannot
+							// dominate the chat view.
+							msg = oneLineTrunc(tc.SentArguments(), communicateRawFallbackMaxRunes)
+						}
 						if msg != "" {
 							msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgCommunicate, Text: msg})
 						}
@@ -492,7 +517,11 @@ func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
 					}
 
 					// Non-communicate tool call: show as collapsed tool entry.
-					argsJSON := string(tc.Arguments)
+					// Use SentArguments so a call whose Arguments were replaced
+					// with the replay-safe {} placeholder after rejection still
+					// shows the model's original raw bytes, matching the hub's
+					// writeToolCardLine.
+					argsJSON := tc.SentArguments()
 					toolDesc, toolDetail := toolsummary.SummarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]
 					output := fmt.Sprintf("%v", result.Content)
@@ -524,7 +553,12 @@ func extractCommunicate(tc *llm.ToolCallData) string {
 			Message string `json:"message"`
 		} `json:"output"`
 	}
-	if err := json.Unmarshal(tc.Arguments, &args); err == nil {
+	// Parse SentArguments so a call whose Arguments were replaced with the
+	// replay-safe {} placeholder still extracts from the model's original
+	// bytes when they were valid JSON. When the raw bytes are malformed the
+	// unmarshal fails and the caller falls back to repair (healed) or the raw
+	// bytes (rejected/pending).
+	if err := json.Unmarshal(tc.SentArgumentsBytes(), &args); err == nil {
 		if args.Message != "" {
 			return args.Message
 		}
@@ -533,4 +567,46 @@ func extractCommunicate(tc *llm.ToolCallData) string {
 		}
 	}
 	return ""
+}
+
+// communicateRawFallbackMaxRunes bounds the raw-arguments fallback for a
+// rejected/pending communicate so one pathological line cannot dominate the
+// chat view, mirroring the hub's resultLineMaxRunes limit.
+const communicateRawFallbackMaxRunes = 300
+
+// healedCommunicateMessage repairs a healed communicate's malformed raw
+// arguments and applies the communicate-specific normalization (promote
+// string output to object, copy output.message into message) so the rendered
+// message matches what live delivered. Mirrors writeResultToolMessage's
+// healed branch in agent/transcript_render.go.
+func healedCommunicateMessage(tc *llm.ToolCallData) string {
+	repaired := argrepair.RepairJSON([]byte(tc.RawArguments))
+	normalized := apptranscript.NormalizeCommunicateArguments(repaired)
+	var args struct {
+		Message string `json:"message"`
+		Output  *struct {
+			Message string `json:"message"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(normalized, &args); err == nil {
+		if args.Message != "" {
+			return args.Message
+		}
+		if args.Output != nil && args.Output.Message != "" {
+			return args.Output.Message
+		}
+	}
+	return ""
+}
+
+// oneLineTrunc collapses newlines to spaces (so a multi-line raw payload does
+// not span the chat view) and truncates to at most limit runes, appending an
+// ellipsis when truncated. Mirrors the hub's oneLine+truncRunes bounding.
+func oneLineTrunc(s string, limit int) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit]) + "…"
 }
