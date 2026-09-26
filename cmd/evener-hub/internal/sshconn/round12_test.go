@@ -124,6 +124,9 @@ func TestRound12PreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 		case strings.Contains(joined, " evener launch-check"):
 			// The non-interactive PATH carries no evener.
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+		case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 			return []byte(resolved + "\n"), nil
 		default:

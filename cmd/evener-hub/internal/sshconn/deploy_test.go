@@ -1354,6 +1354,9 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
