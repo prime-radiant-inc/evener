@@ -8,31 +8,25 @@ import {
 	useColorScheme,
 	useWindowDimensions,
 } from "react-native";
+import { paletteFor } from "./design/tokens";
 
+/** The app's colors: the redesign palette (src/design/tokens.ts) under the
+ * keys every existing screen already reads, plus the full palette for new
+ * code. */
 export function useColors() {
-	return useColorScheme() === "dark"
-		? {
-				background: "#121417",
-				surface: "#23272d",
-				text: "#f1f2f3",
-				secondary: "#a6adb5",
-				border: "#363b42",
-				accent: "#9cb4ff",
-				error: "#ffaaa5",
-				warning: "#f0c674",
-				onAccent: "#18244b",
-			}
-		: {
-				background: "#fafaf8",
-				surface: "#eeefeb",
-				text: "#202326",
-				secondary: "#62676d",
-				border: "#d8dcd9",
-				accent: "#315ad7",
-				error: "#b52b25",
-				warning: "#8a5a00",
-				onAccent: "#ffffff",
-			};
+	const palette = paletteFor(useColorScheme() === "dark" ? "dark" : "light");
+	return {
+		background: palette.page,
+		surface: palette.inset,
+		text: palette.inkHi,
+		secondary: palette.inkMid,
+		border: palette.edge,
+		accent: palette.accentInk,
+		error: palette.dangerInk,
+		warning: palette.attentionInk,
+		onAccent: palette.onFill,
+		palette,
+	};
 }
 
 export function Action({
@@ -63,7 +57,7 @@ export function Action({
 			style={({ pressed }) => [
 				styles.action,
 				tone === "primary" && {
-					backgroundColor: colors.accent,
+					backgroundColor: colors.palette.accentFill,
 					borderRadius: 24,
 					paddingHorizontal: 18,
 				},

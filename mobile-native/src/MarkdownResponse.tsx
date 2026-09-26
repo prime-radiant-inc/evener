@@ -128,8 +128,8 @@ export const MarkdownResponse = memo(function MarkdownResponse({
           keyword: colors.accent,
           operator: colors.text,
           punctuation: colors.secondary,
-          string: colors.background === "#121417" ? "#b8d8a3" : "#2e6443",
-          number: colors.background === "#121417" ? "#ecc48d" : "#785119",
+          string: colors.palette.scheme === "dark" ? "#b8d8a3" : "#2e6443",
+          number: colors.palette.scheme === "dark" ? "#ecc48d" : "#785119",
           constant: colors.accent,
           comment: colors.secondary,
           function: colors.accent,
@@ -175,6 +175,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
     colors.border,
     colors.accent,
     colors.secondary,
+    colors.palette.scheme,
   ]);
   return (
     <EnrichedMarkdownText
