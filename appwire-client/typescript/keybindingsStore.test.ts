@@ -20,6 +20,7 @@ import { deferred } from "./testing/deferred";
 import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient, gateSettlements, type Settlement } from "./testing/fakeClient";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
+import { nextMacrotask } from "./testing/macrotask";
 import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 const getMethod = "evener/settings/keybindings/get";
@@ -160,7 +161,8 @@ describe("an undecodable changed broadcast", () => {
 
     client.emitNotification({ method: changedMethod, params: { version: 1, revision: "two", rules } as never });
 
-    await vi.waitFor(() => expect(store.getState().revision).toBe(2));
+    await nextMacrotask();
+    expect(store.getState().revision).toBe(2);
     expect(store.getState().rawOverrides).toEqual(rules);
     // The initial load plus exactly one follow-up read.
     expect(client.calls.filter((c) => c.method === getMethod)).toHaveLength(2);
@@ -193,7 +195,8 @@ describe("support transitions", () => {
     expect(client.calls.filter((c) => c.method === getMethod)).toHaveLength(0);
 
     store.setSupport("supported");
-    await vi.waitFor(() => expect(store.getState().revision).toBe(4));
+    await nextMacrotask();
+    expect(store.getState().revision).toBe(4);
     expect(client.calls.filter((c) => c.method === getMethod)).toHaveLength(1);
 
     // Publishing the same support again is not a transition and loads nothing.
@@ -310,7 +313,8 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toMatchObject({ revision: 3, rules, generation: 1 });
 
     const save = store.getState().saveDraft();
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
     expect(store.getState().draft).toMatchObject({ revision: 3, rules, generation: 1 });
 
     reply.resolve(payload(4, rules));
@@ -407,7 +411,8 @@ describe("the checkpointed draft editor", () => {
     const store = await readyStore(client, { drafts: drafts.storage });
 
     const save = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
 
     // Another window or app version replaces the SAME on-disk record with
     // its own draft while this write is still out.
@@ -521,12 +526,14 @@ describe("the checkpointed draft editor", () => {
 
     // The draft write starts and claims the write token first.
     const save = store.getState().saveDraft([]);
-    await vi.waitFor(() => expect(patchReplies).toHaveLength(1));
+    await nextMacrotask();
+    expect(patchReplies).toHaveLength(1);
 
     // A refresh's own read starts WHILE the write is still in flight - its
     // snapshot began before the write's outcome was known.
     const refresh = store.getState().refreshOverrides();
-    await vi.waitFor(() => expect(getReplies).toHaveLength(1));
+    await nextMacrotask();
+    expect(getReplies).toHaveLength(1);
 
     // The write's own request comes back with no usable reply: the outcome
     // is unknown (writeUncertain), and `saving` clears - but the fence's
@@ -880,7 +887,8 @@ describe("the checkpointed draft editor", () => {
     const store = await readyStore(client, { drafts: drafts.storage });
 
     const save = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
 
     // Another window or app version replaces the SAME on-disk record with
     // its own draft while this write is still out.
@@ -1040,7 +1048,8 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().saving).toBe(true);
     // The fake defers its handler by a microtask; the reply must be on the wire
     // before the generation ends.
-    await vi.waitFor(() => expect(client.calls.some((c) => c.method === patchMethod)).toBe(true));
+    await nextMacrotask();
+    expect(client.calls.some((c) => c.method === patchMethod)).toBe(true);
 
     store.endReadyGeneration();
     if (settle === "resolve") reply.resolve(payload(4, rules));
@@ -1327,7 +1336,8 @@ describe("the checkpointed draft editor", () => {
     const reply = deferred<KeybindingsOverrides>();
     client.on(patchMethod, () => reply.promise);
     const save = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
 
     // Both paths take the same write token, so a direct write starting here
     // would fence the save's own reply out and strand saving true.
@@ -1345,7 +1355,8 @@ describe("the checkpointed draft editor", () => {
     const reply = deferred<KeybindingsOverrides>();
     client.on(patchMethod, () => reply.promise);
     const direct = store.getState().patchOverrides(rules);
-    await vi.waitFor(() => expect(client.calls.filter((c) => c.method === patchMethod)).toHaveLength(1));
+    await nextMacrotask();
+    expect(client.calls.filter((c) => c.method === patchMethod)).toHaveLength(1);
 
     // The reverse of the case above: a checkpointed save starting here would
     // claim a NEWER write token, fencing the direct write's own reply out as
@@ -1372,7 +1383,8 @@ describe("the checkpointed draft editor", () => {
     const save = store.getState().saveDraft(rules);
 
     await expect(save).rejects.toThrow("unavailable");
-    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    await nextMacrotask();
+    expect(replies).toHaveLength(1);
     // Refusing saveDraft must never have let it send its own PATCH.
     expect(replies).toHaveLength(1);
 
@@ -1388,7 +1400,8 @@ describe("the checkpointed draft editor", () => {
     client.on(patchMethod, () => reply.promise);
 
     const save = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
 
     // A transient disconnect: support drops to "unknown" without ending the
     // generation or retiring the payload (settleLostHubWrite's own comment)
@@ -1410,7 +1423,8 @@ describe("the checkpointed draft editor", () => {
     const store = await readyStore(client, { drafts: drafts.storage });
     const replies = gateSettlements(client, patchMethod);
     const direct = store.getState().patchOverrides(rules);
-    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    await nextMacrotask();
+    expect(replies).toHaveLength(1);
 
     // A transient disconnect retires the generation while the direct write's
     // own request is still out - it never reaches its reply, let alone the
@@ -1423,7 +1437,8 @@ describe("the checkpointed draft editor", () => {
     // request's own reply to clear it. saveDraft's own PATCH gets its own
     // gated reply so it can settle without touching the abandoned one.
     const save = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    await nextMacrotask();
+    expect(replies).toHaveLength(2);
     replyAt(replies, 1).resolve(payload(4, rules));
     await expect(save).resolves.toBeDefined();
 
@@ -1439,7 +1454,8 @@ describe("the checkpointed draft editor", () => {
     const replies = gateSettlements(client, patchMethod);
 
     const one = store.getState().patchOverrides(rules);
-    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    await nextMacrotask();
+    expect(replies).toHaveLength(1);
 
     // reset() wipes the write queue without settling the first request, so a
     // second direct write can start while the first is still out.
@@ -1449,7 +1465,8 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshOverrides();
 
     const two = store.getState().patchOverrides(rules);
-    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    await nextMacrotask();
+    expect(replies).toHaveLength(2);
 
     // The stale first request settling must not clear the second write's
     // claim: saveDraft must stay refused (never issuing a THIRD PATCH)
@@ -1485,7 +1502,8 @@ describe("the checkpointed draft editor", () => {
     client.on(patchMethod, () => (++sends === 1 ? first.promise : second.promise));
 
     const one = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(sends).toBe(1));
+    await nextMacrotask();
+    expect(sends).toBe(1);
 
     // A transient disconnect retires the payload, which frees the editor while
     // the first request is STILL OUT - that is what lets a second save start.
@@ -1497,7 +1515,8 @@ describe("the checkpointed draft editor", () => {
     store.getState().rebaseDraft(3);
 
     const two = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(sends).toBe(2));
+    await nextMacrotask();
+    expect(sends).toBe(2);
     expect(store.getState().saving).toBe(true);
 
     // Superseded, not fenced by a support flip: it may not report the write the
@@ -1518,7 +1537,8 @@ describe("the checkpointed draft editor", () => {
     const reply = deferred<KeybindingsOverrides>();
     client.on(patchMethod, () => reply.promise);
     const save = store.getState().saveDraft(rules);
-    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await nextMacrotask();
+    expect(store.getState().saving).toBe(true);
 
     // The transient-disconnect window keeps the payload and the in-flight work
     // but makes isSupported() false, so the reply is fenced with no retirement
@@ -1610,9 +1630,8 @@ describe("a retired payload fences every reply still in flight", () => {
       () => undefined,
       () => undefined,
     );
-    await vi.waitFor(() =>
-      expect(client.calls.filter((c) => c.method === method)).toHaveLength(method === getMethod ? 2 : 1),
-    );
+    await nextMacrotask();
+    expect(client.calls.filter((c) => c.method === method)).toHaveLength(method === getMethod ? 2 : 1);
 
     reset(store, registry);
     reply.resolve(late);
@@ -1679,7 +1698,8 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
       after: { writeUncertain: true, stored: "intact", hubError: false },
       settle: async (store) => {
         store.setSupport("supported");
-        await vi.waitFor(() => expect(store.getState().loaded).toBe(true));
+        await nextMacrotask();
+        expect(store.getState().loaded).toBe(true);
       },
       draftConflictAfterSettle: true,
     },
@@ -1738,7 +1758,8 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
       client.on(patchMethod, () => wire.promise);
 
       const save = store.getState().saveDraft(rules);
-      await vi.waitFor(() => expect(client.calls.filter((c) => c.method === patchMethod)).toHaveLength(1));
+      await nextMacrotask();
+      expect(client.calls.filter((c) => c.method === patchMethod)).toHaveLength(1);
       const checkpoint = drafts.stored();
       expect(checkpoint).toMatchObject({ baseRevision: 3, rules, writeUncertain: true });
       arrange?.(store, registry);

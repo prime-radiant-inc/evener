@@ -4,13 +4,14 @@ import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { holdChunk } from "../lazyChunkTestUtils";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { connectionStore } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
 import * as dockHostChunk from "./dockHostChunk";
-import { resetDockHostLoaderForTests } from "./dockHostChunk";
+import { type DockHostModule, resetDockHostLoaderForTests } from "./dockHostChunk";
 import * as pageReload from "./pageReload";
 import { resetWorkspaceStoreForTests } from "./workspace";
 
@@ -137,7 +138,8 @@ afterEach(() => {
 });
 
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {
-  vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const chunk = holdChunk<DockHostModule>();
+  vi.mocked(loadDockHost).mockReturnValue(chunk.promise);
 
   const client = new FakeClient("ready");
   scriptNavigationManifest(client);
@@ -149,8 +151,9 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
     navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },
   }));
   render(<AppShell client={client} />);
+  await chunk.reject(new Error(CHUNK_ERROR));
 
-  expect(await screen.findByText("Couldn't load the workspace")).toBeTruthy();
+  expect(screen.getByText("Couldn't load the workspace")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 
@@ -174,76 +177,88 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
 });
 
 test("mounts the host when its chunk arrives", async () => {
-  vi.mocked(loadDockHost).mockResolvedValue({ DockHost: StubDockHost });
+  const chunk = holdChunk<DockHostModule>();
+  vi.mocked(loadDockHost).mockReturnValue(chunk.promise);
 
   render(<DockRegion />);
+  await chunk.resolve({ DockHost: StubDockHost });
 
-  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(screen.getByText("dock host mounted")).toBeTruthy();
 });
 
 test("Retry fetches the chunk again and mounts the host on the second attempt", async () => {
-  vi.mocked(loadDockHost)
-    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
-    .mockResolvedValueOnce({ DockHost: StubDockHost });
+  const firstChunk = holdChunk<DockHostModule>();
+  const retryChunk = holdChunk<DockHostModule>();
+  vi.mocked(loadDockHost).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
   const user = userEvent.setup();
 
   render(<DockRegion />);
-  await screen.findByText("Couldn't load the workspace");
+  await firstChunk.reject(new Error(CHUNK_ERROR));
   await user.click(screen.getByRole("button", { name: "Retry" }));
+  await retryChunk.resolve({ DockHost: StubDockHost });
 
   // Both halves of a retry, in one assertion each: the host it returns
   // replaces the failure state, and the second attempt asks the loader for
   // the cache-busted path proven to reach the network by the built-browser
   // probe. A second same-URL import does not reach Chrome's network stack.
-  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(screen.getByText("dock host mounted")).toBeTruthy();
   expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
 
 test("a successful retry is reused after DockRegion unmounts and remounts", async () => {
-  vi.mocked(loadDockHost)
-    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
-    .mockResolvedValueOnce({ DockHost: StubDockHost });
+  const firstChunk = holdChunk<DockHostModule>();
+  const retryChunk = holdChunk<DockHostModule>();
+  vi.mocked(loadDockHost).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
   const user = userEvent.setup();
 
   const first = render(<DockRegion />);
-  await screen.findByText("Couldn't load the workspace");
+  await firstChunk.reject(new Error(CHUNK_ERROR));
   await user.click(screen.getByRole("button", { name: "Retry" }));
-  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  await retryChunk.resolve({ DockHost: StubDockHost });
+  expect(screen.getByText("dock host mounted")).toBeTruthy();
 
   first.unmount();
   render(<DockRegion />);
 
-  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(screen.getByText("dock host mounted")).toBeTruthy();
   expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
 });
 
 test("a cache-busted retry that still names a stale hashed chunk offers a page reload", async () => {
-  vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const firstChunk = holdChunk<DockHostModule>();
+  const retryChunk = holdChunk<DockHostModule>();
+  vi.mocked(loadDockHost).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
   const reload = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
   onTestFinished(() => reload.mockRestore());
   const user = userEvent.setup();
 
   render(<DockRegion />);
-  await screen.findByText("Couldn't load the workspace");
+  await firstChunk.reject(new Error(CHUNK_ERROR));
+  expect(screen.getByText("Couldn't load the workspace")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
 
   await user.click(screen.getByRole("button", { name: "Retry" }));
-  await user.click(await screen.findByRole("button", { name: "Reload page" }));
+  await retryChunk.reject(new Error(CHUNK_ERROR));
+  await user.click(screen.getByRole("button", { name: "Reload page" }));
 
   expect(reload).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
 });
 
 test("an ordinary retry failure does not prescribe a page reload", async () => {
-  vi.mocked(loadDockHost).mockRejectedValue(new Error("workspace module initialization failed"));
+  const firstChunk = holdChunk<DockHostModule>();
+  const retryChunk = holdChunk<DockHostModule>();
+  vi.mocked(loadDockHost).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
   const user = userEvent.setup();
 
   render(<DockRegion />);
-  await screen.findByText("Couldn't load the workspace");
+  await firstChunk.reject(new Error("workspace module initialization failed"));
+  expect(screen.getByText("Couldn't load the workspace")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Retry" }));
+  await retryChunk.reject(new Error("workspace module initialization failed"));
 
-  expect(await screen.findByText("workspace module initialization failed")).toBeTruthy();
+  expect(screen.getByText("workspace module initialization failed")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
 });
 
@@ -276,9 +291,10 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
 });
 
 test("Retry abandons a chunk still in flight and mounts a fresh attempt", async () => {
+  const retryChunk = holdChunk<DockHostModule>();
   vi.mocked(loadDockHost)
     .mockReturnValueOnce(new Promise(() => {}))
-    .mockResolvedValueOnce({ DockHost: StubDockHost });
+    .mockReturnValueOnce(retryChunk.promise);
   const user = userEvent.setup();
 
   render(<DockRegion />);
@@ -286,7 +302,8 @@ test("Retry abandons a chunk still in flight and mounts a fresh attempt", async 
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
 
   await user.click(screen.getByRole("button", { name: "Retry" }));
+  await retryChunk.resolve({ DockHost: StubDockHost });
 
-  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(screen.getByText("dock host mounted")).toBeTruthy();
   expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
 });

@@ -930,8 +930,12 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 			"session-a":        true,
 			"session-dangling": true,
 		},
-		PinSections:    []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
-		PinAssignments: map[string]hubcore.SessionPin{"session-a": {SectionID: "pin"}, "session-z": {SectionID: "pin"}, "session-dangling": {SectionID: "missing"}},
+		PinSections: []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
+		PinAssignments: map[hubcore.ArchiveKey]hubcore.SessionPin{
+			hubcore.SessionPinKey("", "session-a"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-z"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-dangling"): {SectionID: "missing"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
