@@ -276,6 +276,53 @@ func TestReplaySurveyFailuresFindsParentAssertionThroughSubtests(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresExpandedBlockKeepsAfterContext covers the expanded
+// parent path: its after-context can contain an indented nested failure, which
+// must not be skipped when the expansion selects older parent diagnostics.
+func TestReplaySurveyFailuresExpandedBlockKeepsAfterContext(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"    parent_test.go:42: parent assertion\n"+
+			"=== RUN   TestParent/subtest\n"+
+			"--- PASS: TestParent/subtest (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n"+
+			"    --- FAIL: TestParent/subtest (0.00s)\n"+
+			"        child_test.go:9: nested assertion\n"+
+			"=== RUN   TestNext\n")
+
+	want := []string{
+		"    parent_test.go:42: parent assertion",
+		"--- FAIL: TestParent (0.00s)",
+		"    --- FAIL: TestParent/subtest (0.00s)",
+		"        child_test.go:9: nested assertion",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("expanded failure replayed %q, want parent and nested diagnostics %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresPrefersLateParentAssertion covers a parallel log in
+// which earlier diagnostics from the parent or its subtests precede the
+// parent's assertion, while another test's verdict sits immediately before
+// the parent's verdict. The later assertion is the useful failure detail.
+func TestReplaySurveyFailuresPrefersLateParentAssertion(t *testing.T) {
+	const assertion = "    parent_test.go:99: late parent assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    child_test.go:%d: earlier diagnostic\n", i+1)
+	}
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== RUN   TestParallelSibling\n")
+	log.WriteString("--- PASS: TestParallelSibling (0.00s)\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("late parent assertion was omitted from replay: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework

@@ -812,6 +812,9 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
 				}
+				for _, excerpt := range lines[i+1 : end] {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
 				emitted = end
 				i = end
 				continue
@@ -854,10 +857,11 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict. It intentionally runs only for
 // that empty-proximity shape: ordinary blocks retain their established
-// context (including nested failure markers). A source-located diagnostic is
-// preferred from the whole matching run-to-verdict range; remaining room is
-// filled from the end of that range. The result is still no larger than one
-// block's existing before bound plus its marker.
+// context (including nested failure markers). The latest source-located
+// diagnostics are preferred from the whole matching run-to-verdict range so a
+// parent's assertion is not crowded out by earlier subtest output; remaining
+// room is filled from the end of that range. The result is still no larger
+// than one block's existing before bound plus its marker.
 func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
@@ -897,13 +901,11 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	const maxExpandedLines = surveyContextBefore
 	keep := make(map[int]bool, min(len(candidates), maxExpandedLines))
 	selectedCount := 0
-	for _, candidate := range candidates {
-		if candidate.diagnostic && selectedCount < maxExpandedLines {
+	for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
+		candidate := candidates[i]
+		if candidate.diagnostic {
 			keep[candidate.index] = true
 			selectedCount++
-			if selectedCount == maxExpandedLines {
-				break
-			}
 		}
 	}
 	if selectedCount < maxExpandedLines {
