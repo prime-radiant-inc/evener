@@ -977,6 +977,26 @@ func TestStreamTransportCloseBoundedByStalledWrite(t *testing.T) {
 	requireErrWithin(t, "the admitted Send after the writer is released", firstDone, ErrStreamClosed)
 }
 
+// The latch signal is the one-shot source of truth even when the recorded cause
+// is nil: a first latch(nil) followed by a second latch must not close the
+// latched channel twice, and the second latch must report that it recorded
+// nothing.
+func TestStreamTransportLatchIsOneShotWithNilCause(t *testing.T) {
+	tr := NewStreamTransport(&memoryStream{r: bytes.NewReader(nil)})
+
+	if !tr.latch(nil) {
+		t.Fatal("first latch did not record the cause")
+	}
+	if tr.latch(errors.New("later")) {
+		t.Fatal("second latch recorded a cause after the first")
+	}
+	select {
+	case <-tr.latched:
+	default:
+		t.Fatal("the latch signal was not closed")
+	}
+}
+
 // slowWriteStream is deliberately slow: each Write pauses before appending. A
 // transport that did not serialize writes would let two Sends overlap inside it,
 // and the recorded bytes would then not split into whole frames. The mutex

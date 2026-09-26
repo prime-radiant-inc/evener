@@ -84,6 +84,10 @@ type StreamTransport struct {
 	// arrives after the latch selects on it and is refused immediately instead of
 	// queueing on send behind a stranded writer or drainer.
 	latched chan struct{}
+	// latchedOnce guards the latch signal itself (under mu), so the signal and the
+	// recorded cause stay in sync even if the cause is nil: a second latch must
+	// not close latched twice.
+	latchedOnce bool
 	// closeStarted flips atomically once, when the first caller starts teardown.
 	// startClose never holds a lock another caller needs and never waits for the
 	// underlying close, so a later caller cannot strand behind the initiator.
@@ -434,13 +438,16 @@ func (t *StreamTransport) poison(err error) {
 
 // latch records the terminal cause exactly once and closes the latched signal so
 // a Send blocked on admission wakes. It reports whether this call recorded the
-// cause; a later latch leaves the first one in place.
+// cause; a later latch leaves the first one in place. The signal, not the
+// recorded cause, is the one-shot source of truth, so a nil cause cannot leave
+// the transport latched but "not poisoned" for the next caller.
 func (t *StreamTransport) latch(err error) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.poisoned != nil {
+	if t.latchedOnce {
 		return false
 	}
+	t.latchedOnce = true
 	t.poisoned = err
 	close(t.latched)
 	return true
@@ -518,17 +525,20 @@ func (t *StreamTransport) latchLateCancel(ctx context.Context, stop func() bool)
 // Every wait is bounded by closeTimeout: the underlying close runs on its own
 // goroutine, and the admitted-write drain runs on its own goroutine, so a
 // non-conforming stream — one whose own Close or pending Write never returns —
-// cannot hang shutdown. On expiry Close returns the latched terminal cause: that
-// tells the caller shutdown did not complete cleanly, but it does NOT tell the
-// caller the underlying resource was released, because on that path the close
-// goroutine (and a stranded writer) are abandoned.
+// cannot hang shutdown. The two waits run in sequence (close, then drain), so
+// the worst-case Close blocks for at most 2×closeTimeout (~10s by default) when
+// both a blocked underlying close and a stranded write are present. On expiry
+// Close returns the latched terminal cause: that tells the caller shutdown did
+// not complete cleanly, but it does NOT tell the caller the underlying resource
+// was released, because on that path the close goroutine (and a stranded writer)
+// are abandoned.
 //
-// A clean close returns the underlying closer's own error (usually nil), or nil
-// on a repeat call. A clean Close never returns ErrStreamClosed, so a caller
-// that sees errors.Is(err, ErrStreamClosed) from Close knows a bounded step
-// expired and the stream may still be open. Close's return cannot distinguish a
-// timed-out close from an underlying closer that itself reported an error; both
-// are non-nil, which is the one distinction Close does not make.
+// A clean close returns whatever the underlying closer's Close reported (usually
+// nil), or nil on a repeat call. Close's return therefore cannot with certainty
+// distinguish a timed-out close from an underlying closer that itself returned
+// an error — including one that happens to return ErrStreamClosed; treat a
+// non-nil Close result as "shutdown may be incomplete" and inspect the stream if
+// that matters.
 func (t *StreamTransport) Close() error {
 	first := t.latch(ErrStreamClosed)
 	t.startClose()
