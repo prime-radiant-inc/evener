@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
@@ -10,14 +10,11 @@ import { paneFor } from "../../shell/paneRegistry";
 // is the slow part the render test's findByRole would otherwise race.
 // A warm module cache is only half of it, though: React.lazy keeps a payload
 // of its own that stays uninitialized until React first RENDERS the
-// component, so the first render still suspends, still commits its Suspense
-// fallback (a null fallback counts), and then waits out react-dom's
-// FALLBACK_THROTTLE_MS (300ms, react-dom 19.2) before it will commit the
-// revealed content - a flicker guard that is pure wall clock and does not
-// shrink on a fast machine. Measured: the render test below cost 355ms of it
-// against a findBy budget that defaults to 1000ms. So render the component
-// once here too, in a hook whose ceiling is a tripwire rather than an
-// assertion window (same fix as App.test.tsx, commit c1a8616ea).
+// component, so the first render still suspends. So render the component once
+// here too, inside an awaited act: there the reveal commits as soon as the
+// chunk resolves, where outside act react-dom would hold it for
+// FALLBACK_THROTTLE_MS (300ms, react-dom 19.2) on a real timer. The landmark
+// wait keeps a tripwire deadline for a hung render.
 const SETTINGS_WARMUP_TRIPWIRE_MS = 10_000;
 
 beforeAll(async () => {
@@ -26,11 +23,13 @@ beforeAll(async () => {
 
   stubMatchMedia(false);
   const SettingsComponent = paneFor("settings").component;
-  render(
-    <Suspense fallback={null}>
-      <SettingsComponent params={{}} paneId="settings-warm" focused={true} />
-    </Suspense>,
-  );
+  await act(async () => {
+    render(
+      <Suspense fallback={null}>
+        <SettingsComponent params={{}} paneId="settings-warm" focused={true} />
+      </Suspense>,
+    );
+  });
   await screen.findByRole("navigation", { name: "Settings sections" }, { timeout: SETTINGS_WARMUP_TRIPWIRE_MS });
   cleanup();
   // @ts-expect-error test cleanup, matches the render test's own pattern

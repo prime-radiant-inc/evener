@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { IDBFactory } from "fake-indexeddb";
 import { expect, test } from "vitest";
 import { holdIndexedDBEvent } from "./stalledIndexedDB";

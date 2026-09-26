@@ -27,6 +27,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
@@ -94,20 +95,14 @@ function nextHandledRequest<M extends MethodName>(
 // caller's own catch, and nothing fails when that assumption stops holding -
 // the caller instead converges through the "adopt a replacement read already in
 // flight" arm and the test silently stops covering the owner's wait. A task
-// callback, by contrast, is specified to run only after the microtask
-// checkpoint has drained completely, including microtasks queued by other
-// microtasks. So this holds however many turns that path grows.
+// yield holds however many turns that path grows (see nextMacrotask).
 //
 // Its one boundary: it does not cover a future change that parks the caller
 // behind a task or I/O of its own (an IndexedDB read on the rejection path,
 // say). That would need its own awaited condition, and the mutation proof in
 // this task's report - which fires each owner-wait arm and requires the
 // matching test to fail - is what would catch it.
-function settleCallerContinuations(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
-}
+const settleCallerContinuations = nextMacrotask;
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
