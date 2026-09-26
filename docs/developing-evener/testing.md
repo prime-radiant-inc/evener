@@ -83,6 +83,26 @@ here (vite-cache digest, tmux palette capture, auth stopwatch, composer
 projection refresh) turned out to be an awaitable completion nobody was
 awaiting, and zero were fixed by widening a timeout.
 
+## Agent Tests Run in Parallel by Default
+
+A top-level Go test without `t.Parallel()` runs alone, one at a time. The
+agent package once ran 3,800 tests that way, three quarters of its `-race`
+lane, though only a few hundred touched anything another test could see.
+Start every agent test with `t.Parallel()` unless it reaches process-wide
+state: the environment or working directory, the default logger, a global
+test setter (`Set…ForTesting`), or a package-level variable it changes (a
+seam, an override stack, a hook), directly or through a helper. Such a test
+stays serial, and says why in a comment when the reason is not visible in
+its own body (`Not parallel: shortenCloseCascadeBudget pushes the
+package-wide budget`).
+
+No lint enforces this: without type and pointer analysis a checker cannot
+prove a test leaves shared state alone, and one that guesses would ask for
+`t.Parallel()` on tests that race. The `-race` lane catches a parallel test
+that races on memory; a parallel test that changes shared behavior (an
+override stack, a global hook) shows up as a flake instead, so a change that
+makes tests parallel is checked for exactly that before it merges.
+
 ## Destructive Operations and the Tooling Test Estate
 
 Four standing rules (Jesse, 2026-08-17), set after a shell test suite's
@@ -1296,7 +1316,7 @@ waits for the pipes once the context ends or the child exits, and passes the
 result through `orphanpipe.ChildErr`, which reads `exec.ErrWaitDelay` after a
 successful exit as the success it was.
 
-Prove the bound with `internal/orphanpipe/orphanpipetest` rather than a
+Prove the bound with `execsupport/orphanpipe/orphanpipetest` rather than a
 stopwatch. `New` stages the FIFOs, `WriteScript` writes the fake executable,
 `Spawn` is the shell fragment that backgrounds a grandchild holding the
 script's stdout and stderr, `AwaitStarted` waits until it holds them, and

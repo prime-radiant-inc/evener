@@ -150,7 +150,7 @@ test-install:
 # makes the workspace-wide compile contract explicit for CI and local
 # diagnostics.
 ## Compile every non-fuzz Go workspace module.
-## proves: All packages in the seven GO_MODULES compile, including packages
+## proves: All packages in the eight GO_MODULES compile, including packages
 ##   root-level `go build ./...` does not visit under go.work.
 ## trigger: Required CI build job; local compile diagnostic.
 ## requires: Deterministic Go compilation; no provider calls or

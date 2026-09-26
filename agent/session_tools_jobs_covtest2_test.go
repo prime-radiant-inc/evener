@@ -19,6 +19,7 @@ import (
 // (session_tools_jobs.go lines 298-300): a thin wrapper around
 // clearStableReceiverWatchByID.
 func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// No delegate controller, no subagents — should return (zero, false, nil).
 	res, found, err := s.clearDescendantReceiverWatchByID("watch_nonexistent")
@@ -36,6 +37,7 @@ func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
 // TestCovLiveSteerWaitIgnoredReason covers liveSteerWaitIgnoredReason
 // (session_tools_jobs.go lines 129-134): all branches.
 func TestCovLiveSteerWaitIgnoredReason(t *testing.T) {
+	t.Parallel()
 	const wantIgnored = "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	// blockTimeoutMS=0 — not requested, empty result.
 	if got := liveSteerWaitIgnoredReason(0, jobstore.StatusRunning, "steered"); got != "" {
@@ -66,6 +68,7 @@ func TestCovLiveSteerWaitIgnoredReason(t *testing.T) {
 // TestCovWatchInspectFound covers watchInspectFound
 // (session_tools_jobs.go lines 336-338).
 func TestCovWatchInspectFound(t *testing.T) {
+	t.Parallel()
 	// Empty result — not found.
 	if watchInspectFound(jobWatchInspectToolResult{}) {
 		t.Fatal("empty result should not be found")
@@ -90,6 +93,7 @@ func TestCovWatchInspectFound(t *testing.T) {
 // TestCovMarshalBoundedJSON covers marshalBoundedJSON
 // (session_tools_jobs.go lines 1978-1987).
 func TestCovMarshalBoundedJSON2(t *testing.T) {
+	t.Parallel()
 	// Successful marshal within bounds.
 	got, err := marshalBoundedJSON(map[string]any{"key": "val"}, 1000)
 	if err != nil {
@@ -124,6 +128,7 @@ func TestCovMarshalBoundedJSON2(t *testing.T) {
 // TestCovMarshalBoundedJSONWithFit covers marshalBoundedJSONWithFit
 // (session_tools_jobs.go lines 1992-2001).
 func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
+	t.Parallel()
 	// Fits within bounds.
 	got, fits, err := marshalBoundedJSONWithFit(map[string]any{"k": "v"}, 1000)
 	if err != nil || !fits || got != `{"k":"v"}` {
@@ -152,6 +157,7 @@ func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
 // TestCovSessionJobManager covers sessionJobManager
 // (session_tools_jobs.go lines 1637-1642).
 func TestCovSessionJobManager(t *testing.T) {
+	t.Parallel()
 	// nil session — error.
 	_, err := sessionJobManager(nil)
 	if err == nil || !strings.Contains(err.Error(), "not available") {
@@ -177,6 +183,7 @@ func TestCovSessionJobManager(t *testing.T) {
 // TestCovSessionRunningJobIDs covers sessionRunningJobIDs
 // (session_tools_jobs.go lines 1648-1662).
 func TestCovSessionRunningJobIDs(t *testing.T) {
+	t.Parallel()
 	// nil session — nil.
 	if got := sessionRunningJobIDs(nil); got != nil {
 		t.Fatal("nil session should return nil")
@@ -209,6 +216,7 @@ func TestCovSessionRunningJobIDs(t *testing.T) {
 // TestCovJobStatusArrayArg covers jobStatusArrayArg
 // (session_tools_jobs.go lines 1701-1723): all valid/invalid statuses.
 func TestCovJobStatusArrayArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil, no error.
 	statuses, err := jobStatusArrayArg(map[string]any{}, "status")
 	if err != nil || statuses != nil {
@@ -269,6 +277,7 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 // TestCovJobTypeArrayArg covers jobTypeArrayArg
 // (session_tools_jobs.go lines 1867-1887).
 func TestCovJobTypeArrayArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	types, err := jobTypeArrayArg(map[string]any{}, "type")
 	if err != nil || types != nil {
@@ -308,6 +317,7 @@ func TestCovJobTypeArrayArg2(t *testing.T) {
 // TestCovWatchArgsFromToolArgs covers watchArgsFromToolArgs
 // (session_tools_jobs.go lines 1725-1784): validation branches.
 func TestCovWatchArgsFromToolArgs2(t *testing.T) {
+	t.Parallel()
 	// Missing operation.
 	_, err := watchArgsFromToolArgs(map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "operation is required") {
@@ -428,6 +438,7 @@ func TestCovWatchArgsFromToolArgs2(t *testing.T) {
 // TestCovWatchEventFilterArg covers watchEventFilterArg
 // (session_tools_jobs.go lines 1786-1814).
 func TestCovWatchEventFilterArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	f, err := watchEventFilterArg(map[string]any{})
 	if err != nil || f != nil {
@@ -489,6 +500,7 @@ func TestCovWatchEventFilterArg2(t *testing.T) {
 // TestCovStringArrayArg covers stringArrayArg
 // (session_tools_jobs.go lines 1816-1834).
 func TestCovStringArrayArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	arr, err := stringArrayArg(map[string]any{}, "events")
 	if err != nil || arr != nil {
@@ -517,6 +529,7 @@ func TestCovStringArrayArg2(t *testing.T) {
 // TestCovWatchSendArg covers watchSendArg
 // (session_tools_jobs.go lines 1837-1858).
 func TestCovWatchSendArg(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	s, err := watchSendArg(map[string]any{})
 	if err != nil || s != nil {
@@ -563,6 +576,7 @@ func TestCovWatchSendArg(t *testing.T) {
 // TestCovIsEmptyWatchSend covers isEmptyWatchSend
 // (session_tools_jobs.go lines 1861-1865).
 func TestCovIsEmptyWatchSend(t *testing.T) {
+	t.Parallel()
 	// All empty — true.
 	if !isEmptyWatchSend(map[string]any{}) {
 		t.Fatal("empty map should be true")
@@ -588,6 +602,7 @@ func TestCovIsEmptyWatchSend(t *testing.T) {
 
 // TestCovFirstQueueLine covers firstQueueLine (session_queue.go lines 544-549).
 func TestCovFirstQueueLine(t *testing.T) {
+	t.Parallel()
 	// No newline — returns full string with trailing CR trimmed.
 	if got := firstQueueLine("hello"); got != "hello" {
 		t.Fatalf("no newline: got %q", got)
@@ -622,6 +637,7 @@ func TestCovFirstQueueLine(t *testing.T) {
 // TestCovQueuedEntryPreviewLine covers queuedEntryPreviewLine
 // (session_queue.go lines 555-566).
 func TestCovQueuedEntryPreviewLine(t *testing.T) {
+	t.Parallel()
 	// Text present — returns first line.
 	got := queuedEntryPreviewLine(queuedInput{Text: "hello world"})
 	if got != "hello world" {
@@ -662,6 +678,7 @@ func TestCovQueuedEntryPreviewLine(t *testing.T) {
 // TestCovSteeringMessageToLLM covers steeringMessageToLLM
 // (session_queue.go lines 1033-1038).
 func TestCovSteeringMessageToLLM(t *testing.T) {
+	t.Parallel()
 	// Text-only — llm.User(text).
 	msg := steeringMessageToLLM(steeringMessage{Text: "hello"})
 	if msg.Role != llm.RoleUser {
@@ -691,6 +708,7 @@ func TestCovSteeringMessageToLLM(t *testing.T) {
 // TestCovRouteSystemNotification covers routeSystemNotification
 // (session_queue.go lines 128-144).
 func TestCovRouteSystemNotification(t *testing.T) {
+	t.Parallel()
 	// nil session — false.
 	var s *Session
 	if s.routeSystemNotification("sess_1", "msg") {
@@ -737,6 +755,7 @@ func TestCovRouteSystemNotification(t *testing.T) {
 
 // TestCovWrapHookContext covers wrapHookContext (session_queue.go lines 279-281).
 func TestCovWrapHookContext2(t *testing.T) {
+	t.Parallel()
 	got := wrapHookContext("additional context")
 	if !strings.Contains(got, "<SYSTEM-REMINDER>") || !strings.Contains(got, "additional context") {
 		t.Fatalf("wrapHookContext: %q", got)
@@ -749,6 +768,7 @@ func TestCovWrapHookContext2(t *testing.T) {
 // TestCovSteeringInjectedDataFromMessage covers steeringInjectedDataFromMessage
 // (session_queue.go lines 98-107).
 func TestCovSteeringInjectedDataFromMessage(t *testing.T) {
+	t.Parallel()
 	msg := steeringMessage{
 		Text:             "hello",
 		ClientMutationID: "mut_1",
@@ -768,6 +788,7 @@ func TestCovSteeringInjectedDataFromMessage(t *testing.T) {
 // TestCovWithQueuedClientMutation covers withQueuedClientMutation and
 // queuedClientMutationFromContext (session_queue.go lines 29-40).
 func TestCovWithQueuedClientMutation(t *testing.T) {
+	t.Parallel()
 	queued := queuedInput{
 		ID:               "q_1",
 		ClientMutationID: "mut_1",
@@ -790,6 +811,7 @@ func TestCovWithQueuedClientMutation(t *testing.T) {
 // (session_queue.go lines 748-768): the pure function that decides whether
 // an interrupted turn may drain the queue head.
 func TestCovInterruptDrainConfig(t *testing.T) {
+	t.Parallel()
 	rootCtx := context.Background()
 	ctx := WithQueuedInputDrainOnInterrupt(context.Background(), rootCtx)
 
@@ -830,6 +852,7 @@ func TestCovInterruptDrainConfig(t *testing.T) {
 // TestCovNextTurnContext covers queuedInputDrainConfig.nextTurnContext
 // (session_queue.go lines 781-790).
 func TestCovNextTurnContext2(t *testing.T) {
+	t.Parallel()
 	rootCtx := context.Background()
 
 	// No nextCtx factory — returns rootCtx.
@@ -862,6 +885,7 @@ func TestCovNextTurnContext2(t *testing.T) {
 
 // TestCovPopFollowUp covers popFollowUp (session_queue.go lines 1040-1049).
 func TestCovPopFollowUp(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// No followups — empty string.
 	if got := s.popFollowUp(); got != "" {
@@ -890,6 +914,7 @@ func TestCovPopFollowUp(t *testing.T) {
 // TestCovHasPendingSteering covers hasPendingSteering
 // (session_queue.go lines 969-973).
 func TestCovHasPendingSteering(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.hasPendingSteering() {
 		t.Fatal("empty should be false")
@@ -907,6 +932,7 @@ func TestCovHasPendingSteering(t *testing.T) {
 // TestCovHasPendingUserSteering covers hasPendingUserSteering
 // (session_queue.go lines 981-990).
 func TestCovHasPendingUserSteering(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// No steering — false.
 	if s.hasPendingUserSteering() {
@@ -933,6 +959,7 @@ func TestCovHasPendingUserSteering(t *testing.T) {
 // TestCovPrependSteering covers prependSteering
 // (session_queue.go lines 992-1000).
 func TestCovPrependSteering(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Empty entries — no-op.
 	s.prependSteering(nil)
@@ -956,6 +983,7 @@ func TestCovPrependSteering(t *testing.T) {
 // TestCovSteeringQueueSnapshot covers SteeringQueueSnapshot
 // (session_queue.go lines 1015-1027).
 func TestCovSteeringQueueSnapshot(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Empty — nil.
 	if got := s.SteeringQueueSnapshot(); got != nil {
@@ -992,6 +1020,7 @@ func TestCovSteeringQueueSnapshot(t *testing.T) {
 
 // TestCovFollowUp covers FollowUp (session_queue.go lines 303-313).
 func TestCovFollowUp(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Empty message — no-op.
 	if err := s.FollowUp(""); err != nil {
@@ -1021,6 +1050,7 @@ func TestCovFollowUp(t *testing.T) {
 // TestCovPendingQueueDepth covers pendingQueueDepth
 // (session_queue.go lines 514-519).
 func TestCovPendingQueueDepth(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// No client mutations, no queue — 0.
 	if got := s.pendingQueueDepth(); got != 0 {
@@ -1038,6 +1068,7 @@ func TestCovPendingQueueDepth(t *testing.T) {
 
 // TestCovQueueDepth covers QueueDepth (session_queue.go lines 500-504).
 func TestCovQueueDepth(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if got := s.QueueDepth(); got != 0 {
 		t.Fatalf("empty: got %d", got)
@@ -1054,6 +1085,7 @@ func TestCovQueueDepth(t *testing.T) {
 // TestCovDelegateSendResultFormat covers formatDelegateSend
 // (session_tools_jobs.go lines 1428-1470).
 func TestCovDelegateSendResultFormat(t *testing.T) {
+	t.Parallel()
 	output := "hello"
 	out := delegateSendResult{
 		DelegateID: "dlg_1",
@@ -1095,6 +1127,7 @@ func TestCovDelegateSendResultFormat(t *testing.T) {
 // TestCovDelegateWorktreeToolResultFrom covers delegateWorktreeToolResultFrom
 // (session_tools_jobs.go lines 1364-1369).
 func TestCovDelegateWorktreeToolResultFrom(t *testing.T) {
+	t.Parallel()
 	// nil — returns nil.
 	if delegateWorktreeToolResultFrom(nil) != nil {
 		t.Fatal("nil should return nil")
@@ -1127,6 +1160,7 @@ func TestCovDelegateWorktreeToolResultFrom(t *testing.T) {
 // TestCovDelegateSandboxToolResultFrom covers delegateSandboxToolResultFrom
 // (session_tools_jobs.go lines 1376-1381).
 func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
+	t.Parallel()
 	// nil — returns nil.
 	if delegateSandboxToolResultFrom(nil) != nil {
 		t.Fatal("nil should return nil")
@@ -1146,6 +1180,7 @@ func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
 // TestCovDecodeDelegateArgs covers decodeDelegateArgs
 // (session_tools_jobs.go lines 345-382): validation branches.
 func TestCovDecodeDelegateArgs2(t *testing.T) {
+	t.Parallel()
 	// Valid minimal.
 	a, err := decodeDelegateArgs(map[string]any{"prompt": "do work"})
 	if err != nil {
@@ -1247,6 +1282,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 // TestCovConsumeTerminalJobNotification covers consumeTerminalJobNotification
 // (session_tools_jobs.go lines 446-480): the nil/empty guards.
 func TestCovConsumeTerminalJobNotification(t *testing.T) {
+	t.Parallel()
 	// nil jm — no-op.
 	consumeTerminalJobNotification(&Session{}, nil, &jobstore.JobRecord{TerminalGen: "gen_1"})
 	// nil rec — no-op.
@@ -1313,6 +1349,7 @@ func TestCovConsumeTerminalJobNotification(t *testing.T) {
 // TestCovProjectStableDelegateListItem is a helper test covering the projection
 // of a stable delegate into a job list entry (used by job_list).
 func TestCovProjectStableDelegateListItem(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	startedAt := now.Add(-10 * time.Second)
 	endedAt := now.Add(-2 * time.Second)
@@ -1351,6 +1388,7 @@ func TestCovProjectStableDelegateListItem(t *testing.T) {
 // TestCovWithQueuedInputDrainOnInterrupt covers WithQueuedInputDrainOnInterrupt
 // (session_queue.go lines 49-51).
 func TestCovWithQueuedInputDrainOnInterrupt(t *testing.T) {
+	t.Parallel()
 	rootCtx := context.Background()
 	ctx := WithQueuedInputDrainOnInterrupt(context.Background(), rootCtx)
 	cfg, ok := ctx.Value(queuedInputDrainContextKey{}).(queuedInputDrainConfig)
@@ -1372,6 +1410,7 @@ func TestCovWithQueuedInputDrainOnInterrupt(t *testing.T) {
 // TestCovWithQueuedInputDrainOnInterruptHandler covers
 // WithQueuedInputDrainOnInterruptHandler (session_queue.go lines 64-72).
 func TestCovWithQueuedInputDrainOnInterruptHandler(t *testing.T) {
+	t.Parallel()
 	rootCtx := context.Background()
 	nextCalled := false
 	nextCtx := func(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -1400,6 +1439,7 @@ func TestCovWithQueuedInputDrainOnInterruptHandler(t *testing.T) {
 // TestCovDeliverHookContext covers deliverHookContext
 // (session_queue.go lines 285-290).
 func TestCovDeliverHookContext(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Empty text — no-op.
 	s.deliverHookContext("")
@@ -1422,6 +1462,7 @@ func TestCovDeliverHookContext(t *testing.T) {
 // TestCovAppendSteeringTurn covers appendSteeringTurn
 // (session_queue.go lines 942-947).
 func TestCovAppendSteeringTurn(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 2)}
 	s.appendSteeringTurn("steer now", events.SteeringKindHookContext)
 	if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindHookContext || s.history[0].Message.Text() != "steer now" {

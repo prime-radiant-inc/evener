@@ -13,6 +13,7 @@ import (
 // event fires too - so it never anchors the derivation. Output/event/condition
 // watches carry none.
 func TestWatchCadencesDeriveNextFireForClockCadencesOnly(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	at := func(seconds int) time.Time { return created.Add(time.Duration(seconds) * time.Second) }
 	fmtTime := func(tm time.Time) string { return tm.Format(time.RFC3339Nano) }
@@ -111,6 +112,7 @@ func TestWatchCadencesDeriveNextFireForClockCadencesOnly(t *testing.T) {
 // entry is the match, so the derived instant lands one interval after the match
 // instead of one interval after the tick.
 func TestWatchCadencesDeriveNextFireFromTheClockFireNotAnyDelivery(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	start := time.Unix(1_700_000_000, 0).UTC()
 	// The fake clock leaves the watch's background progress timer inert; the
@@ -189,6 +191,7 @@ func TestWatchCadencesDeriveNextFireFromTheClockFireNotAnyDelivery(t *testing.T)
 // never advance from lastClockFire; an unfired one-shot and a repeating watch
 // keep their own behavior.
 func TestWatchDerivedNextFireOneShotFiredPendingSettlementHasNoNextFire(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	fmtTime := func(tm time.Time) string { return tm.Format(time.RFC3339Nano) }
 
@@ -235,6 +238,7 @@ func TestWatchDerivedNextFireOneShotFiredPendingSettlementHasNoNextFire(t *testi
 // armed state must both read it as spent -- a countdown next to "armed" for a
 // watch that will never fire again is the overstatement this pins against.
 func TestWatchOneShotFiredByConditionIsSpent(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	fired := &watchConfig{
 		timer: true, oneShot: true, timerSeconds: 600, progressIntervalMS: 600_000,
@@ -267,6 +271,7 @@ func TestWatchOneShotFiredByConditionIsSpent(t *testing.T) {
 // install instant, must not move the next fire earlier -- an instant in the past
 // is one the UI deliberately refuses to show.
 func TestWatchRepeatingNextFireNeverAdvancesFromAnOlderClockFire(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	fmtTime := func(tm time.Time) string { return tm.Format(time.RFC3339Nano) }
 	skewed := &watchConfig{

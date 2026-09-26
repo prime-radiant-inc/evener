@@ -99,6 +99,7 @@ func withSalvage(g groupRecord, text string) groupRecord {
 }
 
 func TestClassifySettlement(t *testing.T) {
+	t.Parallel()
 	unhealthy := &llm.ProviderUnhealthyError{Shape: "stall", Attempts: 4, Elapsed: 130 * time.Second, LastErr: midStreamErr()}
 
 	tests := []struct {
@@ -234,6 +235,7 @@ func filterBlockedErr(t *testing.T) error {
 }
 
 func TestComposeFailureSteering(t *testing.T) {
+	t.Parallel()
 	fallbackAuthGroup := groupRecord{Model: "kimi-k3-mini", Provider: "lunarouter", Attempts: []attemptRecord{openAttempt(authErr())}}
 
 	tests := []struct {
@@ -352,6 +354,7 @@ func TestComposeFailureSteering(t *testing.T) {
 // (Config.ResultToolName) must never be told to re-send through a tool it does
 // not expose.
 func TestComposeFailureSteering_NamesTheGivenResultTool(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{capGroup(2)}}
 
 	got := composeFailureSteering(rec, midStreamErr(), 40000, "report_result")
@@ -368,6 +371,7 @@ func TestComposeFailureSteering_NamesTheGivenResultTool(t *testing.T) {
 // the spec calls out by name: a permanent mid-stream error settles after ONE
 // attempt, and plural wording there would be a lie.
 func TestComposeFailureSteering_OneAttemptIsNeverRepeatedly(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{stallGroup(1)}}
 
 	got := composeFailureSteering(rec, midStreamErr(), 0, "communicate")
@@ -383,6 +387,7 @@ func TestComposeFailureSteering_OneAttemptIsNeverRepeatedly(t *testing.T) {
 // terminal-error class that can reach settlement maps to exactly one template"
 // requirement: no output may carry two shape sentences.
 func TestComposeFailureSteering_OneTemplatePerTerminalClass(t *testing.T) {
+	t.Parallel()
 	shapeMarkers := []string{
 		"The provider stopped responding mid-stream",
 		wantSilentStall,
@@ -434,6 +439,7 @@ func TestComposeFailureSteering_OneTemplatePerTerminalClass(t *testing.T) {
 // TestComposeFailureSteering_CapAdviceOnlyForCapShape pins the spec's "Cap shape
 // adds" scoping: the size advice is meaningless for a stall and must not leak.
 func TestComposeFailureSteering_CapAdviceOnlyForCapShape(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		rec     *roundRecorder
@@ -459,6 +465,7 @@ func TestComposeFailureSteering_CapAdviceOnlyForCapShape(t *testing.T) {
 // this composer — the spec gives interrupts their own one-line steering that
 // makes no provider-failure claim, composed elsewhere.
 func TestComposeFailureSteering_NoInterruptWording(t *testing.T) {
+	t.Parallel()
 	recs := []*roundRecorder{
 		{Groups: []groupRecord{stallGroup(4)}},
 		{Groups: []groupRecord{capGroup(2)}},
@@ -476,6 +483,7 @@ func TestComposeFailureSteering_NoInterruptWording(t *testing.T) {
 // TestComposeFailureSteering_NoSalvageOmitsSalvageWording pins that zero bytes
 // produces neither the draft instruction nor the fragment sentence.
 func TestComposeFailureSteering_NoSalvageOmitsSalvageWording(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{stallGroup(4)}}
 
 	got := composeFailureSteering(rec, midStreamErr(), 0, "communicate")
@@ -492,6 +500,7 @@ func TestComposeFailureSteering_NoSalvageOmitsSalvageWording(t *testing.T) {
 // settles as salvage: the spec forbids a salvage floor, and wording — not
 // persistence — is what scales with size.
 func TestClassifySettlement_SalvageNeedsNoByteFloor(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{withSalvage(stallGroup(4), "x")}}
 
 	if got := classifySettlement(rec, midStreamErr()); got != settleSalvageAndSteering {
@@ -507,6 +516,7 @@ func TestClassifySettlement_SalvageNeedsNoByteFloor(t *testing.T) {
 // TestComposeFailureSteering_UnwrappedUnhealthyCancellation keeps a cancelled
 // round out of settlement even when the cancellation arrives wrapped.
 func TestClassifySettlement_WrappedCancellation(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{withSalvage(capGroup(2), strings.Repeat("plan ", 2000))}}
 	wrapped := errors.Join(errors.New("round aborted"), context.Canceled)
 

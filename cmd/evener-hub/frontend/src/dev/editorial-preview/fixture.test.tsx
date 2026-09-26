@@ -28,22 +28,19 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-/** Yields to the event loop, one macrotask turn at a time inside act, until
- * `settled` holds. The shell commits some boot renders through React's
- * scheduler, which only runs when the event loop turns past microtasks - and
- * the scripted fixture answers so fast that the whole boot is one microtask
- * cascade, so an act that only awaits those never lets the scheduler commit.
- * The turn bound is a livelock tripwire (never reached in practice), NOT a
- * wall-clock ceiling: a turn completes whenever the scheduler gets CPU, so
- * machine load cannot trip it the way findByText's 1s default did (sighted
- * at a load average of 900 on 16 CPUs, twice in one gate run). */
-async function flushSchedulerTurns(settled: () => boolean, maxTurns = 20): Promise<void> {
-  for (let turn = 0; turn < maxTurns && !settled(); turn += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-  }
+// Same load-sensitive tripwire used by the AppShell warm-up tests. The store
+// reads are awaited separately; findByText supplies the act-aware wait for
+// React's later DOM commit and fails boundedly if the fixture never appears.
+const FIXTURE_READY_TRIPWIRE_MS = 10_000;
+
+async function waitForFixtureText(text: string, timeout = FIXTURE_READY_TRIPWIRE_MS): Promise<HTMLElement> {
+  return screen.findByText(text, undefined, { timeout });
 }
+
+test("fixture wait rejects when the requested text never appears", async () => {
+  render(<div />);
+  await expect(waitForFixtureText("missing fixture text", 50)).rejects.toThrow();
+}, 500);
 
 test("real AppShell opens fixture parent, distinct child, and returns via navigation", async () => {
   window.history.replaceState({}, "", "/");
@@ -58,20 +55,18 @@ test("real AppShell opens fixture parent, distinct child, and returns via naviga
     await navigationStore.getState().loadManifest();
     await navigationStore.getState().loadSection("live");
   });
-  await flushSchedulerTurns(() => screen.queryByText("Editorial fixture parent") !== null);
+  await waitForFixtureText("Editorial fixture parent");
   await user.click(screen.getByText("Editorial fixture parent"));
   await act(async () => {
     await threadsStore.getState().ensureThread(PARENT);
   });
-  await flushSchedulerTurns(() => screen.queryByText("Parent analysis: fixture-only evidence.") !== null);
+  await waitForFixtureText("Parent analysis: fixture-only evidence.");
   expect(screen.getByText("Parent analysis: fixture-only evidence.")).toBeTruthy();
   await user.click(screen.getByText("Editorial fixture child"));
   await act(async () => {
     await threadsStore.getState().ensureThread(CHILD);
   });
-  await flushSchedulerTurns(
-    () => screen.queryByText("Child report: independent transcript, not the parent snapshot.") !== null,
-  );
+  await waitForFixtureText("Child report: independent transcript, not the parent snapshot.");
   expect(screen.getByText("Child report: independent transcript, not the parent snapshot.")).toBeTruthy();
   expect(
     client.calls.some((call) => call.method === "thread/read" && (call.params as { ref?: string }).ref === CHILD),
@@ -86,7 +81,20 @@ test("real AppShell opens fixture parent, distinct child, and returns via naviga
   await act(async () => {
     await threadsStore.getState().ensureThread(PARENT);
   });
-  await flushSchedulerTurns(() => screen.queryByText("Parent analysis: fixture-only evidence.") !== null);
+  await waitForFixtureText("Parent analysis: fixture-only evidence.");
   expect(screen.getByText("Parent analysis: fixture-only evidence.")).toBeTruthy();
   expect(client.rejectedRequests).toEqual([]);
 }, 20000);
+
+// The real AppShell asks for the spawn pane's slash catalog whenever it gets
+// to it, and the timing varies, so the fixture has to answer it: an
+// unscripted method lands in rejectedRequests and fails the test above only
+// on the runs where the request wins the race (#2446).
+test("the editorial client answers the spawn pane's slash catalog request", async () => {
+  const client = createEditorialClient();
+  await expect(client.request("evener/spawn/slashCatalog", { cwd: "/fixture/editorial" })).resolves.toEqual({
+    commands: [],
+    skills: [],
+  });
+  expect(client.rejectedRequests).toEqual([]);
+});

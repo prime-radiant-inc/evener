@@ -29,6 +29,7 @@ import (
 // from the same state dir through RestoreSessionFromMetaWithConfig -- the same
 // function `evener serve --resume` calls.
 func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()
@@ -94,6 +95,7 @@ func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 // queue instead. The steering queue is the existing delivery path: a wake
 // proceeds on pending steering alone, with no job notifications involved.
 func TestSteerLandsWhenItsTurnAlreadyEnded(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -118,6 +120,7 @@ func TestSteerLandsWhenItsTurnAlreadyEnded(t *testing.T) {
 // is never drained and the message is lost more quietly than a rejection would
 // have been. The daemon must provoke a turn of its own.
 func TestSteerWakesAnIdleSessionToDeliverItself(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -156,6 +159,7 @@ func TestSteerWakesAnIdleSessionToDeliverItself(t *testing.T) {
 // An unneeded kick is cheap: the wake finds nothing and no-ops. A missed one
 // loses what the user typed.
 func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -198,6 +202,7 @@ func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
 // still sitting undelivered. Replay is idempotent in the store; the wake is
 // what makes it idempotent in effect.
 func TestSteerRetryStillProvokesDelivery(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {

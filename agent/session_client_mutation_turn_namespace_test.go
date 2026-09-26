@@ -27,6 +27,7 @@ import (
 // collides again within a few turns. The two namespaces have to be disjoint
 // by construction.
 func TestClientMutation_ReservedTurnIDsCannotNameATranscriptEntry(t *testing.T) {
+	t.Parallel()
 	// A long session: far more persisted entries than client mutations, which
 	// is the ordinary shape (and the one the collision needs).
 	const transcriptEntries = 500
@@ -55,6 +56,7 @@ func TestClientMutation_ReservedTurnIDsCannotNameATranscriptEntry(t *testing.T) 
 // of going through reserveClientMutationTurnID cannot reintroduce the
 // collision unnoticed.
 func TestClientMutation_StartReceiptTurnIDIsOutsideTheEntryIndexNamespace(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	lifecycle, ok := any(sess).(clientMutationStartLifecycle)
 	if !ok {

@@ -169,6 +169,7 @@ func TestReadTranscriptRetainedValidation(t *testing.T) {
 }
 
 func TestReadTranscriptArtifactExpiredWhenNoStoreIsAvailable(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	_, err := execReadTranscript(nil, map[string]any{"transcript_ref": ref})
 	if err == nil || !strings.Contains(err.Error(), "artifact_expired:") {
@@ -196,6 +197,7 @@ func (r *failingArtifactReadSeekCloser) Seek(_ int64, whence int) (int64, error)
 func (*failingArtifactReadSeekCloser) Close() error { return nil }
 
 func TestReadTranscriptArtifactPostOpenReadErrorsArePathFree(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	deps := &toolDeps{openArtifact: func(string) (artifactReadSeekCloser, error) {
 		return &failingArtifactReadSeekCloser{total: int64(len("retained bytes\n"))}, nil
@@ -222,6 +224,7 @@ func TestReadTranscriptArtifactPostOpenReadErrorsArePathFree(t *testing.T) {
 }
 
 func TestReadTranscriptSearchEnvelopeStaysBelowRegistryBackstop(t *testing.T) {
+	t.Parallel()
 	const maxPatternChars = 65_536
 	s := newArtifactTestRoot(t)
 	ref, err := s.artifactStore.Put([]byte("short retained line\n"))

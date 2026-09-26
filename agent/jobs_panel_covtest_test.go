@@ -11,6 +11,7 @@ import (
 // TestClampJobTailBytes covers all three branches of clampJobTailBytes
 // (lines 30-36).
 func TestClampJobTailBytes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   int64
@@ -33,6 +34,7 @@ func TestClampJobTailBytes(t *testing.T) {
 
 // TestIsOutputNotExistErr covers the error-checking helper.
 func TestIsOutputNotExistErr(t *testing.T) {
+	t.Parallel()
 	if !isOutputNotExistErr(os.ErrNotExist) {
 		t.Fatal("expected true for os.ErrNotExist")
 	}
@@ -46,6 +48,7 @@ func TestIsOutputNotExistErr(t *testing.T) {
 
 // TestJobOutputTailFromWindow covers the conversion function (lines 61-69).
 func TestJobOutputTailFromWindow(t *testing.T) {
+	t.Parallel()
 	w := jobOutputWindow{
 		content:  "hello",
 		start:    0,
@@ -77,6 +80,7 @@ func TestJobOutputTailFromWindow(t *testing.T) {
 
 // TestJobOutputTail_NilSession covers the nil-session guard (line 45-46).
 func TestJobOutputTail_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	_, found, err := s.JobOutputTail("job1", 0, 0)
 	if found || err != nil {
@@ -87,6 +91,7 @@ func TestJobOutputTail_NilSession(t *testing.T) {
 // TestLoadSessionJobOutputTail_InvalidSessionID covers the session-ID
 // validation error (line 77-78).
 func TestLoadSessionJobOutputTail_InvalidSessionID(t *testing.T) {
+	t.Parallel()
 	_, _, err := LoadSessionJobOutputTail(t.TempDir(), "../escaped", "job1", 0, 0)
 	if err == nil {
 		t.Fatal("expected error for invalid session ID")
@@ -96,6 +101,7 @@ func TestLoadSessionJobOutputTail_InvalidSessionID(t *testing.T) {
 // TestLoadSessionJobOutputTail_NoJobsFile covers the missing-jobs-file path
 // (line 82-83).
 func TestLoadSessionJobOutputTail_NoJobsFile(t *testing.T) {
+	t.Parallel()
 	_, found, err := LoadSessionJobOutputTail(t.TempDir(), "sess123", "job1", 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -108,6 +114,7 @@ func TestLoadSessionJobOutputTail_NoJobsFile(t *testing.T) {
 // TestLoadSessionJobOutputTail_ReadError covers the ReadEvents error path
 // (line 87-89).
 func TestLoadSessionJobOutputTail_ReadError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := "sessreaderr"
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")

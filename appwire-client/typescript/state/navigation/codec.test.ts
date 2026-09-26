@@ -74,6 +74,31 @@ test("decodes a normalized snapshot and rejects dangling children", () => {
   ).toThrow();
 });
 
+// A folded row from an unreachable source carries the hub's offline marker
+// (component 06). It is an optional boolean beside dormant: a row that ran on
+// an offline host stays a valid session row, and a non-boolean value is still
+// a schema error rather than a silently ignored field.
+test("codec accepts the offline source marker on a session row", () => {
+  const withOffline = (offline: unknown) => {
+    const snapshot = liveSnapshot();
+    const value = snapshot.entities[0]!.value as Record<string, unknown>;
+    value.ref = "remote-offline:offline-thread";
+    value.host_id = "remote-offline";
+    value.session_id = "offline-thread";
+    value.offline = offline;
+    return snapshot;
+  };
+  const snapshot = withOffline(true);
+  expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
+  const entity = snapshot.entities[0]!;
+  const graph = normalizedGraphFromSnapshot(snapshot);
+  const installed = graph.entities.get(entity.key);
+  if (!installed) throw new Error("offline session entity missing from the normalized graph");
+  expect((installed.value as Record<string, unknown>).offline).toBe(true);
+  const malformed = withOffline("yes");
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, malformed))).toThrow();
+});
+
 test("codec accepts stateless records and rejects obsolete entity and container revisions", () => {
   const stateless = structuredClone(liveSnapshot()) as unknown as {
     entities: Array<Record<string, unknown>>;

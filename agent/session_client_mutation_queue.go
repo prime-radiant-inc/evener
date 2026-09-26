@@ -170,6 +170,12 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnQueueResponse{}, clientMutationRejectionError(lookup.Record)
 	}
+	// Only a FRESH application unparks: a replayed accept re-runs no effect
+	// callback, so it releases no QueueHeld, and a Stop that landed after the
+	// original must keep the rail parked.
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
+	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		// A retry of a queue that was accepted but never run -- the process died
 		// between the commit and the wake -- must still provoke a run. Replay is
@@ -865,6 +871,10 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnDrainAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
 	}
+	// Only a FRESH application unparks (see the queue accept's note).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
+	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnDrainAsSteerResponse
 		if err := replayClientMutationResult(lookup.Record, &replayed); err != nil {
@@ -980,6 +990,10 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	}
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
+	}
+	// Only a FRESH application unparks (see the queue accept's note).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnPromoteQueuedAsSteerResponse

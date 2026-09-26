@@ -146,7 +146,7 @@ func FuzzRunMainEarlyBootstrap(f *testing.F) {
 		released := false
 		deps := mainDeps{
 			loadRegistry: hermeticRegistryLoader,
-			loadConfig: func(string) (Config, error) {
+			loadConfig: func(string, bool) (Config, error) {
 				if mode == 1 {
 					return Config{}, stop
 				}

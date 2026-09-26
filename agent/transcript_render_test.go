@@ -360,6 +360,7 @@ func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 }
 
 func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"leading-blank"}`
 	entry := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`
 	path := filepath.Join(t.TempDir(), "leading-blank.transcript.jsonl")
@@ -380,6 +381,7 @@ func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
 }
 
 func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"tail-test"}`
 	complete := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`
 	tests := []struct {
@@ -411,6 +413,7 @@ func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
 }
 
 func TestRawLinesForRangeRejectsMixedOrCorruptTranscript(t *testing.T) {
+	t.Parallel()
 	validEntry := `{"kind":"entry","seq":1,"turn":{"kind":"user_input"}}` + "\n"
 	tests := []string{
 		`{"kind":"header","format_version":1,"session_id":"legacy"}` + "\n",
@@ -2386,5 +2389,85 @@ func TestRenderMarkdown_OversizedValidJSONSuppressesIntent(t *testing.T) {
 	// Intent must NOT appear: the live path suppresses it for oversized args.
 	if strings.Contains(out, "intent: secret") {
 		t.Errorf("oversized valid JSON must suppress intent (size-gate check), but found 'intent: secret' in:\n%s", out)
+	}
+}
+
+// TestRenderMarkdown_RuntimeFailedCommunicateRendersNothing verifies
+// Finding 3: a communicate that executes and fails at runtime
+// (IsError=true, PrevalOnly=false) with malformed raw args must render
+// NOTHING in the markdown — matching the app thread, which creates no
+// item for runtime failures (apptranscript.go:714-742). Before the fix,
+// writeResultToolMessage's healed flag was hasResult && !IsError, which
+// treated every errored result as a pre-validation rejection. The raw
+// fallback then surfaced the malformed bytes even though they were never
+// delivered.
+func TestRenderMarkdown_RuntimeFailedCommunicateRendersNothing(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{message: "done", }` // malformed JSON
+	assistantPart := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:           "call_rt_fail_comm",
+			Name:         "communicate",
+			Arguments:    []byte(`{}`),
+			RawArguments: rawArgs,
+		},
+	}
+	resultPart := llm.ContentPart{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_rt_fail_comm",
+			Name:       "communicate",
+			IsError:    true,
+			PrevalOnly: false,
+		},
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantPart}}}},
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{resultPart}}}},
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	if strings.Contains(out, rawArgs) {
+		t.Errorf("runtime-failed communicate must not show raw bytes; got:\n%s", out)
+	}
+	if strings.Contains(out, "done") {
+		t.Errorf("runtime-failed communicate must not render the message text; got:\n%s", out)
+	}
+}
+
+// TestRenderMarkdown_PrevalOnlyRejectedCommunicateStillSurfaces verifies
+// the companion to Finding 3: a PrevalOnly-rejected communicate
+// (IsError=true, PrevalOnly=true) still surfaces its raw bytes in the
+// markdown, matching the app thread (apptranscript.go:714-732). Only
+// runtime failures are suppressed — pre-validation rejections still
+// show the raw bytes the model sent.
+func TestRenderMarkdown_PrevalOnlyRejectedCommunicateStillSurfaces(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{message: "rejected", }` // malformed JSON
+	assistantPart := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:           "call_preval_rej_comm",
+			Name:         "communicate",
+			Arguments:    []byte(`{}`),
+			RawArguments: rawArgs,
+		},
+	}
+	resultPart := llm.ContentPart{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_preval_rej_comm",
+			Name:       "communicate",
+			IsError:    true,
+			PrevalOnly: true,
+		},
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantPart}}}},
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{resultPart}}}},
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	if !strings.Contains(out, rawArgs) {
+		t.Errorf("PrevalOnly-rejected communicate must still surface raw bytes; got:\n%s", out)
 	}
 }

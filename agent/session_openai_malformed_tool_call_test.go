@@ -20,6 +20,7 @@ import (
 )
 
 func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`
 
@@ -285,6 +286,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 // unquoted-key repair must quote the key, execute the call with the recovered
 // arguments, and keep the model's raw bytes in the durable record.
 func TestSession_OpenAIUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const unquotedArgs = `{value: "recovered"}`
 

@@ -5,6 +5,7 @@ import {
   EnrichedMarkdownText,
   type MarkdownStyle,
 } from "react-native-enriched-markdown";
+import { fonts, typeRoles } from "./design/tokens";
 import { externalMarkdownLink } from "./markdownLinks";
 import { useColors } from "./ui";
 
@@ -70,11 +71,9 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 }) {
   const colors = useColors();
   const markdownStyle = useMemo<MarkdownStyle>(() => {
-    const fontSize = Platform.OS === "ios" ? 17 : 16;
     const body = {
-      fontSize,
-      lineHeight: fontSize * 1.5,
-      color: colors.text,
+      ...typeRoles.agentProse,
+      color: colors.palette.prose,
       marginTop: 0,
       marginBottom: 12,
     };
@@ -84,18 +83,20 @@ export const MarkdownResponse = memo(function MarkdownResponse({
       marginTop: 20,
       marginBottom: 8,
     };
+    const codeFontFamily = Platform.OS === "ios" ? fonts.mono : "monospace";
     return {
       paragraph: body,
-      h1: { ...heading, fontSize: 25, lineHeight: 32 },
-      h2: { ...heading, fontSize: 22, lineHeight: 29 },
-      h3: { ...heading, fontSize: 19, lineHeight: 26 },
-      h4: { ...heading, fontSize: 17, lineHeight: 25 },
-      h5: { ...heading, fontSize: 17, lineHeight: 25 },
-      h6: { ...heading, fontSize: 17, lineHeight: 25 },
+      h1: { ...heading, fontSize: 20, lineHeight: 26 },
+      h2: { ...heading, fontSize: 17, lineHeight: 24 },
+      h3: { ...heading, fontSize: 15, lineHeight: 21 },
+      h4: { ...heading, fontSize: 15, lineHeight: 21 },
+      h5: { ...heading, fontSize: 15, lineHeight: 21 },
+      h6: { ...heading, fontSize: 15, lineHeight: 21 },
       list: {
         ...body,
         bulletColor: colors.secondary,
         markerColor: colors.secondary,
+        markerFontWeight: "normal",
         gapWidth: 8,
         itemSpacing: 4,
       },
@@ -113,6 +114,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         backgroundColor: colors.surface,
         borderColor: colors.border,
         fontSize: 14,
+        fontFamily: codeFontFamily,
       },
       codeBlock: {
         fontSize: 14,
@@ -124,12 +126,13 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         padding: 12,
         marginTop: 8,
         marginBottom: 12,
+        fontFamily: codeFontFamily,
         syntaxColors: {
           keyword: colors.accent,
           operator: colors.text,
           punctuation: colors.secondary,
-          string: colors.background === "#121417" ? "#b8d8a3" : "#2e6443",
-          number: colors.background === "#121417" ? "#ecc48d" : "#785119",
+          string: colors.palette.scheme === "dark" ? "#b8d8a3" : "#2e6443",
+          number: colors.palette.scheme === "dark" ? "#ecc48d" : "#785119",
           constant: colors.accent,
           comment: colors.secondary,
           function: colors.accent,
@@ -142,8 +145,11 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         },
       },
       table: {
-        ...body,
+        marginTop: body.marginTop,
+        marginBottom: body.marginBottom,
+        lineHeight: body.lineHeight,
         fontSize: 14,
+        color: colors.text,
         headerTextColor: colors.text,
         headerBackgroundColor: colors.surface,
         rowEvenBackgroundColor: colors.background,
@@ -160,7 +166,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         marginBottom: 16,
       },
       taskList: {
-        checkedColor: colors.accent,
+        checkedColor: colors.palette.accentFill,
         checkedTextColor: colors.text,
         borderColor: colors.secondary,
       },
@@ -175,6 +181,9 @@ export const MarkdownResponse = memo(function MarkdownResponse({
     colors.border,
     colors.accent,
     colors.secondary,
+    colors.palette.scheme,
+    colors.palette.accentFill,
+    colors.palette.prose,
   ]);
   return (
     <EnrichedMarkdownText

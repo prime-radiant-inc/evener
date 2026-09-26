@@ -96,7 +96,7 @@ export function TimelineItem({
 					style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}
 				>
 					<View style={{ flex: 1, minWidth: 0 }}>
-						<Copy label={`You: ${item.text}`}>{item.text}</Copy>
+						<Copy variant="yourMessage" label={`You: ${item.text}`}>{item.text}</Copy>
 					</View>
 					{fork &&
 					item.transcriptEntryIndex !== undefined &&
@@ -253,7 +253,7 @@ export function TimelineItem({
 				{ gap: 8 },
 				item.kind === "user"
 					? {
-							backgroundColor: colors.surface,
+							backgroundColor: colors.palette.bubble,
 							borderRadius: 18,
 							borderBottomRightRadius: 5,
 							padding: 14,

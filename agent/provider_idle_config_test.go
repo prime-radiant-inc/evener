@@ -13,6 +13,7 @@ import (
 )
 
 func TestProviderIdleConfigPersistsAndBuildsRequest(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		value string
 		want  time.Duration
@@ -35,6 +36,7 @@ func TestProviderIdleConfigPersistsAndBuildsRequest(t *testing.T) {
 }
 
 func TestProviderIdleConfigRejectsInvalidDuration(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"-1s", "0s", "forever", "999999999999999999999h"} {
 		var cfg SessionConfig
 		if err := json.Unmarshal([]byte(`{"provider_idle_timeout":"`+value+`"}`), &cfg); err != nil {
@@ -51,6 +53,7 @@ func TestProviderIdleConfigRejectsInvalidDuration(t *testing.T) {
 }
 
 func TestProviderIdleConfigResumeAndFrozenDelegate(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	frozen := SessionConfig{ProviderIdleTimeout: "45s"}.toSnapshot()
@@ -94,6 +97,7 @@ func (a *visionIdleCaptureAdapter) Complete(ctx context.Context, req llm.Request
 	return llm.Response{Message: llm.Assistant("description")}, nil
 }
 func TestProviderIdleVisionUsesSessionPolicyWithoutTotalDeadline(t *testing.T) {
+	t.Parallel()
 	adapter := &visionIdleCaptureAdapter{name: "openai"}
 	sess := newSession(t, withAdapter(adapter), withProfile(NewOpenAIProfile("gpt-5.2")), withConfig(SessionConfig{ProviderIdleTimeout: "45s"}))
 	drainSessionEvents(sess)

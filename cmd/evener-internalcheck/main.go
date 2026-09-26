@@ -1,5 +1,5 @@
 // evener-internalcheck enforces that the public library packages stay externally
-// importable: no exported symbol in agent or llm may name a
+// importable: no exported symbol in agent, llm, or execsupport may name a
 // evener-internal type (a type whose package path is under primeradiant.com/evener
 // and contains "/internal/") through its public signature.
 //
@@ -45,6 +45,11 @@ var libraryPackages = []string{
 	"primeradiant.com/evener/agent/transcript",
 	"primeradiant.com/evener/llm",
 	"primeradiant.com/evener/llm/registry",
+	"primeradiant.com/evener/execsupport/orphanpipe",
+	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest",
+	"primeradiant.com/evener/execsupport/procgroup",
+	"primeradiant.com/evener/execsupport/shellquote",
+	"primeradiant.com/evener/execsupport/valueexpr",
 }
 
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {

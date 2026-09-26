@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm/registry"
 )
 

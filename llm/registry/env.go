@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 // checkEnvRefs validates the $-expression syntax of a config value at load

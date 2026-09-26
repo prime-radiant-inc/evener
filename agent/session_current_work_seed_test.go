@@ -91,6 +91,7 @@ func TestRootSessionStartSeedsPostTemplateCurrentTask(t *testing.T) {
 }
 
 func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newSession(t, withDir(dir), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
@@ -150,6 +151,7 @@ func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) 
 }
 
 func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newSession(t, withDir(dir), withConfig(SessionConfig{
 		MaxSubagentDepth:       1,
@@ -233,6 +235,7 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 }
 
 func TestSessionStartGoalSeedUsesStructuredMetaAndExplicitClear(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	meta := schema.SessionMeta{

@@ -299,6 +299,7 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 // ok=false (rather than silently returning a truncated line list) when a
 // single line exceeds transcriptJSONLMaxLineBytes.
 func TestTrenderScanLines_ScanError(t *testing.T) {
+	t.Parallel()
 	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
 	content := append([]byte("short line\n"), tooLong...)
 	lines, ok := trender_scanLines(content)

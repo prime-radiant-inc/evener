@@ -34,7 +34,7 @@ func flushUnpairedCommunicateItems(reg *ToolCallRegistry, turnID string) []appwi
 		repaired := argrepair.RepairJSON([]byte(rawArgs))
 		normalized := NormalizeCommunicateArguments(repaired)
 		msg := CommunicateMessageFromArguments(normalized)
-		if msg == "" || EchoesAssistantText(reg.LastAssistantText, msg) {
+		if msg == "" || (turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, msg)) {
 			continue
 		}
 		items = append(items, appwire.ThreadItem{

@@ -82,7 +82,7 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 budget_file="${repo_root}/testing-budget.json"
-modules=". agent llm auth envvars invariant identifier"
+modules=". agent llm auth envvars invariant identifier execsupport"
 web_dir="${repo_root}/cmd/evener-hub/frontend"
 web=true
 check=false

@@ -287,7 +287,9 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.hasPendingDelegateDeliveries() {
 		return true, nil
 	}
-	if s.hasPendingRootDelegateAttention() {
+	// A Stop's park defers pending attention to re-engagement, so it must
+	// not hold a drain open either.
+	if s.pendingRootDelegateAttention() {
 		return true, nil
 	}
 	if s.hasPendingDelegateAttentionArmRetry() {
@@ -554,7 +556,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.hasPendingDelegateDeliveries() {
 		return true, nil
 	}
-	if s.hasPendingRootDelegateAttention() {
+	// A Stop's park defers pending attention to re-engagement, so it must
+	// not hold a drain open either.
+	if s.pendingRootDelegateAttention() {
 		return true, nil
 	}
 	if s.hasPendingDelegateAttentionArmRetry() {
@@ -1066,7 +1070,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				return lastResult, err
 			}
 		}
-		if s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention() {
+		// Parked attention does not drive the rung: a Stop's park defers it,
+		// and the notification turn would only stand down at the admission
+		// gate and spin the drain loop at full rate.
+		if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has

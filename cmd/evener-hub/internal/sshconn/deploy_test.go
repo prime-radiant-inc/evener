@@ -18,8 +18,8 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/remoteinstall"
-	"primeradiant.com/evener/internal/shellquote"
 )
 
 // TestBuildLdflagsStampsControllerBuildinfo proves the deployed binary is
@@ -1354,6 +1354,9 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, executableProbeRemote("evener")):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):

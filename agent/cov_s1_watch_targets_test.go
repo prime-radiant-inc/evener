@@ -8,6 +8,7 @@ import (
 )
 
 func TestS1Cov_validateWatchTarget_CorruptLog(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	now := jm.now()
 	if err := jm.appendEvent(jobstore.Event{
@@ -23,6 +24,7 @@ func TestS1Cov_validateWatchTarget_CorruptLog(t *testing.T) {
 }
 
 func TestS1Cov_terminalWatchTargetStatus(t *testing.T) {
+	t.Parallel()
 	t.Run("session_target", func(t *testing.T) {
 		jm := newTestJM(t)
 		status, _, terminal, err := jm.terminalWatchTargetStatus(runtimeMessageAliasCaller)
