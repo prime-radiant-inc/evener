@@ -1,8 +1,13 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test } from "vitest";
 import TypeSpecimen from "./TypeSpecimen";
 
-afterEach(cleanup);
+// The specimen is static content and every test only reads it, so one
+// render serves the whole file.
+beforeAll(() => {
+  render(<TypeSpecimen />);
+});
+afterAll(cleanup);
 
 // The whole specimen is wrapped in ThemeFlip, which renders its children
 // once per theme, so every label on the page appears exactly twice.
@@ -18,48 +23,39 @@ const MEASURE_LABELS = ["44rem", "64rem"];
 test.each(["Inter Variable", "Source Serif 4 Variable", "JetBrains Mono Variable"])(
   "demonstrates the face %s in both themes",
   (face) => {
-    render(<TypeSpecimen />);
     expect(screen.getAllByText(face)).toHaveLength(THEMES);
   },
 );
 
 test("shows the prose step in both themes", () => {
-  render(<TypeSpecimen />);
   expect(screen.getAllByText("prose 18")).toHaveLength(THEMES);
 });
 
 test("renders without throwing, with the intro note", () => {
-  render(<TypeSpecimen />);
   expect(screen.getByText(/type specimen/i)).toBeTruthy();
 });
 
 test.each(RAMP_LABELS)("shows the ramp step %s in both themes", (label) => {
-  render(<TypeSpecimen />);
   expect(screen.getAllByText(label)).toHaveLength(THEMES);
 });
 
 test.each(LEADING_LABELS)("shows the line-height sample %s in both themes", (label) => {
-  render(<TypeSpecimen />);
   expect(screen.getAllByText(label)).toHaveLength(THEMES);
 });
 
 test.each(RHYTHM_LABELS)("shows the rhythm step %s in both themes", (label) => {
-  render(<TypeSpecimen />);
   expect(screen.getAllByText(label)).toHaveLength(THEMES);
 });
 
 test.each(MEASURE_LABELS)("shows a paragraph at the %s measure in both themes", (label) => {
-  render(<TypeSpecimen />);
   expect(screen.getAllByText(label)).toHaveLength(THEMES);
 });
 
 test("shows the eyebrow recipe rendered in itself", () => {
-  render(<TypeSpecimen />);
   expect(screen.getAllByText("Recommended")).toHaveLength(THEMES);
 });
 
 test("the measure paragraph is the same 600-character text in both columns", () => {
-  render(<TypeSpecimen />);
   const paragraphs = screen.getAllByText(/A session is a conversation with an agent/);
   // one per measure, per theme
   expect(paragraphs).toHaveLength(2 * THEMES);
