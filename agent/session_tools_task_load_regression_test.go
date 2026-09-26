@@ -142,6 +142,55 @@ func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
 	}
 }
 
+func TestSession_SharedTaskListRecoveryClearsOwnerLoadError(t *testing.T) {
+	t.Parallel()
+	base := afero.NewMemMapFs()
+	path := "/state/tasks/shared-recovery.json"
+	if err := afero.WriteFile(base, path, []byte("[]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := taskpkg.NewTaskStore("/state", "shared-recovery").SetFs(base)
+	store.SetFs(fault.FS(base, fault.FromBytes([]byte{0})))
+	initialErr := store.Load()
+	if initialErr == nil {
+		t.Fatal("initial transient Load unexpectedly succeeded")
+	}
+	store.SetFs(base) // The descendant repairs the shared store externally.
+
+	owner := newTestSession(t)
+	owner.taskStore = store
+	owner.taskStoreLoadErr = initialErr
+	owner.taskStoreOnce.Do(func() {})
+	child := newTestSession(t)
+	child.taskStore = store
+	child.taskStoreOnce.Do(func() {})
+
+	args, err := json.Marshal(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childReg := tool.NewRegistry()
+	registerTaskTools(childReg, newToolDeps(child))
+	childResult := childReg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "shared-child-repair", Name: "task_list", Arguments: args,
+	})
+	if childResult.IsError {
+		t.Fatalf("descendant task_list recovery = %q; want success", childResult.Output)
+	}
+
+	ownerReg := tool.NewRegistry()
+	registerTaskTools(ownerReg, newToolDeps(owner))
+	ownerResult := ownerReg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "shared-owner-recovery", Name: "task_list", Arguments: args,
+	})
+	if ownerResult.IsError {
+		t.Fatalf("owner task_list after shared recovery = %q; want success", ownerResult.Output)
+	}
+	if tasks, err := owner.TasksWithError(); len(tasks) != 0 || err != nil {
+		t.Fatalf("owner TasksWithError after shared recovery = tasks=%v err=%v; want authoritative empty snapshot", tasks, err)
+	}
+}
+
 func storePathForTest() string {
 	return "/state/tasks/failed-session.json"
 }

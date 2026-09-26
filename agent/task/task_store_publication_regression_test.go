@@ -178,3 +178,54 @@ func TestTaskStore_LoadFailurePreservesOriginalBytesAndFencesMutation(t *testing
 		t.Fatalf("Append after successful repaired Load: %v", err)
 	}
 }
+
+func TestTaskStore_ApplyBatchRejectedMutationPreservesPublishedState(t *testing.T) {
+	t.Parallel()
+	for _, failAt := range []int{0, 1, 2, 3} {
+		t.Run("fault-"+string(rune('0'+failAt)), func(t *testing.T) {
+			base := afero.NewMemMapFs()
+			store := NewTaskStore("/state", "apply-batch").SetFs(base)
+			added, err := store.Append([]TaskInput{{Description: "existing", Prompt: "prompt"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := store.View()
+			diskBefore, err := afero.ReadFile(base, store.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.SetFs(fault.FS(base, fault.FromBytes(taskFaultPlan(failAt))))
+			if _, err := store.ApplyBatch(
+				[]TaskInput{{Description: "new", Prompt: "prompt"}},
+				[]TaskUpdate{{ID: added[0].ID, Status: TaskDone}},
+			); err == nil {
+				t.Fatalf("ApplyBatch fault %d unexpectedly succeeded", failAt)
+			}
+			if got := store.View(); !reflect.DeepEqual(got, before) {
+				t.Fatalf("live state after rejected ApplyBatch = %#v, want %#v", got, before)
+			}
+			assertBytesUnchanged(t, base, store.path, diskBefore)
+			assertReloadedTasks(t, base, store.path, before)
+		})
+	}
+}
+
+func TestTaskStore_ApplyBatchRejectsFencedStore(t *testing.T) {
+	t.Parallel()
+	base := afero.NewMemMapFs()
+	store := NewTaskStore("/state", "apply-batch-fenced").SetFs(base)
+	original := []byte("{malformed task json")
+	if err := afero.WriteFile(base, store.path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Load(); err == nil {
+		t.Fatal("Load unexpectedly accepted malformed JSON")
+	}
+	if _, err := store.ApplyBatch(
+		[]TaskInput{{Description: "overwrite", Prompt: "prompt"}},
+		[]TaskUpdate{{ID: 1, Status: TaskDone}},
+	); err == nil || !strings.Contains(strings.ToLower(err.Error()), "unavailable") {
+		t.Fatalf("fenced ApplyBatch error = %v, want unavailable fence", err)
+	}
+	assertBytesUnchanged(t, base, store.path, original)
+}
