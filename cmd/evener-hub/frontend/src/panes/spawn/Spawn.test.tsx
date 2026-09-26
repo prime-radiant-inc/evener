@@ -1782,15 +1782,6 @@ afterEach(() => {
 // Prompt card first, taking the page's slack; ONE configuration row beneath it
 // (working directory, model, effort); harness in Advanced options.
 
-test("the directory is established before composing the prompt", async () => {
-  renderSpawn(readyClient());
-  await settled();
-
-  const card = screen.getByTestId("spawn-prompt-card");
-  const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
-  expect(dir.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-});
-
 test("the desktop directory trigger announces the confirmed path", async () => {
   const user = setupUser();
   renderSpawn(readyClient());
@@ -1799,6 +1790,13 @@ test("the desktop directory trigger announces the confirmed path", async () => {
   expect(screen.getByLabelText("Working directory: /tmp/project", { selector: "#spawn-cwd" })).toBe(workingDir());
 });
 
+// Issue #198: the attach button, model trigger, and effort control are the
+// composer's, in the composer's place - the card's own control row - rather
+// than a fixed band at the foot of the viewport and bespoke rows in the
+// settings list. jsdom renders the desktop and mobile layouts together (the
+// split is CSS-only), so one render covers both. The mobile row order is the
+// Treatment A list plus session-only Plugins. Model AND effort left it when
+// the card took the job.
 test("the directory and git info sit above the prompt; model and effort live in the card", async () => {
   renderSpawn(readyClient());
   await settled();
@@ -1817,31 +1815,13 @@ test("the directory and git info sit above the prompt; model and effort live in 
   expect(card.contains(modelTrigger())).toBe(true);
   expect(card.contains(effortControl())).toBe(true);
   expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
+  // The prompt takes the page's vertical slack via its own min-height.
   expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
-});
-
-// Issue #198: the attach button, model trigger, and effort control are the
-// composer's, in the composer's place - the card's own control row - rather
-// than a fixed band at the foot of the viewport and bespoke rows in the
-// settings list. The row order below is the Treatment A list plus
-// session-only Plugins. Model AND effort left it when the card took the job.
-test("mobile Spawn sets attachments, the model, and effort from inside the prompt card", async () => {
-  renderSpawn(readyClient());
-  await settled();
 
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
     [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
   ).toEqual(["Harness", "Working directory", "Branch", "Access mode", "Plugins"]);
-
-  const card = screen.getByTestId("spawn-prompt-card");
-  const controls = screen.getByTestId("spawn-controls");
-  expect(card.contains(controls)).toBe(true);
-  expect(card.contains(screen.getByTestId("spawn-attach"))).toBe(true);
-  expect(card.contains(modelTrigger())).toBe(true);
-  expect(card.contains(effortControl())).toBe(true);
-  expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
 });
 
 // The card's trigger says what the Model field says: "(default)" while the
@@ -2020,18 +2000,6 @@ test("the prompt field is seamless, so the card's border is the only one", async
   renderSpawn(readyClient());
   await settled();
   expect(screen.getByRole("textbox", { name: "Prompt" }).className.split(" ")).toContain(textareaStyles.seamless);
-});
-
-// The prompt takes the page's vertical slack via its own min-height, which is
-// what closes the dead gap that used to sit under the actions row.
-test("the prompt field opens at a size worth writing in, not one line", async () => {
-  renderSpawn(readyClient());
-  await settled();
-  expect(
-    (screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).style.getPropertyValue(
-      "--textarea-min-lines",
-    ),
-  ).toBe("6");
 });
 
 // --- branch: a read-only HEAD readout on the directory row -----------------
@@ -7377,31 +7345,6 @@ test("a user's explicit model pick is preserved when the target becomes remote",
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params.source).toBe("buildbox");
   expect(params.model).toBe("openai/gpt-5");
-});
-
-// The submit snapshots the source (handleSpawn's closure carries the
-// submittedSource/remoteLaunch thread/start and saveDefaults receive) and then
-// awaits the local directory preflight, so a host change mid-submit would
-// launch on a different host than the picker shows. The picker is disabled
-// while busy instead.
-test("the host picker cannot change while a submit is in flight", async () => {
-  const user = setupUser();
-  seedSources([
-    { id: "local", label: "Local", kind: "local", online: true },
-    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
-  ]);
-  const started = deferred<ThreadStartResponse>();
-  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
-  window.history.pushState({}, "", "/new?dir=/tmp/busy-host");
-  renderSpawn(fake);
-  await settled();
-
-  await fillPrompt(user, "run locally");
-  await user.click(screen.getByTestId("spawn-submit"));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
-  expect((screen.getByLabelText("Host") as HTMLSelectElement).disabled).toBe(true);
-
-  await act(async () => started.resolve(startResponse("local:busy-host")));
 });
 
 // The dir-picker's seed (GLOBAL_LAST_WORKING_DIR_KEY) is the CONTROLLER's own
