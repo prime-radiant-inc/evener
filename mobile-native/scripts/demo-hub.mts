@@ -11,8 +11,14 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
+import { createDemoFleet, navigationCapability, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 
-export async function createDemoHub(port = 9196, initialMarkdown?: string) {
+export async function createDemoHub(
+	port = 9196,
+	initialMarkdown?: string,
+	fleetOptions?: DemoFleetOptions,
+) {
+	const demoFleet = fleetOptions ? createDemoFleet(fleetOptions) : null;
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -89,8 +95,9 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 			transcriptList: false,
 			modelList: true,
 			directoryComplete: false,
-			auth: false,
+			auth: demoFleet !== null,
 		},
+		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
 	function resync(thread: Thread) {
@@ -103,6 +110,11 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 						params: { threadId: thread.id, ref: thread.evener.ref },
 					}),
 				);
+	}
+	function requireFleet() {
+		if (!demoFleet)
+			throw new Error("Method not implemented by demonstration server");
+		return demoFleet;
 	}
 	server.on("connection", (socket) => {
 		socket.on("close", () => subscribers.delete(socket));
@@ -365,6 +377,18 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 						changed = thread;
 						break;
 					}
+					case "evener/navigation/read":
+						result = requireFleet().answerNavigationRead(params);
+						break;
+					case "evener/search":
+						result = requireFleet().answerSearch(params);
+						break;
+					case "evener/auth/list":
+						result = requireFleet().answerAuthList();
+						break;
+					case "evener/plugin/list":
+						result = requireFleet().answerPluginList();
+						break;
 					default:
 						throw new Error("Method not implemented by demonstration server");
 				}
@@ -404,6 +428,9 @@ if (
 		Number(process.env.EVENER_DEMO_PORT ?? 9196),
 		process.env.EVENER_DEMO_MARKDOWN
 			? readFileSync(process.env.EVENER_DEMO_MARKDOWN, "utf8")
+			: undefined,
+		process.env.EVENER_DEMO_FLEET === "1"
+			? { offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1" }
 			: undefined,
 	);
 	console.info(
