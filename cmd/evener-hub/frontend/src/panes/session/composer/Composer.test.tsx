@@ -295,7 +295,25 @@ async function mountComposerWithHandle(
       <Composer ref={ref} focused={options.focused ?? false} />
     </ClientProvider>,
   );
+  await settleActivityDiscovery(ref);
   return { fake, ...view };
+}
+
+// A live composer's inline SessionChrome starts activity discovery on mount,
+// and its settle re-renders the chrome. Waiting for it here keeps that
+// re-render inside act() instead of landing after a test that asserts
+// straight off the mount.
+async function settleActivityDiscovery(ref: string): Promise<void> {
+  await act(async () => {
+    if (!activitySummaryStore.getState().entries.get(ref)?.loading) return;
+    await new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        if (state.entries.get(ref)?.loading) return;
+        unsubscribe();
+        resolve();
+      });
+    });
+  });
 }
 
 async function mountComposer(
@@ -2195,6 +2213,8 @@ test("stop and steer both render and both work during the window after status fl
 // the render that offered the button. Here the status frame and the press
 // share one task (no render between them), so the render-time verdict still
 // says active while the store says idle; the handler has to ask the store.
+// Each test folds the frame and presses inside one act(): React defers the
+// re-render the frame schedules until the act scope exits, after the press.
 function foldStatusFrame(fake: FakeClient, statusType: string): void {
   fake.emitNotification({
     method: "thread/status/changed",
@@ -2219,8 +2239,10 @@ test("Steer pressed after an idle frame folded in the same task is refused on th
   }));
   await user.type(textarea(), "hi");
   const steer = steerButton();
-  foldStatusFrame(fake, "idle");
-  fireEvent.click(steer);
+  act(() => {
+    foldStatusFrame(fake, "idle");
+    fireEvent.click(steer);
+  });
   await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Steer failed: no active turn"));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
@@ -2239,8 +2261,10 @@ test("Stop pressed after an idle frame folded in the same task is refused on the
     },
   }));
   const stop = stopButton();
-  foldStatusFrame(fake, "idle");
-  fireEvent.click(stop);
+  act(() => {
+    foldStatusFrame(fake, "idle");
+    fireEvent.click(stop);
+  });
   await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Interrupt failed: no active turn"));
   expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(0);
 });
@@ -2264,8 +2288,10 @@ test("submit after an active frame folded in the same task routes to queue on th
   }
   await user.type(textarea(), "hi");
   const submit = submitButton();
-  foldStatusFrame(fake, "active");
-  fireEvent.click(submit);
+  act(() => {
+    foldStatusFrame(fake, "active");
+    fireEvent.click(submit);
+  });
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
@@ -2328,8 +2354,10 @@ test("submit after the pending send cleared in the same task routes to send on t
   // in the same task as the press, so the press has to read the store.
   await user.type(textarea(), "third");
   const submit = submitButton();
-  resetPendingTurnsStoreForTests();
-  fireEvent.click(submit);
+  act(() => {
+    resetPendingTurnsStoreForTests();
+    fireEvent.click(submit);
+  });
   await waitFor(async () => expect(await routeOf("third")).toBe("turn/start"));
 });
 
