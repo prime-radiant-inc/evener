@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { ActivityTree } from "./activityData";
 import { type ActivityClient, ActivityList } from "./activityList";

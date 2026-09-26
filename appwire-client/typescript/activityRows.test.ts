@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { ActivityJob, ActivitySessionNode, ActivityShellEntry, ActivityTree } from "./activityData";
 import { activityDelegateState, buildActivityRows, foldRowID, indexActivityEntities } from "./activityRows";

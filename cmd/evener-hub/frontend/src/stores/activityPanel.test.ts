@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import type { ActivityTree } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";

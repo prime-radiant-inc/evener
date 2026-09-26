@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "../../model";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";

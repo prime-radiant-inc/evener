@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { AnsiLine } from "./ansi";
 import { AnsiTailBuffer, parseAnsiLines } from "./ansi";
