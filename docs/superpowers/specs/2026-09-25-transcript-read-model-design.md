@@ -679,8 +679,9 @@ calls is recorded (`agent/session_model_call.go:994-996`).
 
 ### New entry kinds stay out of model history
 
-The new entry kinds are the completion entry, COMMUNICATE, and the
-presentational entries. They are written to the transcript only. They never
+The new entry kinds are the completion entry, the reopen marker
+(`TURN_REOPEN`, `agent/schema/turn.go`), COMMUNICATE, and the presentational
+entries. They are written to the transcript only. They never
 enter the session's in-memory history, and resume skips them.
 
 So these consumers never see them:
@@ -809,9 +810,10 @@ recorded length only grows, so snapshots of one incarnation order by length.
 Incarnations themselves are not ordered, so every **latest-window** read request
 carries a **request generation**. The client increments it for each latest-window
 read it issues, and the response echoes it.
-- **Ordering.** The client applies a latest-window response only if no response
-  to a later generation has been applied. So a slow response from an old sidecar
-  can never overwrite history from a newer one.
+- **Ordering.** The client discards a latest-window response whose generation is
+  lower than the newest it has issued for the thread, and one issued before the
+  thread's last invalidation (the rule under Crash or power loss). So a slow
+  response from an old sidecar can never overwrite history from a newer one.
 - **Backfill pages** carry no generation. They accumulate within their snapshot,
   in any arrival order. A page is dropped when its snapshot cannot be the
   current one: a different incarnation (incarnations compare by equality
@@ -826,9 +828,12 @@ incarnation is valid. Each rule applies on one side:
   from the one the client holds, the client replaces the thread's whole history
   with it. A backfill page from a different incarnation never replaces anything.
   The server rejects its stale cursor, and the client re-reads the latest window.
-- **The client discards.** A response from the client's incarnation with a
-  shorter recorded length than the client already holds arrived out of order.
-  The client discards it and re-reads the latest window.
+- **The client discards.** Within one boot generation, a response from the
+  client's incarnation with a shorter recorded length than the client already
+  holds arrived out of order. The client discards it and re-reads the latest
+  window. After a crash the boot generation changes first. The boot-generation
+  rule replaces the whole history before any length comparison, so a
+  post-crash truncation is never discarded by this rule.
 
 The hub already
 rotates its cursor incarnation when a snapshot does not extend the previous one
@@ -871,8 +876,10 @@ it holds three tables of fixed-size records.
   snapshot at recorded length `L` binary-searches the log for the first record
   at or past `L` and returns the items and turns it names. The log is bounded
   to the newest 10,000 records: an extension that would grow it past that
-  cuts the oldest ones, and the header persists the byte offset the cut
-  entries' updates started from as the log's retained floor. A request whose
+  cuts the oldest ones, and the header persists the log's retained floor
+  (`UpdatesFrom`): one past the causing-entry offset of the newest record it
+  removed (`internal/transcriptindex/index.go`). Every update at or after the
+  floor is still in the log. A request whose
   held length is below that floor predates what the log still retains — the
   binary search alone cannot tell that case apart from "no updates yet," so
   the floor is what makes it decidable — and gets a full latest-window
@@ -972,7 +979,7 @@ fields therefore ship in one release (phase 2):
 - `roundID` (on the ASSISTANT and salvage entries)
 - `OriginalOrdinal`
 - the per-entry model
-- the completion, COMMUNICATE and presentational entries
+- the completion, reopen (`TURN_REOPEN`), COMMUNICATE and presentational entries
 - timing fields
 
 The version skew then happens once. The release notes tell users to restart the
