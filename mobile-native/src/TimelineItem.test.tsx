@@ -90,11 +90,11 @@ function userBubbleStyle() {
 it("fills your message bubble with the accent tint in both themes", () => {
 	mode.scheme = "light";
 	expect(userBubbleStyle()).toEqual(
-		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#D7E9F9" })]),
+		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#DDEBFC" })]),
 	);
 
 	mode.scheme = "dark";
 	expect(userBubbleStyle()).toEqual(
-		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#273541" })]),
+		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#2A343D" })]),
 	);
 });

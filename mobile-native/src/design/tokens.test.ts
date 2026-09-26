@@ -31,22 +31,22 @@ describe("the palette is the spec's (section 16.1)", () => {
 });
 
 describe("tints: the hue at 15% over surface, edges at 40% over edge", () => {
-	it("mix blends in sRGB and rounds each channel", () => {
-		expect(mix("#000000", "#FFFFFF", 0.5)).toBe("#808080");
-		expect(mix("#F59E0B", "#FCFBF8", 0.15)).toBe("#FBEDD4");
+	it("mix blends in OKLab, as CSS color-mix does, and rounds each channel", () => {
+		expect(mix("#000000", "#FFFFFF", 0.5)).toBe("#636363");
+		expect(mix("#F59E0B", "#FCFBF8", 0.15)).toBe("#FCEEDC");
 	});
 	it("light tints", () => {
 		expect(palettes.light).toMatchObject({
-			attentionBg: "#FBEDD4", attentionEdge: "#E7C384", aliveBg: "#DAECDE", aliveEdge: "#8EC29E",
-			dangerBg: "#F8E0DE", dangerEdge: "#DFA09E", accentBg: "#D7E9F9", accentEdge: "#85B9E5",
-			bubble: "#D7E9F9",
+			attentionBg: "#FCEEDC", attentionEdge: "#E9C598", aliveBg: "#DEEDDE", aliveEdge: "#9BC29E",
+			dangerBg: "#FDE2DD", dangerEdge: "#E7A69D", accentBg: "#DDEBFC", accentEdge: "#97BDEA",
+			bubble: "#DDEBFC",
 		});
 	});
 	it("dark tints", () => {
 		expect(palettes.dark).toMatchObject({
-			attentionBg: "#433324", attentionEdge: "#825834", aliveBg: "#273A2C", aliveEdge: "#386A4A",
-			dangerBg: "#412C2A", dangerEdge: "#7E4443", accentBg: "#273541", accentEdge: "#385D82",
-			bubble: "#273541",
+			attentionBg: "#3F3227", attentionEdge: "#7D583A", aliveBg: "#2B372C", aliveEdge: "#416749",
+			dangerBg: "#3F2D29", dangerEdge: "#7C4743", accentBg: "#2A343D", accentEdge: "#3D5C7D",
+			bubble: "#2A343D",
 		});
 	});
 });
