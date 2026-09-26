@@ -184,7 +184,7 @@ func setupErrorStore(t *testing.T) *PinSectionStore {
 	initErrorDriver()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seed := NewPinSectionStore(dbPath)
-	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "seed-session", time.Unix(1, 0)); err != nil {
+	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "", "seed-session", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	store := NewPinSectionStore(dbPath)
@@ -209,7 +209,7 @@ func resetErrorCounters() {
 func TestPinSectionStoreAssignCountNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestPinSectionStoreAssignCountNonRetryable(t *testing.T) {
 	// The Assign flow: sectionByIDTx (query 1), upsertSessionPinTx (exec 1),
 	// sessionPinCountTx (query 2). We fail the 2nd query (count).
 	errorQueryTarget.Store(2)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("Assign with non-retryable count error should fail")
 	}
@@ -234,7 +234,7 @@ func TestPinSectionStoreCreateOrReuseUpsertNonRetryable(t *testing.T) {
 	// The flow: sectionByKeyTx (query 1), newPinSectionID, INSERT (exec 1),
 	// upsertSessionPinTx (exec 2). We fail the 2nd exec (upsert).
 	errorExecTarget.Store(2)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection", "session-x", time.Unix(2, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection", "", "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("CreateOrReuseAndAssign with non-retryable upsert error should fail")
 	}
@@ -252,7 +252,7 @@ func TestPinSectionStoreCreateOrReuseCountNonRetryable(t *testing.T) {
 	// upsertSessionPinTx (exec 2), sessionPinCountTx (query 2).
 	// We fail the 2nd query (count).
 	errorQueryTarget.Store(2)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection2", "session-y", time.Unix(3, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection2", "", "session-y", time.Unix(3, 0))
 	if err == nil {
 		t.Fatalf("CreateOrReuseAndAssign with non-retryable count error should fail")
 	}
@@ -266,7 +266,7 @@ func TestPinSectionStoreCreateOrReuseCountNonRetryable(t *testing.T) {
 func TestPinSectionStoreRenameCountNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters() // ensure seeding succeeds
-	section, _, err := store.CreateOrReuseAndAssign("OldName", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("OldName", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestPinSectionStoreRenameCountNonRetryable(t *testing.T) {
 func TestPinSectionStoreRenameSectionByKeyNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("RenameMe", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("RenameMe", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestPinSectionStoreRenameSectionByKeyNonRetryable(t *testing.T) {
 func TestPinSectionStoreRenamePostUpdateSectionByIDNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("RenameMe2", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("RenameMe2", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestPinSectionStoreRenamePostUpdateSectionByIDNonRetryable(t *testing.T) {
 func TestPinSectionStoreDeleteSectionCountNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,11 +351,11 @@ func TestPinSectionStoreDeleteSectionCountNonRetryable(t *testing.T) {
 }
 
 // TestPinSectionStoreDeleteSessionRowsAffectedNonRetryable covers the
-// RowsAffected non-retryable error path in DeleteSession (line 524-526).
+// RowsAffected non-retryable error path in DeleteSession ("", line 524-526).
 func TestPinSectionStoreDeleteSessionRowsAffectedNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	_, _, err := store.CreateOrReuseAndAssign("Section", "session-x", time.Unix(1, 0))
+	_, _, err := store.CreateOrReuseAndAssign("Section", "", "session-x", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestPinSectionStoreDeleteSessionRowsAffectedNonRetryable(t *testing.T) {
 	// The DeleteSession flow: DELETE (exec), RowsAffected.
 	// We fail the RowsAffected call.
 	errorResultTarget.Store(1)
-	_, err = store.DeleteSession("session-x")
+	_, err = store.DeleteSession("", "session-x")
 	if err == nil {
 		t.Fatalf("DeleteSession with non-retryable RowsAffected error should fail")
 	}
@@ -377,7 +377,7 @@ func TestPinSectionStoreDeleteSessionRowsAffectedNonRetryable(t *testing.T) {
 func TestPinSectionStoreDeleteSectionExecNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete2", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete2", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestPinSectionStoreDeleteSectionExecNonRetryable(t *testing.T) {
 func TestPinSectionStoreRenameExecNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("RenameExec", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("RenameExec", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,14 +421,14 @@ func TestPinSectionStoreRenameExecNonRetryable(t *testing.T) {
 func TestPinSectionStoreDeleteSessionExecNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	_, _, err := store.CreateOrReuseAndAssign("Section", "session-y", time.Unix(1, 0))
+	_, _, err := store.CreateOrReuseAndAssign("Section", "", "session-y", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetErrorCounters()
 	// The DeleteSession flow: DELETE (exec), RowsAffected. We fail the exec.
 	errorExecTarget.Store(1)
-	_, err = store.DeleteSession("session-y")
+	_, err = store.DeleteSession("", "session-y")
 	if err == nil {
 		t.Fatalf("DeleteSession with non-retryable exec error should fail")
 	}
@@ -442,7 +442,7 @@ func TestPinSectionStoreDeleteSessionExecNonRetryable(t *testing.T) {
 func TestPinSectionStoreAssignUpsertNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestPinSectionStoreAssignUpsertNonRetryable(t *testing.T) {
 	// The Assign flow: sectionByIDTx (query 1), upsertSessionPinTx (exec 1).
 	// We fail the exec.
 	errorExecTarget.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("Assign with non-retryable upsert error should fail")
 	}

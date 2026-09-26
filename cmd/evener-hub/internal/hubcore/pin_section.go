@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/afero"
 	"golang.org/x/text/cases"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+
+	"primeradiant.com/evener/hubapi"
 )
 
 const PinSectionNameMaxRunes = 80
@@ -38,11 +40,34 @@ type PinSection struct {
 	UpdatedAt   time.Time
 }
 
-// SessionPin records the durable section assignment for one session.
+// SessionPin records the durable section assignment for one session. Source is
+// empty for the controller's own session and the host name for a remote one,
+// so two hosts' sessions that share a bare ID keep separate pins.
 type SessionPin struct {
+	Source     string
 	SessionID  string
 	SectionID  string
 	AssignedAt time.Time
+}
+
+// SessionPinKey returns the source-qualified key one session's pin is stored
+// under. Source normalizes like the decision stores' source: an absent or
+// "local" spelling is the controller's own session.
+func SessionPinKey(source, sessionID string) ArchiveKey {
+	return ArchiveKey{Kind: "session", ID: sessionID, Source: NormalizeDecisionSource(source)}
+}
+
+// SessionPinIdentity maps a session identity — a bare session ID, a
+// "local:<id>" ref, or a "<host>:<id>" ref — to the source-qualified pin key
+// it addresses. The wire spelling "local" and an absent source name the
+// controller's own session; any other host keeps its name, so one source's
+// identity can never address another source's row that shares its bare ID.
+func SessionPinIdentity(identity string) ArchiveKey {
+	ref, err := hubapi.ParseRef(identity)
+	if err != nil {
+		return SessionPinKey("", identity)
+	}
+	return SessionPinKey(ref.HostID, ref.SessionID)
 }
 
 // PinSectionStore persists named pin sections and their session assignments in
@@ -99,9 +124,11 @@ CREATE TABLE IF NOT EXISTS pin_section (
 
 const createSessionPinTable = `
 CREATE TABLE IF NOT EXISTS session_pin (
-  session_id  TEXT    NOT NULL PRIMARY KEY,
+  source      TEXT    NOT NULL DEFAULT '',
+  session_id  TEXT    NOT NULL,
   section_id  TEXT    NOT NULL REFERENCES pin_section(id) ON DELETE CASCADE,
-  assigned_at INTEGER NOT NULL
+  assigned_at INTEGER NOT NULL,
+  PRIMARY KEY (source, session_id)
 )`
 
 func (s *PinSectionStore) open() (*sql.DB, error) {
@@ -156,6 +183,10 @@ func (s *PinSectionStore) openWithImmediateTransaction(immediate bool) (*sql.DB,
 			return nil, err
 		}
 	}
+	if err := ensureIndexSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -195,12 +226,14 @@ GROUP BY s.id, s.name, s.name_key, s.created_at, s.updated_at
 	return out, rows.Err()
 }
 
-// Assign moves sessionID to sectionID, updating assigned_at only when the
-// section actually changes.
-func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (PinSection, bool, error) {
+// Assign moves the (source, sessionID) pin to sectionID, updating assigned_at
+// only when the section actually changes. Source normalizes the same way the
+// decision stores' does: absent/"local" is the controller's own session.
+func (s *PinSectionStore) Assign(sectionID, source, sessionID string, now time.Time) (PinSection, bool, error) {
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
+	source = NormalizeDecisionSource(source)
 	for attempt := range 8 {
 		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
@@ -228,7 +261,7 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 			_ = db.Close()
 			return PinSection{}, false, ErrPinSectionNotFound
 		}
-		changed, err := upsertSessionPinTx(tx, sessionID, sectionID, now)
+		changed, err := upsertSessionPinTx(tx, source, sessionID, sectionID, now)
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
@@ -267,8 +300,9 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 }
 
 // CreateOrReuseAndAssign creates a section when needed, reuses an existing
-// case-folded match, and assigns the session in the same transaction.
-func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now time.Time) (PinSection, bool, error) {
+// case-folded match, and assigns the (source, sessionID) pin in the same
+// transaction.
+func (s *PinSectionStore) CreateOrReuseAndAssign(name, source, sessionID string, now time.Time) (PinSection, bool, error) {
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
@@ -276,6 +310,7 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 	if err != nil {
 		return PinSection{}, false, err
 	}
+	source = NormalizeDecisionSource(source)
 	for attempt := range 8 {
 		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
@@ -298,7 +333,7 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 			}
 			return PinSection{}, false, err
 		}
-		changed, err := upsertSessionPinTx(tx, sessionID, section.ID, now)
+		changed, err := upsertSessionPinTx(tx, source, sessionID, section.ID, now)
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
@@ -336,9 +371,9 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 	return PinSection{}, false, fmt.Errorf("create or reuse pin section %q: retry limit reached", display)
 }
 
-// Unpin removes one session assignment while leaving its section intact.
-func (s *PinSectionStore) Unpin(sessionID string) (bool, error) {
-	return s.DeleteSession(sessionID)
+// Unpin removes one session's assignment while leaving its section intact.
+func (s *PinSectionStore) Unpin(source, sessionID string) (bool, error) {
+	return s.DeleteSession(source, sessionID)
 }
 
 // Rename updates a section's display name, allowing case-only changes.
@@ -510,11 +545,12 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 	return 0, false, fmt.Errorf("delete pin section %s: retry limit reached", sectionID)
 }
 
-// DeleteSession removes a single assignment by session ID.
-func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
+// DeleteSession removes a single (source, session ID) assignment.
+func (s *PinSectionStore) DeleteSession(source, sessionID string) (bool, error) {
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
+	source = NormalizeDecisionSource(source)
 	for attempt := range 8 {
 		db, err := s.openWriteAttempt(attempt)
 		if err != nil {
@@ -528,7 +564,7 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 			}
 			return false, err
 		}
-		res, err := tx.ExecContext(context.Background(), `DELETE FROM session_pin WHERE session_id = ?`, sessionID)
+		res, err := tx.ExecContext(context.Background(), `DELETE FROM session_pin WHERE source = ? AND session_id = ?`, source, sessionID)
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
@@ -563,9 +599,10 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 	return false, fmt.Errorf("delete session pin %s: retry limit reached", sessionID)
 }
 
-// Assignments returns every durable session-to-section mapping.
-func (s *PinSectionStore) Assignments() (map[string]SessionPin, error) {
-	out := make(map[string]SessionPin)
+// Assignments returns every durable session-to-section mapping, keyed by the
+// source-qualified identity it is stored under.
+func (s *PinSectionStore) Assignments() (map[ArchiveKey]SessionPin, error) {
+	out := make(map[ArchiveKey]SessionPin)
 	if s == nil || s.dbPath == "" {
 		return out, nil
 	}
@@ -574,7 +611,7 @@ func (s *PinSectionStore) Assignments() (map[string]SessionPin, error) {
 		return out, err
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.QueryContext(context.Background(), `SELECT session_id, section_id, assigned_at FROM session_pin ORDER BY session_id`)
+	rows, err := db.QueryContext(context.Background(), `SELECT source, session_id, section_id, assigned_at FROM session_pin ORDER BY source, session_id`)
 	if err != nil {
 		return out, err
 	}
@@ -582,11 +619,11 @@ func (s *PinSectionStore) Assignments() (map[string]SessionPin, error) {
 	for rows.Next() {
 		var pin SessionPin
 		var assignedAt int64
-		if err := rows.Scan(&pin.SessionID, &pin.SectionID, &assignedAt); err != nil {
+		if err := rows.Scan(&pin.Source, &pin.SessionID, &pin.SectionID, &assignedAt); err != nil {
 			return out, err
 		}
 		pin.AssignedAt = time.Unix(assignedAt, 0).UTC()
-		out[pin.SessionID] = pin
+		out[SessionPinKey(pin.Source, pin.SessionID)] = pin
 	}
 	return out, rows.Err()
 }
@@ -660,13 +697,13 @@ func sessionPinCountTx(tx *sql.Tx, sectionID string) (int, error) {
 	return count, nil
 }
 
-func upsertSessionPinTx(tx *sql.Tx, sessionID, sectionID string, now time.Time) (bool, error) {
+func upsertSessionPinTx(tx *sql.Tx, source, sessionID, sectionID string, now time.Time) (bool, error) {
 	res, err := tx.ExecContext(context.Background(), `
-INSERT INTO session_pin(session_id, section_id, assigned_at)
-VALUES (?, ?, ?)
-ON CONFLICT(session_id) DO UPDATE
+INSERT INTO session_pin(source, session_id, section_id, assigned_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(source, session_id) DO UPDATE
 SET section_id = excluded.section_id, assigned_at = excluded.assigned_at
-	WHERE session_pin.section_id <> excluded.section_id`, sessionID, sectionID, now.Unix())
+	WHERE session_pin.section_id <> excluded.section_id`, source, sessionID, sectionID, now.Unix())
 	if err != nil {
 		return false, err
 	}

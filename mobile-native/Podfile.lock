@@ -37,7 +37,7 @@ PODS:
     - ExpoModulesCore
   - ExpoFileSystem (57.0.6):
     - ExpoModulesCore
-  - ExpoFont (57.0.3):
+  - ExpoFont (57.0.4):
     - ExpoModulesCore
   - ExpoImageManipulator (57.0.16):
     - ExpoModulesCore
@@ -2074,7 +2074,7 @@ DEPENDENCIES:
   - ExpoCrypto (from `../node_modules/expo-crypto/ios`)
   - "ExpoDomWebView (from `../node_modules/expo/node_modules/@expo/dom-webview/ios`)"
   - ExpoFileSystem (from `../node_modules/expo-file-system/ios`)
-  - ExpoFont (from `../node_modules/expo/node_modules/expo-font/ios`)
+  - ExpoFont (from `../node_modules/expo-font/ios`)
   - ExpoImageManipulator (from `../node_modules/expo-image-manipulator/ios`)
   - ExpoImagePicker (from `../node_modules/expo-image-picker/ios`)
   - ExpoKeepAwake (from `../node_modules/expo/node_modules/expo-keep-awake/ios`)
@@ -2188,7 +2188,7 @@ EXTERNAL SOURCES:
   ExpoFileSystem:
     :path: "../node_modules/expo-file-system/ios"
   ExpoFont:
-    :path: "../node_modules/expo/node_modules/expo-font/ios"
+    :path: "../node_modules/expo-font/ios"
   ExpoImageManipulator:
     :path: "../node_modules/expo-image-manipulator/ios"
   ExpoImagePicker:
@@ -2377,7 +2377,7 @@ SPEC CHECKSUMS:
   ExpoCrypto: f392e5f076a4c11dbfa1a6046449747acec82711
   ExpoDomWebView: beaec034e51bd028428b98bb1f2633ab79c6d095
   ExpoFileSystem: cc500f33804065aacc7b3366007267b84deca8c8
-  ExpoFont: d5b77d74f8d5d1a248de70955bfad847079e9074
+  ExpoFont: f8198a952ba2ff53c9b393b5269ea435f232cfc3
   ExpoImageManipulator: 6ef20bed2da7cb3897f1e434552275e4dcd74eb1
   ExpoImagePicker: 2286f2bcb81240cf66208dacddc2367fd4a1b715
   ExpoKeepAwake: c26f14275017370cc8a4b7b43a0e23361f2053a5

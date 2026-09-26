@@ -93,6 +93,7 @@ func TestCovWatchInspectFound(t *testing.T) {
 // TestCovMarshalBoundedJSON covers marshalBoundedJSON
 // (session_tools_jobs.go lines 1978-1987).
 func TestCovMarshalBoundedJSON2(t *testing.T) {
+	t.Parallel()
 	// Successful marshal within bounds.
 	got, err := marshalBoundedJSON(map[string]any{"key": "val"}, 1000)
 	if err != nil {
@@ -127,6 +128,7 @@ func TestCovMarshalBoundedJSON2(t *testing.T) {
 // TestCovMarshalBoundedJSONWithFit covers marshalBoundedJSONWithFit
 // (session_tools_jobs.go lines 1992-2001).
 func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
+	t.Parallel()
 	// Fits within bounds.
 	got, fits, err := marshalBoundedJSONWithFit(map[string]any{"k": "v"}, 1000)
 	if err != nil || !fits || got != `{"k":"v"}` {
@@ -214,6 +216,7 @@ func TestCovSessionRunningJobIDs(t *testing.T) {
 // TestCovJobStatusArrayArg covers jobStatusArrayArg
 // (session_tools_jobs.go lines 1701-1723): all valid/invalid statuses.
 func TestCovJobStatusArrayArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil, no error.
 	statuses, err := jobStatusArrayArg(map[string]any{}, "status")
 	if err != nil || statuses != nil {
@@ -274,6 +277,7 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 // TestCovJobTypeArrayArg covers jobTypeArrayArg
 // (session_tools_jobs.go lines 1867-1887).
 func TestCovJobTypeArrayArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	types, err := jobTypeArrayArg(map[string]any{}, "type")
 	if err != nil || types != nil {
@@ -434,6 +438,7 @@ func TestCovWatchArgsFromToolArgs2(t *testing.T) {
 // TestCovWatchEventFilterArg covers watchEventFilterArg
 // (session_tools_jobs.go lines 1786-1814).
 func TestCovWatchEventFilterArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	f, err := watchEventFilterArg(map[string]any{})
 	if err != nil || f != nil {
@@ -495,6 +500,7 @@ func TestCovWatchEventFilterArg2(t *testing.T) {
 // TestCovStringArrayArg covers stringArrayArg
 // (session_tools_jobs.go lines 1816-1834).
 func TestCovStringArrayArg2(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	arr, err := stringArrayArg(map[string]any{}, "events")
 	if err != nil || arr != nil {
@@ -523,6 +529,7 @@ func TestCovStringArrayArg2(t *testing.T) {
 // TestCovWatchSendArg covers watchSendArg
 // (session_tools_jobs.go lines 1837-1858).
 func TestCovWatchSendArg(t *testing.T) {
+	t.Parallel()
 	// Not present — nil.
 	s, err := watchSendArg(map[string]any{})
 	if err != nil || s != nil {
@@ -1173,6 +1180,7 @@ func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
 // TestCovDecodeDelegateArgs covers decodeDelegateArgs
 // (session_tools_jobs.go lines 345-382): validation branches.
 func TestCovDecodeDelegateArgs2(t *testing.T) {
+	t.Parallel()
 	// Valid minimal.
 	a, err := decodeDelegateArgs(map[string]any{"prompt": "do work"})
 	if err != nil {

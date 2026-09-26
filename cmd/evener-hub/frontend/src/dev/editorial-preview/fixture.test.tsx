@@ -85,3 +85,16 @@ test("real AppShell opens fixture parent, distinct child, and returns via naviga
   expect(screen.getByText("Parent analysis: fixture-only evidence.")).toBeTruthy();
   expect(client.rejectedRequests).toEqual([]);
 }, 20000);
+
+// The real AppShell asks for the spawn pane's slash catalog whenever it gets
+// to it, and the timing varies, so the fixture has to answer it: an
+// unscripted method lands in rejectedRequests and fails the test above only
+// on the runs where the request wins the race (#2446).
+test("the editorial client answers the spawn pane's slash catalog request", async () => {
+  const client = createEditorialClient();
+  await expect(client.request("evener/spawn/slashCatalog", { cwd: "/fixture/editorial" })).resolves.toEqual({
+    commands: [],
+    skills: [],
+  });
+  expect(client.rejectedRequests).toEqual([]);
+});

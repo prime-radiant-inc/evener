@@ -101,16 +101,16 @@ type navigationBuildInputs struct {
 
 	// These maps are decorations captured with Tree. IDs may be a node ID or its
 	// canonical ref; projection checks both without consulting a live roster.
-	Live                map[string]bool
-	Renameable          map[string]bool
-	SessionFavorite     map[string]bool
-	ProjectFavorite     map[string]bool
-	PinSectionBySession map[string]string
-
+	Live            map[string]bool
+	Renameable      map[string]bool
+	SessionFavorite map[string]bool
+	ProjectFavorite map[string]bool
 	// PinSections and PinAssignments are used when callers retain the durable
-	// pin snapshot instead of precomputing PinSectionBySession.
+	// pin snapshot. PinAssignments is keyed by the (source, session id) pair a
+	// pin is stored under, so one source's pin never decorates another source's
+	// row that shares its bare ID.
 	PinSections    []hubcore.PinSection
-	PinAssignments map[string]hubcore.SessionPin
+	PinAssignments map[hubcore.ArchiveKey]hubcore.SessionPin
 }
 
 type navigationProjection struct {
@@ -124,6 +124,10 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
+	// offlineSources is the set of manifest source IDs whose connection state
+	// is down, indexed once per projection so every row can answer "is my
+	// source unreachable?" from the same capture the manifest serves.
+	offlineSources map[string]bool
 }
 
 type navigationPinSection struct {
@@ -150,7 +154,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -236,20 +240,13 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 	if out.ProjectFavorite, err = cloneBool(in.ProjectFavorite); err != nil {
 		return navigationBuildInputs{}, err
 	}
-	out.PinSectionBySession = make(map[string]string, len(in.PinSectionBySession))
-	for key, value := range in.PinSectionBySession {
-		if err := ctx.Err(); err != nil {
-			return navigationBuildInputs{}, err
-		}
-		out.PinSectionBySession[key] = value
-	}
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
-	for id, assignment := range in.PinAssignments {
+	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
+	for key, assignment := range in.PinAssignments {
 		if err := ctx.Err(); err != nil {
 			return navigationBuildInputs{}, err
 		}
-		out.PinAssignments[id] = assignment
+		out.PinAssignments[key] = assignment
 	}
 	out.Tree, err = in.Tree.SnapshotContext(ctx)
 	if err != nil {
@@ -266,9 +263,8 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.Renameable = cloneNavigationBoolMap(in.Renameable)
 	out.SessionFavorite = cloneNavigationBoolMap(in.SessionFavorite)
 	out.ProjectFavorite = cloneNavigationBoolMap(in.ProjectFavorite)
-	out.PinSectionBySession = cloneNavigationStringMap(in.PinSectionBySession)
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
+	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
 	maps.Copy(out.PinAssignments, in.PinAssignments)
 	return out
 }
@@ -304,12 +300,6 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 		return nil
 	}
 	out := make(map[string]bool, len(in))
-	maps.Copy(out, in)
-	return out
-}
-
-func cloneNavigationStringMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
 	maps.Copy(out, in)
 	return out
 }
@@ -1544,15 +1534,6 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		}
 		byID[section.ID] = navigationPinSection{id: section.ID, name: section.Name, memberCount: section.MemberCount}
 	}
-	assignment := cloneNavigationStringMap(p.inputs.PinSectionBySession)
-	for sessionID, pin := range p.inputs.PinAssignments {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if assignment[sessionID] == "" {
-			assignment[sessionID] = pin.SectionID
-		}
-	}
 	for _, node := range p.pinCandidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1561,10 +1542,7 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		if err != nil {
 			continue
 		}
-		sectionID := assignment[node.ID]
-		if sectionID == "" {
-			sectionID = assignment[ref.String()]
-		}
+		sectionID := p.pinSectionIDFor(ref)
 		section, ok := byID[sectionID]
 		if !ok || sectionID == "" {
 			continue
@@ -1654,7 +1632,7 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	}
 	if _, exists := p.locations[ref.String()]; !exists {
 		summary := navigationProjector{projection: p}.projectShallow(node)
-		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionFor(node.ID, ref.String()), Session: &summary}
+		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
 	for _, child := range node.Children {
 		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
@@ -1742,7 +1720,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 	if !updated.IsZero() {
 		updatedAt = &updated
 	}
-	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
+	pinned := p.projection.pinSectionIDFor(ref) != ""
 	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
@@ -1765,6 +1743,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
 		AskPending:          node.AskPending,
 		Dormant:             node.Dormant,
+		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           updatedAt,
 		MoreSubagents:       node.MoreSubagents,
 		RunningJobs:         navigationJobs(node.RunningJobs),
@@ -1774,6 +1753,39 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		OmittedArmedWatches: omittedArmedWatches,
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// offlineSourceIDs indexes the manifest sources whose connection state is
+// down, keyed by source ID so a row can ask "is my source unreachable?" from
+// the same enumeration the manifest serves.
+//
+// A source absent from the manifest is not offline, matching sourceOnline's
+// fail-open answer for an unregistered source.
+func offlineSourceIDs(sources []hubapi.Source) map[string]bool {
+	var offline map[string]bool
+	for _, source := range sources {
+		if source.ID == "" || source.Online {
+			continue
+		}
+		if offline == nil {
+			offline = make(map[string]bool)
+		}
+		offline[source.ID] = true
+	}
+	return offline
+}
+
+// sourceOffline reports whether the row's owning source is unreachable. It is
+// a property of the source, not the row: a quiet row is as offline as an
+// active one when its host is down.
+//
+// "Owning source" is the row's canonical source identity — the ref host that
+// HostID carries to the frontend — so the marker and the row's host label
+// always name the same source. A row whose advertised ref names a different
+// source than the one that listed it is a conflicting row (the ingestion
+// marks it incomplete); it still marks by the host it names.
+func (p navigationProjection) sourceOffline(hostID string) bool {
+	return p.offlineSources[hostID]
 }
 
 func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
@@ -1994,28 +2006,17 @@ func (p navigationProjection) renameable(id, ref string) bool {
 func (p navigationProjection) sessionFavorite(id, ref string) bool {
 	return p.inputs.SessionFavorite[id] || p.inputs.SessionFavorite[ref]
 }
-func (p navigationProjection) pinSectionFor(id, ref string) string {
-	if value := p.inputs.PinSectionBySession[id]; value != "" {
-		if p.pinSectionIDs[value] {
-			return value
-		}
+
+// pinSectionIDFor is the one pin lookup every consumer shares: the section a
+// row's own (source, session id) pair is assigned to, or "" when no durable
+// section holds it. Callers pass the row's canonical ref, which already
+// carries the source, so no lookup can fall back to a bare ID.
+func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
+	assignment, ok := p.inputs.PinAssignments[hubcore.SessionPinKey(ref.HostID, ref.SessionID)]
+	if !ok || !p.pinSectionIDs[assignment.SectionID] {
+		return ""
 	}
-	if value := p.inputs.PinSectionBySession[ref]; value != "" {
-		if p.pinSectionIDs[value] {
-			return value
-		}
-	}
-	if assignment, ok := p.inputs.PinAssignments[id]; ok {
-		if p.pinSectionIDs[assignment.SectionID] {
-			return assignment.SectionID
-		}
-	}
-	if assignment, ok := p.inputs.PinAssignments[ref]; ok {
-		if p.pinSectionIDs[assignment.SectionID] {
-			return assignment.SectionID
-		}
-	}
-	return ""
+	return assignment.SectionID
 }
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {

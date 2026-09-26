@@ -87,6 +87,9 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
 			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, executableProbeRemote("evener")):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(evenerPathMissingMarker + "\n"), nil
 		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):

@@ -420,6 +420,10 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
 				return []byte("4242\n"), nil
@@ -488,6 +492,10 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
 				return []byte("4242\n"), nil
@@ -544,6 +552,10 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
 				return []byte("4242\n"), nil
@@ -594,6 +606,10 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
 				return []byte("4242\n"), nil
@@ -844,6 +860,10 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
 				return []byte("4242\n"), nil
@@ -948,6 +968,195 @@ func TestRestartBareRefusesForeignProcessOnHubPort(t *testing.T) {
 		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("refused process was still killed: %v", argv)
 		}
+	}
+}
+
+// TestRestartBareRefusesListenerOwnedByAnotherUser proves the identity read
+// compares the listener's owning user against the host's effective SSH user
+// (spec 04 §"Stop/restart mechanics" check 3): a hub-looking process owned by
+// another user is refused with ErrRestart, with no kill and no relaunch.
+func TestRestartBareRefusesListenerOwnedByAnotherUser(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", User: "dev"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
+		case strings.Contains(joined, "ps -o user= -p 4242"):
+			return []byte("root\n"), nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for a listener owned by another user", err)
+	}
+	if !strings.Contains(err.Error(), `"root"`) || !strings.Contains(err.Error(), `"dev"`) {
+		t.Fatalf("error does not name both the owner and the effective user: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		remote := strings.Join(argv, " ")
+		if strings.Contains(remote, "kill -- 4242") {
+			t.Fatalf("foreign-owned process was still killed: %v", argv)
+		}
+		if strings.Contains(remote, "nohup") {
+			t.Fatalf("foreign-owned process was still relaunched: %v", argv)
+		}
+	}
+}
+
+// TestRestartBareRefusesWhenListenerOwnerIsNotTheProbedLoginUser proves the
+// effective user follows the spec's chain when the entry names none: a host
+// reached through an ambient ssh_config resolves no user name from its entry, so
+// the identity read probes the login user (`id -un`) and compares the owner
+// against it.
+func TestRestartBareRefusesWhenListenerOwnerIsNotTheProbedLoginUser(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
+		case strings.Contains(joined, "ps -o user= -p 4242"):
+			return []byte("root\n"), nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for a listener not owned by the probed login user", err)
+	}
+	if !strings.Contains(err.Error(), `"root"`) || !strings.Contains(err.Error(), `"dev"`) {
+		t.Fatalf("error does not name both the owner and the probed login user: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		remote := strings.Join(argv, " ")
+		if strings.Contains(remote, "kill -- 4242") {
+			t.Fatalf("foreign-owned process was still killed: %v", argv)
+		}
+		if strings.Contains(remote, "nohup") {
+			t.Fatalf("foreign-owned process was still relaunched: %v", argv)
+		}
+	}
+}
+
+// TestRestartBareRestartsAListenerOwnedByTheEffectiveUser is the matching half
+// of the owner check: when the probed login user owns the process, the restart
+// proceeds — and the identity read must actually have read both the user and the
+// owner before the kill.
+func TestRestartBareRestartsAListenerOwnedByTheEffectiveUser(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	killed := false
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, "lsof -ti :"+port):
+			if !killed {
+				return []byte("4242\n"), nil
+			}
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
+		case strings.Contains(joined, "ps -o user= -p 4242"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			return nil, nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+		t.Fatalf("restartBare: %v (a hub owned by the effective user must restart)", err)
+	}
+	var probedUser, probedOwner, relaunched bool
+	for _, argv := range fr.recordedRuns() {
+		remote := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(remote, "id -un"):
+			probedUser = true
+		case strings.Contains(remote, "ps -o user= -p 4242"):
+			probedOwner = true
+		case strings.Contains(remote, "nohup"):
+			relaunched = true
+		}
+	}
+	if !probedUser || !probedOwner {
+		t.Fatalf("identity read did not compare the owner (login user probed=%v, owner probed=%v): %v", probedUser, probedOwner, fr.recordedRuns())
+	}
+	if !relaunched {
+		t.Fatalf("hub owned by the effective user was not relaunched: %v", fr.recordedRuns())
+	}
+}
+
+// TestEffectiveUserName pins the spec's resolution chain: the destination
+// composeDest dials decides the user, and a destination that names none reports
+// unknown so the restart probes the login user instead of comparing the owner
+// against an empty string (which would refuse every legitimate hub on an
+// ambient-ssh_config host).
+func TestEffectiveUserName(t *testing.T) {
+	cases := []struct {
+		name string
+		host hostreg.Host
+		want string
+		ok   bool
+	}{
+		{"an explicit user composes the destination", hostreg.Host{SSH: "alpha.example", User: "dev"}, "dev", true},
+		{"a user@host destination names its user", hostreg.Host{SSH: "bob@alpha.example"}, "bob", true},
+		{"a bare hostname names none", hostreg.Host{SSH: "alpha.example"}, "", false},
+		{"an empty destination names none", hostreg.Host{}, "", false},
+		{"an empty user part names none", hostreg.Host{SSH: "@alpha.example"}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := effectiveUserName(tc.host)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("effectiveUserName(%+v) = %q, %v; want %q, %v", tc.host, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 
@@ -1111,6 +1320,10 @@ func TestRestartBareInspectsListenerAddress(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :9180"):
 			if killed {
 				return []byte(noListenerMarker + "\n"), nil
@@ -2542,25 +2755,21 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 	}
 }
 
-// TestEnsureRefusesSupervisorlessRestart pins spec 04 criterion 20 at the Ensure
-// level: a host with no supervisor needs an unguarded ad hoc signal to restart,
-// and no atomic process handle (a pidfd or a host-side pin helper) is reachable
-// through this component's `ssh <dest> <command>` interface. The ladder must
-// refuse with ErrRestart and emit no signal rather than fall back to the removed
-// `restartBare` kill — "the bare `restartBare` (`kill <pid>`, `sshconn/version.go`)
-// is not acceptable … When neither form is available for the identified process
-// the manager refuses with `ErrRestart` and emits no signal." This replaces
-// TestEnsureRestartRecoveryRetriesRelaunch, whose bare-relaunch recovery is
-// unreachable now that no supervisorless restart is ever signaled; the
-// supervised recovery that path shared is covered by
-// TestEnsureSupervisorRestartRecoveryRetriesRestart.
-func TestEnsureRefusesSupervisorlessRestart(t *testing.T) {
+// TestEnsureRestartRecoveryRetriesRelaunch pins High #2: a bare restart that kills
+// the old hub and fails to relaunch leaves the host with no listener. The next
+// Ensure must complete the recorded relaunch, which is what ErrRestart promises.
+func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	launchCalls, relaunches, killCalls := 0, 0, 0
+	var relaunchCommands []string
 
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
@@ -2597,6 +2806,7 @@ func TestEnsureRefusesSupervisorlessRestart(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
 			relaunches++
+			relaunchCommands = append(relaunchCommands, joined)
 			if relaunches == 1 {
 				return []byte("nohup: failed"), errors.New("exit status 1")
 			}
@@ -2629,13 +2839,24 @@ func TestEnsureRefusesSupervisorlessRestart(t *testing.T) {
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, ErrRestart) {
-		t.Fatalf("Ensure err = %v, want ErrRestart (a supervisorless restart must refuse)", err)
+		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the relaunch failed)", err)
 	}
-	if killCalls != 0 {
-		t.Fatalf("kill calls = %d, want 0 (a supervisorless restart must emit no signal)", killCalls)
+	if relaunches != 1 {
+		t.Fatalf("relaunches after failed restart = %d, want 1", relaunches)
 	}
-	if relaunches != 0 {
-		t.Fatalf("relaunches = %d, want 0 (a supervisorless restart must not relaunch)", relaunches)
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure 2: %v (the next Ensure must retry the recorded relaunch)", err)
+	}
+	if relaunches != 2 {
+		t.Fatalf("relaunches after recovery = %d, want 2", relaunches)
+	}
+	if len(relaunchCommands) != 2 || relaunchCommands[0] != relaunchCommands[1] {
+		t.Fatalf("recovery did not retry the recorded relaunch: %v", relaunchCommands)
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel version = %q, want newsha", got)
 	}
 }
 
@@ -2653,6 +2874,10 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "/proc/4242/cmdline"):
 			return []byte(strings.Join(exactArgv, "\x00") + "\x00"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
@@ -3088,6 +3313,10 @@ func TestRestartBareRecordsRelaunchBeforePortClearFails(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			return []byte("4242\n"), nil // the port never clears
 		case strings.Contains(joined, "-ww -o "):
@@ -3387,24 +3616,21 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 	}
 }
 
-// TestRestartHubRefusesAdHocHubUnderAnInactiveSupervisor pins spec 04 criterion
-// 20 for the case where a supervisor definition exists but is not the hub's
-// owner: an inactive unit that does not own the configured address is not an
-// accepted supervisor, so the branch is the supervisorless one — "the
-// supervisorless branch, which refuses `ErrRestart` with no signal and no
-// relaunch" — and an ad hoc hub holding the port must be refused rather than
-// killed. The inactive unit must also not be started while the ad hoc hub holds
-// the port, because starting it would race hub.lock. Before the fix restartBare
-// killed the ad hoc hub and relaunched it; that is exactly the check-then-act
-// signal criterion 20 removes ("the bare `restartBare` (`kill <pid>`,
-// `sshconn/version.go`) is not acceptable").
-func TestRestartHubRefusesAdHocHubUnderAnInactiveSupervisor(t *testing.T) {
+// TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor guards the dormant
+// path: an inactive unit must NOT be started while an ad-hoc hub holds the hub
+// port, because starting it would race hub.lock and leave the ad-hoc hub (on the
+// old build) still serving. The bare-process restart is the correct repair there.
+func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	port := hubPort(defaultHubAddr)
 	killed, restarted := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
 		case strings.Contains(joined, "/proc/4242/cmdline"):
@@ -3441,46 +3667,36 @@ func TestRestartHubRefusesAdHocHubUnderAnInactiveSupervisor(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
-	if !errors.Is(err, ErrRestart) {
-		t.Fatalf("restartHub err = %v, want ErrRestart (a supervisorless restart must refuse)", err)
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+		t.Fatalf("restartHub: %v", err)
 	}
 	if restarted {
 		t.Fatal("restartHub started the inactive unit while an ad-hoc hub held the port")
 	}
-	if killed {
-		t.Fatal("restartHub killed the ad-hoc hub instead of refusing the supervisorless restart")
+	if !killed {
+		t.Fatal("the ad-hoc hub was never restarted")
 	}
 }
 
-// assertNoRestartSignal fails when fr recorded a bare signal (`kill --`) or a
-// relaunch (`nohup`): a refused restart must emit neither.
-func assertNoRestartSignal(t *testing.T, fr *fakeRunner) {
-	t.Helper()
-	for _, argv := range fr.recordedRuns() {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "kill --") || strings.Contains(joined, "nohup") {
-			t.Fatalf("refused restart still signaled or relaunched: %v", argv)
-		}
-	}
-}
-
-// TestRestartHubRefusesUnsafeLaunchdLabel pins spec 04 criterion 19: a detected
-// launchd supervisor whose label is outside the bare-safe set must refuse with
-// ErrRestart (no signal, no relaunch) instead of falling through to an unmanaged
-// ad hoc launch. The label comes from the host's `launchctl list`, so
-// interpolating it into `launchctl kickstart gui/<uid>/<label>` would be the
-// injection the bare-safe check exists to prevent, and the ad hoc fall-through
-// is the unguarded check-then-act kill criterion 20 forbids. Before the fix
-// restartHub fell through: it recovered pid 4242 by port, ran `kill -- 4242`,
-// and relaunched the recovered argv with nohup.
-func TestRestartHubRefusesUnsafeLaunchdLabel(t *testing.T) {
+// TestRestartHubFallsThroughOnUnsafeLaunchdLabel pins the restored rule: a
+// detected launchd supervisor whose label is outside the bare-safe set has no
+// safely-buildable restart command, so restartHub falls through to the guarded
+// ad hoc path — the identified pid is killed and the recovered argv is
+// relaunched — rather than refusing. The label comes from the host's
+// `launchctl list`, so it must never be interpolated into the remote shell; the
+// test asserts it appears in no command the runner is asked to execute. Before
+// the restoration restartHub refused with ErrRestart and emitted no signal.
+func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	port := hubPort(defaultHubAddr)
-	killed := false
+	killed, relaunched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "launchctl list"):
 			return []byte("PID\tStatus\tLabel\n1234\t0\tcom.example/evener-hub\n"), nil
 		case strings.Contains(joined, "/proc/4242/cmdline"):
@@ -3498,6 +3714,7 @@ func TestRestartHubRefusesUnsafeLaunchdLabel(t *testing.T) {
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
+			relaunched = true
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -3514,36 +3731,42 @@ func TestRestartHubRefusesUnsafeLaunchdLabel(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{})
-	if !errors.Is(err, ErrRestart) {
-		t.Fatalf("err = %v, want ErrRestart for a label outside the bare-safe set", err)
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+		t.Fatalf("restartHub = %v, want nil (an unbuildable launchd command must fall through to the ad hoc path)", err)
 	}
-	if !strings.Contains(err.Error(), "com.example/evener-hub") {
-		t.Fatalf("error does not name the unsafe label: %v", err)
+	if !killed {
+		t.Fatal("restartHub never killed the identified hub: the ad hoc fall-through did not run")
 	}
-	if killed {
-		t.Fatal("restartHub killed a bare process instead of refusing the unsafe label")
+	if !relaunched {
+		t.Fatal("restartHub never relaunched the recovered argv")
 	}
-	assertNoRestartSignal(t, fr)
+	const label = "com.example/evener-hub"
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), label) {
+			t.Fatalf("the unsafe launchd label reached the remote shell: %v", argv)
+		}
+	}
 }
 
-// TestRestartHubRefusesSupervisorlessRestart pins spec 04 criterion 20: when no
-// supervisor owns the hub, the restart would have to signal an identified PID
-// directly, and no atomic process handle (a pidfd or a host-side pin helper) is
-// reachable through this component's `ssh <dest> <command>` interface. The
-// manager must refuse with ErrRestart and emit no signal instead of the
-// check-then-act `restartBare` kill. Before the fix restartBare killed 4242 by
-// port and relaunched its recovered argv. The cold-bootstrap start path is
-// unaffected: it is start-only and never reaches this branch.
-func TestRestartHubRefusesSupervisorlessRestart(t *testing.T) {
+// TestRestartHubRestartsAdHocOnSupervisorlessHost pins the restored rule for a
+// hub with no supervisor: the restart runs the guarded ad hoc path — it recovers
+// the listening pid, kills it, and relaunches the recovered argv — instead of
+// refusing with ErrRestart. The running hub is expected to answer /api/health on
+// the recovered build, exactly as the pre-refusal path required. Before the
+// restoration restartHub refused with ErrRestart and emitted no signal.
+func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	port := hubPort(defaultHubAddr)
-	killed := false
+	killed, relaunched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "list-units"):
-			return nil, nil
+			return nil, nil // no supervisor: the ad hoc path
 		case strings.Contains(joined, "/proc/4242/cmdline"):
 			return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
@@ -3559,6 +3782,7 @@ func TestRestartHubRefusesSupervisorlessRestart(t *testing.T) {
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
+			relaunched = true
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -3575,17 +3799,15 @@ func TestRestartHubRefusesSupervisorlessRestart(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
-	if !errors.Is(err, ErrRestart) {
-		t.Fatalf("err = %v, want ErrRestart for a supervisorless restart", err)
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+		t.Fatalf("restartHub = %v, want nil (a supervisorless hub must restart through the ad hoc path)", err)
 	}
-	if !strings.Contains(err.Error(), "supervisor") {
-		t.Fatalf("error does not explain the missing supervisor: %v", err)
+	if !killed {
+		t.Fatal("restartHub never killed the listening pid: the ad hoc path did not run")
 	}
-	if killed {
-		t.Fatal("restartHub signaled a bare pid instead of refusing a supervisorless restart")
+	if !relaunched {
+		t.Fatal("restartHub never relaunched the recovered argv")
 	}
-	assertNoRestartSignal(t, fr)
 }
 
 // TestRestartBareFailsClosedOnUnusableProcArgv pins the Medium finding that a
