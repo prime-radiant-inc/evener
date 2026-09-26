@@ -306,6 +306,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			status = appwire.ThreadStatusAwaiting
 		case appwire.ThreadStatusIdle:
 			status = appwire.ThreadStatusIdle
+		case appwire.ThreadStatusSystemError:
+			// A restored session whose transcript ends in a failed turn
+			// (agent RestingWireState).
+			status = appwire.ThreadStatusSystemError
 		}
 		var tasks *appwire.TaskAggregate
 		var goal *appwire.GoalState
@@ -1347,6 +1351,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			state = appwire.ThreadStatusAwaiting
 		case appwire.ThreadStatusClosed:
 			state = appwire.ThreadStatusClosed
+		case appwire.ThreadStatusSystemError:
+			// Open and resting on a failed turn (agent RestingWireState): the
+			// session takes the next message, so this is no close.
+			state = appwire.ThreadStatusSystemError
 		}
 		turnStatus := appwire.TurnStatusCompleted
 		if state == appwire.ThreadStatusClosed || data.Interrupted {

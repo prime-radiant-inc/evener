@@ -953,6 +953,45 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 	t.Fatalf("awaiting SessionEnd missing turn/completed: %+v", sessionEnd)
 }
 
+// TestAppEventProjectorMapsFailedSessionEnd: a failed turn ends its input with
+// EventSessionEnd{Reason: "turn_failed", State: systemError} (the agent's
+// endInputAtTurnFailure). The session is open and takes the next message, so
+// the projector announces systemError and never thread/closed.
+func TestAppEventProjectorMapsFailedSessionEnd(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+		Reason: "turn_failed",
+		State:  appwire.ThreadStatusSystemError,
+	}})
+
+	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
+		t.Fatalf("a failed turn's SessionEnd emitted thread/closed: %+v", sessionEnd)
+	}
+	if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("failed SessionEnd status = %+v, want systemError", status)
+	}
+}
+
+// TestAppEventProjectorRestoredSessionStartCarriesFailedState: a daemon
+// restored onto a transcript that ends in a failed turn stamps systemError on
+// its SessionStart (agent RestingWireState), and the thread starts Failed.
+func TestAppEventProjectorRestoredSessionStartCarriesFailedState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, State: appwire.ThreadStatusSystemError},
+	})
+
+	if thread := notificationThread(t, started, appwire.NotifyThreadStarted); thread.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("restored SessionStart thread status = %+v, want systemError", thread.Status)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("restored SessionStart status notification = %+v, want systemError", status)
+	}
+}
+
 // TestAppEventProjectorMarksInterruptedTurnCanceled covers kata 0ax1:
 // an interrupted turn keeps the thread alive (status=idle) but the
 // active turn must be reported as canceled, not completed.
