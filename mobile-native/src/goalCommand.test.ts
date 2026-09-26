@@ -725,7 +725,6 @@ it.each(["current", "obsolete", "failure"])(
 				expect(method).toBe("thread/fork");
 				expect(params).toEqual({
 					ref: "local:test",
-					sourceTurnId: "",
 					aside: true,
 				});
 				expect(document.getSnapshot().record.unconfirmed).toBe("/aside");
@@ -802,12 +801,19 @@ it("forks from the selected transcript entry with input deferred and leaves the 
 		expect(calls).toEqual([
 			{
 				method: "thread/fork",
-				params: { ref: "local:test", sourceTurnId: "5", deferInput: true },
+				params: {
+					ref: "local:test",
+					sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:4:0",
+					deferInput: true,
+				},
 			},
 		]);
 		await service.forkFromTurn(7);
 		expect(calls[1]).toMatchObject({
-			params: { ref: "local:test", sourceTurnId: "7" },
+			params: {
+				ref: "local:test",
+				sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:6:0",
+			},
 		});
 	} finally {
 		service.close();

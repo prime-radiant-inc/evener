@@ -49,6 +49,25 @@ import { createActivityService } from "./activity";
 // copy.
 export const READ_ITEM_LIMIT = 40;
 
+// FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID fills the turn-id component of the item
+// key forkFromTurn builds from transcriptEntryIndex. Mobile does not yet carry
+// each transcript item's own key (MobileTimelineItem.transcriptKey) through
+// to this call site, only its 1-based entry index; the hub's item-key parser
+// (transcriptindex.ParseItemKey) recovers the divergence position from the
+// key's ordinal alone and never reads this component, so a fixed placeholder
+// is sufficient until that plumbing lands (cmd/evener-tui/hub_commands.go's
+// forkEntryKeyTurnID takes the same shortcut for the same reason).
+const FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID = "mobile-fork-entry";
+
+// forkEntrySourceItemKey spells transcriptindex.ItemKey's format:
+// apptranscript-item-v2:<turnID>:<entry ordinal>:<part>. transcriptEntryIndex
+// is already 1-based (wire ThreadItem.transcriptEntryIndex, i.e. ordinal + 1),
+// so the ordinal is transcriptEntryIndex - 1; part is 0 (the divergence names
+// a transcript position, not a specific content part).
+function forkEntrySourceItemKey(transcriptEntryIndex: number): string {
+  return `apptranscript-item-v2:${FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID}:${transcriptEntryIndex - 1}:0`;
+}
+
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
 // pulling the real class's reconnect/heartbeat machinery.
@@ -1071,7 +1090,7 @@ export function createConversationService<ReadLease = unknown>(
       const parentRef = requireRef();
       const response = await client.request("thread/fork", {
         ref: parentRef,
-        sourceTurnId: String(transcriptEntryIndex),
+        sourceItemKey: forkEntrySourceItemKey(transcriptEntryIndex),
         deferInput: true,
       });
       const childRef = nonemptyString(
@@ -1088,7 +1107,6 @@ export function createConversationService<ReadLease = unknown>(
       const parentRef = requireRef();
       const response = await client.request("thread/fork", {
         ref: parentRef,
-        sourceTurnId: "",
         aside: true,
       });
       const childRef = nonemptyString(

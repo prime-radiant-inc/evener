@@ -115,7 +115,7 @@ async function boundary() {
 				requests++;
 				expect(params).toEqual({
 					ref: "local:parent",
-					sourceTurnId: "7",
+					sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:6:0",
 					deferInput: true,
 				});
 				expect(journal.load()).toMatchObject({ target });
