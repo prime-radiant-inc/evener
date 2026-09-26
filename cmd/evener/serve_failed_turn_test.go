@@ -127,7 +127,9 @@ func TestServe_StartupWritePublishesTheRestoredFailure(t *testing.T) {
 			appwire.NewIntID(2), appwire.MethodThreadRead,
 			appwire.ThreadReadParams{Ref: "local:" + sessionID}))
 	}
-	deps.serveHTTP = func(*http.Server, net.Listener) error {
+	deps.serveHTTP = func(_ *http.Server, listener net.Listener) error {
+		// Nothing serves on the listener, so nothing else closes it.
+		_ = listener.Close()
 		state.srv.shutdown()
 		return http.ErrServerClosed
 	}
