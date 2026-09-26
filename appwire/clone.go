@@ -107,7 +107,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.PendingMutations = clonePendingMutations(e.PendingMutations)
 	e.PendingEscalations = append([]SandboxEscalationRequested(nil), e.PendingEscalations...)
 	e.ReasoningEffortLevels = append([]string(nil), e.ReasoningEffortLevels...)
-	e.Tasks = cloneTaskAggregate(e.Tasks)
+	e.Tasks = CloneTaskAggregate(e.Tasks)
 	e.Goal = cloneGoalState(e.Goal)
 	e.SessionURLs = append([]SessionURL(nil), e.SessionURLs...)
 	e.Usage = cloneEvenerUsage(e.Usage)
@@ -132,7 +132,9 @@ func cloneInt64(value *int64) *int64 {
 	return &clone
 }
 
-func cloneTaskAggregate(value *TaskAggregate) *TaskAggregate {
+// CloneTaskAggregate returns a copy of value whose Current task is its own.
+// nil stays nil, so "the source cannot know the task state" survives the copy.
+func CloneTaskAggregate(value *TaskAggregate) *TaskAggregate {
 	if value == nil {
 		return nil
 	}
