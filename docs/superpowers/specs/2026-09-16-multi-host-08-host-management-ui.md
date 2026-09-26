@@ -140,7 +140,7 @@ This table is the only place the three-document split is defined.
 | Origin guard pre-admission hook at request ingress | ships (hook + registry-surface orderings: `list`/`status` here; union-surface orderings in the pipeline PR where those handlers ship) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship | — |
 | Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc registers no handler and ships no catalog entry and no regenerated client for a union-shaped response) | ships | — |
 | Non-union registry helpers | register immediately | — | — |
-| Hosts settings section, dialogs, stores, polling, deploy confirmation | — (lands with the pipeline PR's regenerated client) | ships (section + dialogs + stores + polling + UI acceptance) | consumes (resolve affordance) |
+| Hosts settings section, dialogs, stores, polling, deploy confirmation | shipped (the add/edit/connect/remove section, dialogs, and `stores/hosts.ts` — #1784 and the edit slice #2111) | ships (the Deploy/Restart actions, plan confirmation, and `operations` polling added to that section, with the regenerated client) | consumes (resolve affordance) |
 | Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests plus union catalog/protocol-shape tests ship in the pipeline PR where those handlers register) | — | — |
 | Pipeline tests (§12 of the pipeline spec) | — | ships | — |
 | Fencing tests (§10 of the fencing spec) | — | — | ships |
@@ -163,8 +163,9 @@ Scope: the seven controller-side methods besides `attach` — `evener/host/list`
 `add`, `update`, `remove`, `status`, the `evener/host/teardown-retry`
 repair mutation, and the `evener/host/teardown-recover` recovery mutation (§6) —
 plus durable persistence of host entries with hot-apply,
-the Hosts settings contract (§13; files land in the pipeline PR per the §2
-table), and the catalog/client/registration work
+the Hosts settings contract (§13; the add/edit/connect/remove section already
+shipped, and only the Deploy/Restart/polling files land in the pipeline PR per
+the §2 table), and the catalog/client/registration work
 per the §2 table. `evener/host/plan`, `deploy`, `restart`, `operations`,
 the local `evener/host/running` probe handler, and the controller-side
 operation store are defined in the deploy-pipeline spec. The
@@ -173,8 +174,9 @@ reaping are defined in the crash-fencing spec. `evener/host/attach` ships
 with #1603 and is relied on, not re-specified.
 
 Cross-component effects (each owned by the cited section, none introduced
-elsewhere): component-03 validation rules and the 63-remote-host cap enforced
-on mutations, boot load, registry paths, and live reconcile (§4, §14, §15);
+elsewhere): component-03 validation rules enforced on mutations, boot load,
+registry paths, and live reconcile (§4, §14, §15), with the 63-remote-host cap
+withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2);
 component-04b deploy/restart internals reused verbatim under the operation
 model (deploy-pipeline spec §6); component-05 `Online()`/broker rebind consuming the live host set
 (§15); component-06 navigation poke consuming the live host set, manifest
@@ -338,15 +340,15 @@ update). `status` reads the same two snapshots for its single row.
 `evener/host/add` is a mutation: params are one full host entry (all seven
 `HostConfig` fields; `name` required) plus optional `mutationId`. It validates
 with the component-03 rules (name validation, the `[[hosts]]` field validation
-at `cmd/evener-hub/config.go:177`). It enforces the component-03 host-count
-limit: at most 63 remote hosts (the `local` entry is the 64th manifest source —
-one host over the cap fails navigation for the entire hub, not just the extra
-host). The staged commit validates the merged post-change live set against the
-cap under the mutation lock before the sidecar persist, and the same check runs
-on the boot load and the registry `Add`/`Update` paths, so no sidecar or
-runtime commit can push the registry over it. Over-cap is refused with the
-typed `ErrTooManyHosts`; boot over-cap is a hard startup error naming both
-sources and their counts that refuses to serve. `add` refuses any name already
+at `cmd/evener-hub/config.go:177`). The component-03 host-count cap was
+withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
+"Host-count cap: withdrawn"): no add, boot, or registry path enforces it, and
+`ErrTooManyHosts` is not a sentinel. A `[[hosts]]` list larger than the
+navigation manifest's 64-source limit is therefore accepted, and such a config
+fails navigation for the entire hub until it shrinks. The staged commit still
+validates the merged post-change live set under the mutation lock before the
+sidecar persist, and boot load and the registry `Add`/`Update` paths run the
+same validation, with no count rule among them. `add` refuses any name already
 declared in `hub.toml` or held as a live sidecar entry — the duplicate refusal
 applies to live entries only: a name present solely as a tombstone is accepted
 (re-add) past the remnant fence (a re-add naming a host with an open teardown
@@ -1480,9 +1482,7 @@ protocol-shapes test asserts the code-plus-discriminator pair for each.
 
 ## 13. UI
 
-Hosts settings section (owned by the pipeline PR per the §2 table — section,
-dialog, store, and polling files plus the UI acceptance land there with the
-regenerated client; this section states the contract only): host rows with state chip (online /
+Hosts settings section (the add/edit/connect/remove section, dialog, and `stores/hosts.ts` shipped with #1784 and the edit slice #2111 at `cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx`; the pipeline PR adds only the Deploy/Restart actions, plan confirmation, and `operations` polling to it, with the regenerated client, per the §2 table; this section states the contract only): host rows with state chip (online /
 offline / connecting / removed-retained), installed version + controller
 version, OS/arch, origin marker, actions: Connect, Deploy, Restart, Edit,
 Remove (each with the confirm pattern used elsewhere in settings), and the Add
@@ -1549,9 +1549,8 @@ mutable module state.
 ## 14. Implementation approach (files/packages, cited seams)
 
 - `cmd/evener-hub/internal/hostreg` — live registry: `Add` exists; add
-  `Update`/`Remove` with the same cycle/validation rules (including the
-  63-remote-host cap — over-cap `Add`/`Update` fail `ErrTooManyHosts`), safe
-  for concurrent use.
+  `Update`/`Remove` with the same cycle/validation rules (the host-count cap is
+  withdrawn — component 03 §Scope), safe for concurrent use.
 - `cmd/evener-hub/internal/sshconn` — `Manager` gains the live host-set
   surface (add/update/remove entry, each safe against in-flight `Ensure` and
   running supervisors) and thin exported entry points for deploy/restart
@@ -1609,8 +1608,10 @@ mutable module state.
   with the live view seam (registry, manager, sources, web config, and the
   host-admin controller's host set/fan-outs); keep every existing
   `RemoteHost*` wiring.
-- Frontend: owned by the pipeline PR (section, dialogs, stores, polling per
-  the §2 table). The spawn
+- Frontend: the section, dialogs, and `stores/hosts.ts` shipped with #1784 and
+  the edit slice #2111; the pipeline PR owns only the Deploy/Restart actions,
+  plan confirmation, and `operations` polling added to them per the §2
+  table. The spawn
   picker is untouched (its Connect trigger ships with #1603).
 
 ## 15. Data flow (remove + tombstone)
@@ -1864,15 +1865,12 @@ the step publishes a new snapshot under the lock and the admitted
 mutation-path call then serves from it — but only after the reconciled merged
 set passes the complete merged-config validation first (the reconcile
 validates the merged post-adopt live set against the full component-03 rules
-plus the 63-host cap under the mutation lock BEFORE publishing: valid sets
+under the mutation lock BEFORE publishing: valid sets
 publish exactly as above, while a failed validation publishes nothing — the
 last-good snapshot stays live, the admitted call serves its file-filtered
 view from it, and the
-failure surfaces as the typed `too-many-hosts` configuration error (over-cap)
-or `concurrent-edit` (other merged-config drift), naming both sources and
-their counts — an external edit adding declared hosts cannot publish an
-over-cap live registry no mutation path could have committed — never a
-silently over-cap registry), and all live consumers (registry, manager
+failure surfaces as the typed `concurrent-edit` configuration error (merged-config drift), naming both sources and
+their counts), and all live consumers (registry, manager
 bindings, sources, manifest, host-admin controller fan-outs, web-config view)
 update atomically under that lock before the admitted call proceeds (a
 `list`/`status` read arriving while the reconcile holds the lock serves the
@@ -1911,11 +1909,10 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   manager add/remove-vs-supervisor tests (removing an attached host stops its
   supervisor, closes its channel, and drains its per-host lifecycle handles
   before the entry is gone), sidecar merge/atomicity tests including the
-  refuse rules, the 63-remote-host cap (63 live remotes add; the 64th fails
-  `ErrTooManyHosts` — and a live external `hub.toml` edit pushing the merged
-  set over the cap fails the reconcile validation instead of publishing: the
+  refuse rules (a live external `hub.toml` edit that fails the merged-config
+  validation fails the reconcile instead of publishing: the
   last-good snapshot stays live and the failure surfaces as the typed
-  `too-many-hosts` configuration error), the boot-time hard-error duplicate,
+  `concurrent-edit` configuration error), the boot-time hard-error duplicate,
   swap-failure compensation (prior sidecar bytes restored, runtime reverted,
   retry re-applies cleanly), and the corrupt/schema-invalid sidecar boot hard
   error, the host-admin controller live-set tests (forwarded requests reach
