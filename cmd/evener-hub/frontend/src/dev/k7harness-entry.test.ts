@@ -1,3 +1,4 @@
+import { act } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // k7harness-entry renders SessionChrome - and therefore ActivityPanel - outside
@@ -14,7 +15,10 @@ describe("k7harness entry", () => {
   // The harness entry pulls in the whole SessionChrome graph, whose Vite
   // transform alone can outrun the default 5s ceiling on a loaded host.
   test("registers the activity summary link, so a continuation fetch does not throw", async () => {
-    await import("./k7harness-entry");
+    // The entry renders its root as it loads.
+    await act(async () => {
+      await import("./k7harness-entry");
+    });
     const { activityPanelStore } = await import("../stores/activityPanel");
 
     expect(() => activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" })).not.toThrow();
