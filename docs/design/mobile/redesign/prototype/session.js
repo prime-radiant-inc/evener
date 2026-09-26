@@ -233,13 +233,17 @@
   };
 
   // A steer shows as a ghost until the agent's next step, then lands in the
-  // transcript and runs onLand.
+  // transcript and runs onLand. Steers sent before the first lands each wait
+  // their own turn, so none is lost.
+  let steerSeq = 0;
   EV.steer = function (s, text, onLand) {
     const S = EV.S;
-    S.steering[s.id] = { text, at: Date.now() };
+    const steer = { id: "st" + ++steerSeq, text, at: Date.now() };
+    (S.steering[s.id] = S.steering[s.id] || []).push(steer);
     EV.later(2200, () => {
-      if (!S.steering[s.id]) return;
-      delete S.steering[s.id];
+      const pending = S.steering[s.id] || [];
+      if (!pending.includes(steer)) return;
+      S.steering[s.id] = pending.filter((x) => x !== steer);
       EV.addItem(s.id, { t: "user", text, kind: "steer" });
       if (onLand) onLand();
       EV.update();
@@ -526,8 +530,8 @@
   function Ghosts({ s }) {
     const S = EV.S;
     const q = S.queue[s.id] || [];
-    const steer = S.steering[s.id];
-    return html`${steer ? html`<div class="u-msg ghost"><div class="u-bubble">${steer.text}</div><div class="u-cap">Steering · arrives at the next step</div></div>` : null}
+    const steers = S.steering[s.id] || [];
+    return html`${steers.map((st) => html`<div class="u-msg ghost" key=${st.id}><div class="u-bubble">${st.text}</div><div class="u-cap">Steering · arrives at the next step</div></div>`)}
       ${q.map((m) => html`<div class="u-msg ghost" key=${m.id}><div class="u-bubble">${m.text}</div><div class="u-cap">Queued · sends when this turn ends</div>
         <div class="ghost-row"><button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); EV.steer(s, m.text); EV.log("queue_promote", { sessionId: s.id }); EV.update(); }}>Steer now</button>
         <button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); S.drafts[s.id] = m.text; S.focusComposer = s.id; EV.log("queue_edit", { sessionId: s.id }); EV.update(); }}>Edit</button>

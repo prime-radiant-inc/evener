@@ -423,6 +423,25 @@ async function runChecks(page, scheme) {
     const released = await ev(page, `EV.S.banner && EV.S.banner.kind`);
     if (released !== 'question') throw new Error('held alerts released with a finished result among them; banner kind was ' + released);
   });
+  // A hub notice is not a session: it never joins "N sessions need you".
+  await check(S('flow-notice-is-not-counted-as-a-session'), page, async () => {
+    await reset(page); await ev(page, `window.__proto.trigger('question')`); await ev(page, `window.__proto.trigger('host-offline')`); await sleep(300);
+    const shown = await ev(page, `EV.S.banner && EV.S.banner.kind`);
+    if (shown !== 'notice') throw new Error('a notice right after a question should replace its banner; banner kind was ' + shown);
+    await reset(page, 'reading');
+    await ev(page, `window.__proto.trigger('question')`); await ev(page, `window.__proto.trigger('host-offline')`); await sleep(300);
+    await ev(page, `EV.releaseHeld()`); await sleep(200);
+    const released = await ev(page, `EV.S.banner && EV.S.banner.kind`);
+    if (released !== 'question') throw new Error('held alerts released a notice counted as a session; banner kind was ' + released);
+  });
+  // Two steers sent before the first arrives both arrive, in order.
+  await check(S('flow-two-steers-both-land'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-tasklist')`); await sleep(400);
+    await compose('Also cover the empty state', 'Steer'); await compose('And the error state', 'Steer');
+    await sleep(2600);
+    const steers = await ev(page, `EV.S.transcripts['s-tasklist'].filter((x) => x.kind === 'steer').map((x) => x.text)`);
+    if (JSON.stringify(steers.slice(-2)) !== JSON.stringify(['Also cover the empty state', 'And the error state'])) throw new Error('both steers should land in order; landed ' + JSON.stringify(steers));
+  });
 }
 
 try {
