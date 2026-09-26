@@ -6,6 +6,7 @@ import type {
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
 } from "@evener/appwire-client";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -150,19 +151,10 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
 	): boolean;
 }
 
-/** The raw string-keyed storage a backend's own get/set/deleteIf/replaceIf
- * run on - Storage.getItemSync et al. in production and a Map-backed fake in
- * tests. */
-export interface RawStringStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
-
 /** One native keybinding backend over any raw string storage. Keeping parsing
  * and identity comparison here lets tests exercise the same code production
  * uses, including malformed bytes, stored JSON null, and key-order changes. */
-export function rawStringDraftBackend(storage: RawStringStorage, createId: () => string): NativeKeybindingDraftBackend {
+export function rawStringDraftBackend(storage: SyncStringStorage, createId: () => string): NativeKeybindingDraftBackend {
 	function matches(key: string, value: unknown): boolean {
 		return matchesStoredBytes(storage.getItemSync(key), value);
 	}

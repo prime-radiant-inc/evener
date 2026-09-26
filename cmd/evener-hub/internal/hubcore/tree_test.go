@@ -1117,29 +1117,46 @@ func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	}
 }
 
-func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
-	// A subagent that still reports "active" in the live map but whose parent
-	// session has ended must not keep spinning ⟳ forever — its state is clamped
-	// to "ended" so the dead session's children read as terminal.
+// staleSubagentOfDeadParent builds a project whose parent session has ended
+// (it is not in the live map) while its subagent lingers there as entry, and
+// returns the subagent's row.
+func staleSubagentOfDeadParent(t *testing.T, entry LiveEntry) TreeNode {
+	t.Helper()
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01DEADP", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "parent",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "01STALESUB", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
+		{ID: entry.SessionID, UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
 			IsSubagent: true, ParentSessionID: "01DEADP",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	// Parent is NOT live (ended); the subagent lingers as "active" in the map.
-	live := []LiveEntry{
-		{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
-	}
-	proj := projectByName(t, buildTree(metas, live), "evener")
-	sessions := allSessions(proj)
+	sessions := allSessions(projectByName(t, buildTree(metas, []LiveEntry{entry}), "evener"))
 	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
 		t.Fatalf("unexpected shape: %#v", sessions)
 	}
-	if got := sessions[0].Children[0].State; got != "ended" {
+	return sessions[0].Children[0]
+}
+
+func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
+	// A subagent that still reports "active" in the live map but whose parent
+	// session has ended must not keep spinning ⟳ forever — its state is clamped
+	// to "ended" so the dead session's children read as terminal.
+	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive})
+	if got := child.State; got != "ended" {
 		t.Errorf("stale subagent state = %q, want ended (parent is dead)", got)
+	}
+}
+
+// fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval: a subagent row
+// under a parent that has ended is clamped to ended, and an ended row asks for
+// nothing, so the approval its stale live entry still carries goes with the
+// state: no flag, no tool, no target.
+func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval(t *testing.T) {
+	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+	}})
+	if child.State != "ended" || child.ApprovalPending || child.ApprovalTool != "" || child.ApprovalTarget != "" {
+		t.Fatalf("stale subagent = state %q, approval %v %q %q; want ended with no approval", child.State, child.ApprovalPending, child.ApprovalTool, child.ApprovalTarget)
 	}
 }
 
@@ -2122,6 +2139,19 @@ func fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending(t *testing.T) {
 	tree := buildTree(nil, live)
 	if len(tree.Live) != 1 || !tree.Live[0].ApprovalPending {
 		t.Fatalf("Live = %+v, want the meta-less leaf carrying ApprovalPending", tree.Live)
+	}
+}
+
+// fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval: the meta-less leaf
+// builder names the oldest pending card's tool and target too.
+func fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval(t *testing.T) {
+	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+	}}}
+	tree := buildTree(nil, live)
+	if len(tree.Live) != 1 || tree.Live[0].ApprovalTool != "write_file" || tree.Live[0].ApprovalTarget != "/home/me/sites/docs/index.md" {
+		t.Fatalf("Live = %+v, want the meta-less leaf naming the first card's write_file and its full path", tree.Live)
 	}
 }
 
