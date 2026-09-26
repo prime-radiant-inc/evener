@@ -422,7 +422,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
@@ -494,7 +494,7 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
@@ -554,7 +554,7 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
@@ -608,7 +608,7 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
@@ -862,7 +862,7 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			if !killed {
@@ -1132,6 +1132,34 @@ func TestRestartBareRestartsAListenerOwnedByTheEffectiveUser(t *testing.T) {
 	}
 }
 
+// TestEffectiveUserName pins the spec's resolution chain: the destination
+// composeDest dials decides the user, and a destination that names none reports
+// unknown so the restart probes the login user instead of comparing the owner
+// against an empty string (which would refuse every legitimate hub on an
+// ambient-ssh_config host).
+func TestEffectiveUserName(t *testing.T) {
+	cases := []struct {
+		name string
+		host hostreg.Host
+		want string
+		ok   bool
+	}{
+		{"an explicit user composes the destination", hostreg.Host{SSH: "alpha.example", User: "dev"}, "dev", true},
+		{"a user@host destination names its user", hostreg.Host{SSH: "bob@alpha.example"}, "bob", true},
+		{"a bare hostname names none", hostreg.Host{SSH: "alpha.example"}, "", false},
+		{"an empty destination names none", hostreg.Host{}, "", false},
+		{"an empty user part names none", hostreg.Host{SSH: "@alpha.example"}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := effectiveUserName(tc.host)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("effectiveUserName(%+v) = %q, %v; want %q, %v", tc.host, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
 // TestRestartBareRefusesCompoundCommandLine proves a recovered line carrying an
 // unquoted metacharacter is refused rather than tokenized by guesswork: the line
 // is not a simple exec, so restarting it could run the trailing command.
@@ -1294,7 +1322,7 @@ func TestRestartBareInspectsListenerAddress(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :9180"):
 			if killed {
@@ -2740,7 +2768,7 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
@@ -2848,7 +2876,7 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "/proc/4242/cmdline"):
 			return []byte(strings.Join(exactArgv, "\x00") + "\x00"), nil
@@ -3287,7 +3315,7 @@ func TestRestartBareRecordsRelaunchBeforePortClearFails(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			return []byte("4242\n"), nil // the port never clears
@@ -3601,7 +3629,7 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
@@ -3667,7 +3695,7 @@ func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "launchctl list"):
 			return []byte("PID\tStatus\tLabel\n1234\t0\tcom.example/evener-hub\n"), nil
@@ -3735,7 +3763,7 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "id -un"):
 			return []byte("dev\n"), nil
-		case strings.Contains(joined, "ps -o user= -p "):
+		case strings.Contains(joined, pidOwnerRemote("4242")):
 			return []byte("dev\n"), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil // no supervisor: the ad hoc path

@@ -276,8 +276,6 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 					return pf, nil
 				}
 			}
-		}
-		if missing {
 			// The dedicated probe verified that the resolved run target is not
 			// executable there, and the installer default did not hold a binary
 			// either: record the verified fact.
@@ -372,9 +370,6 @@ var ErrExecutableMissing = errExecutableMissing
 // installation").
 func (m *Manager) verifiedExecutableMissing(ctx context.Context, host hostreg.Host) bool {
 	_, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, executableProbeRemote(evenerCommand(host.EvenerPath))), nil)
-	if err == nil {
-		return false
-	}
 	var exit *exec.ExitError
 	return errors.As(err, &exit) && exit.ExitCode() == 1
 }
@@ -384,9 +379,11 @@ func (m *Manager) verifiedExecutableMissing(ctx context.Context, host hostreg.Ho
 // there, exit 1 when it is not. A path target is probed with `test -x`, the
 // spec's form; a bare name is probed with `command -v`, the PATH equivalent,
 // because `test -x evener` would test the login shell's cwd rather than the
-// PATH the bare word resolves through. Both forms normalize their answer to the
-// 0/1 status the caller reads, so the recognition does not depend on the shell
-// generation, the host locale, or the wording of "not found".
+// PATH the bare word resolves through. The if/exit wrapper normalizes both forms
+// to the spec's 0/1 sentinel: `command -v` answers 127 — not 1 — for a name it
+// cannot find (dash and other shells), so without the wrapper the absent answer
+// would depend on the shell generation, and a status that double-duties as the
+// shell's own not-found code could not be told from the probe's.
 func executableProbeRemote(target string) string {
 	word := shellquote.RemoteWord(target)
 	cond := "test -x " + word

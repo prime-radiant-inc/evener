@@ -230,7 +230,7 @@ func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 			case strings.Contains(joined, " evener launch-check"):
 				// The host's non-interactive PATH does not carry the binary.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-			case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+			case strings.Contains(joined, executableProbeRemote("evener")):
 				// The dedicated executable probe: absent.
 				return nil, exitStatus(t, 1)
 			case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
@@ -294,7 +294,7 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 				// The host has neither lsof nor a listener: the fallback tier
 				// proved the hub port free.
 				return []byte(noListenerMarker + "\n"), nil
-			case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+			case strings.Contains(joined, executableProbeRemote("evener")):
 				// The dedicated executable probe: absent.
 				return nil, exitStatus(t, 1)
 			case strings.Contains(joined, "command -v evener"):

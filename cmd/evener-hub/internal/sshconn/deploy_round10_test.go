@@ -117,7 +117,7 @@ func TestRound10PreflightDiscoversInstallerDefault(t *testing.T) {
 		case strings.Contains(joined, " evener launch-check"):
 			// No evener on the non-interactive PATH.
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-		case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
@@ -165,7 +165,7 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-		case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, resolved):

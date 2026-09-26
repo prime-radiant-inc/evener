@@ -836,9 +836,9 @@ func (m *Manager) checkHubOwner(ctx context.Context, host hostreg.Host, pid stri
 			return fmt.Errorf("%w: host %q reported no login user to check the restart target's owner against; refusing to restart it", ErrRestart, host.Name)
 		}
 	}
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, pidOwnerRemote(pid)), nil)
+	out, err := m.runRemote(ctx, host, pidOwnerRemote(pid))
 	if err != nil {
-		return fmt.Errorf("%w: host %q could not read the owner of pid %s: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
+		return fmt.Errorf("%w: host %q could not read the owner of pid %s: %w", ErrRestart, host.Name, pid, err)
 	}
 	owner := firstLine(string(out))
 	if owner == "" {
@@ -852,15 +852,13 @@ func (m *Manager) checkHubOwner(ctx context.Context, host hostreg.Host, pid stri
 }
 
 // effectiveUserName resolves the effective user of the host's SSH session from
-// the registry entry alone: the explicit User when set, else the user part of a
-// user@host SSH destination (the form composeDest passes through verbatim). ok is
-// false when the entry names neither, and the caller must then probe the login
-// user the host reports.
+// the registry entry alone: the user part of the destination ssh will dial,
+// derived from composeDest so the destination's one definition also decides the
+// user. ok is false when the destination names no user — a bare hostname, or a
+// host resolved through an ambient ssh_config — and the caller must then probe
+// the login user the host reports.
 func effectiveUserName(host hostreg.Host) (string, bool) {
-	if u := strings.TrimSpace(host.User); u != "" {
-		return u, true
-	}
-	if user, _, found := strings.Cut(strings.TrimSpace(host.SSH), "@"); found && user != "" {
+	if user, _, found := strings.Cut(composeDest(host), "@"); found && user != "" {
 		return user, true
 	}
 	return "", false

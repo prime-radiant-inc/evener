@@ -309,7 +309,7 @@ func TestPreflightMissingExecutableCarriesTheDeployRemedy(t *testing.T) {
 				return []byte("1000\n"), nil
 			case strings.Contains(joined, "launch-check"):
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
-			case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+			case strings.Contains(joined, executableProbeRemote("evener")):
 				// The dedicated executable probe: absent.
 				return nil, exitStatus(t, 1)
 			case strings.Contains(joined, `if [ -n "${HOME-}" ]`):
@@ -416,7 +416,7 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 					return []byte("1000\n"), nil
 				case strings.Contains(joined, "launch-check"):
 					return tc.launchOut, tc.launchErr
-				case strings.Contains(joined, "test -x "+target):
+				case strings.Contains(joined, executableProbeRemote(target)):
 					return tc.probeOut, tc.probeErr
 				case strings.Contains(joined, `if [ -n "${HOME-}" ]`):
 					return nil, nil // nothing at the installer default either
@@ -449,7 +449,7 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 				}
 				var probed bool
 				for _, argv := range fr.recordedRuns() {
-					if strings.Contains(strings.Join(argv, " "), "test -x "+target) {
+					if strings.Contains(strings.Join(argv, " "), executableProbeRemote(target)) {
 						probed = true
 					}
 				}
@@ -465,5 +465,27 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 				t.Fatalf("preflight err = %v, want the retryable ErrSSHStart class", err)
 			}
 		})
+	}
+}
+
+// TestExecutableProbeRemote pins the dedicated probe's shape and quoting: the
+// answer is the 0/1 exit status alone for both forms (test -x for a path,
+// command -v for a bare name), and a run target carrying a space or a shell
+// metacharacter reaches the remote shell as one literal word.
+func TestExecutableProbeRemote(t *testing.T) {
+	cases := []struct {
+		target string
+		want   string
+	}{
+		{"/opt/evener/bin/evener", "if test -x /opt/evener/bin/evener; then exit 0; else exit 1; fi"},
+		{"/opt/my evener/bin/evener", "if test -x '/opt/my evener/bin/evener'; then exit 0; else exit 1; fi"},
+		{"/opt/evener/bin/evener; rm -rf /", "if test -x '/opt/evener/bin/evener; rm -rf /'; then exit 0; else exit 1; fi"},
+		{"evener", "if command -v evener >/dev/null 2>&1; then exit 0; else exit 1; fi"},
+		{"my evener", "if command -v 'my evener' >/dev/null 2>&1; then exit 0; else exit 1; fi"},
+	}
+	for _, tc := range cases {
+		if got := executableProbeRemote(tc.target); got != tc.want {
+			t.Errorf("executableProbeRemote(%q) =\n %q\nwant %q", tc.target, got, tc.want)
+		}
 	}
 }
