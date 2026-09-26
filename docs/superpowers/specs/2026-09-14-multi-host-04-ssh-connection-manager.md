@@ -16,8 +16,11 @@ hint, not as pinning; the reviewer's base is `origin/main`.
 
 > **Partial supersession (2026-09-26) — the guarded ad hoc restart is
 > restored.** The 2026-09-26 ruling *"Keep the ad hoc path — restore the
-> capability"* reverses the two refusals that acceptance criteria 19–20 and
-> the refusal prose of §"Stop/restart mechanics" require. A hub with **no
+> capability"* reverses every statement in this spec that a supervisorless or
+> unbuildable-launchd restart refuses — acceptance criteria 19–20,
+> §"Stop/restart mechanics", the data-flow and testing notes, and the "How the
+> host hub is stopped for restart" answer in Open questions among them. A hub
+> with **no
 > supervisor**, and a detected launchd supervisor whose restart command
 > **cannot be built safely** (no numeric uid, or a label outside the bare-safe
 > set), restart through the **guarded ad hoc path** — recover the listening
@@ -1535,7 +1538,7 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                         │     changes the protocol a binary speaks
                         ├─ version != controller, and a deploy path can fix it?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
-                        │     └─ restart host hub (identify → supervisor, else refuse ErrRestart)
+                        │     └─ restart host hub (identify → supervisor, else guarded ad hoc restart)
                         │          → Runner.Run on the host: curl /api/health
                         │            → answer + running version == the expected build
                         ├─ version != controller with nothing to deploy?
@@ -1689,9 +1692,11 @@ with the remote hub and its daemons still running.
   Tokenizer unit tests cover quotes/escapes and each refusal.
   Supervisor cases: exactly one evener-named unit → restarted; two candidates →
   `ErrRestart` with no `kill` and no relaunch argv (the ambiguity refusal, never
-  "first match" and never an ad hoc launch); zero candidates → the
-  supervisorless refusal: `ErrRestart` with no `kill` and no relaunch argv, and
-  the cold-bootstrap **start** is the only no-supervisor launch.
+  "first match" and never an ad hoc launch); zero candidates → the guarded ad
+  hoc restart (reversed 2026-09-26 — see the partial-supersession note at the
+  top of this spec: the identified listener is killed and the recovered argv
+  relaunched), and the cold-bootstrap **start** is the only no-supervisor
+  *launch*.
 - **Health-verification tests.** Fake runner returns a body reporting the
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
@@ -1951,16 +1956,19 @@ from the component-03 registry.
   `.goreleaser.yml:24-30`); installer runs on the host but needs host network and
   a release archive. Decide precedence and whether `evener_path` implies
   "already correct, skip deploy".
-- **How the host hub is stopped for restart (resolved, with identification).**
-  No new host-side RPC is needed in v1: restart through the host's supervisor
-  when one is identified unambiguously; when **none** is identified the manager
-  refuses the restart (`ErrRestart`, no signal, no relaunch) — it never runs the
-  ops doc's recipe itself. That recipe — find the listener by port with `lsof`,
+- **How the host hub is stopped for restart (resolved, with identification;
+  reversed 2026-09-26).** No new host-side RPC is needed in v1: restart through
+  the host's supervisor when one is identified unambiguously; from 2026-09-26,
+  when **none** is identified the manager runs the ops doc's recipe itself,
+  through the guarded ad hoc path — see the partial-supersession note at the top
+  of this spec. That recipe — find the listener by port with `lsof`,
   verify *what it is* (single listener, evener hub argv, effective SSH user,
   matching address), recover argv/log, `kill` it, wait for the port to clear,
-  relaunch detached — is the **operator's** out-of-band procedure for a
-  supervisorless host, and the cold-bootstrap **start** (no process to identify
-  or signal) is the manager's only no-supervisor launch. See §5. `hub.lock`
+  relaunch detached — is the path the manager runs for a supervisorless host,
+  and it refuses rather than restarting wrong when the listener cannot be
+  matched to the configured address; the cold-bootstrap **start** (no process to
+  identify or signal) remains the manager's only no-supervisor launch. See §5.
+  `hub.lock`
   stays a pure mutual-exclusion `flock` (`main.go`; `hostlock.go`); it is never
   read for a PID and never broken. Residual risk: that recipe calls `lsof`/`ps` on
   the host, so a host without those tools (or a hub the controller cannot match
@@ -1996,8 +2004,10 @@ from the component-03 registry.
   and must **not** be used to compare builds.
 - **Detach idiom on the host (partly resolved).** Supervised hubs restart
   through their supervisor (`launchctl kickstart -k`, `systemctl restart`); a
-  supervisorless **restart** is refused, not relaunched (§"Stop/restart
-  mechanics" check 5). An operator relaunches an ad hoc hub with `nohup <argv>
+  supervisorless **restart** runs the guarded ad hoc recipe and relaunches the
+  recovered argv (reversed 2026-09-26 — see the partial-supersession note at the
+  top of this spec, and §"Stop/restart mechanics" check 5). An operator
+  relaunches an ad hoc hub with `nohup <argv>
   >> <log> 2>&1 </dev/null &`, preserving the recovered log (ops doc
   §"Restarting an ad hoc Hub"), or discards output (`</dev/null >/dev/null
   2>&1`) when no regular-file log was recovered; the manager's cold-bootstrap

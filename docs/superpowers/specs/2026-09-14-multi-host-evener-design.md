@@ -464,7 +464,9 @@ implementing — several have landed without their entry being re-marked.
   and no host-side helper is specified, installed, or invoked. Supervisorless
   restart therefore refuses `ErrRestart` with no signal on Linux exactly as on
   Darwin; see the round-19/22 item below.) Mirrors component-04 acceptance
-  criterion 20.
+  criterion 20; **reversed 2026-09-26 — see §2 Decisions: the supervisorless
+  restart runs the guarded ad hoc path again and the identification/signal
+  window is accepted.**
 - **[05/06] remote-originated `thread/start` resolution (round 17; landed,
   `1e4018fa5d`)** — at the **receiving** hub, `hubThreadStart`
   (`app_threadlifecycle.go`) and the request-context `origin` plumbing
