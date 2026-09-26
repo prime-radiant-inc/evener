@@ -56,7 +56,11 @@ type hostManagerConfig struct {
 	// boot plus every entry added at runtime. Mutations hold mu; the SSH manager
 	// and the attach handler consult the same instance in production.
 	hosts *hostreg.Registry
-	// store holds the durable host set: every live entry, in file order. It is
+	// store holds the durable host set: every live entry, in the order a
+	// rewrite writes it (the boot set in the registry's name-sorted order,
+	// then entries in add order; an edit replaces in place). The file's host
+	// order is the hub's — the banner says formatting does not survive — so a
+	// hand-authored out-of-order file is normalized by the first rewrite. It is
 	// the model of the rewritten hub.toml — mutations derive their write from
 	// it, so an entry a removal already committed can never be re-persisted by a
 	// concurrent mutation whose write starts during the removal's teardown.
@@ -142,8 +146,12 @@ type hostManagerConfig struct {
 	mutating map[string]struct{}
 }
 
-// hostStore is the durable host set: every live entry, in file order. The zero
-// value is usable; all methods are safe for concurrent use. Callers that also
+// hostStore is the durable host set: every live entry, in the order a rewrite
+// writes it — the boot set in the registry's own (name-sorted) order, then
+// entries in add order, with an edit replacing in place. The file's host order
+// is the hub's, not the operator's: the machine-managed banner says formatting
+// does not survive, and a rewrite normalizes a hand-authored out-of-order file.
+// The zero value is usable; all methods are safe for concurrent use. Callers that also
 // mutate the registry hold hostManagerConfig.mu across both, so the two cannot
 // drift apart under concurrency.
 type hostStore struct {
@@ -500,8 +508,8 @@ func (s *hostStore) without(name string) []hostreg.Host {
 }
 
 // replace swaps entry in for the entry already stored under entry.Name, in
-// place, so the file keeps the order it had: an edit is a minimal change to it
-// rather than a reordering nothing asked for. Callers hold hostManagerConfig.mu.
+// place, so an edit is a minimal change to the write order rather than a
+// reordering nothing asked for. Callers hold hostManagerConfig.mu.
 func (s *hostStore) replace(entry hostreg.Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

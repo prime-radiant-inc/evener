@@ -185,6 +185,41 @@ ssh = "beta.example"
 	}
 }
 
+// TestHubTOMLWriteOrderIsTheStores pins the order contract the store's
+// comments state: the boot set is seeded from the registry (name-sorted), so a
+// rewrite normalizes a hand-authored out-of-order file, runtime adds append,
+// and an edit keeps its entry's position. The file's host order is the hub's —
+// the banner says formatting does not survive.
+func TestHubTOMLWriteOrderIsTheStores(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	// Seeded deliberately out of name order: the first rewrite normalizes it.
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{
+		{Name: "zeta", SSH: "zeta.example"},
+		{Name: "alpha", SSH: "alpha.example"},
+	}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{
+		Name: "mid", Address: "mid.example",
+	}}); err != nil {
+		t.Fatalf("Add(mid) = %v", err)
+	}
+	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "zeta", "mid"}) {
+		t.Fatalf("write order after add = %v, want the name-sorted boot set then the add", got)
+	}
+	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "zeta",
+		Entry: appwire.HostEntry{Address: "zeta2.example"},
+	}); err != nil {
+		t.Fatalf("Update(zeta) = %v", err)
+	}
+	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "zeta", "mid"}) {
+		t.Fatalf("write order after edit = %v, want zeta to keep its position", got)
+	}
+}
+
 // TestHubTOMLMigrationMergesSidecarOnce pins the one-time migration: a
 // pre-existing hub.hosts.json folds into hub.toml, the sidecar is renamed
 // aside rather than deleted, and a later removal of a migrated name cannot
