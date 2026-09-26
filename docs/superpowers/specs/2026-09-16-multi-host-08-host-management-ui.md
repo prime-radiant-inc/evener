@@ -1,17 +1,19 @@
 # Component spec 08 — Host management registry (mutations, sidecar, reads, UI)
 
-Status: not started. This spec is the hand-off for the implementing session.
+Status: slices 1–2 landed. The live registry, the durable sidecar, `add`/
+`update`/`remove`/`list`/`status`, the generation fence, `evener/host/attach`,
+and the Hosts settings section shipped in #1784 and the edit slice #2111; this
+spec is the hand-off for the remaining registry-durability work (mutation
+guards and receipts, tombstones, remnants, and the store-owned helpers `remove`
+depends on).
 
-Depends on: PR #1603 (the attached-only seams and the shared origin guard).
-The symbols this spec cites that do not yet exist on main —
-`sshManager.ChannelIfAttached`, the `RemoteHostClientIfAttached`/
+Depends on: PR #1603 (the attached-only seams and the shared origin guard) —
+**landed**. `sshManager.ChannelIfAttached`, the `RemoteHostClientIfAttached`/
 `RemoteHostHandshake` seams, the attach classifier, and the shared origin
 guard (bridge origin metadata plus the rule that remote-originated,
 peer-forwarded requests never reach controller-side dialing or SSH-affecting
-handlers) — land with #1603 and MUST be on main before this component starts.
-`evener/host/attach` itself and the spawn picker's Connect trigger also ship in
-#1603; this component does not extend that method. Do not start this component
-until #1603 is landed.
+handlers) all exist on main. `evener/host/attach` itself and the spawn picker's
+Connect trigger shipped with #1603; this component does not extend that method.
 
 Related: `2026-09-14-multi-host-evener-design.md` (topology), `…-03-host-config.md`
 (host registry), `…-04-ssh-connection-manager.md` (attach + deploy/restart
@@ -1153,13 +1155,13 @@ keeps a crash-torn snapshot from surfacing under the live entry: generations
 are strictly monotonic (§1), so no live re-add reuses a generation, and the
 pair key additionally fences a stale write that survived on disk past the
 registry's advance. Every `plan` call publishes into it under the gate
-before returning — except the pre-mint no-token refusals
-(`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
-`handler-absent`): `unattached`, `refresh-failed`, and `remnant-open` occur
+before returning — except the pre-acquisition no-token refusals
+(`unattached`, `refresh-failed`, `remnant-open`), which occur
 before any acquisition and publish gateless, never by acquiring the gate to do
 so (holding the gate across the SSH preflight refresh reintroduces the
-slow-probe busy-refusal bug), while a gated-probe `probe-failed` or
-`handler-absent` publishes under the probe-window gate before releasing it:
+slow-probe busy-refusal bug). The gated-probe refusals (`probe-failed`,
+`handler-absent`) publish under the probe-window gate before releasing it,
+matching the deploy-pipeline spec §6:
 a refusal publishes its
 `{terminal, message}` as the pair's plan-time refusal (a later success clears
 it), and the `remnant-open` check runs before any gate acquisition — a
@@ -1275,6 +1277,17 @@ documents and are cited, never restated):
   `lastAttachError?`, and `lastAttachErrorAgeSec?` stay absent (never null)
   per the absent-when-unknown rule — every other `HostRow` field carries the
   explicit value above, so no non-optional field is left unknown.
+  **Shipped-wire reconciliation:** slices 1–2 shipped `HostRow`/`HostEntry`
+  under different spellings — `address` for this contract's `ssh`, an extra
+  `keyPath` (an SSH key path that is not a `HostConfig` field, recorded in
+  `2026-09-20-multi-host-host-edit-slice.md`), and the live-state names
+  `midAttach`, `os`, `arch`, `hubVersion`, and `serverVersion` — and the shipped
+  Add/Edit dialog and `stores/hosts.ts` consume exactly those. The registry PR
+  reshapes the shipped wire and dialog to this contract (`ssh`, `midEnsure`,
+  `osArch`, `installedVersion`) and adds `generation`/`incarnationId`,
+  regenerating the client it ships (§2); the shipped `keyPath` is retained as
+  the documented non-schema field. Until that lands, the shipped spellings are
+  the wire.
 - `evener/host/add`: params are one full host entry (all seven `HostConfig`
   fields; `name` required) plus optional `mutationId: string` (opaque,
   non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every sidecar mutation and every boot compacting past either bound in the same atomic write — so keyless-add spam against one name cannot grow the sidecar without limit; the §15 tombstone cap is tombstone-scoped and does not cover these records, so across names sidecar size scales with the operator's host list, the same accepted bound as the withdrawn host-count cap); response is the
@@ -1505,7 +1518,9 @@ affordance, and an orphan-fenced row showing the resolve-first affordance.
 Add / Edit dialog: fields exactly the `HostConfig` schema — `name`, `ssh`,
 `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
 `config.go:32-46` — TOML-file spellings; the wire carries `evenerPath` /
-`configPath` per §11) — all seven fields, none invented, none hidden; each
+`configPath` per §11) — all seven fields, none invented, none hidden, plus the
+shipped `keyPath` SSH-key field the schema does not carry (§11 shipped-wire
+reconciliation); each
 with its validation message mapped from the backend response. Edit does not
 offer `name` (immutable).
 
@@ -1565,7 +1580,9 @@ mutable module state.
   `ChannelIfAttached`/facts unchanged.
 - `cmd/evener-hub/config.go` — sidecar load/merge (hard-error duplicate rule)
   + atomic write.
-- `cmd/evener-hub/app_host_manage.go` (new) — the `list`/`status` handlers
+- `cmd/evener-hub/app_host_manage.go` (exists — it already registers
+  `list`/`status`/`add`/`update`/`remove`; extend it) — the `list`/`status`
+  handlers
   with router registration, catalog entries, and regenerated client, plus the
   `add`/`update`/`remove`/`teardown-retry`/`teardown-recover` behavior behind
   private hand-written request/response types with no router or catalog

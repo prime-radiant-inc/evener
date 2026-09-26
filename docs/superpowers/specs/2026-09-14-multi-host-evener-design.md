@@ -586,8 +586,9 @@ implementing — several have landed without their entry being re-marked.
   **more than one match is `ErrRestart` with no kill and no relaunch**
   ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`), never
   a fall-through to
-  the ad hoc launch, and the same refusal applies when an identified launchd
-  label fails the bare-safe gate instead of the old ad hoc fallback. When
+  the ad hoc launch, while an identified launchd label that fails the bare-safe
+  gate is never interpolated into the remote shell and falls through to the
+  guarded ad hoc restart (design §2). When
   **no** candidate definition matches, a supervisorless *restart* runs the
   guarded verify-then-signal ad hoc path (design §2), and the ad hoc *launch*
   is the cold-bootstrap **start**. Scope:

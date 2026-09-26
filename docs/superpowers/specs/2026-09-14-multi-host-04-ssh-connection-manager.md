@@ -1394,10 +1394,10 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      `gui/$(id -u)/<label>` would reach `launchctl` as the literal string
      `gui/$(id -u)/<label>` with no expansion and never restart the unit. With
      the numeric uid and a `<label>` validated against the bare-safe set
-     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it **refuses the restart
-     with `ErrRestart`, no signal and no relaunch**, rather than injecting into
-     the remote shell — an identified supervisor is never bypassed for an
-     unmanaged launch, and a Darwin ad hoc launch is unavailable anyway), the
+     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it is never interpolated into
+     the remote shell, and the restart **falls through to the guarded ad hoc
+     path instead of refusing** — the accepted outcome, design §2 "Restart
+     identity pin: verify-then-signal accepted", Jesse 2026-09-26), the
      whole `gui/<uid>/<label>` argument is one bare-safe word
      passed verbatim. Adding `gui/$(id -u)/<label>` to the raw exception list is
      rejected: the label is host-derived data, so passing it raw is exactly the
@@ -1841,10 +1841,11 @@ with the remote hub and its daemons still running.
     resolved `run_path` / unit `ExecStart`, so a valid custom `evener_path`
     basename restarts; a non-hub executable still refuses.
 19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
-    bare-safe word (uid from preflight), and a label outside the bare-safe set
-    **refuses with `ErrRestart` (no signal, no relaunch)** instead of falling
-    through to an unmanaged ad hoc launch; no `$(id -u)` reaches the remote
-    shell.
+    bare-safe word (uid from preflight); no `$(id -u)` reaches the remote
+    shell. A label outside the bare-safe set is never interpolated into the
+    remote shell and **falls through to the guarded ad hoc restart instead of
+    refusing** — the accepted outcome (design §2 "Restart identity pin:
+    verify-then-signal accepted", Jesse 2026-09-26).
 20. Restart safety is hardened against the identification/signal PID-reuse
     window by a **guarded verify-then-signal**: the pid, recovered argv (with
     `--config`/`--addr` agreeing with the entry's configured `config_path`/
