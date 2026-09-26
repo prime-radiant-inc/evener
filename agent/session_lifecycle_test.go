@@ -268,9 +268,9 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 // the loop (the cancellation branch right above it, and the successful-settle
 // tail), which each emit one. A live subscriber saw turn/completed(Failed)
 // and then silence; its belief that a turn was still running leaked until it
-// left and re-entered the session. The failure exit now announces systemError:
-// the session is idle inside and takes the next message, and the wire reports
-// it resting on a failed turn (RestingWireState).
+// left and re-entered the session. The failure exit announces systemError: the
+// session is idle inside and takes the next message, and the wire reports it
+// resting on a failed turn (RestingWireState).
 func TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
