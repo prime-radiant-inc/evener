@@ -296,18 +296,22 @@ describe("transcript projector", () => {
       }
     });
 
-    test("the terminal fallback does not resurrect a hidden informational warning", () => {
-      // A failed turn renders no empty (terminalFallbackEntry promotes its
+    test("the terminal fallback does not resurrect a hidden informational warning where an end cap will render", () => {
+      // A terminal turn renders no empty (terminalFallbackEntry promotes its
       // last item), but that fallback must consult the same visibility rule
-      // decisionFor applied: a failed turn whose ONLY item is a
-      // context-budget notice stays hidden below high verbosity - the
-      // failure end cap still represents the turn, so nothing is lost.
+      // decisionFor applied — EXCEPT where no failure end cap will render:
+      // an interrupted turn carries no error object (TurnBlock renders
+      // TurnFailureEndCap only from asTurnError(sourceTurn.error)), so
+      // suppressing its fallback would show an empty block where the
+      // pre-change notice showed something. Suppression holds only for a
+      // failed turn that carries the error the end cap renders.
       const failedBudgetTurn = {
         ...BASE_THREAD,
         turns: [
           {
             id: "turn-1",
             status: "failed",
+            error: { message: "the model call failed" },
             items: [
               item("budget", "warning", {
                 text: "Output allocation reduced for inst/model: requested=100 admitted=50",
@@ -319,6 +323,28 @@ describe("transcript projector", () => {
       } as unknown as ThreadModel;
       expect(entriesFor(failedBudgetTurn, preset("tools"))).toEqual([]);
       expect(entriesFor(failedBudgetTurn, preset("activity"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "budget" }),
+      ]);
+
+      // An errorless terminal turn (the interrupted shape: no error object)
+      // keeps the never-empty guarantee even when its only item is the
+      // hidden notice — there is no end cap to represent it.
+      const interruptedBudgetTurn = {
+        ...BASE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "interrupted",
+            items: [
+              item("budget", "warning", {
+                text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+                warning: { title: "Context budget", code: WarningCodeContextBudget },
+              }),
+            ],
+          },
+        ],
+      } as unknown as ThreadModel;
+      expect(entriesFor(interruptedBudgetTurn, preset("tools"))).toEqual([
         expect.objectContaining({ kind: "critical", id: "budget" }),
       ]);
 
