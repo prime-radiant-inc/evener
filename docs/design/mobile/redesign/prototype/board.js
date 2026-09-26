@@ -73,7 +73,7 @@
     const stop = (e) => e.stopPropagation();
     return html`<div class="atts">${s.attachments.slice(0, 2).map((a) => html`<button class="att" onPointerDown=${stop} onPointerUp=${stop}
       onClick=${(e) => { e.stopPropagation(); EV.log("attachment_open", { sessionId: s.id, kind: a.kind, target: a.path || a.id, from: "board" }); EV.markSeen(s); if (a.kind === "Artifact") EV.push("artifact", { id: a.id, sessionId: s.id }); else EV.push("reader", { path: a.path, sessionId: s.id }); }}>
-      <span style="display:flex;color:var(--ink-mid)">${a.kind === "Artifact" ? I.artifact({ s: 15 }) : I.doc({ s: 15 })}</span><b>${a.kind}</b><span class="p">${a.kind === "Artifact" ? a.title : a.path.split("/").pop()}</span></button>`)}</div>`;
+      <span style="display:flex;color:var(--ink-mid)">${a.kind === "Artifact" ? I.artifact({ s: 15 }) : I.doc({ s: 15 })}</span><b>${a.kind}</b><span class="p">${a.kind === "Artifact" ? a.title : EV.docTitle(a.path)}</span></button>`)}</div>`;
   }
 
   EV.rowActions = function (s) {
@@ -236,26 +236,24 @@
     </section>`;
   }
 
-  function PinnedSection() {
+  // Pinned sessions live in the user's named categories. Each category is a
+  // section of its own (as on the web's rail), never one generic "Pinned" bucket.
+  function CategorySections() {
     const S = EV.S;
-    if (!S.categories.length) return null;
-    return html`<section aria-label="Pinned">
-      <${SectionHead} id="sec-pinned" label="Pinned" big=${true} />
-      ${S.categories.map((c) => {
-        const list = S.sessions.filter((s) => s.category === c.id && !s.archived);
-        const id = "cat:" + c.id;
-        const open = !S.board.collapsed[id];
-        return html`<div key=${c.id}>
-          <div style="display:flex;align-items:center">
-            <button class=${"fold" + (open ? " open" : "")} style="flex:1" aria-expanded=${open ? "true" : "false"} onClick=${() => { S.board.collapsed[id] = open; EV.update(); }}>
-              <span class="lbl" style="color:var(--ink-hi);font-weight:600">${c.name} <span class="cnt" style="font-weight:400">${list.length}</span></span><span class="chev">${I.chevR()}</span>
-            </button>
-            <button class="icon-btn" aria-label=${"Category actions for " + c.name} style="color:var(--ink-mid)" onClick=${() => EV.categoryMenu(c)}>${I.dots({ s: 18 })}</button>
-          </div>
-          ${open ? (list.length ? list.map((s) => html`<${EV.BoardRow} key=${s.id} s=${s} quiet=${!s.live || EV.band(s) === "idle"} context=${"category:" + c.name} />`) : html`<div class="fold" style="cursor:default;font-size:14px;color:var(--ink-low)">No sessions pinned here yet</div>`) : null}
-        </div>`;
-      })}
-    </section>`;
+    return S.categories.map((c) => {
+      const list = S.sessions.filter((x) => x.category === c.id && !x.archived);
+      const id = "cat:" + c.id;
+      const open = !S.board.collapsed[id];
+      return html`<section aria-label=${c.name} key=${c.id} id=${"sec-cat-" + c.id}>
+        <div class="sec-h big cat-h">
+          <button class="h-left cat-toggle" aria-expanded=${open ? "true" : "false"} onClick=${() => { S.board.collapsed[id] = open; EV.log("fold", { id, open: !open }); EV.update(); }}>
+            <span class="cat-pin">${I.pin({ s: 13 })}</span>${c.name}<span class="n">${list.length}</span><span class=${"cat-chev" + (open ? " open" : "")}>${I.chevR({ s: 11 })}</span>
+          </button>
+          <button class="h-act" aria-label=${"Category actions for " + c.name} onClick=${() => EV.categoryMenu(c)}>${I.dots({ s: 18 })}</button>
+        </div>
+        ${open ? (list.length ? list.map((x) => html`<${EV.BoardRow} key=${x.id} s=${x} quiet=${!x.live || EV.band(x) === "idle"} context=${"category:" + c.name} />`) : html`<div class="fold" style="cursor:default;font-size:14px;color:var(--ink-low)">No sessions pinned here yet. Touch and hold a session and choose Pin to category.</div>`) : null}
+      </section>`;
+    });
   }
 
   EV.categoryMenu = function (c) {
@@ -430,7 +428,7 @@
     const scrollRef = useRef(null);
     useEffect(() => {
       if (!S.board.jump || !scrollRef.current) return;
-      const target = { live: "sec-live", needs: "band-needs", pinned: "sec-pinned", projects: "sec-projects", archived: "sec-archived" }[S.board.jump];
+      const target = S.board.jump.startsWith("cat:") ? "sec-cat-" + S.board.jump.slice(4) : { live: "sec-live", needs: "band-needs", projects: "sec-projects", archived: "sec-archived" }[S.board.jump];
       S.board.jump = null;
       const el = target && scrollRef.current.querySelector("#" + target);
       if (el) scrollRef.current.scrollTo({ top: Math.max(0, el.offsetTop - 50), behavior: "smooth" });
@@ -439,7 +437,6 @@
     const hub = EV.host("magic-kingdom");
     const needs = EV.needsCount();
     const live = S.sessions.filter((s) => s.live && !s.archived && !s.test).length;
-    const pinnedN = S.sessions.filter((s) => s.category && !s.archived).length;
     const projN = S.projects.filter((p) => projSessions(p.id).length).length;
     const archN = S.sessions.filter((s) => s.archived).length + S.archivedTotal - 5;
     const jump = (k) => { EV.log("jump", { to: k }); S.board.jump = k; EV.update(); };
@@ -456,7 +453,7 @@
       <div class="scroll" ref=${scrollRef}>
         <div class="chips" role="navigation" aria-label="Sections">
           <button class="chip" onClick=${() => jump("live")}>Live <span class="n">${live}</span>${needs ? html`<span class="badge" aria-label=${needs + " need you"}>${needs}</span>` : null}</button>
-          ${pinnedN || S.categories.length ? html`<button class="chip" onClick=${() => jump("pinned")}>Pinned <span class="n">${pinnedN}</span></button>` : null}
+          ${S.categories.map((c) => html`<button class="chip" key=${c.id} onClick=${() => jump("cat:" + c.id)}><span style="display:flex;color:var(--ink-mid)">${I.pin({ s: 12 })}</span>${c.name} <span class="n">${S.sessions.filter((x) => x.category === c.id && !x.archived).length}</span></button>`)}
           <button class="chip" onClick=${() => jump("projects")}>Projects <span class="n">${projN}</span></button>
           <button class="chip" onClick=${() => { S.board.collapsed.archived = false; jump("archived"); }}>Archived <span class="n">${archN}</span></button>
         </div>
@@ -474,7 +471,7 @@
           <span style="display:flex;color:var(--ink-low)">${I.chevR()}</span>
         </button>` : null}
         ${h(LiveSection)}
-        ${h(PinnedSection)}
+        ${h(CategorySections)}
         ${h(ProjectsSection)}
         ${h(TestRuns)}
         ${h(Archived)}

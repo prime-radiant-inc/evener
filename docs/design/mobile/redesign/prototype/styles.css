@@ -752,3 +752,10 @@ input, textarea { font: inherit; color: inherit; }
 .appr-choices .choice:active { background: var(--pressed); }
 
 .dock-b { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); padding-bottom: 22px; }
+
+.cat-h { align-items: center; }
+.cat-toggle { display: flex; align-items: center; gap: 6px; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; padding: 4px 0; }
+.cat-pin { display: flex; color: var(--attention-ink); }
+.cat-chev { display: flex; color: var(--ink-low); transition: transform 160ms ease; margin-left: 2px; }
+.cat-chev.open { transform: rotate(90deg); }
+.cat-h .h-act { color: var(--ink-mid); padding: 4px 0 4px 8px; }

@@ -134,7 +134,7 @@ The Board is home. It shows every session, ordered by who needs you, followed by
 
 ```
 ◉ magic-kingdom ▾                              ⌕
-[Live 17 (3)] [Pinned 3] [Projects 14] [Archived 271]
+[Live 17 (3)] [📌 Release 2] [📌 Research 1] [Projects 14] [Archived 271]
 
 ⚠ codex-jesse-fsck.com sign-in expired · 3 sessions          Sign in
 
@@ -156,8 +156,9 @@ WORKING · 12
    Waiting on 31 subagents
    ▰▰▰▰▰▰▱▱▱ 54 subagents, 2 failed · evener
 Idle · 6                                            ›
-PINNED
-  Release                                           ⋯
+📌 RELEASE · 2                                      ⋯
+  …
+📌 RESEARCH · 1                                     ⋯
   …
 PROJECTS                          Project, then host ⇄
   📌 evener                                         ▾
@@ -171,7 +172,7 @@ Select              Live                            ✎
 ```
 
 - **Header (glass nav bar).** Leading: the hub button (hub name, a connection dot, a chevron). Trailing: Search. No large title; the section chips carry orientation.
-- **Section chips (sticky under the header).** Live, Pinned, Projects (or Hosts), Archived, each with a count. Tapping scrolls to that section. The Live chip carries an amber badge with the Needs you count when it is above zero. Chips for empty sections are hidden.
+- **Section chips (sticky under the header).** Live, one chip per pinned category (with a pin glyph), Projects, Archived, each with a count. Chips are landmarks, so their names never change with display settings. Tapping scrolls to that section. The Live chip carries an amber badge with the Needs you count when it is above zero. Chips for empty sections are hidden.
 - **Notices (only when present).** Hub-level problems that block sessions: a provider sign-in expired or expiring within a day, a host offline, a plugin marked broken. A host on a different version than the hub is shown in Hub > Hosts, not here, because it doesn't block work. One row each: a mark, one sentence naming the affected count, and one action ("Sign in", "Reconnect", "Update host"). Notices dismiss themselves when resolved.
 - **Continue reading (only when present).** Leaving a plan or document before its end leaves one row under the notices for two hours: "Continue reading · 62%" and the document's title. Tapping it reopens the document at the same position, inside its session. This is the way back after an interruption.
 - **Live** holds every live, unarchived top-level session, in four bands:
@@ -180,7 +181,7 @@ Select              Live                            ✎
   - Working: stable order by start time, newest first. Sessions that "may be stuck" float to the top of this band.
   - Idle: finished sessions you have already seen, collapsed by default, most recent first.
   Band headers show counts. Empty bands are omitted.
-- **Pinned** shows the user's categories in the order the hub returns them. Each category is a collapsible group with a ⋯ menu (Rename, Delete). Deleting a category unpins its sessions; it never deletes sessions. A pinned session also appears in Live while it is live, so pinning never hides attention.
+- **Pinned categories.** Pinned sessions live in the user's named categories, and each category is its own section (as on the web's rail), in the order the hub returns them; there is no generic "Pinned" section. Each section header has a pin glyph, the name, a count, a collapse toggle and a ⋯ menu (Rename, Delete). An empty category says how to pin to it. Deleting a category unpins its sessions; it never deletes sessions. A pinned session also appears in Live while it is live, so pinning never hides attention.
 - **Projects / Hosts** mirrors the web's "Organize by" control: "Project, then host" (default) or "Host, then project". The toggle sits in the section header, flips the section title between Projects and Hosts, and appears only when more than one host exists. Pinned projects float to the top with a pin mark. Inside a project, sessions split like the web: today, recent, and a folded archived group. Each project and host row shows its live count.
 - **Test runs** (collapsed): projects whose sessions all came from test runs, as on the web.
 - **Archived** (collapsed): archived sessions and projects, newest first. Unarchive from the row's swipe or menu.
