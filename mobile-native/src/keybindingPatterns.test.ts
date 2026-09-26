@@ -40,7 +40,6 @@ const patterns = [
 ];
 
 describe("native shortcut pattern compilation", () => {
-	const authoredChord = String.raw`([\p{ASCII}&&\p{Letter}])`;
 	it.each(patterns)(
 		"compiles %s to UnicodeSets membership without the v flag",
 		(pattern) => {
@@ -70,13 +69,14 @@ describe("native shortcut pattern compilation", () => {
 		},
 	);
 	it("preserves the authored pattern through the real native preview and change validator", () => {
-		const changed = checkedKeybindingChange([], "palette.open", authoredChord);
+		const chord = String.raw`([\p{ASCII}&&\p{Letter}])`;
+		const changed = checkedKeybindingChange([], "palette.open", chord);
 		const preview = keybindingPreview(changed);
-		expect(changed).toEqual([{ action: "palette.open", chord: authoredChord }]);
+		expect(changed).toEqual([{ action: "palette.open", chord }]);
 		expect(preview.warnings).toEqual([]);
 		expect(
 			preview.rows.find((row) => row.actionId === "palette.open")?.shortcuts,
-		).toEqual([authoredChord]);
+		).toEqual([chord]);
 	});
 	it("rejects the same invalid Unicode sets as the web parser", () => {
 		for (const chord of ["([a&&])", "([a--])", "(\\p{NotAProperty})"]) {
