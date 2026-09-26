@@ -48,13 +48,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  // Same hygiene as HeldSteerStack.test.tsx: every test here calls ensureThread
-  // directly (HeldSteerAnnouncements takes its ref as a prop), so cleanup()'s
-  // unmount leaves the ref refcounted, and every test writes real durable rows
-  // into this file's own globalThis.indexedDB instance, which the beforeEach
-  // only replaces BEFORE each test - wipe both for whichever file runs next.
-  resetThreadsStoreForTests();
-  globalThis.indexedDB = new IDBFactory();
 });
 
 // The first observation never announces (the reader who just opened the pane
