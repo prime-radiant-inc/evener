@@ -327,10 +327,19 @@ async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: str
   await user.click(workingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
-  await user.type(input, `${path}{Enter}`);
+  await user.paste(path);
+  await user.keyboard("{Enter}");
   const confirm = screen.getByRole("button", { name: "Use this folder" });
   await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
   await user.click(confirm);
+}
+
+/** Enters prompt text as one paste instead of key by key: each prompt
+ * keystroke re-renders the whole pane. Tests about per-keystroke prompt
+ * behavior (the slash menu) type with `user.type` instead. */
+async function fillPrompt(user: ReturnType<typeof userEvent.setup>, text: string): Promise<void> {
+  await user.click(promptField());
+  await user.paste(text);
 }
 
 /** Waits for the mount-time catalogs to land. The Advanced-options toggle is
@@ -365,7 +374,7 @@ test("draft survives unmount and bare /new return before any successful start", 
   const client = readyClient();
   const mounted = renderSpawn(client);
   await settled();
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-a-sentinel");
+  await fillPrompt(user, "draft-a-sentinel");
   fireEvent.change(effortControl(), { target: { value: "high" } });
   mounted.unmount();
   await visitSpawnURL("/settings");
@@ -383,14 +392,14 @@ test("project navigation isolates drafts and ignores non-new URL prefill", async
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   renderSpawn(readyClient());
   await settled();
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-a-sentinel");
+  await fillPrompt(user, "draft-a-sentinel");
   fireEvent.change(effortControl(), { target: { value: "high" } });
   await visitSpawnURL("/settings?dir=/tmp/foreign&prompt=foreign");
   expectWorkingDir("/tmp/draft-a");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
   await visitSpawnURL("/new?dir=/tmp/draft-b");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("");
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-b-sentinel");
+  await fillPrompt(user, "draft-b-sentinel");
   await visitSpawnURL("/new?dir=/tmp/draft-a");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-a-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
@@ -402,11 +411,11 @@ test("re-entering the same /new URL after leaving /new re-applies its explicit p
   const client = readyClient();
   const mounted = renderSpawn(client);
   await settled();
-  await user.type(promptField(), "sentinel-a");
+  await fillPrompt(user, "sentinel-a");
   // The picker switches drafts without touching the URL, so the prefill
   // marker still names this same URL.
   await setWorkingDir(user, "/tmp/reentry-b");
-  await user.type(promptField(), "sentinel-b");
+  await fillPrompt(user, "sentinel-b");
   expectWorkingDir("/tmp/reentry-b");
   expect(window.location.search).toBe("?dir=/tmp/reentry-a");
   // Leaving /new can unmount the pane (mobile StackHost mounts only the
@@ -429,7 +438,7 @@ test("remounting the same /new URL without leaving /new keeps the picker-selecte
   const mounted = renderSpawn(client);
   await settled();
   await setWorkingDir(user, "/tmp/reentry-b");
-  await user.type(promptField(), "sentinel-b");
+  await fillPrompt(user, "sentinel-b");
   expectWorkingDir("/tmp/reentry-b");
   // A remount with no intervening departure must not clobber the current
   // draft back to the URL's prefill directory.
@@ -470,13 +479,13 @@ test.each(["unchanged", "picker", "picker return", "away", "route return", "remo
     const started = deferred<ThreadStartResponse>();
     const fake = readyClient((f) => f.on("thread/start", () => started.promise));
     const mounted = renderSpawn(fake);
-    await user.type(promptField(), "submitted-a");
+    await fillPrompt(user, "submitted-a");
     await user.click(screen.getByTestId("spawn-submit"));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
     const origin = completionDraft("/tmp/completion-a");
     if (scenario.startsWith("picker")) {
       await setWorkingDir(user, "/tmp/completion-b");
-      await user.type(promptField(), "unsent-b");
+      await fillPrompt(user, "unsent-b");
       expect(window.location.search).toBe("?dir=/tmp/completion-a");
       if (scenario === "picker return") await setWorkingDir(user, "/tmp/completion-a");
     } else if (scenario === "away" || scenario === "route return") {
@@ -519,11 +528,11 @@ test.each(["A first", "B first"])("completion ownership: concurrent launches fin
     f.on("thread/start", ({ cwd }) => (cwd === "/tmp/completion-a" ? startA.promise : startB.promise)),
   );
   renderSpawn(fake);
-  await user.type(promptField(), "submitted-a");
+  await fillPrompt(user, "submitted-a");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
   await setWorkingDir(user, "/tmp/completion-b");
-  await user.type(promptField(), "submitted-b");
+  await fillPrompt(user, "submitted-b");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(2));
   expect(fake.calls.filter((call) => call.method === "thread/start").map((call) => call.params)).toMatchObject([
@@ -561,7 +570,7 @@ test.each(["preflight", "create confirmation"])(
       f.on("evener/dirs/create", () => creation.promise);
     });
     renderSpawn(fake);
-    await user.type(promptField(), "submitted-a");
+    await fillPrompt(user, "submitted-a");
     await user.click(screen.getByTestId("spawn-submit"));
     if (boundary === "create confirmation")
       await user.click(await screen.findByRole("button", { name: "Create & start" }));
@@ -595,7 +604,7 @@ test("completion ownership: late missing-directory preflight cannot open a dialo
   const validation = deferred<{ path: string; valid: boolean }>();
   const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
   renderSpawn(fake);
-  await user.type(promptField(), "submitted-a");
+  await fillPrompt(user, "submitted-a");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
   await completionNavigate("/settings");
@@ -618,7 +627,7 @@ test("completion ownership: a query-only navigation retires a pending launch's c
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
   renderSpawn(fake);
-  await user.type(promptField(), "submitted-a");
+  await fillPrompt(user, "submitted-a");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
   // Same draft, same pathname: only the query changes. The user's newest
@@ -1068,7 +1077,7 @@ test.each(["%20/tmp/review-a%20", "%20%20"])(
     window.history.pushState({}, "", "/new?dir=/tmp/review-a");
     const fake = readyClient();
     renderSpawn(fake);
-    await user.type(promptField(), "normalized-draft");
+    await fillPrompt(user, "normalized-draft");
     await visitSpawnURL(`/new?dir=${dir}`);
     expect(promptField().value).toBe("normalized-draft");
     await user.click(screen.getByTestId("spawn-submit"));
@@ -1085,7 +1094,7 @@ test("directory picker assigns the unscoped draft and restores each project's la
   window.history.pushState({}, "", "/new");
   const fake = readyClient();
   const mounted = renderSpawn(fake);
-  await user.type(promptField(), "unscoped-sentinel");
+  await fillPrompt(user, "unscoped-sentinel");
   fireEvent.change(effortControl(), { target: { value: "high" } });
   mounted.unmount();
   renderSpawn(fake);
@@ -1098,7 +1107,7 @@ test("directory picker assigns the unscoped draft and restores each project's la
   await setWorkingDir(user, "/tmp/draft-b");
   expect(promptField().value).toBe("");
   expect((effortControl() as HTMLSelectElement).value).toBe("");
-  await user.type(promptField(), "draft-b-sentinel");
+  await fillPrompt(user, "draft-b-sentinel");
   await setWorkingDir(user, "/tmp/draft-a");
   expect(promptField().value).toBe("unscoped-sentinel");
   expect((effortControl() as HTMLSelectElement).value).toBe("high");
@@ -1132,7 +1141,7 @@ test("unchanged URL directory prefill does not replace a picker-selected draft o
   const fake = readyClient();
   const mounted = renderSpawn(fake);
   await setWorkingDir(user, "/tmp/review-b");
-  await user.type(promptField(), "picker-draft");
+  await fillPrompt(user, "picker-draft");
   mounted.unmount();
   renderSpawn(fake);
   expectWorkingDir("/tmp/review-b");
@@ -1212,7 +1221,7 @@ test("successful creation preserves edits made while directory preflight was pen
   const validation = deferred<{ path: string; valid: boolean }>();
   const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
   renderSpawn(fake);
-  await user.type(promptField(), "submitted-sentinel");
+  await fillPrompt(user, "submitted-sentinel");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
   await user.type(promptField(), "-newer");
@@ -1230,10 +1239,10 @@ test("late missing-directory preflight keeps Create and start with its originati
   const validation = deferred<{ path: string; valid: boolean }>();
   const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
   renderSpawn(fake);
-  await user.type(promptField(), "draft-a-sentinel");
+  await fillPrompt(user, "draft-a-sentinel");
   await user.click(screen.getByTestId("spawn-submit"));
   await visitSpawnURL("/new?dir=/tmp/draft-b");
-  await user.type(promptField(), "draft-b-sentinel");
+  await fillPrompt(user, "draft-b-sentinel");
   await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: false }));
   expect(screen.queryByRole("dialog")).toBeNull();
   await visitSpawnURL("/new?dir=/tmp/draft-a");
@@ -1255,7 +1264,7 @@ test("late successful creation clears only the originating draft across remount 
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
   const mounted = renderSpawn(fake);
-  await user.type(promptField(), "submitted-sentinel");
+  await fillPrompt(user, "submitted-sentinel");
   act(() => pastePngInto(promptField(), "submitted.png"));
   await screen.findByRole("button", { name: "View submitted.png" });
   fireEvent.change(effortControl(), { target: { value: "high" } });
@@ -1265,7 +1274,7 @@ test("late successful creation clears only the originating draft across remount 
   renderSpawn(fake);
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
   await visitSpawnURL("/new?dir=/tmp/draft-b");
-  await user.type(promptField(), "other-project-sentinel");
+  await fillPrompt(user, "other-project-sentinel");
   act(() => pastePngInto(promptField(), "other.png"));
   await screen.findByRole("button", { name: "View other.png" });
   await act(async () => started.resolve(startResponse("local:abc123")));
@@ -1338,7 +1347,7 @@ test("missing credentials surface setup in the composer without opening a dialog
   renderSpawn(client);
   const connect = await screen.findByRole("button", { name: "Connect provider" });
   expect(screen.queryByRole("dialog")).toBeNull();
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-sentinel");
+  await fillPrompt(user, "draft-sentinel");
   await setWorkingDir(user, "/tmp/my-project");
   expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
   // userEvent owns its async act environment. Await it before opening the
@@ -1404,7 +1413,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await screen.findByRole("button", { name: "Connect provider" });
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "handoff-draft");
+  await fillPrompt(user, "handoff-draft");
   await setWorkingDir(user, "/tmp/handoff-project");
   await user.click(screen.getByRole("button", { name: "Connect provider" }));
   await act(async () => {
@@ -1495,7 +1504,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await screen.findByRole("button", { name: "Connect provider" });
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "guided-draft");
+  await fillPrompt(user, "guided-draft");
   await setWorkingDir(user, "/tmp/guided");
   await user.click(screen.getByRole("button", { name: "Connect provider" }));
   await act(async () => {
@@ -1579,7 +1588,7 @@ test("closing the handoff without choosing requires an explicit model before Sta
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "guided-draft");
+  await fillPrompt(user, "guided-draft");
   await setWorkingDir(user, "/tmp/guided-required");
   await user.click(screen.getByRole("button", { name: "Connect provider" }));
   await act(async () => {
@@ -1741,7 +1750,7 @@ test("credential changes reload the cached model catalog and re-enter setup afte
   renderSpawn(client);
   await screen.findByRole("button", { name: "Connect provider" });
   await setWorkingDir(user, "/tmp/my-project");
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-sentinel");
+  await fillPrompt(user, "draft-sentinel");
   const requestsBefore = modelRequests;
   configured = true;
   await act(async () => credentialsStore.getState().fetch());
@@ -1875,7 +1884,7 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
   renderSpawn(readyClient());
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed mobile work");
+  await fillPrompt(user, "typed mobile work");
 
   expect(screen.getByTestId("pane-title-mobile").textContent).toBe("New session");
   expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
@@ -2084,7 +2093,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await setWorkingDir(user, "/tmp/project");
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
@@ -2209,7 +2218,7 @@ test.each(["bare return", "picker return", "remount", "unchanged"])(
       });
     });
     let mounted = renderSpawn(fake);
-    await user.type(promptField(), "unsent-a");
+    await fillPrompt(user, "unsent-a");
     await openDesktopPluginSelection(user);
     await user.click(screen.getByRole("switch", { name: "beta" }));
     await screen.findByRole("button", { name: "Remove alpha" });
@@ -2282,12 +2291,12 @@ test.each(["failed", "loading then failed", "ready invalid", "newer origin selec
     await openDesktopPluginSelection(user);
     await user.click(screen.getByRole("switch", { name: "beta" }));
     await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
-    await user.type(promptField(), "submitted-a");
+    await fillPrompt(user, "submitted-a");
     await user.click(screen.getByTestId("spawn-submit"));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
     if (scenario === "newer origin selection") await user.click(screen.getByRole("button", { name: "None" }));
     await setWorkingDir(user, "/tmp/completion-b");
-    await user.type(promptField(), "unsent-b");
+    await fillPrompt(user, "unsent-b");
     await openDesktopPluginSelection(user);
     await user.click(screen.getByRole("switch", { name: "beta" }));
     await screen.findByRole("button", { name: "Remove alpha" });
@@ -2862,7 +2871,7 @@ test("a whitespace-only prompt starts a dormant session too", async () => {
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "   ");
+  await fillPrompt(user, "   ");
   await setWorkingDir(user, "/tmp/project");
   await user.click(screen.getByTestId("spawn-submit"));
 
@@ -2965,7 +2974,7 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
   await waitFor(() => expectWorkingDir("/home/me/app"));
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed by hand");
+  await fillPrompt(user, "typed by hand");
 
   act(() => {
     window.history.pushState({}, "", "/new");
@@ -2995,7 +3004,7 @@ test("Escape discards directory browsing while preserving the prompt and launch 
   const fake = readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] })));
   renderSpawn(fake);
   await settled();
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "my important draft text");
+  await fillPrompt(user, "my important draft text");
   await user.click(workingDir());
   await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
   const pathname = window.location.pathname;
@@ -3064,7 +3073,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
+  await fillPrompt(user, "go");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
@@ -3092,7 +3101,7 @@ test("aborts with the validator message for a non-fixable working dir, then a co
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
+  await fillPrompt(user, "go");
   await user.click(screen.getByTestId("spawn-submit"));
 
   expect(await screen.findByText("path is not a directory")).toBeTruthy();
@@ -3139,7 +3148,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "say hello");
+  await fillPrompt(user, "say hello");
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   // The state the kata's DOM readout recorded: enabled, no aria-disabled,
   // the working-directory control still showing its placeholder.
@@ -3187,7 +3196,7 @@ test("Model keeps reading '(default)' and Spawn stays untouched when the hub res
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
@@ -3210,7 +3219,7 @@ test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled
 
   // Defense in depth: the ⌘+Enter submit chord must not bypass the disabled
   // button either (handleSpawn's own guard, not just the button's attribute).
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
 });
@@ -3235,7 +3244,7 @@ test("kata xgk8: choosing a model clears the required state and lets Start proce
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
@@ -3325,7 +3334,7 @@ test("changing the top-level Model clears a standing Advanced-options model over
   const advancedPickersAfter = screen.getAllByRole("button", { name: /change model/i });
   expect(advancedPickersAfter[advancedPickersAfter.length - 1]!.textContent).not.toContain("openai/gpt-5");
 
-  await user.type(promptField(), "model precedence");
+  await fillPrompt(user, "model precedence");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
@@ -3371,7 +3380,7 @@ test("changing the top-level Effort clears a standing Advanced-options effort ov
   // The Advanced field is cleared too, so it cannot show the discarded value.
   expect((screen.getByLabelText("Reasoning effort") as HTMLSelectElement).value).toBe("");
 
-  await user.type(promptField(), "effort precedence");
+  await fillPrompt(user, "effort precedence");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
@@ -3405,7 +3414,7 @@ test("an Advanced-options model override set after the top-level Model still win
   await user.type(advancedCombo, "gpt-5");
   await user.click(await screen.findByText("openai/gpt-5"));
 
-  await user.type(promptField(), "override wins");
+  await fillPrompt(user, "override wins");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
@@ -3440,7 +3449,7 @@ test("an Advanced-options effort override set after the top-level Effort still w
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Reasoning effort"), "high");
 
-  await user.type(promptField(), "effort override wins");
+  await fillPrompt(user, "effort override wins");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
@@ -3639,7 +3648,7 @@ test("preselects the first launchable model when the resolved default's provider
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
@@ -4196,9 +4205,9 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string
   await user.click(modelTrigger());
   const combo = await screen.findByRole("combobox", { name: "Model" });
   // The panel's input survives between opens with its last query, so a second
-  // pick must clear before typing or the new query appends to the old one.
+  // pick must clear before entering or the new query appends to the old one.
   await user.clear(combo);
-  await user.type(combo, query);
+  await user.paste(query);
   await user.click(await screen.findByText(qualified));
 }
 
@@ -4508,7 +4517,7 @@ test("failed creation retains images and advanced/plugin settings through remoun
     });
   });
   const mounted = renderSpawn(fake);
-  await user.type(promptField(), "retained-sentinel");
+  await fillPrompt(user, "retained-sentinel");
   act(() => pastePngInto(promptField(), "retained.png"));
   await screen.findByRole("button", { name: "View retained.png" });
   await openDesktopPluginSelection(user);
@@ -4551,7 +4560,7 @@ test("successful submitted snapshot clears only its images and preserves newer e
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
   const mounted = renderSpawn(fake);
-  await user.type(promptField(), "submitted-sentinel");
+  await fillPrompt(user, "submitted-sentinel");
   act(() => pastePngInto(promptField(), "submitted.png"));
   await screen.findByRole("button", { name: "View submitted.png" });
   await user.click(screen.getByTestId("spawn-submit"));
@@ -4599,7 +4608,7 @@ test.each([
     window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
     const fake = readyClient();
     const mounted = renderSpawn(fake);
-    await user.type(promptField(), "draft-a-sentinel");
+    await fillPrompt(user, "draft-a-sentinel");
     act(() => pastePngInto(promptField(), "a.png"));
     expect(screen.getByRole("img", { name: "a.png (still processing)" })).toBeTruthy();
     if (remount) {
@@ -4611,7 +4620,7 @@ test.each([
     expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
     await user.type(promptField(), "-newer");
     await visitSpawnURL("/new?dir=/tmp/draft-b");
-    await user.type(promptField(), "draft-b-sentinel");
+    await fillPrompt(user, "draft-b-sentinel");
     act(() => pastePngInto(promptField(), "b.png"));
     expect(images).toHaveLength(2);
     promptField().setSelectionRange(promptField().value.length, promptField().value.length);
@@ -4650,7 +4659,7 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
   await setWorkingDir(user, "/tmp/project");
-  await user.type(prompt, "do the thing");
+  await fillPrompt(user, "do the thing");
   await act(async () => {
     pastePngInto(prompt);
   });
@@ -4680,7 +4689,7 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  await user.type(prompt, "do the thing");
+  await fillPrompt(user, "do the thing");
   await act(async () => {
     pastePngInto(prompt);
   });
@@ -4713,7 +4722,7 @@ test("a spawn that fails because no agent daemon could be reached shows actionab
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(
@@ -4735,7 +4744,7 @@ test("a spawn that fails because the hub connection is down keeps the hub-unreac
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText("Start failed: Can't reach the hub right now.");
@@ -4748,7 +4757,7 @@ test("re-enables the Spawn button after a successful start (post-success state h
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
@@ -4937,7 +4946,7 @@ test("kata 61v2: three clicks in the same tick still spawn only one session", as
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
 
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   act(() => {
@@ -4957,7 +4966,7 @@ test("kata 61v2 corollary: a successful spawn releases the guard for the next on
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "first session");
+  await fillPrompt(user, "first session");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
 
@@ -4965,7 +4974,7 @@ test("kata 61v2 corollary: a successful spawn releases the guard for the next on
   // session pane doSpawn navigates to (see doSpawn's own comment on the
   // sticky-defaults reset) - a second Start on the SAME mounted instance must
   // not be permanently blocked by the first success's guard release.
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "second session");
+  await fillPrompt(user, "second session");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(2));
@@ -4989,7 +4998,7 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
   renderSpawn(fake);
   await settled();
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await fillPrompt(user, "do the thing");
   await user.click(screen.getByTestId("spawn-submit"));
 
   const button = await screen.findByTestId("spawn-submit");
@@ -5046,7 +5055,7 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   const displayed = effortSelect().value;
   expect(displayed).toBe("xhigh");
 
-  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
+  await fillPrompt(user, "go");
   await user.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(started).toBeDefined());
   expect(started?.reasoningEffort ?? "").toBe(displayed);
@@ -5979,7 +5988,7 @@ test("plain text spawns with no goal/set call", async () => {
   renderSpawn(fake);
   await settled();
 
-  await user.type(promptField(), "hello world");
+  await fillPrompt(user, "hello world");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
@@ -6538,7 +6547,7 @@ test("choosing a non-local host sends source and persists it in the draft", asyn
   await settled();
 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  await user.type(promptField(), "run on buildbox");
+  await fillPrompt(user, "run on buildbox");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -6558,7 +6567,7 @@ test("a local host choice omits source from the thread/start request", async () 
   renderSpawn(fake);
   await settled();
 
-  await user.type(promptField(), "stay local");
+  await fillPrompt(user, "stay local");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -6604,7 +6613,7 @@ test("a draft naming a remote host submits it while the manifest is loading", as
     });
   });
 
-  await user.type(promptField(), "keep the host");
+  await fillPrompt(user, "keep the host");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -6640,7 +6649,7 @@ test("a host that goes offline while a draft names it falls back to local", asyn
   // The option is still listed (disabled) but the effective choice is local.
   expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
 
-  await user.type(promptField(), "no longer reachable");
+  await fillPrompt(user, "no longer reachable");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -6686,7 +6695,7 @@ test("a host that returns online after its offline fallback stays on local", asy
   });
   expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
 
-  await user.type(promptField(), "still local");
+  await fillPrompt(user, "still local");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -6715,7 +6724,7 @@ test("a draft naming a host removed from the manifest shows local and omits sour
 
   expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
 
-  await user.type(promptField(), "host is gone");
+  await fillPrompt(user, "host is gone");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -6866,7 +6875,7 @@ test("a remote launch the selected host cannot serve reports that host's own fai
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText("Start failed: provider credentials missing for anthropic");
@@ -6940,7 +6949,7 @@ test("a remote host submission is not blocked by controller-local plugin issues"
     setDraftField(completionDraft("/tmp/remote-plugins"), "pluginSelection", { mode: "explicit", names: ["alpha"] });
   });
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7067,7 +7076,7 @@ test("a remote host does not inherit the controller's uncredentialed-default fal
   expect(modelTrigger().textContent).toContain("(default)");
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
 
@@ -7110,7 +7119,7 @@ test("a controller-catalog fallback model is retired when the target becomes rem
   await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
 
@@ -7165,7 +7174,7 @@ test("a remote launch does not persist its cwd as the controller's global workin
     setDraftField(completionDraft("/srv/app"), "model", "openai/gpt-5");
   });
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7205,7 +7214,7 @@ test("a remote launch's model does not become the cwd's local project default", 
     setDraftField(completionDraft("/srv/app"), "model", "buildbox-only/gpt-5");
   });
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7267,7 +7276,7 @@ test("a fallback installed for one draft does not retire another draft's identic
   expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
   expect(modelTrigger().textContent).not.toContain("(default)");
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7311,7 +7320,7 @@ test("a controller-catalog fallback model is still retired after a pane remount"
   await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7361,7 +7370,7 @@ test("a user's explicit model pick is preserved when the target becomes remote",
   expect(modelTrigger().textContent).toContain("openai/gpt-5");
   expect(modelTrigger().textContent).not.toContain("(default)");
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7387,7 +7396,7 @@ test("the host picker cannot change while a submit is in flight", async () => {
   renderSpawn(fake);
   await settled();
 
-  await user.type(promptField(), "run locally");
+  await fillPrompt(user, "run locally");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
   expect((screen.getByLabelText("Host") as HTMLSelectElement).disabled).toBe(true);
@@ -7581,7 +7590,7 @@ test("a remote target's advanced path value is not dropped for being invisible h
   expect(completionDraft("/tmp/remote-advanced-path").fields.getState().advancedOverrides).toEqual({
     agent: "remote-only-agent",
   });
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
@@ -7623,7 +7632,7 @@ test("the host picker keeps its host while the manifest revalidates", async () =
 
   // Unsettled, the draft's host is still the launch target (only a settled
   // manifest may confirm a fallback), so what the picker shows is what submits.
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
@@ -7681,7 +7690,7 @@ test("a remote target keeps the draft's model this controller's catalog calls st
   expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
 
   // A remote launch forwards the model for the selected host to resolve.
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
@@ -7827,7 +7836,7 @@ test("a path marked invalid while local reaches the launch after switching host 
     }),
   );
 
-  await user.type(promptField(), "run remotely");
+  await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;

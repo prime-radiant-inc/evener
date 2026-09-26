@@ -106,7 +106,8 @@ async function typePath(user: ReturnType<typeof userEvent.setup>, trigger: HTMLE
   await user.click(trigger);
   const input = await screen.findByLabelText("Path", { selector: "input" });
   await user.clear(input);
-  await user.type(input, `${path}{Enter}`);
+  await user.paste(path);
+  await user.keyboard("{Enter}");
   const confirm = screen.queryByRole("button", { name: "Use this folder" });
   if (confirm) {
     await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
