@@ -118,6 +118,7 @@ describe("a Board row (spec 7.2)", () => {
 		expect(textWith(tree, "magic-kingdom")).toEqual([]);
 		expect(symbols(tree)).not.toContain("folder");
 		expect(pressedStyle(tree, false).minHeight).toBe(48);
+		expect(pressable(tree).props.accessibilityLabel).toBe("Fix Endless Provider Retry Loop, Failed, 2 minutes");
 	});
 
 	it("shows the Draft tag only when the session has a draft", () => {
