@@ -39,7 +39,7 @@
 - Test: `mobile-native/src/design/tokens.test.ts`
 
 **Interfaces:**
-- Produces: `type Scheme = "light" | "dark"`, `interface Palette` (fields below), `palettes: Record<Scheme, Palette>`, `paletteFor(scheme: Scheme | null | undefined): Palette`, `mix(hue: string, base: string, amount: number): string`, `fonts: { serif: string; serifItalic: string; serifSemibold: string; mono: string }`, `type` roles (`typeRoles`) used by Task 4.
+- Produces: `type Scheme = "light" | "dark"`, `interface Palette` (fields below), `palettes: Record<Scheme, Palette>`, `paletteFor(scheme: string | null | undefined): Palette`, `mix(hue: string, base: string, amount: number): string`, `fonts: { serif: string; serifItalic: string; serifSemibold: string; mono: string }`, `type` roles (`typeRoles`) used by Task 4.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -104,6 +104,7 @@ describe("paletteFor", () => {
 		expect(paletteFor("light").scheme).toBe("light");
 		expect(paletteFor(null).scheme).toBe("light");
 		expect(paletteFor(undefined).scheme).toBe("light");
+		expect(paletteFor("unspecified").scheme).toBe("light");
 	});
 });
 
@@ -233,18 +234,19 @@ export function mix(hue: string, base: string, amount: number): string {
 type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "aliveEdge" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
 
 function withTints(core: Core): Palette {
-	const accentBg = mix(core.accent, core.surface, 0.15);
+	const bg = (hue: string) => mix(hue, core.surface, 0.15);
+	const edge = (hue: string) => mix(hue, core.edge, 0.4);
 	return {
 		...core,
-		attentionBg: mix(core.attention, core.surface, 0.15),
-		attentionEdge: mix(core.attention, core.edge, 0.4),
-		aliveBg: mix(core.alive, core.surface, 0.15),
-		aliveEdge: mix(core.alive, core.edge, 0.4),
-		dangerBg: mix(core.danger, core.surface, 0.15),
-		dangerEdge: mix(core.danger, core.edge, 0.4),
-		accentBg,
-		accentEdge: mix(core.accent, core.edge, 0.4),
-		bubble: accentBg,
+		attentionBg: bg(core.attention),
+		attentionEdge: edge(core.attention),
+		aliveBg: bg(core.alive),
+		aliveEdge: edge(core.alive),
+		dangerBg: bg(core.danger),
+		dangerEdge: edge(core.danger),
+		accentBg: bg(core.accent),
+		accentEdge: edge(core.accent),
+		bubble: bg(core.accent),
 	};
 }
 
@@ -303,8 +305,9 @@ export const palettes: Record<Scheme, Palette> = {
 	}),
 };
 
-/** The palette for React Native's color scheme; anything but "dark" is light. */
-export function paletteFor(scheme: Scheme | null | undefined): Palette {
+/** The palette for React Native's color scheme; anything but "dark" (null,
+ * "unspecified") is light. */
+export function paletteFor(scheme: string | null | undefined): Palette {
 	return scheme === "dark" ? palettes.dark : palettes.light;
 }
 
@@ -356,7 +359,8 @@ git commit -m "feat(native): design tokens from the redesign spec"
 ```tsx
 // mobile-native/src/ui.test.tsx
 import { expect, it, vi } from "vitest";
-import { renderHook } from "./renderNative.testkit";
+import { Action, useColors } from "./ui";
+import { render, renderHook } from "./renderNative.testkit";
 
 // vi.mock is hoisted above everything else, so the scheme it reads lives in
 // vi.hoisted state rather than a plain top-level variable.
@@ -365,9 +369,6 @@ vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	useColorScheme: () => mode.scheme,
 }));
-
-const { useColors, Action } = await import("./ui");
-const { render } = await import("./renderNative.testkit");
 
 it("maps the existing color keys onto the spec's light palette", () => {
 	mode.scheme = "light";
@@ -402,6 +403,8 @@ it("fills a primary action with accent-fill so white text passes contrast in dar
 ```tsx
 // mobile-native/src/MarkdownResponse.test.tsx
 import { expect, it, vi } from "vitest";
+import { MarkdownResponse } from "./MarkdownResponse";
+import { render } from "./renderNative.testkit";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
 vi.mock("react-native", async () => ({
@@ -413,22 +416,19 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
 
-const { MarkdownResponse } = await import("./MarkdownResponse");
-const { render } = await import("./renderNative.testkit");
-
-function codeColors() {
-	const tree = render(<MarkdownResponse markdown="`x`" />);
-	return tree.root.findByType("EnrichedMarkdownText" as never).props.markdownStyle.codeBlock.syntaxColors;
+function markdownStyle(markdown: string) {
+	const tree = render(<MarkdownResponse markdown={markdown} />);
+	return tree.root.findByType("EnrichedMarkdownText" as never).props.markdownStyle;
 }
 
 it("picks light code colors in light mode", () => {
 	mode.scheme = "light";
-	expect(codeColors()).toMatchObject({ string: "#2e6443", number: "#785119" });
+	expect(markdownStyle("`x`").codeBlock.syntaxColors).toMatchObject({ string: "#2e6443", number: "#785119" });
 });
 
 it("picks dark code colors in dark mode", () => {
 	mode.scheme = "dark";
-	expect(codeColors()).toMatchObject({ string: "#b8d8a3", number: "#ecc48d" });
+	expect(markdownStyle("`x`").codeBlock.syntaxColors).toMatchObject({ string: "#b8d8a3", number: "#ecc48d" });
 });
 ```
 
@@ -645,17 +645,12 @@ git commit -m "feat(native): embed Source Serif 4 for the conversation's voice"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `mobile-native/src/MarkdownResponse.test.tsx`:
+Add to `mobile-native/src/MarkdownResponse.test.tsx`, reusing its `markdownStyle` helper:
 
 ```tsx
-function style() {
-	const tree = render(<MarkdownResponse markdown="Hello" />);
-	return tree.root.findByType("EnrichedMarkdownText" as never).props.markdownStyle;
-}
-
 it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font", () => {
 	mode.scheme = "light";
-	const s = style();
+	const s = markdownStyle("Hello");
 	expect(s.paragraph).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26, color: "#252521" });
 	expect(s.list).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
 	expect(s.h1).toMatchObject({ fontSize: 20, fontWeight: "600" });
@@ -667,7 +662,7 @@ it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font"
 
 it("uses the dimmer prose ink in dark mode", () => {
 	mode.scheme = "dark";
-	expect(style().paragraph).toMatchObject({ color: "#E0DED6" });
+	expect(markdownStyle("Hello").paragraph).toMatchObject({ color: "#E0DED6" });
 });
 ```
 
