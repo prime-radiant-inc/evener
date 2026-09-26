@@ -10486,7 +10486,9 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	// Source, not Harness, names the host source: a harness naming a registered
+	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -10537,7 +10539,9 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	// Source, not Harness, names the host source: a harness naming a registered
+	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
