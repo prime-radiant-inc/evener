@@ -15,7 +15,7 @@ import { MarketplacesPluginsHostScope } from "./index";
 // them back through evener/host/request, never this hub's.
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 function plugin(name: string): PluginEntry {

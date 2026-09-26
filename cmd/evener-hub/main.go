@@ -552,7 +552,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHosts:               hostEntries,
 		// The one live registry the SSH manager dials through, shared with the
 		// attach handler and the host-management surface, and the selected
-		// hub.toml path the UI's host sidecar persists beside.
+		// hub.toml path the host surface rewrites in place (machine-managed).
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
@@ -774,6 +774,7 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 			ConfigPath: h.ConfigPath,
 			Addr:       h.Addr,
 			Roots:      h.Roots,
+			KeyPath:    h.KeyPath,
 		})
 	}
 	return entries

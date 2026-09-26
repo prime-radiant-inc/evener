@@ -14,7 +14,7 @@ import { HOST_POLL_MS } from "./sections/hosts";
 // remote host, writing the one shared selection and the URL.
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 function connectFakeClient(hosts: HostRow[]): FakeClient {

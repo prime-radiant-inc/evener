@@ -73,7 +73,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	}
 
 	// The channel's own registration: the row adopts it and renders its facts.
-	row := f.m.hostRow(context.Background(), live, hostOriginSidecar)
+	row := f.m.hostRow(context.Background(), live)
 	if !row.Attached || row.OS != "linux" || row.Arch != "amd64" {
 		t.Fatalf("row for the channel's own registration = %+v, want attached with its facts", row)
 	}
@@ -82,7 +82,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	// generation — the identity a swap leaves behind while the name is unchanged.
 	other := live
 	other.Generation = live.Generation + 1
-	row = f.m.hostRow(context.Background(), other, hostOriginSidecar)
+	row = f.m.hostRow(context.Background(), other)
 	if rowHasLiveState(row) {
 		t.Fatalf("row for another registration = %+v, want offline with none of the installed channel's state", row)
 	}
@@ -92,7 +92,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	// from this row's, so it must not pass on generation alone.
 	other = live
 	other.SSH = "elsewhere.example"
-	row = f.m.hostRow(context.Background(), other, hostOriginSidecar)
+	row = f.m.hostRow(context.Background(), other)
 	if rowHasLiveState(row) {
 		t.Fatalf("row for changed content = %+v, want offline with no facts", row)
 	}
@@ -132,14 +132,14 @@ func TestHostRowAcrossTheUpdateWindowDoesNotAdoptTheNewGenerationsChannel(t *tes
 
 	// The stale row resolves while the new generation's channel is installed: it
 	// must not read that channel's live state.
-	stale := f.m.hostRow(context.Background(), preSwap, hostOriginSidecar)
+	stale := f.m.hostRow(context.Background(), preSwap)
 	if rowHasLiveState(stale) {
 		t.Fatalf("row built from the pre-swap entry = %+v, want offline with none of the new channel's state", stale)
 	}
 
 	// The new identity's own row still adopts its channel: the guard refuses
 	// only the mismatched pairing, not the live one.
-	fresh := f.m.hostRow(context.Background(), current, hostOriginSidecar)
+	fresh := f.m.hostRow(context.Background(), current)
 	if !fresh.Attached || fresh.OS != "linux" || fresh.Arch != "amd64" {
 		t.Fatalf("row for the edited identity = %+v, want attached with its channel's facts", fresh)
 	}
@@ -229,7 +229,7 @@ func TestHostRowRendersAttachedWhenTheManagerResolvedTheTarget(t *testing.T) {
 
 	// The row renders from the registry entry (empty EvenerPath) and must pair
 	// it with the installed channel by its registration.
-	row := f.m.hostRow(context.Background(), live, hostOriginSidecar)
+	row := f.m.hostRow(context.Background(), live)
 	if !row.Attached || row.OS != "linux" || row.Arch != "amd64" {
 		t.Fatalf("row for the resolved-target host = %+v, want attached with its facts", row)
 	}

@@ -249,8 +249,8 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 	if err != nil {
 		t.Fatalf("step evener/host/add (ssh destination %q, run target %q): %v", dest, runTarget, err)
 	}
-	if row.Origin != "sidecar" {
-		t.Fatalf("step evener/host/add: added row origin = %q, want %q (a host added through the wire is a sidecar entry)", row.Origin, "sidecar")
+	if row.Origin != "hub.toml" {
+		t.Fatalf("step evener/host/add: added row origin = %q, want %q (every host lives in the machine-managed hub.toml)", row.Origin, "hub.toml")
 	}
 
 	attached := awaitHostAttachedWithin(ctx, t, client, hostName, hostDeployAttachTimeout)

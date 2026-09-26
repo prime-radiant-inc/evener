@@ -19,7 +19,7 @@ import { McpSectionHostScope, type SettingsOverviewLike } from "./mcp";
 // evener/host/request and never touches the controller's launch layer.
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => SettingsOverviewLike {

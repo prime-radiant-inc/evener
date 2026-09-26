@@ -21,10 +21,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
-// updateFixture is a hub host manager with one sidecar host ("side") already
-// committed over a real sidecar file, plus the config path the tests assert the
-// durable state against. hubTOMLHosts, when given, are the entries the
-// controller's own hub.toml declared (they cannot be edited here).
+// updateFixture is a hub host manager booted over a real hub.toml that already
+// declares the fixture's own host ("side"), plus the config path the tests
+// assert the durable state against. Every live host lives in the one
+// machine-managed hub.toml, so the file is the durable record these tests read
+// back and no sidecar exists. declared, when given, are extra entries the boot
+// file carries; they are ordinary live, editable hosts like every other one.
 type updateFixture struct {
 	m          *hubHostManager
 	configPath string
@@ -32,41 +34,38 @@ type updateFixture struct {
 	hosts      *hostreg.Registry
 }
 
-func newUpdateFixture(t *testing.T, hubTOMLHosts ...hostreg.Host) *updateFixture {
+// newUpdateFixture seeds hub.toml with the fixture's own host ("side") plus any
+// extra entries a test wants the boot file to declare, then boots through
+// bootHostManager so the manager's store, registry, and durable file all start
+// from that one seed — the file is what a live entry durably is, so an edit
+// lands in it and the next boot sees it.
+func newUpdateFixture(t *testing.T, declared ...hostreg.Host) *updateFixture {
 	t.Helper()
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
+	seed := append([]hostreg.Host{{Name: "side", SSH: "side.example"}}, declared...)
+	if err := writeHubTOMLHosts(configPath, seed); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
 	}
-	hosts, err := hostreg.New(hubTOMLHosts)
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	sources := appsource.NewRegistry()
-	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, hosts, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{
-		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
-	}); err != nil {
-		t.Fatalf("Add(side): %v", err)
-	}
-	return &updateFixture{m: m, configPath: configPath, sources: sources, hosts: hosts}
+	m := bootHostManager(t, configPath)
+	return &updateFixture{m: m, configPath: configPath, sources: m.cfg.sources, hosts: m.cfg.hosts}
 }
 
-// readSidecarBytes reads the sidecar file's raw bytes, so a test can pin that a
-// refusal wrote nothing at all.
-func readSidecarBytes(t *testing.T, configPath string) []byte {
+// readHubTOMLBytes reads hub.toml's raw bytes, so a test can pin that a refusal
+// wrote nothing at all.
+func readHubTOMLBytes(t *testing.T, configPath string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(sidecarPathFor(configPath))
+	data, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("read sidecar: %v", err)
+		t.Fatalf("read hub.toml: %v", err)
 	}
 	return data
 }
 
 // TestHostManageUpdateRoundTripsEveryMutableField pins criteria 1 and 2: each
-// mutable field lands, list/status returns it, a fresh boot over the same config
-// sees the edited values as the effective entry, and hub.toml was never written.
+// mutable field lands, list/status returns it, and a fresh boot over the same
+// config reads the edited values back out of the machine-managed hub.toml, the
+// durable record every live host now lives in.
 func TestHostManageUpdateRoundTripsEveryMutableField(t *testing.T) {
 	f := newUpdateFixture(t)
 	entry := appwire.HostEntry{
@@ -95,12 +94,12 @@ func TestHostManageUpdateRoundTripsEveryMutableField(t *testing.T) {
 		!slices.Equal(got.Roots, entry.Roots) {
 		t.Fatalf("row = %+v, want the edited entry %+v", got, entry)
 	}
-	// The sidecar is the durable record: a fresh boot over the same config sees
-	// the edited values, with no hub.toml write anywhere.
-	boot := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, f.configPath, nil, nil)
+	// hub.toml is the durable record: a fresh boot over the same config sees the
+	// edited values as the effective entry.
+	boot := bootHostManager(t, f.configPath)
 	loaded, ok := boot.cfg.hosts.Get("side")
 	if !ok {
-		t.Fatal("the edited host is not in the reloaded sidecar")
+		t.Fatal("the edited host is not in the reloaded hub.toml")
 	}
 	want := hostreg.Host{
 		Name: "side", SSH: entry.Address, User: entry.User, KeyPath: entry.KeyPath,
@@ -109,12 +108,20 @@ func TestHostManageUpdateRoundTripsEveryMutableField(t *testing.T) {
 	if !loaded.Equal(want) {
 		t.Fatalf("reloaded entry = %+v, want %+v", loaded, want)
 	}
-	hubTOML, err := os.ReadFile(f.configPath)
+	// The durable file itself holds the whole edited entry, so the bytes the next
+	// boot reads are the ones the edit wrote.
+	cfg, err := LoadConfig(f.configPath)
 	if err != nil {
-		t.Fatalf("read hub.toml: %v", err)
+		t.Fatalf("load hub.toml: %v", err)
 	}
-	if len(hubTOML) != 0 {
-		t.Fatalf("hub.toml = %q, want it untouched", hubTOML)
+	if len(cfg.Hosts) != 1 {
+		t.Fatalf("hub.toml hosts = %+v, want the single edited entry", cfg.Hosts)
+	}
+	onFile := cfg.Hosts[0]
+	if onFile.Name != "side" || onFile.SSH != entry.Address || onFile.User != entry.User || onFile.KeyPath != entry.KeyPath ||
+		onFile.EvenerPath != entry.EvenerPath || onFile.ConfigPath != entry.ConfigPath || onFile.Addr != entry.Addr ||
+		!slices.Equal(onFile.Roots, entry.Roots) {
+		t.Fatalf("hub.toml entry = %+v, want the edited entry's fields", onFile)
 	}
 }
 
@@ -133,7 +140,7 @@ func TestHostManageUpdateKeepsTheFileOrder(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertSidecarNames(t, f.configPath, "side", "second")
+	assertHubTOMLHostNames(t, f.configPath, "side", "second")
 }
 
 // TestHostManageUpdateCannotRename pins the no-rename invariant (criterion 3):
@@ -160,22 +167,22 @@ func TestHostManageUpdateCannotRename(t *testing.T) {
 	if resp.Host.Removed {
 		t.Fatalf("update row = %+v, want no removed/rename discriminator", resp.Host)
 	}
-	// The durable sidecar file still holds side (edited), never other.
-	assertSidecarNames(t, f.configPath, "side")
-	reloaded, err := loadHostSidecar(sidecarPathFor(f.configPath))
+	// The durable hub.toml still holds side (edited), never other.
+	assertHubTOMLHostNames(t, f.configPath, "side")
+	reloaded, err := LoadConfig(f.configPath)
 	if err != nil {
-		t.Fatalf("reload sidecar: %v", err)
+		t.Fatalf("reload hub.toml: %v", err)
 	}
-	if len(reloaded) != 1 || reloaded[0].Name != "side" || reloaded[0].SSH != "edited.example" {
-		t.Fatalf("reloaded sidecar = %+v, want side with the edited address only", reloaded)
+	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].Name != "side" || reloaded.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("reloaded hub.toml = %+v, want side with the edited address only", reloaded.Hosts)
 	}
-	// The in-memory sidecar store still holds side (edited), never other.
-	stored := f.m.cfg.sidecar.snapshot()
+	// The in-memory host store still holds side (edited), never other.
+	stored := f.m.cfg.store.snapshot()
 	if len(stored) != 1 || stored[0].Name != "side" || stored[0].SSH != "edited.example" {
-		t.Fatalf("sidecar store = %+v, want side with the edited address only", stored)
+		t.Fatalf("host store = %+v, want side with the edited address only", stored)
 	}
-	if f.m.cfg.sidecar.isSidecar("other") {
-		t.Fatal("a rename put the entry's name into the sidecar store")
+	if storeHas(f.m.cfg.store, "other") {
+		t.Fatal("a rename put the entry's name into the host store")
 	}
 	// The live registry still holds side (edited), never other.
 	live, ok := f.hosts.Get("side")
@@ -192,26 +199,19 @@ func TestHostManageUpdateCannotRename(t *testing.T) {
 	}
 }
 
-// TestHostManageUpdateRefusalsCommitNothing pins criteria 4, 5, and 14's
-// durable half: a hub.toml name, an unknown name, and a name with a mutation in
-// flight all refuse, and the file's bytes are the ones the fixture left.
+// TestHostManageUpdateRefusalsCommitNothing pins criteria 4, 5, and 14's durable
+// half: an unknown name and a name with a mutation in flight both refuse, and
+// the file's bytes are the ones the fixture left. The old declared-name refusal
+// this test carried is gone with the sidecar: a name hub.toml declares at boot
+// is a live entry like any other, and
+// TestHostManageUpdateEditsAFileDeclaredHost pins that inverted property. The
+// file-declared "toml" entry below is therefore one of the live entries the
+// refusal must leave untouched.
 func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
-	before := readSidecarBytes(t, f.configPath)
+	before := readHubTOMLBytes(t, f.configPath)
 
 	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "toml",
-		Entry: appwire.HostEntry{Address: "other.example"},
-	})
-	if err == nil {
-		t.Fatal("Update of a hub.toml name committed, want a refusal")
-	}
-	assertWireCode(t, err, appwire.CodeInvalidParams)
-	if !strings.Contains(err.Error(), "hub.toml") {
-		t.Fatalf("hub.toml refusal = %v, want the edit-the-file explanation", err)
-	}
-
-	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{
 		Name:  "nope",
 		Entry: appwire.HostEntry{Address: "other.example"},
 	})
@@ -220,6 +220,24 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 	}
 	assertWireCode(t, err, appwire.CodeInvalidParams)
 
+	// A name with a mutation in flight: the conflict, and that refusal writes
+	// nothing either. Take the mark the update path takes, in the same
+	// commit-phase hold.
+	f.m.cfg.mu.Lock()
+	f.m.markMutating("side")
+	f.m.cfg.mu.Unlock()
+	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "other.example"},
+	})
+	if err == nil {
+		t.Fatal("Update of a name with a mutation in flight committed, want a refusal")
+	}
+	assertWireCode(t, err, appwire.CodeConflict)
+	f.m.cfg.mu.Lock()
+	f.m.unmarkMutating("side")
+	f.m.cfg.mu.Unlock()
+
 	// The live entries are the two the fixture started with, untouched...
 	live, ok := f.hosts.Get("toml")
 	if !ok || live.SSH != "toml.example" {
@@ -227,11 +245,45 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 	}
 	side, ok := f.hosts.Get("side")
 	if !ok || side.SSH != "side.example" {
-		t.Fatalf("sidecar entry after the refusals = %+v, want it untouched", side)
+		t.Fatalf("host entry after the refusals = %+v, want it untouched", side)
 	}
-	// ...and so are the file's bytes.
-	if after := readSidecarBytes(t, f.configPath); !bytes.Equal(before, after) {
-		t.Fatalf("sidecar changed across refusals:\nbefore %s\nafter  %s", before, after)
+	// ...and so are the file's bytes, across both refusals.
+	if after := readHubTOMLBytes(t, f.configPath); !bytes.Equal(before, after) {
+		t.Fatalf("hub.toml changed across the refusals:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestHostManageUpdateEditsAFileDeclaredHost pins the inverted half of the
+// retired declared-name refusal: a host hub.toml declared at boot is a live
+// entry like every other one — the hub rewrites the file it manages, so no
+// class of host is protected from editing (registry spec 08 §6/§19) — and
+// Update succeeds on it, with the machine-managed file holding the edit.
+func TestHostManageUpdateEditsAFileDeclaredHost(t *testing.T) {
+	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
+	resp, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "toml",
+		Entry: appwire.HostEntry{Address: "toml2.example", User: "operator"},
+	})
+	if err != nil {
+		t.Fatalf("Update of a file-declared host: %v", err)
+	}
+	if resp.Host.Name != "toml" || resp.Host.Address != "toml2.example" || resp.Host.Origin != hostOriginHubTOML {
+		t.Fatalf("response row = %+v, want the edited file-declared host", resp.Host)
+	}
+	// The live registry holds the edit.
+	live, ok := f.hosts.Get("toml")
+	if !ok || live.SSH != "toml2.example" || live.User != "operator" {
+		t.Fatalf("live entry = %+v (present %v), want the edited file-declared host", live, ok)
+	}
+	// The durable file holds it too, in the order the file had, with the
+	// fixture's own host still in place.
+	assertHubTOMLHostNames(t, f.configPath, "side", "toml")
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 2 || cfg.Hosts[1].Name != "toml" || cfg.Hosts[1].SSH != "toml2.example" || cfg.Hosts[1].User != "operator" {
+		t.Fatalf("hub.toml hosts = %+v, want side and the edited toml entry", cfg.Hosts)
 	}
 }
 
@@ -240,7 +292,7 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 // trimmed, so the file and the live set cannot drift.
 func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 	f := newUpdateFixture(t)
-	before := readSidecarBytes(t, f.configPath)
+	before := readHubTOMLBytes(t, f.configPath)
 	for _, entry := range []appwire.HostEntry{
 		{Address: ""},
 		{Address: "   "},
@@ -251,8 +303,8 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 			t.Errorf("Update(%+v) accepted, want a validation refusal", entry)
 		}
 	}
-	if after := readSidecarBytes(t, f.configPath); !bytes.Equal(before, after) {
-		t.Fatal("a refused update rewrote the sidecar")
+	if after := readHubTOMLBytes(t, f.configPath); !bytes.Equal(before, after) {
+		t.Fatal("a refused update rewrote hub.toml")
 	}
 	if live, ok := f.hosts.Get("side"); !ok || live.SSH != "side.example" {
 		t.Fatalf("live entry after the refusals = %+v, want it untouched", live)
@@ -280,12 +332,12 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 	if live.SSH != "side3.example" || live.User != "operator" {
 		t.Fatalf("stored entry = %+v, want the trimmed values", live)
 	}
-	reloaded, err := loadHostSidecar(sidecarPathFor(f.configPath))
+	reloaded, err := LoadConfig(f.configPath)
 	if err != nil {
-		t.Fatalf("reload sidecar: %v", err)
+		t.Fatalf("reload hub.toml: %v", err)
 	}
-	if len(reloaded) != 1 || reloaded[0].SSH != "side3.example" || reloaded[0].User != "operator" {
-		t.Fatalf("reloaded entries = %+v, want the trimmed values on disk", reloaded)
+	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].SSH != "side3.example" || reloaded.Hosts[0].User != "operator" {
+		t.Fatalf("reloaded entries = %+v, want the trimmed values on disk", reloaded.Hosts)
 	}
 }
 
@@ -293,11 +345,13 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 // against an invalid entry: the target's own refusal wins over the entry's shape
 // refusal. An empty address is a field refusal on its own, so each case below
 // would get that generic refusal if the entry were validated first — the old
-// order. The surface specifies the target refusal instead: a hub.toml-declared
-// name is the edit-the-file refusal, an unknown name is not found, and a name
-// with a mutation in flight is the conflict, whatever the entry carries.
+// order. The surface specifies the target refusal instead: an unknown name is
+// not found and a name with a mutation in flight is the conflict, whatever the
+// entry carries. (The retired declared-name refusal is gone with the sidecar —
+// a file-declared host is a target like any other, pinned by
+// TestHostManageUpdateEditsAFileDeclaredHost.)
 func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
-	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
+	f := newUpdateFixture(t)
 	// The invalid entry: an empty address, which ValidateEntry alone refuses as a
 	// field error. It must not be what these calls are told.
 	invalid := appwire.HostEntry{Address: ""}
@@ -319,15 +373,11 @@ func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
 		}
 	}
 
-	// hub.toml-declared name: the edit-the-file refusal, not the field refusal.
-	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "toml", Entry: invalid})
-	assertTargetRefusal("toml", err, "hub.toml")
-
 	// Unknown name: not found, not the field refusal.
-	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "nope", Entry: invalid})
+	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "nope", Entry: invalid})
 	assertTargetRefusal("nope", err, "unknown host")
 
-	// A live sidecar name with a mutation in flight: the conflict, not the field
+	// A live host with a mutation in flight: the conflict, not the field
 	// refusal. Take the mark the update path takes, in the same commit-phase hold.
 	f.m.cfg.mu.Lock()
 	f.m.markMutating("side")
@@ -427,9 +477,9 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	}
 	manager := sshconn.New(otherReg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
-	// Add with the manager unwired so the entry lands in the live registry the
-	// commit reads; wiring the different empty manager only now makes the live
-	// phase fail after that durable commit, which is the rollback seam under test.
+	// The fixture's own boot seeded "side" into the live registry the commit
+	// reads; wiring the different empty manager only now makes the live phase
+	// fail after that durable commit, which is the rollback seam under test.
 	f.m.cfg.manager = manager
 	before, _ := f.hosts.Get("side")
 
@@ -446,33 +496,33 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	if !ok || !live.Equal(before) || live.Generation != before.Generation {
 		t.Fatalf("live entry after the failed edit = %+v, want %+v", live, before)
 	}
-	stored := f.m.cfg.sidecar.snapshot()
+	stored := f.m.cfg.store.snapshot()
 	if len(stored) != 1 || stored[0].SSH != "side.example" {
 		t.Fatalf("store rows after the failed edit = %+v, want the old entry", stored)
 	}
-	onDisk, err := loadHostSidecar(sidecarPathFor(f.configPath))
+	onDisk, err := LoadConfig(f.configPath)
 	if err != nil {
-		t.Fatalf("reload sidecar: %v", err)
+		t.Fatalf("reload hub.toml: %v", err)
 	}
-	if len(onDisk) != 1 || onDisk[0].SSH != "side.example" {
-		t.Fatalf("sidecar after the failed edit = %+v, want the old entry", onDisk)
+	if len(onDisk.Hosts) != 1 || onDisk.Hosts[0].SSH != "side.example" {
+		t.Fatalf("hub.toml after the failed edit = %+v, want the old entry", onDisk.Hosts)
 	}
 
 	// The retry lands, from a fresh boot over the same config with a live seam
 	// that works: nothing was half-applied.
-	boot := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, f.configPath, nil, nil)
+	boot := bootHostManager(t, f.configPath)
 	if _, err := boot.Update(context.Background(), appwire.HostUpdateParams{
 		Name:  "side",
 		Entry: appwire.HostEntry{Address: "edited.example"},
 	}); err != nil {
 		t.Fatalf("retry after the rollback: %v", err)
 	}
-	reloaded, err := loadHostSidecar(sidecarPathFor(f.configPath))
+	reloaded, err := LoadConfig(f.configPath)
 	if err != nil {
-		t.Fatalf("reload sidecar after the retry: %v", err)
+		t.Fatalf("reload hub.toml after the retry: %v", err)
 	}
-	if len(reloaded) != 1 || reloaded[0].SSH != "edited.example" {
-		t.Fatalf("sidecar after the retry = %+v, want the edited entry", reloaded)
+	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml after the retry = %+v, want the edited entry", reloaded.Hosts)
 	}
 }
 
@@ -519,15 +569,15 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 	if _, ok := f.hosts.Get("side"); ok {
 		t.Fatal("the directly removed live entry reappeared")
 	}
-	if stored := f.m.cfg.sidecar.snapshot(); len(stored) != 0 {
+	if stored := f.m.cfg.store.snapshot(); len(stored) != 0 {
 		t.Fatalf("store rows after the failed edit = %+v, want the empty live set", stored)
 	}
-	onDisk, loadErr := loadHostSidecar(sidecarPathFor(f.configPath))
+	onDisk, loadErr := LoadConfig(f.configPath)
 	if loadErr != nil {
-		t.Fatalf("reload sidecar after the failed edit: %v", loadErr)
+		t.Fatalf("reload hub.toml after the failed edit: %v", loadErr)
 	}
-	if len(onDisk) != 0 {
-		t.Fatalf("sidecar after the failed edit = %+v, want the empty live set", onDisk)
+	if len(onDisk.Hosts) != 0 {
+		t.Fatalf("hub.toml after the failed edit = %+v, want the empty live set", onDisk.Hosts)
 	}
 
 	if _, addErr := f.m.Add(context.Background(), appwire.HostAddParams{
@@ -535,12 +585,12 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 	}); addErr != nil {
 		t.Fatalf("re-add after the failed edit: %v", addErr)
 	}
-	reloaded, loadErr := loadHostSidecar(sidecarPathFor(f.configPath))
+	reloaded, loadErr := LoadConfig(f.configPath)
 	if loadErr != nil {
-		t.Fatalf("reload sidecar after the re-add: %v", loadErr)
+		t.Fatalf("reload hub.toml after the re-add: %v", loadErr)
 	}
-	if len(reloaded) != 1 || reloaded[0].Name != "side" || reloaded[0].SSH != "fresh.example" {
-		t.Fatalf("sidecar after the re-add = %+v, want one fresh entry", reloaded)
+	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].Name != "side" || reloaded.Hosts[0].SSH != "fresh.example" {
+		t.Fatalf("hub.toml after the re-add = %+v, want one fresh entry", reloaded.Hosts)
 	}
 }
 
@@ -551,8 +601,8 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 // live phase then fails with hostreg.ErrUnknownHost *and* the live set has no
 // entry to restore, so the un-commit must be a removal — the committed store
 // row and the file entry go too. Restoring the edited row instead leaves an edit
-// for a name that is not live, which a later Add duplicates and the next sidecar
-// load rejects. The name's derived state goes with the row exactly as the
+// for a name that is not live, which a later Add duplicates and the next
+// hub.toml load rejects. The name's derived state goes with the row exactly as the
 // success-side vanished arm retires it: leaving the source registration, the
 // attach record, the cache generation, or the retained list behind keeps facts
 // for a name the live registry no longer holds, and a later Add reuses the stale
@@ -600,19 +650,13 @@ func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.
 	}
 	// The store holds the other names the window committed ("keep"); the vanished
 	// name must be gone, not just restored to its edit.
-	for _, e := range pu.m.cfg.sidecar.snapshot() {
+	for _, e := range pu.m.cfg.store.snapshot() {
 		if e.Name == "side" {
-			t.Fatalf("store still holds %q after the failed edit = %+v", e.Name, pu.m.cfg.sidecar.snapshot())
+			t.Fatalf("store still holds %q after the failed edit = %+v", e.Name, pu.m.cfg.store.snapshot())
 		}
 	}
-	onDisk, err := loadHostSidecar(sidecarPathFor(pu.configPath))
-	if err != nil {
-		t.Fatalf("reload sidecar after the failed edit: %v", err)
-	}
-	for _, e := range onDisk {
-		if e.Name == "side" {
-			t.Fatalf("sidecar still holds %q after the failed edit = %+v", e.Name, onDisk)
-		}
+	if names := hubTOMLHostNames(t, pu.configPath); slices.Contains(names, "side") {
+		t.Fatalf("hub.toml still holds %q after the failed edit = %v", "side", names)
 	}
 	// The derived state is gone too, exactly as the success-side vanished arm
 	// retires it and in the same order. The cache and the retention hook are the
@@ -710,7 +754,7 @@ func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 	if removeErr := <-removed; removeErr != nil {
 		t.Fatalf("direct registry removal: %v", removeErr)
 	}
-	if stored := m.cfg.sidecar.snapshot(); len(stored) != 0 {
+	if stored := m.cfg.store.snapshot(); len(stored) != 0 {
 		t.Fatalf("store rows after the vanished edit = %+v, want the empty live set", stored)
 	}
 	// The derived state is retired exactly as Remove retires it.
@@ -830,7 +874,7 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 	}()
 	// The commit landed once the file holds the edited address: the save runs
 	// under the mutation mutex, ahead of the live phase.
-	waitSidecarAddress(t, configPath, name, "edited.example")
+	waitHubTOMLAddress(t, configPath, name, "edited.example")
 	var releaseOnce sync.Once
 	pu := &parkedUpdate{
 		m:          m,
@@ -852,22 +896,25 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 	return pu
 }
 
-// waitSidecarAddress polls the sidecar file until name's entry carries want as
-// its address, with a deadline only a genuine failure to commit can hit.
-func waitSidecarAddress(t *testing.T, configPath, name, want string) {
+// waitHubTOMLAddress polls hub.toml until name's entry carries want as its
+// address, with a deadline only a genuine failure to commit can hit.
+func waitHubTOMLAddress(t *testing.T, configPath, name, want string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		entries, err := loadHostSidecar(sidecarPathFor(configPath))
+		cfg, err := LoadConfig(configPath)
 		if err == nil {
-			for _, e := range entries {
-				if e.Name == name && e.SSH == want {
+			for _, h := range cfg.Hosts {
+				if h.Name == name && h.SSH == want {
 					return
 				}
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the update of %q never committed: sidecar = %+v (%v)", name, entries, err)
+			if err != nil {
+				t.Fatalf("the update of %q never committed: load hub.toml: %v", name, err)
+			}
+			t.Fatalf("the update of %q never committed: hub.toml = %+v", name, cfg.Hosts)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -933,13 +980,13 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	}
 	// The refusals committed nothing: the entry the update's own commit wrote is
 	// the whole durable state of the window.
-	assertSidecarNames(t, pu.configPath, "keep", "side")
-	entries, err := loadHostSidecar(sidecarPathFor(pu.configPath))
+	assertHubTOMLHostNames(t, pu.configPath, "keep", "side")
+	cfg, err := LoadConfig(pu.configPath)
 	if err != nil {
-		t.Fatalf("loadHostSidecar: %v", err)
+		t.Fatalf("load hub.toml: %v", err)
 	}
-	if len(entries) != 2 || entries[1].SSH != "edited.example" {
-		t.Fatalf("sidecar during the window = %+v, want the edited entry", entries)
+	if len(cfg.Hosts) != 2 || cfg.Hosts[1].Name != "side" || cfg.Hosts[1].SSH != "edited.example" {
+		t.Fatalf("hub.toml during the window = %+v, want the edited entry", cfg.Hosts)
 	}
 
 	// A different name commits through the window: one host's teardown holds up
@@ -952,7 +999,7 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	}); err != nil {
 		t.Fatalf("Add(other) during the update window: %v", err)
 	}
-	assertSidecarNames(t, pu.configPath, "keep", "side", "other")
+	assertHubTOMLHostNames(t, pu.configPath, "keep", "side", "other")
 
 	// Release: the update completes, the row reports the edited entry, and the
 	// fence lifts with it.
@@ -997,8 +1044,8 @@ func TestHostManageUpdateLeavesTheRowOffline(t *testing.T) {
 	if row.Host.Attached {
 		t.Fatalf("row = %+v, want it offline: every update retires the channel", row.Host)
 	}
-	if row.Host.Address != "edited.example" || row.Host.Origin != hostOriginSidecar {
-		t.Fatalf("row = %+v, want the edited entry under its sidecar origin", row.Host)
+	if row.Host.Address != "edited.example" || row.Host.Origin != hostOriginHubTOML {
+		t.Fatalf("row = %+v, want the edited entry under the hub.toml origin", row.Host)
 	}
 }
 
@@ -1033,7 +1080,7 @@ func TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate(t *testing.T)
 		t.Fatalf("Update: %v", done.err)
 	}
 	row := done.resp.Host
-	if row.Name != "side" || row.Address != "edited.example" || row.Origin != hostOriginSidecar {
+	if row.Name != "side" || row.Address != "edited.example" || row.Origin != hostOriginHubTOML {
 		t.Fatalf("finished row = %+v, want the edited configured entry", row)
 	}
 	if row.ServerName != "" || row.ServerVersion != "" || row.HubVersion != "" || row.OS != "" || row.Arch != "" {
@@ -1827,8 +1874,8 @@ func TestHostManageRemoveCarriesTheEffectiveEntryFields(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	got := resp.Host
-	if !got.Removed || got.Origin != hostOriginSidecar {
-		t.Fatalf("removal row = %+v, want Removed with the sidecar origin", got)
+	if !got.Removed || got.Origin != hostOriginHubTOML {
+		t.Fatalf("removal row = %+v, want Removed with the hub.toml origin", got)
 	}
 	if got.Name != "rem" || got.Address != entry.Address || got.User != entry.User ||
 		got.KeyPath != entry.KeyPath || got.EvenerPath != entry.EvenerPath ||

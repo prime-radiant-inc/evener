@@ -151,9 +151,9 @@ const (
 	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
 	// seam; every other remote path is attached-only. See HostAttachParams.
 	MethodEvenerHostAttach = "evener/host/attach"
-	// MethodEvenerHostAdd registers one sidecar host entry (component 08 slice
-	// 1: name + SSH address + key path). hub.toml stays authoritative for its
-	// own names; a duplicate of a live name is refused. See HostAddParams.
+	// MethodEvenerHostAdd registers one host entry (component 08 slice 1: name
+	// + SSH address + key path). The entry is written into the machine-managed
+	// hub.toml; a duplicate of a live name is refused. See HostAddParams.
 	MethodEvenerHostAdd = "evener/host/add"
 	// MethodEvenerHostList returns every known host with truthful online state
 	// (component 08 slice 1). Attached rows report live channel facts; rows
@@ -164,16 +164,15 @@ const (
 	// same HostRow evener/host/list serves, for a single named host. Never
 	// dials. See HostStatusParams.
 	MethodEvenerHostStatus = "evener/host/status"
-	// MethodEvenerHostRemove deregisters one sidecar host entry (component 08
+	// MethodEvenerHostRemove deregisters one live host entry (component 08
 	// slice 1): its supervisor stops, its channel drops, and the name is gone
-	// until re-added. hub.toml-declared names cannot be removed here. See
+	// until re-added. Every live host is removable here. See
 	// HostRemoveParams.
 	MethodEvenerHostRemove = "evener/host/remove"
-	// MethodEvenerHostUpdate edits one live sidecar host entry in place: every
-	// field except the name is mutable, the name is the request's target, and
-	// the entry's advancement of the registry generation retires the host's
-	// channel. hub.toml-declared names are refused (edit the file). See
-	// HostUpdateParams.
+	// MethodEvenerHostUpdate edits one live host entry in place: every field
+	// except the name is mutable, the name is the request's target, and the
+	// entry's advancement of the registry generation retires the host's
+	// channel. Every live host is editable here. See HostUpdateParams.
 	MethodEvenerHostUpdate = "evener/host/update"
 	// MethodEvenerHostPushCredentials copies the controller's local
 	// provider-instance keys to one named remote host (component 07c). The unit
@@ -4127,9 +4126,10 @@ type HostAttachResponse struct {
 // HostEntry is one host's effective configuration as a mutation carries it
 // (component 08 slice 2): the six mutable HostConfig fields under slice 1's
 // wire spellings — Address is the schema's `ssh`, EvenerPath the schema's
-// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the one
-// field slice 1 added that hub.toml's schema has no spelling for (the dial needs
-// a key path, and hostreg's Host says a file-declared host never sets one).
+// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the SSH
+// identity file the dial uses. The machine-managed hub.toml stores KeyPath as
+// `key_path` (registry spec 08 §6), so a host with one round-trips through a
+// rewrite.
 //
 // Name is carried by the ADD entry, which has no other place to put the new
 // host's name. The update entry omits it: a rename is not a thing this wire
@@ -4148,20 +4148,20 @@ type HostEntry struct {
 }
 
 // HostAddParams is the evener/host/add payload (component 08 slice 1, reshaped
-// by slice 2): one sidecar host entry. The nested entry is the design record's
+// by slice 2): one host entry. The nested entry is the design record's
 // own shape, so the guard fields the pipeline slice adds land on a wire this
 // slice already matches instead of reshaping it a second time. The handler
-// validates exactly like hub.toml loading and refuses a name hub.toml or the
-// live set already holds.
+// validates exactly like hub.toml loading, writes the machine-managed hub.toml,
+// and refuses a name the live set already holds.
 type HostAddParams struct {
 	Entry HostEntry `json:"entry"`
 }
 
 // HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
-// name of the live sidecar entry to edit, and the entry that replaces it. Name
+// name of the live entry to edit, and the entry that replaces it. Name
 // is the immutable target — it identifies which host to edit, and nothing in the
-// request can rename one. hub.toml-declared names are refused (edit the file);
-// unknown names are InvalidParams.
+// request can rename one. Every live host is editable; unknown names are
+// InvalidParams.
 type HostUpdateParams struct {
 	Name  string    `json:"name"`
 	Entry HostEntry `json:"entry"`
@@ -4177,9 +4177,12 @@ type HostUpdateResponse struct {
 // HostRow is one host as evener/host/list and evener/host/status render it
 // (component 08 slice 2): the effective entry plus live state. A dialog prefills
 // from this row, and list/status remain the one source of truth for what a host
-// currently is. Origin names the entry's source: "hub.toml" for file-declared
-// entries, "sidecar" for UI-added ones. Attached reports a live channel right
-// now; offline rows carry the last-known facts below when any were recorded.
+// currently is. Origin names the entry's source and is `hub.toml` on every
+// row: the storage decision (registry spec 08 §6/§19) made that file the
+// machine-managed store every host lives in, so there is no second origin to
+// distinguish (the field is retained for wire compatibility). Attached reports
+// a live channel right now; offline rows carry the last-known facts below when
+// any were recorded.
 // Optional entry fields and facts stay absent — never null — when unknown.
 type HostRow struct {
 	Name          string   `json:"name"`
@@ -4204,7 +4207,7 @@ type HostRow struct {
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
 // known host in name-sorted order — the registry's own order; the origin field
-// distinguishes hub.toml entries from sidecar ones. It never dials: attached
+// is `hub.toml` on every row. It never dials: attached
 // rows read the live channel, offline rows render last-known state.
 type HostListResponse struct {
 	Hosts []HostRow `json:"hosts"`
@@ -4224,8 +4227,8 @@ type HostStatusResponse struct {
 }
 
 // HostRemoveParams is the evener/host/remove payload (component 08 slice 1):
-// the component-03 source ID of one sidecar host. hub.toml-declared names are
-// refused (edit the file); unknown names are InvalidParams. Removing an
+// the component-03 source ID of one live host, any of which is removable here;
+// unknown names are InvalidParams. Removing an
 // attached host stops its supervisor and drops its channel.
 type HostRemoveParams struct {
 	Name string `json:"name"`
