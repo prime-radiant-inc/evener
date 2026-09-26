@@ -83,6 +83,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
       marginTop: 20,
       marginBottom: 8,
     };
+    const codeFontFamily = Platform.OS === "ios" ? fonts.mono : "monospace";
     return {
       paragraph: body,
       h1: { ...heading, fontSize: 20, lineHeight: 26 },
@@ -113,7 +114,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         backgroundColor: colors.surface,
         borderColor: colors.border,
         fontSize: 14,
-        fontFamily: Platform.OS === "ios" ? fonts.mono : "monospace",
+        fontFamily: codeFontFamily,
       },
       codeBlock: {
         fontSize: 14,
@@ -125,7 +126,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         padding: 12,
         marginTop: 8,
         marginBottom: 12,
-        fontFamily: Platform.OS === "ios" ? fonts.mono : "monospace",
+        fontFamily: codeFontFamily,
         syntaxColors: {
           keyword: colors.accent,
           operator: colors.text,

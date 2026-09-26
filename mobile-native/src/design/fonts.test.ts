@@ -14,8 +14,7 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 // PostScript name, ID 16 is the typographic family (present only when a face
 // needs one beyond the four RIBBI styles, as the SemiBold weights do here),
 // ID 1 is the family every face has.
-function nameTableRecord(path: string, nameId: number): string | undefined {
-	const d = readFileSync(path);
+function nameTableRecord(d: Buffer, nameId: number): string | undefined {
 	const tables = d.readUInt16BE(4);
 	for (let i = 0; i < tables; i++) {
 		const rec = 12 + 16 * i;
@@ -35,13 +34,14 @@ function nameTableRecord(path: string, nameId: number): string | undefined {
 }
 
 function postScriptName(path: string): string {
-	const name = nameTableRecord(path, 6);
+	const name = nameTableRecord(readFileSync(path), 6);
 	if (name === undefined) throw new Error(`no PostScript name in ${path}`);
 	return name;
 }
 
 function familyName(path: string): string {
-	const name = nameTableRecord(path, 16) ?? nameTableRecord(path, 1);
+	const font = readFileSync(path);
+	const name = nameTableRecord(font, 16) ?? nameTableRecord(font, 1);
 	if (name === undefined) throw new Error(`no family name in ${path}`);
 	return name;
 }
