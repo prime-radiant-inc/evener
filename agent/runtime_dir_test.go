@@ -10,6 +10,7 @@ import (
 )
 
 func TestNonProjectHash_Deterministic(t *testing.T) {
+	t.Parallel()
 	h1 := hexHash("https://github.com/example/repo.git")
 	h2 := hexHash("https://github.com/example/repo.git")
 	if h1 != h2 {
@@ -18,6 +19,7 @@ func TestNonProjectHash_Deterministic(t *testing.T) {
 }
 
 func TestNonProjectHash_DifferentInputs(t *testing.T) {
+	t.Parallel()
 	h1 := hexHash("https://github.com/example/repo.git")
 	h2 := hexHash("https://github.com/other/repo.git")
 	if h1 == h2 {
@@ -26,6 +28,7 @@ func TestNonProjectHash_DifferentInputs(t *testing.T) {
 }
 
 func TestNonProjectHash_Length(t *testing.T) {
+	t.Parallel()
 	h := hexHash("any-string")
 	if len(h) != 16 {
 		t.Fatalf("expected 16-char hex hash, got %d chars: %q", len(h), h)
@@ -66,6 +69,7 @@ func TestRuntimeDir_NoGit(t *testing.T) {
 }
 
 func TestRuntimeDir_NonexistentPathReturnsError(t *testing.T) {
+	t.Parallel()
 	if _, _, err := RuntimeDir(filepath.Join(t.TempDir(), "missing"), ""); err == nil {
 		t.Fatal("RuntimeDir(nonexistent) returned nil error")
 	}
