@@ -175,20 +175,16 @@ test("an unknown key never excuses a malformed known one", () => {
 });
 
 test("codec drops unknown keys on project, project anchor and pin-section values", () => {
-  const fixtures = schemaFixtures();
   for (const kind of ["catalog", "project", "pin_catalog"] as const) {
-    const fixture = fixtures.find((candidate) => candidate.key.kind === kind);
-    if (!fixture) throw new Error(`missing ${kind} fixture`);
-    const snapshot = cloneSnapshot(fixture.snapshot);
+    const { key: resource, snapshot } = schemaFixture(kind);
     for (const item of snapshot.entities) item.value = { ...(item.value as object), future_value_key: futureValue };
-    for (const item of decodedSnapshot(fixture.key, snapshot).snapshot.entities)
+    for (const item of decodedSnapshot(resource, snapshot).snapshot.entities)
       expect(item.value).not.toHaveProperty("future_value_key");
   }
 });
 
 test("codec drops unknown keys across the manifest and keeps everything it knows", () => {
-  const manifest = schemaFixtures().find((fixture) => fixture.key.kind === "manifest");
-  if (!manifest) throw new Error("missing manifest fixture");
+  const { key: resource, snapshot } = schemaFixture("manifest");
   const source = { id: "local", label: "magic-kingdom", kind: "local", online: true };
   const known = {
     generation_id: "g",
@@ -198,7 +194,6 @@ test("codec drops unknown keys across the manifest and keeps everything it knows
     sections: { live: { count: 3 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
     catalogs: { projects: { count: 2 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   };
-  const snapshot = cloneSnapshot(manifest.snapshot);
   snapshot.metadata = {
     ...known,
     notices: futureValue,
@@ -207,15 +202,13 @@ test("codec drops unknown keys across the manifest and keeps everything it knows
     sections: { ...known.sections, live: { count: 3, oldest: "private-body-value" }, finished: { count: 4 } },
     catalogs: { ...known.catalogs, hosts: { count: 2 } },
   };
-  expect(materializeSnapshot(manifest.key, decodedSnapshot(manifest.key, snapshot))).toEqual(known);
+  expect(materializeSnapshot(resource, decodedSnapshot(resource, snapshot))).toEqual(known);
 });
 
 test("codec drops unknown keys on a location's metadata", () => {
-  const location = schemaFixtures().find((fixture) => fixture.key.kind === "location");
-  if (!location) throw new Error("missing location fixture");
-  const snapshot = cloneSnapshot(location.snapshot);
+  const { key: resource, snapshot } = schemaFixture("location");
   snapshot.metadata = { ...(snapshot.metadata as object), host_label: "private-body-value" };
-  expect(decodedSnapshot(location.key, snapshot).snapshot.metadata).not.toHaveProperty("host_label");
+  expect(decodedSnapshot(resource, snapshot).snapshot.metadata).not.toHaveProperty("host_label");
 });
 
 test.each([
@@ -587,6 +580,13 @@ function schemaFixtures(): SnapshotFixture[] {
 
 function cloneSnapshot(snapshot: NavigationSnapshot): NavigationSnapshot {
   return structuredClone(snapshot);
+}
+
+// The first schema fixture of a resource kind, as a copy the caller may change.
+function schemaFixture(kind: ResourceKey["kind"]): SnapshotFixture {
+  const fixture = schemaFixtures().find((candidate) => candidate.key.kind === kind);
+  if (!fixture) throw new Error(`missing ${kind} fixture`);
+  return { key: fixture.key, snapshot: cloneSnapshot(fixture.snapshot) };
 }
 
 function chainSnapshot(fixture: SnapshotFixture, depth: number): NavigationSnapshot {
@@ -1205,70 +1205,24 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
 // of them: a field the hub sends that the codec does not list would be dropped
 // without a sound, and this is the test that hears it.
 test("codec keeps every field the hub's value records carry", () => {
-  const live: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
-  const session = entityKey(live, "1");
-  const liveDecoded = decodedSnapshot(live, {
-    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 50, remaining: 0, truncated: false },
-    entities: [{ key: session, kind: "session", value: valueRecords.session }],
-    containers: [
-      {
-        key: navigationRootContainerKey(live, "sessions"),
-        owner: { kind: "resource_root", slot: "sessions" },
-        children: [session],
-      },
-      {
-        key: navigationOwnedContainerKey(session, "children"),
-        owner: { kind: "entity", entityKey: session, slot: "children" },
-        children: [],
-      },
-    ],
-  });
-  expect(liveDecoded.snapshot.entities[0]?.value).toEqual(valueRecords.session);
+  for (const [kind, record] of [
+    ["section", valueRecords.session],
+    ["catalog", valueRecords.project],
+    ["pin_catalog", valueRecords.pin_section],
+  ] as const) {
+    const { key: resource, snapshot } = schemaFixture(kind);
+    const first = snapshot.entities[0];
+    if (!first) throw new Error("missing entity");
+    first.value = record;
+    expect(decodedSnapshot(resource, snapshot).snapshot.entities[0]?.value).toEqual(record);
+  }
 
-  const catalog: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 };
-  const project = entityKey(catalog, "3");
-  const catalogDecoded = decodedSnapshot(catalog, {
-    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 100, remaining: 0 },
-    entities: [{ key: project, kind: "project", value: valueRecords.project }],
-    containers: [
-      {
-        key: navigationRootContainerKey(catalog, "projects"),
-        owner: { kind: "resource_root", slot: "projects" },
-        children: [project],
-      },
-    ],
-  });
-  expect(catalogDecoded.snapshot.entities[0]?.value).toEqual(valueRecords.project);
+  const manifest = schemaFixture("manifest");
+  manifest.snapshot.metadata = valueRecords.manifest;
+  expect(decodedSnapshot(manifest.key, manifest.snapshot).snapshot.metadata).toEqual(valueRecords.manifest);
 
-  const pins: ResourceKey = { kind: "pin_catalog", offset: 0, limit: 100 };
-  const pin = entityKey(pins, "2");
-  const pinsDecoded = decodedSnapshot(pins, {
-    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 100, remaining: 0 },
-    entities: [{ key: pin, kind: "pin_section", value: valueRecords.pin_section }],
-    containers: [
-      {
-        key: navigationRootContainerKey(pins, "pin_sections"),
-        owner: { kind: "resource_root", slot: "pin_sections" },
-        children: [pin],
-      },
-    ],
-  });
-  expect(pinsDecoded.snapshot.entities[0]?.value).toEqual(valueRecords.pin_section);
-
-  const manifest: ResourceKey = { kind: "manifest" };
-  const manifestDecoded = decodedSnapshot(manifest, {
-    metadata: valueRecords.manifest,
-    entities: [],
-    containers: [
-      {
-        key: navigationRootContainerKey(manifest, "manifest"),
-        owner: { kind: "resource_root", slot: "manifest" },
-        children: [],
-      },
-    ],
-  });
-  expect(manifestDecoded.snapshot.metadata).toEqual(valueRecords.manifest);
-
+  // A location's metadata names its resource, so the resource here is built
+  // from the fixture's own ref.
   const location: ResourceKey = { kind: "location", ref: String(valueRecords.location.ref) };
   const locationDecoded = decodedSnapshot(location, {
     metadata: valueRecords.location,

@@ -45,13 +45,14 @@ func TestNavigationValueRecordFixtureNamesEveryWireField(t *testing.T) {
 	}
 	// The hub's own validators accept the fixture, so the codec test decodes a
 	// value the hub could really produce.
-	var session hubapi.NavigationSessionSummary
-	if err := strictNavigationDecode(fixture["session"], []string{"ref"}, &session); err != nil || !navigationSessionValueValid(session) {
-		t.Fatalf("fixture session is not a valid hub summary (decode error %v)", err)
+	live := navigationResourceKey{Kind: navigationResourceLive}
+	session := hubapi.NavigationEntityRecord{Key: navigationEntityKey(live, "session", "fixture"), Kind: "session", Value: fixture["session"]}
+	if _, _, err := validateNavigationEntity(live, nil, session); err != nil {
+		t.Fatalf("fixture session is not a valid hub summary: %v", err)
 	}
-	var manifest hubapi.NavigationManifest
-	if err := json.Unmarshal(fixture["manifest"], &manifest); err != nil || !validateNavigationManifestRaw(fixture["manifest"]) || !navigationManifestValuesValid(manifest) {
-		t.Fatalf("fixture manifest is not a valid hub manifest (decode error %v)", err)
+	manifest := navigationResourceKey{Kind: navigationResourceManifest}
+	if _, err := validateNavigationMetadata(manifest, "g", 1, fixture["manifest"]); err != nil {
+		t.Fatalf("fixture manifest is not a valid hub manifest: %v", err)
 	}
 }
 

@@ -72,14 +72,19 @@ const bool = (value: unknown): value is boolean => typeof value === "boolean";
 const optional = (value: unknown, check: (candidate: unknown) => boolean) => value === undefined || check(value);
 const schemaError = (category: string): Error => new Error(`navigation protocol: invalid ${category}`);
 
-// A value record's keys: the keys it must carry, the keys it may carry, and
-// the keys whose values are themselves value records ("one" record, or "each"
-// record of a list).
+// A value record's keys: the keys it must carry, every key the codec knows
+// (the required keys, then the optional ones), and the keys whose values are
+// themselves value records, one record or a list of them.
 interface ValueRecordKeys {
   readonly required: readonly string[];
-  readonly optional: readonly string[];
-  readonly nested?: Readonly<Record<string, { readonly one: ValueRecordKeys } | { readonly each: ValueRecordKeys }>>;
+  readonly known: readonly string[];
+  readonly nested?: Readonly<Record<string, ValueRecordKeys>>;
 }
+const valueRecordKeys = (
+  required: readonly string[],
+  optional: readonly string[] = [],
+  nested?: ValueRecordKeys["nested"],
+): ValueRecordKeys => ({ required, known: [...required, ...optional], nested });
 
 // knownKeys is exactKeys for a value record: every required key is present,
 // and a key the record's keys do not name is allowed. A newer hub adds
@@ -96,16 +101,16 @@ const knownKeys = (value: unknown, keys: ValueRecordKeys): value is Record<strin
 // Dropping keeps unvalidated data out of the graph and the rendered rows, and
 // keeps merge's identity check from seeing a change an older app cannot show.
 function dropUnknownKeys(value: Record<string, unknown>, keys: ValueRecordKeys): Record<string, unknown> {
-  const known: Record<string, unknown> = {};
-  for (const key of [...keys.required, ...keys.optional]) {
+  const kept: Record<string, unknown> = {};
+  for (const key of keys.known) {
     if (!hasOwn(value, key)) continue;
     const item = value[key];
     const nested = keys.nested?.[key];
-    if (nested === undefined) known[key] = item;
-    else if ("one" in nested) known[key] = dropUnknownKeys(item as Record<string, unknown>, nested.one);
-    else known[key] = (item as Record<string, unknown>[]).map((entry) => dropUnknownKeys(entry, nested.each));
+    if (nested === undefined) kept[key] = item;
+    else if (Array.isArray(item)) kept[key] = item.map((entry) => dropUnknownKeys(entry, nested));
+    else kept[key] = dropUnknownKeys(item as Record<string, unknown>, nested);
   }
-  return known;
+  return kept;
 }
 
 const MAX_NAVIGATION_DEPTH = 32;
@@ -144,32 +149,19 @@ const version = (value: unknown): value is NavigationReadBase =>
   (value.revision as number) >= 0 &&
   safeString(value.etag, 1024);
 
-const JOB_KEYS: ValueRecordKeys = {
-  required: ["job_id", "job_type", "status"],
-  optional: ["command", "task", "reason", "intent", "full_command"],
-};
-const WATCH_CADENCE_KEYS: ValueRecordKeys = {
-  required: ["kind"],
-  optional: ["seconds", "derived_next_fire_at", "every", "filter"],
-};
-const WATCH_KEYS: ValueRecordKeys = {
-  required: ["id", "source", "deliveries", "created_at", "active"],
-  optional: [
-    "target",
-    "send_to",
-    "note",
-    "cadence",
-    "output_match",
-    "events",
-    "wildcard_events",
-    "delivery_times",
-    "end_reason",
-  ],
-  nested: { cadence: { each: WATCH_CADENCE_KEYS } },
-};
-const SESSION_KEYS: ValueRecordKeys = {
-  required: ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
-  optional: [
+const JOB_KEYS = valueRecordKeys(
+  ["job_id", "job_type", "status"],
+  ["command", "task", "reason", "intent", "full_command"],
+);
+const WATCH_CADENCE_KEYS = valueRecordKeys(["kind"], ["seconds", "derived_next_fire_at", "every", "filter"]);
+const WATCH_KEYS = valueRecordKeys(
+  ["id", "source", "deliveries", "created_at", "active"],
+  ["target", "send_to", "note", "cadence", "output_match", "events", "wildcard_events", "delivery_times", "end_reason"],
+  { cadence: WATCH_CADENCE_KEYS },
+);
+const SESSION_KEYS = valueRecordKeys(
+  ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
+  [
     "branch",
     "cluster_count",
     "favorite",
@@ -186,11 +178,11 @@ const SESSION_KEYS: ValueRecordKeys = {
     "completed_jobs",
     "watches",
   ],
-  nested: { running_jobs: { each: JOB_KEYS }, completed_jobs: { each: JOB_KEYS }, watches: { each: WATCH_KEYS } },
-};
-const PROJECT_KEYS: ValueRecordKeys = {
-  required: ["key", "name", "session_count"],
-  optional: [
+  { running_jobs: JOB_KEYS, completed_jobs: JOB_KEYS, watches: WATCH_KEYS },
+);
+const PROJECT_KEYS = valueRecordKeys(
+  ["key", "name", "session_count"],
+  [
     "working_dir",
     "rollup_state",
     "rollup_live",
@@ -204,36 +196,31 @@ const PROJECT_KEYS: ValueRecordKeys = {
     "favorite",
     "sources",
   ],
-};
-const PROJECT_ANCHOR_KEYS: ValueRecordKeys = { required: ["key"], optional: [] };
-const PIN_SECTION_KEYS: ValueRecordKeys = { required: ["id", "name", "count"], optional: [] };
-const SOURCE_KEYS: ValueRecordKeys = { required: ["id", "label", "kind", "online"], optional: [] };
-const COUNT_KEYS: ValueRecordKeys = { required: ["count"], optional: [] };
-const ATTENTION_SUMMARY_KEYS: ValueRecordKeys = { required: ["needsYou", "error", "working"], optional: [] };
-const SECTIONS_KEYS: ValueRecordKeys = {
-  required: ["live", "needs_you", "pin_sections"],
-  optional: [],
-  nested: { live: { one: COUNT_KEYS }, needs_you: { one: COUNT_KEYS }, pin_sections: { one: COUNT_KEYS } },
-};
-const CATALOGS_KEYS: ValueRecordKeys = {
-  required: ["projects", "archived_projects", "test_runs"],
-  optional: [],
-  nested: { projects: { one: COUNT_KEYS }, archived_projects: { one: COUNT_KEYS }, test_runs: { one: COUNT_KEYS } },
-};
-const MANIFEST_KEYS: ValueRecordKeys = {
-  required: ["generation_id", "revision", "sources", "attentionSummary", "sections", "catalogs"],
-  optional: [],
-  nested: {
-    sources: { each: SOURCE_KEYS },
-    attentionSummary: { one: ATTENTION_SUMMARY_KEYS },
-    sections: { one: SECTIONS_KEYS },
-    catalogs: { one: CATALOGS_KEYS },
-  },
-};
-const LOCATION_KEYS: ValueRecordKeys = {
-  required: ["generation_id", "revision", "ref", "top_level_ref", "top_level"],
-  optional: ["project_key", "tier", "pin_section_id"],
-};
+);
+const PROJECT_ANCHOR_KEYS = valueRecordKeys(["key"]);
+const PIN_SECTION_KEYS = valueRecordKeys(["id", "name", "count"]);
+const SOURCE_KEYS = valueRecordKeys(["id", "label", "kind", "online"]);
+const COUNT_KEYS = valueRecordKeys(["count"]);
+const ATTENTION_SUMMARY_KEYS = valueRecordKeys(["needsYou", "error", "working"]);
+const SECTIONS_KEYS = valueRecordKeys(["live", "needs_you", "pin_sections"], [], {
+  live: COUNT_KEYS,
+  needs_you: COUNT_KEYS,
+  pin_sections: COUNT_KEYS,
+});
+const CATALOGS_KEYS = valueRecordKeys(["projects", "archived_projects", "test_runs"], [], {
+  projects: COUNT_KEYS,
+  archived_projects: COUNT_KEYS,
+  test_runs: COUNT_KEYS,
+});
+const MANIFEST_KEYS = valueRecordKeys(
+  ["generation_id", "revision", "sources", "attentionSummary", "sections", "catalogs"],
+  [],
+  { sources: SOURCE_KEYS, attentionSummary: ATTENTION_SUMMARY_KEYS, sections: SECTIONS_KEYS, catalogs: CATALOGS_KEYS },
+);
+const LOCATION_KEYS = valueRecordKeys(
+  ["generation_id", "revision", "ref", "top_level_ref", "top_level"],
+  ["project_key", "tier", "pin_section_id"],
+);
 
 function jobValue(value: unknown): boolean {
   return (
