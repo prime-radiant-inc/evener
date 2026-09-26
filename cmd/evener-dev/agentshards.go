@@ -908,12 +908,10 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	}
 
 	type candidate struct {
-		index       int
-		line        string
-		owner       string
-		ordinary    bool
-		diagnostic  bool
-		parentLevel bool
+		line       string
+		owner      string
+		ordinary   bool
+		diagnostic bool
 	}
 	owner := name
 	parentDiagnostic := false
@@ -935,12 +933,10 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 			parentDiagnostic = true
 		}
 		candidates = append(candidates, candidate{
-			index:       run + 1 + index,
-			line:        line,
-			owner:       owner,
-			ordinary:    run+1+index >= ordinaryStart,
-			diagnostic:  diagnostic,
-			parentLevel: parentLevel,
+			line:       line,
+			owner:      owner,
+			ordinary:   run+1+index >= ordinaryStart,
+			diagnostic: diagnostic,
 		})
 	}
 	ownedByFailure := func(candidate candidate) bool {
@@ -989,7 +985,7 @@ func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]
 	}
 	if parentDiagnostic {
 		selectNewest(maxExpandedLines, func(candidate candidate) bool {
-			return candidate.diagnostic && candidate.parentLevel
+			return candidate.diagnostic && candidate.owner == name
 		})
 	}
 	selectNewest(maxExpandedLines, func(candidate candidate) bool {
