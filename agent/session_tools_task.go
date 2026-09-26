@@ -342,13 +342,22 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// readable again. Retry the existing read path here; a continued
 				// failure leaves the store fenced and preserves its bytes.
 				if reloadErr := store.Load(); reloadErr != nil {
-					return nil, store.LoadError()
+					if hook := deps.taskGuard.afterFailedTaskReload; hook != nil {
+						hook()
+					}
+					return nil, fmt.Errorf("%w: %w", taskpkg.ErrTaskStoreUnavailable, reloadErr)
 				}
 			}
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil
 				// slices; a mutation with nothing to mutate is the view.)
-				tasks := store.View()
+				if hook := deps.taskGuard.beforeBareTaskView; hook != nil {
+					hook()
+				}
+				tasks, err := store.ViewWithError()
+				if err != nil {
+					return nil, err
+				}
 				return tool.StateResult{Output: formatTaskList(tasks), State: tasks}, nil
 			}
 
