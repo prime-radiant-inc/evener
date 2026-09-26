@@ -835,7 +835,48 @@ Delete, after Tasks 11-19 are green:
 
 ## Acceptance results
 
-(Filled in by Task 19.)
+Measured 2026-09-26 with `scripts/measure-transcript-read-model.sh`, against
+copies of the same transcripts the baseline table above used, plus a full
+copy of the 261-transcript (root + 260 delegates) coordinator session
+`034N8nMIUxWLIw7RrX7Kgg` (`/tmp/claude-1000/trm-data/coord-session/`, 290 MB).
+`server/history_acceptance_test.go`, opt-in
+(`EVENER_TRM_SESSION_DIR`, `EVENER_TRANSCRIPT_INDEX_REAL`); both tests skip
+by default and stayed green under `go test ./server`.
+
+**Memory** (`TestRealSessionRetainedHistoryMemory`, replaying every
+transcript's recorded activity into its own thread history on one `Server`,
+`runtime.GC()` twice before and after):
+
+| Run | Threads | Retained heap | Retained per thread | Open index handles | Notice budget used | Largest per-thread notice ring |
+|---|---|---|---|---|---|---|
+| Full session | 261 | 17.6 MB | 67.5 KB | 64 (capacity) | 1.73 MB | 28.9 KB |
+| 20 smallest transcripts | 20 | 1.0 MB | 49.6-67.6 KB | 20 | 21.9 KB | 2.3 KB |
+
+Per-thread retained memory is the same order of magnitude (49.6-67.6 KB)
+whether the daemon holds 20 small transcripts or the full session with its
+~200 MB root: no term grows with history size. Both the notice ring
+(64 KB/thread) and daemon-wide budget (16 MB) limits are met with a wide
+margin (28.9 KB max per thread; 1.73 MB of 16 MB used). Open handles never
+exceed the cache's 64-handle capacity by construction. For comparison, the
+old snapshot-history model held about 334 MB for this session (283 MB in the
+spec's own earlier measurement) — a two-order-of-magnitude reduction.
+
+**Latency** (`TestRealTranscriptHistoryReadLatency`, the full `thread/read`
+handler path — capture, latest, regroup, JSON encoding — at the default page
+size, 200 samples, idle and while a goroutine appends one entry every
+100 ms):
+
+| Transcript | Idle p50 / p99 | Appending p50 / p99 | Idle limit | Appending limit |
+|---|---|---|---|---|
+| root101.jsonl (~101 MB) | 3.4 ms / 5.3 ms | 3.5 ms / 10.8 ms | < 50 ms and ≤ 15.6 ms (2× baseline) | < 100 ms |
+| root110.jsonl (~110 MB) | 9.2 ms / 14.4 ms | 8.2 ms / 18.4 ms | < 50 ms (no baseline row) | < 100 ms |
+| coord134.jsonl (~134 MB) | 8.3 ms / 24.6 ms | 8.1 ms / 11.5 ms | < 50 ms and ≤ 46.8 ms (2× baseline) | < 100 ms |
+
+All six p99s pass their limits with a wide margin (run-to-run p99 varied by a
+few ms across repeats, always well inside these bounds).
+
+**Both criteria pass.** No criterion needed to be changed to pass; the PR is
+not a draft on their account.
 
 ## Self-review
 

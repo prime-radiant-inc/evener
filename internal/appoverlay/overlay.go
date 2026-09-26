@@ -172,6 +172,15 @@ func (o *Overlay) Snapshot() []appwire.OverlayItem {
 	return append(items, o.notices.items(o.budget)...)
 }
 
+// NoticeBytes reports this thread's notice ring's encoded bytes. For the
+// acceptance measurement (spec: "Ephemeral notices stay within 64 KB per
+// thread").
+func (o *Overlay) NoticeBytes() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.notices.bytes
+}
+
 // Contains reports whether key is still in the overlay (a read drops captured
 // items a recorded entry covered between the cut and the projection).
 func (o *Overlay) Contains(key string) bool {
