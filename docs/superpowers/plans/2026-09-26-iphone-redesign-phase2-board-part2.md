@@ -62,7 +62,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 - Test: `mobile-native/src/board/notices.test.ts`, `mobile-native/src/board/boardData.test.ts` and `mobile-native/src/board/Notices.test.tsx`
 
 **Interfaces:**
-- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" | "Plugins" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; loadedRows: readonly NavigationSessionSummary[] }): Notice[]`. `loadedRows` is `BoardScreen`'s union of every page it has loaded so far: Live, each pinned category, Projects' `current`/`recent`/`archived` groups, test runs and archived projects. A session can be visible only through one of these, so all of them count.
+- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" | "Plugins" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; loadedRows: readonly NavigationSessionSummary[] }): Notice[]`. `loadedRows` is `BoardScreen`'s union of every page it has loaded so far: Live, the `needs_you` section (Task 5's separate page for a session that needs you past the loaded Live pages, per part 1's Review Focus 2), each pinned category, Projects' `current`/`recent`/`archived` groups, test runs and archived projects. A session can be visible only through one of these, so all of them count.
 
 **Requirements (spec 7.1, ruling 8):**
 - **Sign-in:** one notice per provider with `needsLogin`: "<provider> sign-in expired". Its action "Sign in" opens today's provider sign-in flow for that provider. #2483 is fixing `needsLogin` to mean "access token expired and no refresh token", so a sign-in that refreshes silently stops tripping the notice. A rejected refresh isn't recorded anywhere yet (#2479), so the notice can't fire for that case until #2479 lands.
@@ -94,7 +94,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
   - `evener/search { query }` is debounced 250ms. A newer query wins, and a query change clears stale results.
   - **Sessions** lists `live` and then `past` results, each with a state mark from `boardState` over `{ state }` and the age.
   - **Projects** lists the loaded projects catalog filtered by name or `working_dir`, case-insensitive.
-  - Tapping a session opens it; tapping a project scrolls to it and unfolds it, in whichever of Task 10's groupings is showing: directly in the Projects section ("Project, then host" mode), or inside its host group in the Hosts section ("Host, then project" mode). This needs Task 10's `ProjectsSection`. PR 5 starts alongside PR 3, not after it, so if PR 3 hasn't landed yet when this task ships, land the rest of Task 15 first and wire the project tap once PR 3 merges.
+  - Tapping a session opens it; tapping a project scrolls to it and unfolds it, in whichever of Task 10's groupings is showing: directly in the Projects section ("Project, then host" mode), or inside its host group in the Hosts section ("Host, then project" mode). This needs Task 10's `ProjectsSection`, so Task 15 is not done until PR 3 has landed. PR 5 may start alongside PR 3, and its other work (recent searches, Sessions results, the search field itself) can land as soon as it's ready, but the project-tap PR does not merge until PR 3 is on `main` and the tap is wired and tested against it: it never ships stubbed out or as a follow-up.
 - **Recent searches** show when the field is empty: the last 8 queries submitted with a tap on a result, kept in kv-store under `evener.native.recent-searches.${hubId}` and cleared by `forgetBoardForHub`, with a "Clear" action.
 - **Retire today's search:** `RosterSearch` and `rosterSearch.ts` are deleted if nothing else uses them. Check first with `grep -rn "rosterSearch\|RosterSearch" mobile-native/src`.
 
@@ -125,16 +125,18 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 - Test: `mobile-native/src/board/rowActions.test.ts` and `mobile-native/src/board/RowMenu.test.tsx`
 
 **Interfaces:**
-- Produces `rowActions.ts`. Each function is at the request boundary, takes the client, and returns the hub's result:
+- Produces `rowActions.ts`. Each function is at the request boundary and returns the hub's result:
   - `archiveSession(actions: NavigationActions, row, archived: boolean)`, using `evener/archive/set` through `NavigationActions.archive` so the recovery journal covers it;
-  - `stopSession(client, row)`, calling `turn/interrupt`. Read `TurnInterruptParams` in `appwire/types.go`. If it needs the instance id, read it with `thread/read { ref }` first, and say so in a comment;
-  - `shutDownSession(client, row)` (`thread/shutdown`);
-  - `renameSession(client, row, name)` (`evener/thread/name/set`);
+  - `stopSession(runtime: NativeMutationRuntime, row)`, calling `runtime.submit({ kind: "interrupt", hubId, targetRef: row.ref, threadId, instanceId, input: [] })` (`mobile-native/src/nativeMutationRuntime.ts`, `getNativeMutationRuntime()`), never a raw `client.request("turn/interrupt", ...)`: `TurnInterruptParams.clientMutationId` is required and the hub rejects a missing one (`cmd/evener-hub/app_rpc.go`), and `enqueueInterruptAndCancel` is what cancels the target's queued rows and bumps the stop epoch in the same durable write the Conversation screen's own Stop relies on (`mobile-native/src/mutationOutboxStorage.ts`). Resolve `threadId` and `instanceId` with `thread/read { ref }` first, and say so in a comment;
+  - `shutDownSession(client, row)` (`thread/shutdown`, params are just `{ ref }`, no `clientMutationId`);
+  - `renameSession(client, row, name)` (`evener/thread/name/set`, params are `{ ref, name }`, no `clientMutationId`);
   - `pinSession(actions, row, target)` (`NavigationActions.assignPin`).
 
 **Requirements (spec 7.3):**
 - **Swipe right** (leading) is Archive, in blue-gray (`inkMid` fill, white label). A full swipe archives, and the toast "Archived · Undo" shows for 8 seconds; Undo unarchives.
-- **Swipes that begin within 24pt of the screen's left edge never act on a row.** The rule is enforced by a pure start-x check, tested as a pure function, applied in the swipe gesture's start handler; this is the mechanism of record regardless of what else is tried. A `ReanimatedSwipeable` `hitSlop` of `{ left: -24 }` may also be worth trying, since it's unverified whether it alone satisfies the rule, but it never replaces the start-x check. Cover the iOS edge-swipe-back gesture in the same test: a swipe starting in that 24pt band must reach the OS, not this row.
+- **Swipes that begin within 24pt of the screen's left edge never act on a row, and must not stop iOS's own edge-swipe-back gesture from acting instead.** These are two separate properties, both required:
+  - The resulting action (archive, or revealing Stop/Pin/More) must never fire for a touch that started there. This is a pure start-x check, tested as a pure function.
+  - The row's own gesture recognizer must not claim the touch at all when it starts there; deciding not to act after the fact isn't enough, because by then the recognizer has already taken the touch away from the OS's back-swipe recognizer. Spike how `ReanimatedSwipeable` refuses or fails to activate for a start position in that band (a `hitSlop` of `{ left: -24 }`, `activeOffsetX`, or another activation-boundary API), record which one works and why in the PR description, and verify it in the simulator: a left-edge swipe starting in that band must trigger back navigation, not the row.
 - **Swipe left** (trailing) shows Stop (only when the row is working), Pin and More (which opens the long-press menu).
 - **Long-press:**
   - Spike `@expo/ui`'s SwiftUI `ContextMenu` with a preview first, then `@react-native-menu/menu`, and if neither gives a preview card, a sheet that shows the preview card on top with the actions below.
@@ -144,7 +146,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
   - Record the spike's outcome in the PR description.
 - Every action shows its state where it was taken (spec 14's outbox): an archived row dims until the hub confirms.
 
-- [ ] Steps: failing tests (each `rowActions` function sends the right request; the edge-zone rule; the menu's actions per state), implement, `make test-native`, look in the simulator, then commit (`feat(native): swipe and long-press actions on Board rows`).
+- [ ] Steps: failing tests (each `rowActions` function sends the right request; `stopSession` submits through `NativeMutationRuntime` and cancels the target's queued rows in the same write, not just a bare `turn/interrupt`; the edge-zone rule; the menu's actions per state), implement, `make test-native`, look in the simulator, then commit (`feat(native): swipe and long-press actions on Board rows`).
 
 ### Task 13: Select mode and list stability
 
