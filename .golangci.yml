@@ -178,7 +178,7 @@ linters:
       # reports it — "exported: exported method/function/… " or "exported:
       # comment on exported …" — and the rule-name prefix keeps it clear of
       # unexported-return's "unexported-return: exported func …" wording.
-      - path-except: '^(llm/[^/]+|agent/[^/]+|agent/(diagnostic|events|execenv|mcpconfig|plugin|provider|schema|skill|task|transcript)/[^/]+|auth/openai/[^/]+|execsupport/.+)\.go$'
+      - path-except: '^(llm/[^/]+|llm/registry/[^/]+|agent/[^/]+|agent/(diagnostic|events|execenv|mcpconfig|plugin|provider|schema|skill|task|transcript)/[^/]+|auth/openai/[^/]+|execsupport/.+)\.go$'
         text: '^exported: (exported (method|function|type|const|var)|comment on exported)'
         linters:
           - revive

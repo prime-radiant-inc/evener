@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import type { HostRow, MarketplaceEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
