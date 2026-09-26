@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1634,7 +1635,7 @@ func TestTrimActivityTreeToFit_SkippedMeasurementsLandOnTheSamePage(t *testing.T
 		t.Skip("the measure-every-drop reference is too slow under -race; covered by the plain run")
 	}
 	for seed := range uint64(12) {
-		t.Run(fmt.Sprint(seed), func(t *testing.T) {
+		t.Run(strconv.FormatUint(seed, 10), func(t *testing.T) {
 			tree, resume := oversizedActivityTreeFixture(seed)
 			fast, err := trimActivityTreeToFit(tree, "root", nil, 7, resume)
 			if err != nil {
