@@ -3,10 +3,12 @@ package hub
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -236,6 +238,85 @@ func TestHubTOMLMigrationMergesSidecarOnce(t *testing.T) {
 	fresh := bootHostManager(t, configPath)
 	if _, err := fresh.Status(context.Background(), appwire.HostStatusParams{Name: "beta"}); err == nil {
 		t.Fatal("removed host resurrected from the migrated sidecar")
+	}
+}
+
+// TestHubTOMLMigrationSetAsideSyncFailureIsLoudAndRetryable pins the
+// migration's crash-safety story: when the set-aside rename's directory sync
+// fails, the merged hub.toml is already durable, the sidecar still exists, and
+// writes are refused (the caller poisons) — so nothing can act on the merged
+// state while the retired file could still be re-merged. The next boot retries
+// the migration and converges.
+func TestHubTOMLMigrationSetAsideSyncFailureIsLoudAndRetryable(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	sidecar := legacySidecarPathFor(configPath)
+	sidecarBytes := []byte(`{"hosts":[{"name":"beta","ssh":"beta.example"}]}`)
+	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	boot := func(logf func(string, ...any)) *hubHostManager {
+		t.Helper()
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		hosts, err := hostreg.New(hostRegistryEntries(cfg))
+		if err != nil {
+			t.Fatalf("hostreg.New: %v", err)
+		}
+		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
+	}
+
+	// Fail only the second directory sync — the set-aside rename's.
+	saved := hubTOMLSyncDir
+	var call int
+	hubTOMLSyncDir = func(d string) error {
+		call++
+		if call == 2 {
+			return fmt.Errorf("hub.toml directory sync: %w", syscall.EIO)
+		}
+		return saved(d)
+	}
+	var logs []string
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	m := boot(logf)
+	hubTOMLSyncDir = saved
+	if len(logs) == 0 {
+		t.Fatal("a failed set-aside sync produced no log line at startup")
+	}
+	// The merged state is durable...
+	names := hubTOMLHostNames(t, configPath)
+	if !slices.Equal(names, []string{"alpha", "beta"}) {
+		t.Fatalf("hub.toml after the failed set-aside = %v, want alpha + beta merged", names)
+	}
+	// ...the retired sidecar's bytes are safe in the set-aside file (the
+	// rename landed; only its durability is unproven)...
+	aside, err := os.ReadFile(sidecar + legacyHostSidecarAsideSuffix)
+	if err != nil || !bytes.Equal(aside, sidecarBytes) {
+		t.Fatalf("sidecar set aside = %q, %v; want the original bytes", aside, err)
+	}
+	// ...and no mutation can land on the merged state while a crash could
+	// still bring the retired file back.
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
+		t.Fatal("Add over an unmigrated sidecar succeeded, want the poisoned refusal")
+	}
+
+	// The next boot retries and converges: the sidecar is set aside with its
+	// original bytes, and mutations work again.
+	fresh := boot(nil)
+	sideRow, err := fresh.Status(context.Background(), appwire.HostStatusParams{Name: "beta"})
+	if err != nil || sideRow.Host.Address != "beta.example" {
+		t.Fatalf("Status(beta) after the retry = %+v, %v", sideRow.Host, err)
+	}
+	if names := hubTOMLHostNames(t, configPath); !slices.Equal(names, []string{"alpha", "beta"}) {
+		t.Fatalf("hub.toml after the retry = %v, want alpha + beta exactly once", names)
+	}
+	if _, err := fresh.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
+		t.Fatalf("Add after the retried migration = %v, want success", err)
 	}
 }
 

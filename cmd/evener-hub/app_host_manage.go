@@ -779,17 +779,25 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 }
 
 // migrateLegacyHostSidecar folds a retired hub.hosts.json into hub.toml exactly
-// once, at boot: every entry that parses and validates joins the live registry
-// (a name hub.toml already declares wins — the sidecar's duplicate is dropped
-// exactly as the retired boot merge resolved that collision), hub.toml is
-// rewritten with the merged set and the machine-managed banner, and the sidecar
-// is renamed aside — never deleted — so its bytes survive for recovery while a
-// later removal of a name it carried can never resurrect through it. A sidecar
-// that fails to parse or validate is not migrated at all: both files stay
-// untouched and the caller poisons writes. Any failure after the rewrite — the
-// set-aside rename included — is returned so the caller poisons writes; the
-// next boot retries the whole migration and converges, because already-merged
-// names collide with the live set and are skipped.
+// once, at boot. The order is the crash-safety story, and it is fixed:
+//
+//  1. hub.toml is rewritten (atomically, directory synced) with the merged set
+//     and the machine-managed banner — the durable merged state exists before
+//     the retired file can go away.
+//  2. the sidecar is renamed aside — never deleted — and the directory synced,
+//     so the retirement is durable before anything can act on the merged state.
+//
+// A name hub.toml already declares wins: the migration drops the sidecar's
+// duplicate in the file's favor (the retired split made a live name in both
+// files a hard startup error, so this precedence is the migration's own rule).
+// The caller poisons writes on any failure, including a failed set-aside
+// rename: no mutation can land while an unmigrated sidecar remains, so a name
+// removed through the UI after a completed migration can never resurrect from
+// a lost rename. A sidecar that fails to parse or validate is not migrated at
+// all — both files stay untouched and the caller poisons writes. A crash at any
+// point re-runs the whole migration on the next boot and converges, because
+// already-merged names collide with the live set and are skipped, and the
+// set-aside rename either already happened or is retried.
 func (m *hubHostManager) migrateLegacyHostSidecar() error {
 	path := legacySidecarPathFor(m.cfg.configPath)
 	if path == "" {
@@ -843,6 +851,14 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 		return fmt.Errorf("cannot set legacy host sidecar %s aside: %s already exists", path, aside)
 	}
 	if err := os.Rename(path, aside); err != nil {
+		return fmt.Errorf("set legacy host sidecar aside: %w", err)
+	}
+	// The rename is only durable once the directory entry carrying it is
+	// synced: without this, a power loss could bring the retired sidecar back
+	// and the next boot would re-merge names the UI had already removed. The
+	// sync seam keeps its usual tolerance for filesystems that cannot sync a
+	// directory at all.
+	if err := hubTOMLSyncDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("set legacy host sidecar aside: %w", err)
 	}
 	return nil
