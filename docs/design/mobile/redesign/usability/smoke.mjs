@@ -136,7 +136,9 @@ async function runChecks(page, scheme) {
     ['plugins', `EV.openSheet('plugins',{})`], ['recipes', `EV.openSheet('recipes',{})`], ['display', `EV.openSheet('display',{})`], ['alerts', `EV.openSheet('alerts',{})`], ['hubs', `EV.openSheet('hubs',{})`],
     ['session-info', `EV.openSession('s-pr2138'); EV.openSheet('session',{sessionId:'s-pr2138'})`], ['model-session', `EV.openSession('s-pr2138'); EV.openSheet('model',{target:'session',sessionId:'s-pr2138'})`],
     ['commands', `EV.openSession('s-pr2138'); EV.openSheet('commands',{sessionId:'s-pr2138'})`], ['tasks', `EV.openSheet('tasks',{sessionId:'s-pr2138'})`], ['goal', `EV.openSheet('goal',{sessionId:'s-pr2138'})`],
-    ['notes', `EV.openSheet('notes',{sessionId:'s-pr2138'})`], ['find', `EV.openSheet('find',{sessionId:'s-pr2138'})`], ['aside', `EV.openSheet('aside',{sessionId:'s-pr2138'})`],
+    ['notes', `EV.openSession('s-pr2138'); EV.openSheet('notes',{sessionId:'s-pr2138'})`], ['notes-links-only', `EV.openSession('s-hier'); EV.openSheet('notes',{sessionId:'s-hier'})`],
+    ['notes-empty', `EV.openSession('s-tasklist'); EV.openSheet('notes',{sessionId:'s-tasklist'})`], ['notes-ended', `EV.openSheet('notes',{sessionId:'s-roster'})`],
+    ['browser', `EV.openSheet('browser',{url:'https://github.com/prime-radiant-inc/evener/pull/2138',label:'PR #2138'})`], ['find', `EV.openSheet('find',{sessionId:'s-pr2138'})`], ['aside', `EV.openSheet('aside',{sessionId:'s-pr2138'})`],
     ['files', `EV.openSession('s-hier'); EV.openSheet('files',{sessionId:'s-hier'})`], ['queue', `EV.S.queue['s-tasklist']=[{id:'q1',text:'Also cover the empty state'}]; EV.openSheet('queue',{sessionId:'s-tasklist'})`],
     ['stop-subagent', `EV.push('subagent',{sessionId:'s-pr2138',subId:'g-settle'}); EV.openSheet('stopSub',{sessionId:'s-pr2138',subId:'g-settle'})`],
     ['comment', `EV.openSheet('comment',{path:'docs/superpowers/plans/2026-09-25-host-project-hierarchy.md',sessionId:'s-hier',block:3})`],
@@ -234,6 +236,37 @@ async function runChecks(page, scheme) {
     if (!open) throw new Error('the long-press menu closed as soon as the finger lifted');
     await tapRole('menuitem', 'Comment');
     await logHas(page, 'sheet', (e) => e.kind === 'comment');
+  });
+  // Taps inside the topmost sheet only: the screens under it stay in the DOM.
+  const tapInSheet = async (role, name, exact = false) => { const loc = page.locator('.layer').last().getByRole(role, { name, exact }).first(); await loc.waitFor({ timeout: 4000 }); await loc.tap(); await sleep(250); };
+  await check(S('flow-notes-bar-opens-link'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-pr2138')`); await sleep(400);
+    await tapRole('button', 'Notes and links');
+    await tapInSheet('button', 'PR #2138');
+    await logHas(page, 'link_open', (e) => e.url.endsWith('/pull/2138'));
+    const kinds = await ev(page, 'EV.S.sheets.map((s) => s.kind).join(",")');
+    if (kinds !== 'notes,browser') throw new Error(`expected the browser over the notes sheet, got [${kinds}]`);
+  });
+  await check(S('flow-file-link-opens-reader'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-pr2138'); EV.openSheet('notes',{sessionId:'s-pr2138'})`); await sleep(400);
+    await tapInSheet('button', 'Settle race plan');
+    const top = await ev(page, 'EV.S.nav[EV.S.nav.length - 1]');
+    if (top.name !== 'reader' || !top.path.endsWith('settle-race.md')) throw new Error('the file link did not open the plan in the Reader: ' + JSON.stringify(top));
+  });
+  await check(S('flow-note-saves-after-leaving'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-hier'); EV.openSheet('notes',{sessionId:'s-hier'})`); await sleep(400);
+    await page.locator('textarea[aria-label="Your note"]').tap(); await page.keyboard.type('Prefer layout B');
+    await tapInSheet('button', 'Done', true); await sleep(300);
+    const early = await ev(page, 'window.__proto.log.filter((e) => e.type === "note_set").length');
+    if (early) throw new Error('the note saved before the 10-second grace period');
+    await page.waitForFunction(() => window.__proto.log.some((e) => e.type === 'note_set'), null, { timeout: 12000 });
+    await logHas(page, 'note_set', (e) => e.text === 'Prefer layout B' && e.woke === true);
+  });
+  await check(S('flow-remove-link'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-pr2138'); EV.openSheet('notes',{sessionId:'s-pr2138'})`); await sleep(400);
+    await ev(page, `EV.linkMenu(EV.sess('s-pr2138'), EV.sess('s-pr2138').urls[1])`); await sleep(300);
+    await tapRole('menuitem', 'Remove link');
+    await logHas(page, 'link_remove', (e) => e.url.endsWith('/checks'));
   });
   await check(S('flow-launch'), page, async () => {
     await reset(page); await page.locator('button[aria-label="New session"]').tap(); await sleep(400);

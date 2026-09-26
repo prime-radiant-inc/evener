@@ -98,7 +98,7 @@
   const base = (o) => Object.assign({
     host: "magic-kingdom", project: "evener", model: "deepseek-4.1-flash", effort: "xhigh",
     plugins: P10, access: "Workspace write", branch: "main", live: true, archived: false,
-    tasks: null, goal: null, notes: null, attachments: [], subs: null, unseen: false,
+    tasks: null, goal: null, notes: null, urls: [], attachments: [], subs: null, unseen: false,
     usage: { in: 38.2e6, out: 1.1e6, cache: 29.4e6 }, cost: "~$11.40", workSec: 2 * H, ctx: { used: 96, window: 256 }, failedTools: 0,
   }, o);
 
@@ -120,13 +120,16 @@
     base({ id: "s-hier", title: "Host Project Hierarchy UI Mockups", state: "yourmove", unseen: true, model: "glm-5.3-vision", ago: 62 * M, started: 3 * H,
       why: "Three layouts are ready for review. I recommend B: hosts as badges inside projects…",
       attachments: [{ kind: "Plan", path: "docs/superpowers/plans/2026-09-25-host-project-hierarchy.md" }, { kind: "Artifact", id: "a-hier", title: "Hierarchy layouts" }],
-      subs: { run: 0, wait: 0, fail: 0, done: 6 }, cost: "~$5.90" }),
+      subs: { run: 0, wait: 0, fail: 0, done: 6 }, cost: "~$5.90",
+      urls: [{ id: "u-hplan", url: "file:///home/jesse/git/evener/docs/superpowers/plans/2026-09-25-host-project-hierarchy.md", label: "Hierarchy plan", addedBy: "agent" }] }),
     base({ id: "s-flakes", title: "Find Test Flakes in GitHub Issues", state: "yourmove", unseen: true, model: "gpt-5.6-luna", effort: "high", ago: 8 * M, started: 70 * M,
       why: "I found 11 open flake reports. Four are the same race in delegate settle…",
       attachments: [{ kind: "Doc", path: "docs/design/flake-triage.md" }], subs: { run: 0, wait: 0, fail: 0, done: 5 }, cost: "~$2.70" }),
     base({ id: "s-jobdisp", title: "Redesign Failed Job Display", state: "yourmove", unseen: true, model: "glm-5.3-vision", ago: 25 * M, started: 4 * H, category: "release",
       why: "Done. Failed jobs now show the exit code and the last 20 lines inline. PR #2331 is green.",
-      subs: { run: 0, wait: 0, fail: 1, done: 11 }, cost: "~$8.20" }),
+      subs: { run: 0, wait: 0, fail: 1, done: 11 }, cost: "~$8.20",
+      notes: { agent: "PR #2331 is green. I'll merge once you've looked at the new failed-job card." },
+      urls: [{ id: "u-2331", url: "https://github.com/prime-radiant-inc/evener/pull/2331", label: "PR #2331", addedBy: "agent" }] }),
     base({ id: "s-branch", title: "Idiomatic Branch Naming for Delegates", state: "yourmove", unseen: true, model: "glm-5.3", ago: 3 * H, started: 6 * H,
       why: "Spec updated with your naming rules. Ready for your review.",
       attachments: [{ kind: "Spec", path: "docs/superpowers/specs/2026-09-22-delegate-lane-branch-names.md" }], subs: { run: 0, wait: 0, fail: 0, done: 3 }, cost: "~$1.90" }),
@@ -135,7 +138,12 @@
     base({ id: "s-pr2138", title: "Get PR 2138 Test Clean", state: "working", ago: 5, started: 38 * M, category: "release",
       activity: "Waiting on 31 subagents", subs: { run: 31, wait: 3, fail: 2, done: 18 }, tasks: { done: 3, total: 7, current: "Fix the settle/drain race" },
       goal: { text: "PR 2138 green on CI without skipped tests", status: "active" }, cost: "~$19.60", usage: { in: 46.1e6, out: 1.9e6, cache: 38.8e6 }, ctx: { used: 38, window: 256 },
-      attachments: [{ kind: "Plan", path: "docs/superpowers/plans/2026-09-25-settle-race.md" }], notes: { human: "Don't skip or quarantine tests. Fix causes.", agent: "Race is in retirement drain vs tree settle; see plan." } }),
+      attachments: [{ kind: "Plan", path: "docs/superpowers/plans/2026-09-25-settle-race.md" }], notes: { human: "Don't skip or quarantine tests. Fix causes.", agent: "Race is in retirement drain vs tree settle; see plan." },
+      urls: [
+        { id: "u-2138", url: "https://github.com/prime-radiant-inc/evener/pull/2138", label: "PR #2138", addedBy: "agent" },
+        { id: "u-checks", url: "https://github.com/prime-radiant-inc/evener/pull/2138/checks", label: "CI checks", addedBy: "agent" },
+        { id: "u-splan", url: "file:///home/jesse/git/evener/docs/superpowers/plans/2026-09-25-settle-race.md", label: "Settle race plan", addedBy: "agent" },
+      ] }),
     base({ id: "s-tasklist", title: "Rework Inline Task List Display", state: "working", model: "glm-5.3-vision", ago: 3, started: 12 * M,
       activity: "Running go test ./cmd/evener-hub/...", subs: { run: 3, wait: 0, fail: 0, done: 1 }, tasks: { done: 1, total: 4, current: "Fold the task card to one line" }, cost: "~$1.30" }),
     base({ id: "s-stumble", title: "Diagnose and Fix Tool Use Stumbles", state: "working", model: "glm-5.2-vision", ago: 8, started: 65 * M,
@@ -159,7 +167,9 @@
     base({ id: "s-shepherd", title: "Shepherd PR Stack Rebase", state: "idle", project: "shepherd-pr", ago: 7 * H, started: 9 * H, why: "", cost: "~$0.80" }),
 
     // Shut down, not live (appear under Projects)
-    base({ id: "s-roster", title: "Hub Roster Latency", state: "shutdown", live: false, ago: 1 * D, started: 1 * D + 3 * H }),
+    base({ id: "s-roster", title: "Hub Roster Latency", state: "shutdown", live: false, ago: 1 * D, started: 1 * D + 3 * H,
+      notes: { human: "Measure on magic-kingdom, not a laptop.", agent: "Roster p95 went from 1.8s to 240ms. The fix is in PR #2290." },
+      urls: [{ id: "u-2290", url: "https://github.com/prime-radiant-inc/evener/pull/2290", label: "PR #2290", addedBy: "agent" }] }),
     base({ id: "s-sandbox", title: "Sandbox Network Egress Audit", state: "shutdown", live: false, ago: 2 * D, started: 2 * D + 2 * H }),
     base({ id: "s-skills", title: "Skills Lifecycle Cleanup", state: "shutdown", live: false, project: "superpowers", ago: 3 * D, started: 3 * D + H }),
     base({ id: "s-house", title: "Thermostat Schedule Script", state: "shutdown", live: false, project: "house", host: "paradise-park", ago: 4 * D, started: 4 * D + H }),

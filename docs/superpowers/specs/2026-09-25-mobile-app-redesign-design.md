@@ -112,8 +112,8 @@ Board (home)
 ├── Session
 │   ├── Subagents → one subagent (read-only transcript)
 │   ├── Files & artifacts → Reader | Artifact viewer
-│   ├── Session sheet: where, model, effort, plugins, access, usage, goal, tasks, notes, actions
-│   └── Queue, tasks, notes (sheets)
+│   ├── Session sheet: where, model, effort, plugins, access, usage, goal, tasks, notes and links, actions
+│   └── Queue, tasks, Notes & links → Reader | in-app browser (sheets)
 ├── New session (sheet)
 ├── Search (from the header)
 └── Hub (from the header button): hosts, providers, plugins, recipes, display, alerts, hubs, about
@@ -254,7 +254,8 @@ splitting the fix into two subagents…
 ```
 
 - **Nav bar (glass).** Back shows an amber count of sessions that need you (excluding this one). The center holds the title (15pt semibold, one line) and a subtitle with the state mark, the state ("Working · 38m", "Finished", "Asks a question", "Failed") and a small chevron that says the title is tappable. Tapping the center opens the Session sheet; it has a pressed state and sits clear of Back. Trailing: the ⋯ menu.
-- **Context chips (under the nav bar; hide on scroll down, return on scroll up).** Subagents (with a mini strip and the count; a red dot if any failed), Files (count; blue dot when something new or changed), Tasks (done/total), Goal (when set; amber when blocked), Notes (when either note exists), Queue (count, when non-empty). Chips appear only when they have content.
+- **Context chips (under the nav bar; hide on scroll down, return on scroll up).** Subagents (with a mini strip and the count; a red dot if any failed), Files (count; blue dot when something new or changed), Tasks (done/total), Goal (when set; amber when blocked), Queue (count, when non-empty). Chips appear only when they have content.
+- **Notes bar (under the chips, only when the session has a note or a link).** One 32pt line, the phone's form of the web's collapsed notes bar (section 8.8).
 - **Transcript** (section 8.2).
 - **Status tray** (section 8.3), replaced by the **Ask dock** when a question or approval is pending (section 8.4).
 - **Composer** (section 8.5).
@@ -382,12 +383,25 @@ Opened by tapping the title. A large-detent sheet:
 - **Plugins:** "10 plugins · chosen at start" and the list. Footer: "Plugins are chosen when a session starts. To change them, start a new session or fork this one."
 - **Access:** sandbox mode and network, read-only.
 - **Usage:** total tokens with input/output/cache split, estimated cost, work time, a context gauge (used of window, with a marker at the compaction threshold), and failed tool calls when above zero.
-- **Goal** (edit), **Tasks** (list with current task highlighted), **Notes** (your note, the agent's note, links).
+- **Goal** (edit), **Tasks** (list with current task highlighted), **Notes & links** ("Your note · agent note · 3 links", or "None"; opens section 8.8's sheet).
 - **Actions:** Aside (ask something in a side session), Fork from latest, Compact context, Copy link, Pin to category…, Archive, Shut down (destructive, confirms), Delete (only when shut down, destructive, confirms).
 
 ### 8.7 ⋯ menu
 
-Detail level ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes, Aside, Pin to category…, Archive, Shut down.
+Detail level ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Aside, Pin to category…, Archive, Shut down.
+
+### 8.8 Notes & links
+
+The same shared notes the web shows in its Notes panel: your note, the agent's note, and the session's links (`humanNote`, `agentNote` and `sessionUrls` on the thread; updates arrive as `evener/notes/updated` and `evener/urls/updated`). Hidden when the session lacks the `sharedNotes` capability.
+
+- **Notes bar.** Under the context chips, one line, shown only when there is something in it. It previews, in the web's order, your note (person glyph), else the agent's note (sparkle glyph), else the links: a lone link by its label, several as "3 links". When a note is showing and links exist, a trailing link glyph carries their count. The whole bar opens the sheet. The web also shows an empty "Add a note…" bar; the phone leaves it out to keep 32pt of transcript, and "Notes & links" in the ⋯ menu and the Session sheet is always there instead.
+- **Sheet** ("Notes & links", large detent, Done). Three groups, as on the web:
+  - **Your note.** A serif editor with the placeholder "Make a note…". Below it one status line: "Saving will wake the agent." when it isn't in a turn, "The agent gets your note at its next step." while it works, "Saves in 10 seconds. Tap the note to keep editing." once you leave it, then "Saved".
+  - **Agent.** The agent's note in the serif, or "No agent note yet".
+  - **Links.** Each row shows the label and, beneath it, the full URL in SF Mono. The URL is never hidden, so a trusted-looking label can't disguise where a link goes. Web links show a globe, file links a document. A web link opens in an in-app browser (SFSafariViewController) over the sheet, with Done coming back. A `file://` link opens in the Reader when it names a document the phone can show; any other file keeps its text and isn't tappable, as on the web. Swipe left for Remove; long-press for Open, Copy link and Remove link. Removal can't be undone from the phone, because only the agent adds links (`urls/add` is agent-only), and the toast says so. Footer: "The agent adds links as it works. Swipe left on one to remove it." Empty: "No links yet".
+  - Ended sessions show what was saved, read-only, with no editor and no Remove; with nothing saved, "No shared notes".
+- **Saving.** Saving your note is a steer: the daemon hands it to the agent at its next step and wakes an agent that isn't in a turn (`SetHumanNote` in agent/session_notes_rpc.go). So the phone saves the way the web does: leaving the note schedules the save 10 seconds later and returning to it cancels that, so a burst of edits reaches the agent once. On the phone, closing the sheet counts as leaving the note; the web instead keeps an unsaved draft when a panel closes without the field losing focus, which has no equivalent on a phone.
+- **Transcript.** A saved note shows where it reached the agent: "You updated your note" over the text in the serif, with a left rule, at every detail level (the web shows the same moment as a divider labeled "Human note").
 
 ## 9. Subagents
 
@@ -631,7 +645,7 @@ The one piece of expression in the app: a live 7-bar activity meter (22×14pt) s
 
 ### 16.5 Iconography
 
-SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle.fill`, `hand.raised.fill`, `exclamationmark.triangle.fill`, `xmark.octagon.fill`, `arrow.clockwise.circle.fill`, `circle.fill` (unread), `magnifyingglass`, `square.and.pencil` (new session), `ellipsis.circle`, `pin.fill`, `archivebox`, `stop.fill`, `arrow.up` (send), `plus`, `command` (commands and skills), `cpu` (model), `server.rack` (host), `folder` (project), `puzzlepiece.extension` (plugins), `lock.shield` (access), `doc.text` (plan and documents), `square.stack.3d.up` (artifact), `person.2` (subagents), `checklist` (tasks), `target` (goal), `note.text` (notes), `text.quote` (quote), `bubble.left` (comment).
+SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle.fill`, `hand.raised.fill`, `exclamationmark.triangle.fill`, `xmark.octagon.fill`, `arrow.clockwise.circle.fill`, `circle.fill` (unread), `magnifyingglass`, `square.and.pencil` (new session), `ellipsis.circle`, `pin.fill`, `archivebox`, `stop.fill`, `arrow.up` (send), `plus`, `command` (commands and skills), `cpu` (model), `server.rack` (host), `folder` (project), `puzzlepiece.extension` (plugins), `lock.shield` (access), `doc.text` (plan and documents), `square.stack.3d.up` (artifact), `person.2` (subagents), `checklist` (tasks), `target` (goal), `note.text` (notes), `person` (your note), `sparkles` (the agent's note), `link` (links), `globe` (web link), `text.quote` (quote), `bubble.left` (comment).
 
 ### 16.6 Motion and haptics
 
@@ -647,10 +661,10 @@ SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle
 | Board sections, rows, children | `evener/navigation/read` (Live, needs-you, projects, pin sections, archived), `NavigationSessionSummary` (title, state, ask_pending, live, updated_at, host_id, project, branch, children, running_jobs, more_subagents, omitted_descendants), invalidated by `evener/navigation/invalidated` |
 | Needs you count | `evener/attention/changed` (`AttentionSummary{NeedsYou, Error, Working}`) |
 | Search | `evener/search` |
-| Session content | `thread/read` with subscribe; `item/*` streaming notifications; `thread/status/changed`, `thread/queueChanged`, `evener/goal/updated`, `evener/task/updated`, `evener/notes/updated`, `evener/delegate/updated`, `evener/jobs/treeUpdated` |
+| Session content | `thread/read` with subscribe; `item/*` streaming notifications; `thread/status/changed`, `thread/queueChanged`, `evener/goal/updated`, `evener/task/updated`, `evener/notes/updated`, `evener/urls/updated`, `evener/delegate/updated`, `evener/jobs/treeUpdated` |
 | Capabilities | `ThreadCapabilities` gates every control (send, steer, interrupt, compact, clear, forkFromTurn, shutdown, changeModel, queue, goal, sharedNotes, rename, skillInput) |
 | Send, steer, queue, stop | `turn/start`, `turn/steer`, `turn/queue`, `turn/cancelQueued`, `turn/promoteQueuedAsSteer`, `turn/interrupt` |
-| Session actions | `thread/shutdown`, `thread/model/set`, `thread/reasoning-effort/set`, `thread/fork` (with `aside`), `thread/compact/start`, `evener/thread/name/set`, `evener/archive/set`, `evener/session-pin/assign` and `unpin`, `evener/pin-section/rename` and `delete`, `evener/favorite/set` (pin project), `goal/set`, `notes/human/set` |
+| Session actions | `thread/shutdown`, `thread/model/set`, `thread/reasoning-effort/set`, `thread/fork` (with `aside`), `thread/compact/start`, `evener/thread/name/set`, `evener/archive/set`, `evener/session-pin/assign` and `unpin`, `evener/pin-section/rename` and `delete`, `evener/favorite/set` (pin project), `goal/set`, `notes/human/set`, `urls/remove` |
 | Approvals | `evener/sandbox/escalation/requested`, `EvenerThread.PendingEscalations`, `evener/sandbox/escalation/resolve` |
 | Questions | `status=awaiting` + `AskPending`; the ask's questions come from the transcript item; answers are an ordinary message |
 | Usage | `EvenerThread.Usage`, `.Cost`, `.WorkMillis`, context pressure fields, `FailedToolCalls` |
@@ -708,6 +722,7 @@ For Claude Design or any visual pass. Each frame at 393×852pt, light and dark u
 11. Session, failed: error block with Retry.
 12. Session, Tools level with an expanded step showing command output and a diff.
 13. Session sheet: where, model, plugins (fixed), usage with context gauge.
+13a. Notes & links: the notes bar on a working session; the sheet with your note, the agent's note and three links (two web, one file); the in-app browser over it; an ended session's read-only notes.
 14. Model sheet with Effort control.
 15. Subagents: strip, filters, failed first, nested running rows, Done folded.
 16. Subagent transcript, read-only, with "Ask coordinator to stop it" and its sheet.
@@ -724,4 +739,4 @@ For Claude Design or any visual pass. Each frame at 393×852pt, light and dark u
 
 ## Appendix B: fixture content
 
-Use content shaped like real usage (section 2): about 17 live top-level sessions across evener and a few other projects, two hosts (magic-kingdom, paradise-park), subagent trees from 0 to 54 with at least one of 467 in Archived, models from several provider profiles (lunaroute: deepseek-4.1-flash, glm-5.3-vision; codex-jesse-fsck.com: gpt-5.6; meta: muse-spark-1.3; kimi-code: k3), effort mostly xhigh and high, sessions running 6 to 13 of these plugins: superpowers, elements-of-style, frontend-design, go, go-release, go-spec-reviewer, fileflow-pathologize, claude-session-driver, private-journal-mcp, shepherd-pr, iterative-development, study-skills, simplify-code, superpowers-chrome. Titles are four to six words in title case, auto-named from the prompt. The prototype's `data.js` is the canonical fixture.
+Use content shaped like real usage (section 2): about 17 live top-level sessions across evener and a few other projects, two hosts (magic-kingdom, paradise-park), subagent trees from 0 to 54 with at least one of 467 in Archived, models from several provider profiles (lunaroute: deepseek-4.1-flash, glm-5.3-vision; codex-jesse-fsck.com: gpt-5.6; meta: muse-spark-1.3; kimi-code: k3), effort mostly xhigh and high, sessions running 6 to 13 of these plugins: superpowers, elements-of-style, frontend-design, go, go-release, go-spec-reviewer, fileflow-pathologize, claude-session-driver, private-journal-mcp, shepherd-pr, iterative-development, study-skills, simplify-code, superpowers-chrome. Titles are four to six words in title case, auto-named from the prompt. Shared notes on a few sessions: both notes and three links (PR, CI checks, plan file) on the PR session, a lone file link on a finished one, an agent note and a PR link on another, and read-only notes on a shut-down one. The prototype's `data.js` is the canonical fixture.

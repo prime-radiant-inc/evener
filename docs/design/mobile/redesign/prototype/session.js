@@ -130,6 +130,7 @@
           <div class="ft"><span>Artifact · v${a.version}${st && st.sent ? " · you chose " + st.sent : ""}</span><span class="open">Open</span></div></div>
         </button>`;
       }
+      case "noteSet": return html`<div class="note-set"><div class="ns-l">${I.person({ s: 12 })} You updated your note</div>${it.text ? html`<div class="ns-t">${it.text}</div>` : html`<div class="ns-t dim">Cleared</div>`}</div>`;
       case "sys": return L >= 1 || /compacted|Model changed|Stopped/.test(it.text) ? html`<div class="sys">${I.diamond({ s: 12 })}<span>${it.text}</span></div>` : null;
       case "qhist": return html`<div class="q-hist">${it.qs.map((q, i) => html`<div style=${i ? "margin-top:8px" : ""}><div class="q">${q.q}</div><div class="a">You answered: ${q.a}</div></div>`)}</div>`;
       case "err": return html`<div class="err"><div class="e">${it.e}</div><div class="d">${it.d}</div>${it.done ? null : html`<div class="acts">${(it.acts || []).map((a) => a === "signin"
@@ -575,6 +576,7 @@
       { label: "Find in session", icon: I.search({ s: 18 }), run: () => EV.openSheet("find", { sessionId: s.id }) },
       files ? { label: "Files & artifacts", icon: I.doc({ s: 18 }), run: () => EV.openSheet("files", { sessionId: s.id }) } : null,
       tot ? { label: "Subagents", icon: I.people({ s: 18 }), run: () => EV.push("subagents", { sessionId: s.id }) } : null,
+      { label: "Notes & links", icon: I.note({ s: 18 }), run: () => { EV.log("notes_open", { sessionId: s.id, from: "menu" }); EV.openSheet("notes", { sessionId: s.id }); } },
       { label: "Session info", icon: I.gauge({ s: 18 }), run: () => EV.openSheet("session", { sessionId: s.id }) },
       { label: "Ask aside…", icon: I.bubble({ s: 18 }), sep: true, run: () => EV.openSheet("aside", { sessionId: s.id }) },
       { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) },
@@ -606,9 +608,9 @@
           ${files ? html`<button class="cchip" onClick=${() => EV.openSheet("files", { sessionId: s.id })}>${I.doc({ s: 15 })} Files <span class="n">${files}</span>${fileNew ? html`<span class="bd"></span>` : null}</button>` : null}
           ${s.tasks ? html`<button class="cchip" onClick=${() => EV.openSheet("tasks", { sessionId: s.id })}>${I.checklist({ s: 15 })} Tasks <span class="n">${s.tasks.done}/${s.tasks.total}</span></button>` : null}
           ${s.goal ? html`<button class=${"cchip" + (s.goal.status === "blocked" ? " amber" : "")} onClick=${() => EV.openSheet("goal", { sessionId: s.id })}>${I.target({ s: 15 })} Goal</button>` : null}
-          ${s.notes ? html`<button class="cchip" onClick=${() => EV.openSheet("notes", { sessionId: s.id })}>${I.note({ s: 15 })} Notes</button>` : null}
           ${q.length ? html`<button class="cchip" onClick=${() => EV.openSheet("queue", { sessionId: s.id })}>Queue <span class="n">${q.length}</span></button>` : null}
         </div>
+        ${h(EV.NotesBar, { s })}
       </div>
       <div class="scroll" ref=${scrollRef} onScroll=${onScroll}>
         <div class="tx">
@@ -686,11 +688,11 @@
         </div>
         ${s.failedTools ? h(EV.Gi, { label: "Failed tool calls", value: html`<span style="color:var(--danger-ink)">${s.failedTools}</span>` }) : null}
       </div>
-      <div class="glabel">Goal, tasks, notes</div>
+      <div class="glabel">Goal, tasks, notes and links</div>
       <div class="group">
         ${h(EV.Gi, { label: "Goal", value: s.goal ? EV.cap(s.goal.status) : "None", chev: true, onClick: () => EV.openSheet("goal", { sessionId: s.id }) })}
         ${h(EV.Gi, { label: "Tasks", value: s.tasks ? s.tasks.done + " of " + s.tasks.total : "None", chev: true, onClick: () => EV.openSheet("tasks", { sessionId: s.id }) })}
-        ${h(EV.Gi, { label: "Notes", value: s.notes ? "2 notes" : "None", chev: true, onClick: () => EV.openSheet("notes", { sessionId: s.id }) })}
+        ${h(EV.Gi, { label: "Notes & links", value: EV.notesSummary(s), chev: true, onClick: () => EV.openSheet("notes", { sessionId: s.id }) })}
       </div>
       <div class="glabel">Actions</div>
       <div class="group">
@@ -795,16 +797,175 @@
     </${EV.Sheet}>`;
   };
 
+  // Shared notes, as the web's Notes panel shows them: your note, the
+  // agent's note, and the session's links (humanNote, agentNote and
+  // sessionUrls on the thread). The phone writes two of them: your note
+  // (notes/human/set) and link removal (urls/remove). Only the agent adds
+  // links.
+  const hasText = (t) => !!(t && t.trim());
+  EV.notesOf = function (s) {
+    const n = s.notes || {};
+    const draft = EV.S.noteDrafts[s.id];
+    return { human: draft != null ? draft : n.human || "", saved: n.human || "", agent: n.agent || "", urls: s.urls || [] };
+  };
+  EV.hasNotes = function (s) {
+    const n = EV.notesOf(s);
+    return hasText(n.human) || hasText(n.agent) || n.urls.length > 0;
+  };
+  const plural = (n, one) => n + " " + one + (n === 1 ? "" : "s");
+  EV.notesSummary = function (s) {
+    const n = EV.notesOf(s);
+    const parts = [];
+    if (hasText(n.human)) parts.push("your note");
+    if (hasText(n.agent)) parts.push("agent note");
+    if (n.urls.length) parts.push(plural(n.urls.length, "link"));
+    return parts.length ? EV.cap(parts.join(" · ")) : "None";
+  };
+
+  // Saving your note is a steer: the daemon hands it to the agent at its next
+  // step, and wakes an agent that isn't in a turn. So, like the web, leaving
+  // the note schedules the save 10 seconds later and coming back to it
+  // cancels that, and a burst of edits reaches the agent once. On the phone,
+  // closing the sheet is leaving the note.
+  const noteTimers = {};
+  const NOTE_DELAY = 10000;
+  const agentIdle = (s) => s.state === "idle" || s.state === "yourmove";
+  EV.leaveNote = function (s) {
+    const S = EV.S;
+    const draft = S.noteDrafts[s.id];
+    if (draft == null) return;
+    if (draft === ((s.notes && s.notes.human) || "")) { delete S.noteDrafts[s.id]; S.noteState[s.id] = null; EV.update(); return; }
+    // Leaving twice (the field blurs, then the sheet closes) is one leave.
+    if (S.noteState[s.id] === "pending") return;
+    S.noteState[s.id] = "pending";
+    EV.log("note_leave", { sessionId: s.id });
+    noteTimers[s.id] = setTimeout(() => {
+      if (EV.S !== S) return;
+      const text = S.noteDrafts[s.id];
+      if (text == null) return;
+      const woke = agentIdle(s);
+      s.notes = Object.assign({}, s.notes || {}, { human: text.trim() });
+      delete S.noteDrafts[s.id];
+      S.noteState[s.id] = "saved";
+      EV.addItem(s.id, { t: "noteSet", text: text.trim() });
+      if (woke) {
+        s.state = "working"; s.unseen = false; s.activity = "Reading your note";
+        s.startedAt = s.updatedAt = Date.now();
+        s.pulse = [0, 0, 0, 0, 0, 0.4, 0.8];
+        EV.addItem(s.id, { t: "think", live: true });
+      }
+      EV.log("note_set", { sessionId: s.id, text: text.trim(), woke });
+      EV.update();
+    }, NOTE_DELAY);
+    EV.update();
+  };
+  EV.focusNote = function (s) {
+    clearTimeout(noteTimers[s.id]);
+    if (EV.S.noteState[s.id] === "pending") { EV.S.noteState[s.id] = null; EV.update(); }
+  };
+
+  // Links: web pages open in an in-app browser (SFSafariViewController), and
+  // file links open in the Reader when the file is a document the phone can
+  // show. A file it can't show keeps its text but isn't tappable, as on the
+  // web.
+  EV.linkKind = function (u) {
+    if (/^https?:\/\//.test(u.url)) return "web";
+    if (/^file:\/\//.test(u.url)) return "file";
+    return "other";
+  };
+  EV.linkDoc = function (u) {
+    if (EV.linkKind(u) !== "file") return null;
+    return Object.keys(EV.S.docs).find((p) => u.url.endsWith("/" + p)) || null;
+  };
+  EV.openLink = function (s, u, from) {
+    const kind = EV.linkKind(u);
+    const doc = EV.linkDoc(u);
+    if (kind === "web") { EV.log("link_open", { sessionId: s.id, url: u.url, from }); EV.openSheet("browser", { url: u.url, label: u.label }); return; }
+    if (doc) { EV.log("link_open", { sessionId: s.id, url: u.url, from }); EV.closeAllSheets(); EV.push("reader", { path: doc, sessionId: s.id }); }
+  };
+  EV.removeLink = function (s, u) {
+    s.urls = (s.urls || []).filter((x) => x.id !== u.id);
+    EV.log("link_remove", { sessionId: s.id, url: u.url });
+    EV.toast("Removed " + (u.label || "the link") + ". Only the agent can add it back.");
+    EV.update();
+  };
+  EV.linkMenu = function (s, u, e) {
+    const doc = EV.linkDoc(u), kind = EV.linkKind(u);
+    EV.openMenu({ kind: "list", top: e && e.clientY ? Math.max(90, e.clientY - 40) : 200, title: u.label || u.url, items: [
+      kind === "web" || doc ? { label: kind === "web" ? "Open" : "Open in Reader", icon: kind === "web" ? I.globe({ s: 18 }) : I.doc({ s: 18 }), run: () => EV.openLink(s, u, "menu") } : null,
+      { label: "Copy link", icon: I.link({ s: 18 }), run: () => { EV.log("link_copy", { sessionId: s.id, url: u.url }); EV.toast("Link copied"); } },
+      s.live ? { label: "Remove link", icon: I.x({ s: 18 }), danger: true, sep: true, run: () => EV.removeLink(s, u) } : null,
+    ] });
+  };
+
+  // The one-line bar under the session's chips, like the web's collapsed
+  // notes bar: your note if there is one, else the agent's, else the links
+  // (a lone link by its label, which says more than "1 link"). It only
+  // appears when there is something to show; "Notes & links" in the session
+  // menu is always there.
+  EV.NotesBar = function ({ s }) {
+    const n = EV.notesOf(s);
+    const links = n.urls.length;
+    if (!hasText(n.human) && !hasText(n.agent) && !links) return null;
+    const [icon, who, text] = hasText(n.human) ? [I.person({ s: 14 }), "Your note", n.human] : hasText(n.agent) ? [I.sparkle({ s: 14 }), "Agent's note", n.agent] : [I.link({ s: 14 }), null, links === 1 ? n.urls[0].label || n.urls[0].url : plural(links, "link")];
+    const count = links && who ? links : 0;
+    const open = () => { EV.log("notes_open", { sessionId: s.id, from: "bar" }); EV.openSheet("notes", { sessionId: s.id }); };
+    return html`<button class="notes-bar" onClick=${open} aria-label=${"Notes and links. " + (who ? who + ": " : "") + text.trim() + (count ? ". " + plural(count, "link") : "")}>
+      <span class="nb-ic">${icon}</span><span class="nb-t">${text.trim()}</span>
+      ${count ? html`<span class="nb-n">${I.link({ s: 13 })}${count}</span>` : null}
+      <span class="nb-chev">${I.chevR({ s: 10 })}</span>
+    </button>`;
+  };
+
+  function LinkRow({ s, u }) {
+    const kind = EV.linkKind(u), doc = EV.linkDoc(u);
+    const opens = kind === "web" || !!doc;
+    const body = html`<div class=${"link-row" + (opens ? "" : " inert")}>
+      <span class="lr-ic">${kind === "web" ? I.globe({ s: 17 }) : I.doc({ s: 17 })}</span>
+      <span class="lr-t"><span class="lr-l">${u.label || u.url}</span>${u.label ? html`<span class="lr-u">${u.url}</span>` : null}</span>
+      ${opens ? html`<span class="chev">${I.chevR()}</span>` : null}
+    </div>`;
+    const trail = s.live ? [{ label: "Remove", cls: "sa-stop", icon: I.x({ s: 18 }), run: () => EV.removeLink(s, u) }] : [];
+    return h(EV.SwipeRow, { trail, onTap: () => EV.openLink(s, u, "notes"), onLong: (e) => EV.linkMenu(s, u, e) }, body);
+  }
+
   EV.sheets.notes = function ({ sessionId }) {
+    const S = EV.S;
     const s = EV.sess(sessionId);
-    const [txt, setTxt] = useState((s.notes && s.notes.human) || "");
-    const save = () => { s.notes = Object.assign({}, s.notes || {}, { human: txt }); EV.log("note_set", { sessionId: s.id }); EV.closeSheet(); EV.toast("Note saved"); };
-    return html`<${EV.Sheet} title="Notes" left=${h(Cancel)} right=${html`<button class="text-btn strong" onClick=${save}>Save</button>`} size="large">
-      <div class="glabel">Your note</div>
-      <div class="field"><textarea rows="4" placeholder="Anything the agent should keep in mind" value=${txt} onInput=${(e) => setTxt(e.currentTarget.value)} aria-label="Your note"></textarea></div>
-      <div class="gfoot">Saving your note can wake an idle agent.</div>
-      <div class="glabel">The agent's note</div>
-      <div class="group"><div class="gi static"><span class="gl" style="grid-column:1/4;font-family:var(--read-font)">${(s.notes && s.notes.agent) || "No note yet."}</span></div></div>
+    const n = EV.notesOf(s);
+    const state = S.noteState[s.id];
+    useEffect(() => () => EV.leaveNote(s), []);
+    const status = state === "pending" ? "Saves in 10 seconds. Tap the note to keep editing."
+      : state === "saved" && n.human === n.saved ? "Saved"
+      : agentIdle(s) ? "Saving will wake the agent."
+      : s.state === "working" ? "The agent gets your note at its next step."
+      : "Saving sends your note to the agent.";
+    const hasAny = hasText(n.human) || hasText(n.agent) || n.urls.length;
+    return html`<${EV.Sheet} title="Notes & links" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="large">
+      ${s.live ? html`<div class="glabel">Your note</div>
+        <div class="field"><textarea class="note-editor" rows="4" placeholder="Make a note…" value=${n.human} aria-label="Your note"
+          onFocus=${() => EV.focusNote(s)} onBlur=${() => EV.leaveNote(s)}
+          onInput=${(e) => { S.noteDrafts[s.id] = e.currentTarget.value; S.noteState[s.id] = null; EV.update(); }}></textarea></div>
+        <div class="gfoot" role="status">${status}</div>`
+      : hasText(n.saved) ? html`<div class="glabel">Your note</div><div class="group"><div class="gi static"><span class="gl note-text">${n.saved}</span></div></div>` : null}
+      ${hasText(n.agent) || s.live ? html`<div class="glabel">Agent</div>
+        <div class="group"><div class="gi static"><span class=${"gl " + (hasText(n.agent) ? "note-text" : "dim")}>${hasText(n.agent) ? n.agent : "No agent note yet"}</span></div></div>` : null}
+      ${n.urls.length || s.live ? html`<div class="glabel">Links</div>
+        ${n.urls.length ? html`<div class="group">${n.urls.map((u) => html`<${LinkRow} key=${u.id} s=${s} u=${u} />`)}</div>
+          <div class="gfoot">${s.live ? "The agent adds links as it works. Swipe left on one to remove it." : "Links the agent saved in this session."}</div>`
+        : html`<div class="group"><div class="gi static"><span class="gl dim">No links yet</span></div></div>`}` : null}
+      ${!s.live && !hasAny ? html`<div class="empty" style="padding-top:28px"><b>No shared notes</b>This session ended without any.</div>` : null}
+    </${EV.Sheet}>`;
+  };
+
+  // A stand-in for the in-app browser (SFSafariViewController): the page
+  // opens over the app and Done comes straight back.
+  EV.sheets.browser = function ({ url, label }) {
+    const host = url.replace(/^https?:\/\//, "").split("/")[0];
+    return html`<${EV.Sheet} title=${host} left=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="large">
+      <div class="browser-bar"><span class="mono">${url}</span></div>
+      <div class="empty" style="padding-top:48px">${I.globe({ s: 34 })}<b style="margin-top:10px">${label || host}</b>The page loads here, inside the app. Done brings you back.</div>
+      <div style="padding:8px 16px 0"><button class="btn big" onClick=${() => { EV.log("link_safari", { url }); EV.toast("Opens in Safari"); }}>Open in Safari</button></div>
     </${EV.Sheet}>`;
   };
 
