@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1570,5 +1572,277 @@ func TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale(t *testing.T) 
 	})
 	if _, err := decodeActivityContinuation(current, "root"); err != nil {
 		t.Fatalf("this build's own token does not decode: %v", err)
+	}
+}
+
+// TestTrimActivityTreeToFit_EncodesThePageAHandfulOfTimes pins that trimming
+// an oversized page costs a handful of whole-page encodes, not one per entry
+// it drops. Each encode is the whole page - megabytes - so a trim that
+// re-weighs the page after every drop is quadratic: a ~5MB page of small
+// entries is hundreds of drops from fitting.
+func TestTrimActivityTreeToFit_EncodesThePageAHandfulOfTimes(t *testing.T) {
+	// Not parallel: this swaps the package's page encoder to count calls.
+	const maxEncodes = 8
+	encodes := 0
+	original := encodeActivityTree
+	encodeActivityTree = func(tree appwire.JobActivityTree) ([]byte, error) {
+		encodes++
+		if encodes > maxEncodes {
+			return nil, fmt.Errorf("encoded the whole page %d times", encodes)
+		}
+		return original(tree)
+	}
+	t.Cleanup(func() { encodeActivityTree = original })
+
+	description := strings.Repeat("x", 1000)
+	entries := make([]appwire.JobActivityEntry, 0, 5000)
+	for i := range 5000 {
+		entries = append(entries, appwire.JobActivityEntry{
+			Kind: "shell",
+			Job:  new(appwire.JobActivityJob{JobID: fmt.Sprintf("job_%04d", i), Description: description, Status: "completed", Terminal: true}),
+		})
+	}
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{SessionID: "root", Ref: "local:root", Entries: entries}}
+
+	got, err := trimActivityTreeToFit(tree, "root", nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("trimmed page is %d bytes, over the %d-byte limit", len(raw), activityMaxEncodedBytes)
+	}
+	if !got.Root.Branch.Truncated || len(got.Root.Entries) >= len(entries) {
+		t.Fatalf("truncated = %v with %d of %d entries, want a trimmed page", got.Root.Branch.Truncated, len(got.Root.Entries), len(entries))
+	}
+}
+
+// TestTrimActivityTreeToFit_SkippedMeasurementsLandOnTheSamePage pins that
+// skipping measurements changes the trim's cost and nothing else: on every
+// page shape, trimming with them lands on exactly the page that measuring
+// after every drop does - the same entries, tokens, counts and errors. The
+// shapes cover nested delegates, a resumed page's ancestor chain, pages just
+// over the limit and far over it, and an entry no page can carry.
+func TestTrimActivityTreeToFit_SkippedMeasurementsLandOnTheSamePage(t *testing.T) {
+	// Not parallel: this swaps the package's trim slack. The reference trim
+	// weighs a ~5MB page after every drop, which is minutes under -race; the
+	// property is sequential logic, which the plain run covers.
+	if raceDetectorEnabled {
+		t.Skip("the measure-every-drop reference is too slow under -race; covered by the plain run")
+	}
+	for seed := range uint64(12) {
+		t.Run(fmt.Sprint(seed), func(t *testing.T) {
+			tree, resume := oversizedActivityTreeFixture(seed)
+			fast, err := trimActivityTreeToFit(tree, "root", nil, 7, resume)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			original := activityTrimSlack
+			activityTrimSlack = func(*appwire.JobActivitySession) int { return math.MaxInt / 2 }
+			defer func() { activityTrimSlack = original }()
+			tree, resume = oversizedActivityTreeFixture(seed)
+			measured, err := trimActivityTreeToFit(tree, "root", nil, 7, resume)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !reflect.DeepEqual(fast, measured) {
+				fastRaw, _ := json.Marshal(fast)
+				measuredRaw, _ := json.Marshal(measured)
+				t.Fatalf("skipping measurements changed the page: %d entries, %d bytes; measuring every drop gave %d entries, %d bytes", len(fast.Root.Entries), len(fastRaw), len(measured.Root.Entries), len(measuredRaw))
+			}
+		})
+	}
+}
+
+// oversizedActivityTreeFixture builds one pseudo-random page over the size
+// limit, fresh on every call: the trim rewrites nested sessions in place, so
+// two trims compared must not share one.
+func oversizedActivityTreeFixture(seed uint64) (appwire.JobActivityTree, activityTrimResume) {
+	rng := rand.New(rand.NewPCG(seed, 0x5eed))
+	text := func(n int) string { return strings.Repeat(string(rune('a'+rng.IntN(26))), n) }
+	// Sizes: mostly small, some medium, now and then one no page can carry.
+	entrySize := func() int {
+		switch r := rng.IntN(100); {
+		case r < 70:
+			return 200 + rng.IntN(4_000)
+		case r < 97:
+			return 20_000 + rng.IntN(200_000)
+		default:
+			return activityMaxEncodedBytes + rng.IntN(1_000)
+		}
+	}
+	nextJob := 0
+	var session func(id string, budget, depth int) *appwire.JobActivitySession
+	session = func(id string, budget, depth int) *appwire.JobActivitySession {
+		s := &appwire.JobActivitySession{SessionID: id, Ref: "local:" + id, Label: "session " + id, Entries: []appwire.JobActivityEntry{}}
+		for used := 0; used < budget; {
+			if depth < 2 && rng.IntN(12) == 0 {
+				childBudget := min(budget-used, 200_000+rng.IntN(1_500_000))
+				child := session(fmt.Sprintf("%s.%d", id, len(s.Entries)), childBudget, depth+1)
+				s.Entries = append(s.Entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+					DelegateID: "dlg_" + child.SessionID, ChildSessionID: child.SessionID, ChildRef: child.Ref,
+					Task: text(rng.IntN(2_000)), Child: child,
+				}})
+				used += childBudget
+				continue
+			}
+			size := entrySize()
+			s.Entries = append(s.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &appwire.JobActivityJob{
+				JobID: fmt.Sprintf("job_%05d", nextJob), Description: text(size), Status: "completed", Terminal: true,
+			}})
+			nextJob++
+			used += size
+		}
+		return s
+	}
+	// Just over the limit, or far over it.
+	budget := activityMaxEncodedBytes + []int{8_000, 300_000, 2_000_000}[rng.IntN(3)]
+	root := session("root", budget, 0)
+	resume := activityTrimResume{}
+	if rng.IntN(3) == 0 {
+		// A resumed page: root is the ancestor chain, whose trailing delegate
+		// carries the page's own target and long prose the trim can shrink.
+		target := session("target", budget, 1)
+		root = &appwire.JobActivitySession{SessionID: "root", Ref: "local:root", Label: "root", Entries: []appwire.JobActivityEntry{
+			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+				DelegateID: "dlg_target", ChildSessionID: "target", ChildRef: "local:target",
+				Mandate: text(40_000), Task: text(40_000), Description: text(40_000), Child: target,
+			}},
+		}}
+		resume = activityTrimResume{depth: 1, index: rng.IntN(500)}
+	}
+	return appwire.JobActivityTree{Revision: 7, Root: *root}, resume
+}
+
+// TestActivityTrimSlackBoundsEveryLaterPage pins the bound the trim skips
+// measurements on: from any measurement, however many entries are dropped
+// next, the page never encodes smaller than that measurement less its slack
+// less the entries dropped (and a comma each). Counts and continuation
+// positions crossing a digit boundary (1000 -> 999) are where a page shrinks
+// by more than its entries, so the walk crosses them.
+func TestActivityTrimSlackBoundsEveryLaterPage(t *testing.T) {
+	t.Parallel()
+	entries := make([]appwire.JobActivityEntry, 0, 1_050)
+	for i := range 1_050 {
+		entries = append(entries, appwire.JobActivityEntry{Kind: "shell", Job: new(appwire.JobActivityJob{
+			JobID: fmt.Sprintf("job_%d", i), Status: "completed", Terminal: true,
+		})})
+	}
+	child := &appwire.JobActivitySession{SessionID: "child", Ref: "local:child", Entries: slices.Clone(entries[:120])}
+	tree := appwire.JobActivityTree{Revision: 7, Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root",
+		Entries: append(entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+			DelegateID: "dlg_child", ChildSessionID: "child", ChildRef: "local:child", Child: child,
+		}}),
+	}}
+	resume := activityTrimResume{index: 995}
+
+	type point struct{ size, slack, droppedSince int }
+	var points []point
+	for {
+		recomputeActivitySession(&tree.Root)
+		raw, err := json.Marshal(tree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range points {
+			if bound := p.size - p.slack - p.droppedSince; len(raw) < bound {
+				t.Fatalf("page encodes to %d bytes, under the bound %d from a %d-byte measurement with slack %d and %d bytes dropped since", len(raw), bound, p.size, p.slack, p.droppedSince)
+			}
+		}
+		points = append(points, point{size: len(raw), slack: activityTrimSlack(&tree.Root)})
+		dropped, ok := trimActivityTrailingEntry(&tree.Root, "root", nil, nil, 7, resume)
+		if !ok {
+			break
+		}
+		entry, err := json.Marshal(dropped.entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range points {
+			points[i].droppedSince += len(entry) + 1
+		}
+	}
+	if len(points) < 1_000 {
+		t.Fatalf("walked %d pages, want the whole tree", len(points))
+	}
+}
+
+// TestTrimActivityTreeToFit_WeighsThePageAfterAnEntryNoPageCarries pins that
+// a drop the trim has already weighed exactly is the new baseline. A resumed
+// page's target holds one entry no page can carry; dropping it leaves the
+// page still over, and dropping the target's delegate then makes it fit. The
+// trim stops there: the root's own entry stays.
+func TestTrimActivityTreeToFit_WeighsThePageAfterAnEntryNoPageCarries(t *testing.T) {
+	t.Parallel()
+	target := &appwire.JobActivitySession{SessionID: "target", Ref: "local:target", Entries: []appwire.JobActivityEntry{
+		{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "job_huge", Description: strings.Repeat("h", activityMaxEncodedBytes+(1<<20))})},
+	}}
+	tree := appwire.JobActivityTree{Revision: 7, Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root",
+		// The fixed part: the page sits 50KB under the limit with only the
+		// root's own entry, 30KB over it with the (emptied) delegate too.
+		Label: strings.Repeat("p", activityMaxEncodedBytes-100_000),
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "job_keep", Description: strings.Repeat("k", 50_000)})},
+			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+				DelegateID: "dlg_target", ChildSessionID: "target", ChildRef: "local:" + strings.Repeat("r", 80_000), Child: target,
+			}},
+		},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", nil, 7, activityTrimResume{depth: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, entry := range got.Root.Entries {
+		kept = append(kept, activityEntryRef(entry))
+	}
+	if !slices.Equal(kept, []string{`job "job_keep"`}) {
+		t.Fatalf("root entries = %v, want only job_keep: the page fits once the delegate is dropped", kept)
+	}
+}
+
+// TestTrimActivityTreeToFit_CountsWhatAReplacedTokenGivesBack pins that the
+// trim's bound includes more than the entries it drops. A page can arrive
+// already carrying a continuation (projection's own, for a deeper path), and
+// the first drop replaces it with the trim's shorter one, so that drop can
+// shrink the page by far more than its entry. Here it takes the page from
+// 1,000 bytes over the limit to under it: exactly one entry goes.
+func TestTrimActivityTreeToFit_CountsWhatAReplacedTokenGivesBack(t *testing.T) {
+	t.Parallel()
+	build := func(label int) appwire.JobActivityTree {
+		entries := make([]appwire.JobActivityEntry, 0, 40)
+		for i := range 40 {
+			entries = append(entries, appwire.JobActivityEntry{Kind: "shell", Job: new(appwire.JobActivityJob{
+				JobID: fmt.Sprintf("job_%02d", i), Status: "completed", Terminal: true,
+			})})
+		}
+		tree := appwire.JobActivityTree{Revision: 7, Root: appwire.JobActivitySession{
+			SessionID: "root", Ref: "local:root", Label: strings.Repeat("p", label), Entries: entries,
+		}}
+		tree.Root.Branch.Truncated = true
+		tree.Root.Branch.Continuation = strings.Repeat("c", 5_000)
+		recomputeActivitySession(&tree.Root)
+		return tree
+	}
+	base, err := json.Marshal(build(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := build(activityMaxEncodedBytes + 1_000 - len(base))
+
+	got, err := trimActivityTreeToFit(tree, "root", nil, 7, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Root.Entries) != 39 {
+		t.Fatalf("kept %d of 40 entries, want 39: one drop replaces the 5,000-byte token and the page fits", len(got.Root.Entries))
 	}
 }
