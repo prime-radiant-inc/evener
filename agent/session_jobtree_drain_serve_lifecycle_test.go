@@ -37,8 +37,7 @@ func (e *serveDrainWedgeEnvironment) releaseRead() {
 // read_file wedge is reached through the real tool path, and StopSubtree is the
 // same mutation job_stop uses; no durable/controller state is hand-seeded.
 func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
-	restoreBudget := SetLaneClosePassBudget(10 * time.Millisecond)
-	t.Cleanup(restoreBudget)
+	shortenCloseCascadeBudget(t, 10*time.Millisecond)
 
 	clk := agenttest.NewFakeClock()
 	wedge := &serveDrainWedgeEnvironment{

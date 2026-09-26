@@ -246,9 +246,14 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 		budget = closeStopJoinBudget(time.Until(cascadeDeadline), cascadeBudget)
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, budget)
-	if ObserveCloseStopJoin != nil && bounded {
+	if bounded {
 		if stopDeadline, ok := stopCtx.Deadline(); ok {
-			ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
+			if ObserveCloseStopJoin != nil {
+				ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
+			}
+			if ObserveCloseStopJoinBudget != nil {
+				ObserveCloseStopJoinBudget(stopDeadline, cascadeDeadline, cascadeBudget)
+			}
 		}
 	}
 	return stopCtx, cancel
@@ -261,7 +266,13 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 // wedged-delegate run tests check the close tree against this rule rather
 // than a copy of it that can drift.
 func CloseStopJoinBudget(remaining time.Duration) time.Duration {
-	return closeStopJoinBudget(remaining, laneClosePassBudget())
+	return CloseStopJoinBudgetForCascade(remaining, laneClosePassBudget())
+}
+
+// CloseStopJoinBudgetForCascade applies the stop-join split using the immutable
+// budget captured by the initiating close cascade.
+func CloseStopJoinBudgetForCascade(remaining, cascadeBudget time.Duration) time.Duration {
+	return closeStopJoinBudget(remaining, cascadeBudget)
 }
 
 func closeStopJoinBudget(remaining, cascadeBudget time.Duration) time.Duration {
@@ -280,6 +291,11 @@ func closeStopJoinBudget(remaining, cascadeBudget time.Duration) time.Duration {
 // of off wall-clock time, which host load can stretch past any ceiling. Nil in
 // production; the same convention as the close-cascade budget.
 var ObserveCloseStopJoin func(stopDeadline, cascadeDeadline time.Time)
+
+// ObserveCloseStopJoinBudget is the context-independent observation seam for
+// callers that need the exact immutable cascade budget used by a stop join.
+// ObserveCloseStopJoin remains unchanged for compatibility.
+var ObserveCloseStopJoinBudget func(stopDeadline, cascadeDeadline time.Time, cascadeBudget time.Duration)
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
 // not reach before the budget expired (spec §P0, rev-9.1 finding O2): touch the

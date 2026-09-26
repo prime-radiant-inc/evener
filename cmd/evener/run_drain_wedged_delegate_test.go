@@ -237,7 +237,7 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 
 // closeStopJoinObservations records every stop join Session.Close bounds, via
 // agent.ObserveCloseStopJoin: the stop's deadline, the cascade's, and when it
-// was minted.
+// was minted. The companion budget seam records the immutable cascade budget.
 type closeStopJoinObservations struct {
 	mu   sync.Mutex
 	seen []closeStopJoin
@@ -245,15 +245,16 @@ type closeStopJoinObservations struct {
 
 type closeStopJoin struct {
 	mintedAt, stopDeadline, cascadeDeadline time.Time
+	cascadeBudget                           time.Duration
 }
 
 // reservedItsShare reports what the stop join left of the cascade's remaining
 // budget for the joins behind it, what closeStopJoinContext's rule says it
-// should have left (agent.CloseStopJoinBudget, the one rule both sides call),
+// should have left (agent.CloseStopJoinBudgetForCascade, the one rule both sides call),
 // and whether the two agree within 250ms of mint skew.
 func (join closeStopJoin) reservedItsShare() (reserved, want time.Duration, ok bool) {
 	remaining := join.cascadeDeadline.Sub(join.mintedAt)
-	want = remaining - agent.CloseStopJoinBudget(remaining)
+	want = remaining - agent.CloseStopJoinBudgetForCascade(remaining, join.cascadeBudget)
 	reserved = join.cascadeDeadline.Sub(join.stopDeadline)
 	return reserved, want, reserved >= want-250*time.Millisecond
 }
@@ -261,13 +262,18 @@ func (join closeStopJoin) reservedItsShare() (reserved, want time.Duration, ok b
 func observeCloseStopJoins(t *testing.T) *closeStopJoinObservations {
 	t.Helper()
 	obs := &closeStopJoinObservations{}
-	old := agent.ObserveCloseStopJoin
-	agent.ObserveCloseStopJoin = func(stopDeadline, cascadeDeadline time.Time) {
+	oldWithBudget := agent.ObserveCloseStopJoinBudget
+	agent.ObserveCloseStopJoinBudget = func(stopDeadline, cascadeDeadline time.Time, cascadeBudget time.Duration) {
 		obs.mu.Lock()
-		obs.seen = append(obs.seen, closeStopJoin{mintedAt: time.Now(), stopDeadline: stopDeadline, cascadeDeadline: cascadeDeadline})
+		obs.seen = append(obs.seen, closeStopJoin{
+			mintedAt:        time.Now(),
+			stopDeadline:    stopDeadline,
+			cascadeDeadline: cascadeDeadline,
+			cascadeBudget:   cascadeBudget,
+		})
 		obs.mu.Unlock()
 	}
-	t.Cleanup(func() { agent.ObserveCloseStopJoin = old })
+	t.Cleanup(func() { agent.ObserveCloseStopJoinBudget = oldWithBudget })
 	return obs
 }
 
@@ -401,7 +407,7 @@ func TestCloseStopJoinReservationFollowsTheHelpersRule(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			join := closeStopJoin{mintedAt: at, cascadeDeadline: at.Add(tc.remaining), stopDeadline: at.Add(tc.stopAfter)}
+			join := closeStopJoin{mintedAt: at, cascadeDeadline: at.Add(tc.remaining), stopDeadline: at.Add(tc.stopAfter), cascadeBudget: 3 * time.Second}
 			reserved, want, ok := join.reservedItsShare()
 			if ok != tc.ok {
 				t.Fatalf("reservedItsShare() = (reserved %s, want %s, ok %v), want ok=%v", reserved, want, ok, tc.ok)
