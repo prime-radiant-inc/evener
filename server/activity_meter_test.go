@@ -102,6 +102,20 @@ func TestActivityMeterQuietClockMovesOnTranscriptMotionOnly(t *testing.T) {
 	}
 }
 
+// A clock that steps backward (a resync, a corrected wall clock) must not
+// un-mark motion that already happened: the quiet clock only moves forward.
+func TestActivityMeterQuietClockNeverMovesBackward(t *testing.T) {
+	meter, clock := startedMeter()
+	clock.now = activityTestStart.Add(90 * time.Second)
+	meter.observe(appwire.NotifyItemCompleted)
+	later := clock.now
+	clock.now = activityTestStart.Add(30 * time.Second) // a step backward
+	meter.observe(appwire.NotifyItemCompleted)
+	if got, want := meter.snapshot().LastActivityAt, later.UnixMilli(); got != want {
+		t.Fatalf("a clock step backward moved the quiet clock to %d, want it to stay at %d", got, want)
+	}
+}
+
 func TestActivityMeterReadsNothingBeforeItStarts(t *testing.T) {
 	if got := (&activityMeter{}).snapshot(); got != nil {
 		t.Fatalf("an unstarted meter reported %+v, want nil", got)
