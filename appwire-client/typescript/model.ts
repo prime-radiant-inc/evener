@@ -129,7 +129,7 @@ export interface ItemModel {
   observedCompletedAt?: string;
   // Populated only by the reducer's `case "warning"` fold (see reducer.ts);
   // undefined for every other item.
-  warning?: { source?: string; title?: string; hint?: string };
+  warning?: { source?: string; title?: string; hint?: string; code?: string };
 }
 
 export interface TurnModel {

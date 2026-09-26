@@ -2510,6 +2510,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `message` | `string` | yes |  |
 | `source` | `string` | yes |  |
+| `code` | `string` | yes |  |
 | `title` | `string` | yes |  |
 | `hint` | `string` | yes |  |
 | `warning` | `interface {}` | yes |  |

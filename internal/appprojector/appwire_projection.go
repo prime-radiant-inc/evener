@@ -923,6 +923,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			"ref":      p.ref,
 			"message":  data.Message,
 			"source":   string(info.Source),
+			"code":     data.Code,
 			"title":    info.Title,
 			"hint":     info.Hint,
 			"warning":  event.Data,
