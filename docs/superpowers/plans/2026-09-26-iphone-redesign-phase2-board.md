@@ -446,6 +446,8 @@ describe("a row's Board state (spec 13.1)", () => {
 		[{ state: "ended" }, false, false, "shutDown"],
 		[{ state: "notLoaded" }, false, false, "shutDown"],
 		[{ state: "ended", offline: true }, false, false, "shutDown"],
+		[{ state: "active", offline: true }, false, false, "shutDown"],
+		[{ state: "awaiting", ask_pending: true, offline: true }, false, false, "shutDown"],
 	] as const)("%o, approval %s, seen %s → %s", (over, approval, seen, expected) => {
 		expect(boardState(row("s", over), approval, seen)).toBe(expected);
 	});
@@ -568,6 +570,7 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 			],
 		});
 		expect(workingActivity(three)).toBe("Waiting on 3 subagents");
+		expect(workingActivity({ ...three, more_subagents: 12 })).toBe("Waiting on 3 subagents (+12 more)");
 		const running = row("s", {
 			state: "active",
 			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],
@@ -676,6 +679,9 @@ export function boardState(
 	approval: boolean,
 	seen: boolean,
 ): BoardState {
+	// A row from an offline source can't be reached, whatever state it last
+	// reported: it is never Working, Finished or Needs you.
+	if (row.offline) return "shutDown";
 	switch (row.state) {
 		case "errored":
 			return "failed";
@@ -797,7 +803,11 @@ export function whyLine(item: ClassifiedRow): WhyLine | null {
  * current step and quiet spells). */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const subagents = row.children.filter((child) => child.state === "active").length;
-	if (subagents > 0) return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}`;
+	// The hub caps a row's children; until S3 tallies the whole tree, say how
+	// many more there are rather than undercounting (spec 18, S3's fallback).
+	const more = row.more_subagents ?? 0;
+	if (subagents > 0)
+		return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}${more > 0 ? ` (+${more} more)` : ""}`;
 	const command = row.running_jobs?.find((job) => job.command)?.command;
 	if (command) return `Running ${command}`;
 	return "Working";
@@ -1739,7 +1749,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 - Produces:
   - `BoardScreen` (a route component for `"Sessions"`).
   - `connectionStatus(state: ConnectionState, downSince: number | null, lastLiveAt: number | null, now: number): string | null`, which returns `null` when live, "Reconnecting…" after 2 seconds down, and "Offline · updated 3m ago" after 30 seconds (the age comes from `relativeAge` on `lastLiveAt`; with no `lastLiveAt`, because the hub was never reached this launch, it says "Offline").
-  - `DraftRepository.refsWithDrafts(hubId: string): Set<string>` (`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL)`) and `DraftLibrary.refsWithDrafts(hubId)` passing it through (add `"refsWithDrafts"` to the `DraftStorage` `Pick` in `draftLibrary.ts`).
+  - `DraftRepository.refsWithDrafts(hubId: string): Set<string>` (`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL) UNION SELECT session_ref FROM draft_image_sets WHERE hub_id = ?`: an image-only draft lives only in `draft_image_sets`, since `write` deletes the empty `drafts` row) and `DraftLibrary.refsWithDrafts(hubId)` passing it through (add `"refsWithDrafts"` to the `DraftStorage` `Pick` in `draftLibrary.ts`).
 
 **Requirements (spec 7.1, 7.5, 14; layout from top to bottom):**
 1. **Header** (native stack header, no large title):
@@ -1777,7 +1787,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 - [ ] **Step 1: Write the failing tests.**
   - `BoardToolbar` under fake timers: disconnected with nothing else changing, it shows nothing at 1 second, "Reconnecting…" at 2 seconds and "Offline · updated …" at 30 seconds, and it schedules no timer once live.
   - `connectionStatus.test.ts` is a table: live → null; down 1s → null; down 2s → "Reconnecting…"; down 31s with `lastLiveAt` 3 minutes ago → "Offline · updated 3m ago"; down 31s with no `lastLiveAt` → "Offline"; closed → the same timeline.
-  - `draftRepository.test.ts`: `refsWithDrafts` returns refs with non-empty or unconfirmed drafts for that hub only.
+  - `draftRepository.test.ts`: `refsWithDrafts` returns refs with non-empty text, unconfirmed text or only images, for that hub only.
   - `BoardScreen.test.tsx`: mock `react-native`, `expo-symbols`, `@react-navigation/native` (`useFocusEffect`, `useIsFocused`, `useNavigation`) and `../ConnectionProvider` (a `useConnection` returning `screenConnection(...)` from `renderNative.testkit`). Drive the hub through `scriptedClient` from `renderNative.testkit` answering navigation reads with `wireV2`. Cover:
     - the fixture fleet renders bands in order with counts;
     - Idle starts folded;
@@ -1868,7 +1878,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 **Requirements (spec 7.1, ruling 8):**
 - **Sign-in:** one notice per provider with `needsLogin`: "<provider> sign-in expired". Its action "Sign in" opens today's provider sign-in flow for that provider.
 - **Host:** one notice per offline source: "<label> is offline · 3 sessions", where the count is the number of loaded rows whose `host_id` is that source. The action "Details" opens `HubSettings` until phase 5.
-- **Plugin:** one notice per broken plugin: "<plugin> is broken". Its action "Plugins" opens today's `Plugins` screen.
+- **Plugin:** one notice per broken plugin: "<plugin> is broken". Its action "Plugins" opens today's `Plugins` screen. That route takes only `{ hubId }`, so opening at that plugin's row (spec 7.1) waits for phase 5's Hub; the notice already names the plugin.
 - **Placement and style:** notices sit under the chips as rows: `exclamationmark.triangle.fill` in amber, the sentence in `inkHi`, the action in `accentInk`. No tinted box. They disappear when resolved.
 - **Reads:**
   - `evener/auth/list` on focus and on `evener/auth/updated`.
