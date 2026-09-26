@@ -11,16 +11,16 @@
 
 **Tech Stack:** Go 1.27 workspace (root module and `agent/`), AppWire over WebSocket (`ProtocolVersion` `"evener-appwire-v5"`), SQLite through `modernc.org/sqlite` in the hub's shared `index.db`, TypeScript 6 in `appwire-client/typescript` tested by vitest from `cmd/evener-hub/frontend`, the React web frontend.
 
-**Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`: 7.1 (Live bands, Finished and its blue dot), 7.2 (row anatomy: why line, last line), 7.3 (Mark as read and unread), 9 (subagent states), 13.1 (Quiet, May be stuck, Finished, Idle), 13.2, 16.4 (the pulse meter), 17 and 18 (S3, S4, S5). The server plan `docs/superpowers/plans/2026-09-26-iphone-redesign-server-additions.md` holds the design-level sections this plan replaces, the PR map (these are PRs 14 to 19) and the lane's landing rules. Written against main at `68ffc9a05`, after the tolerant navigation codec (#2473) merged.
+**Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`: 7.1 (Live bands, Finished and its blue dot), 7.2 (row anatomy: why line, last line), 7.3 (Mark as read and unread), 9 (subagent states), 13.1 (Quiet, May be stuck, Finished, Idle), 13.2, 16.4 (the pulse meter), 17 and 18 (S3, S4, S5). The server plan `docs/superpowers/plans/2026-09-26-iphone-redesign-server-additions.md` holds the design-level sections this plan replaces, the PR map (these are PRs 14 to 19) and the lane's landing rules. Written against main at `f667e4e97`, after the tolerant navigation codec (#2473), the approval flag (PR 3, #2508) and task progress (PR 12, #2502) merged.
 
 ## Global Constraints
 
 - **Wire.** Every change is additive and stays on `ProtocolVersion = "evener-appwire-v5"` (`appwire/types.go:25`); the navigation read stays `representationVersion: 2`. A new field is optional and `omitempty`, so its key is absent unless it carries a fact, and it lands in the same PR as its codec entry, its hub schema bound and its `make generate` output (Jesse's ruling).
-- **Codec first.** The tolerant codec (#2473) is on main. A PR that adds a navigation summary field (PRs 17 and 19) also waits for a TestFlight build containing #2473 (the server plan's TestFlight checkpoint).
-- **Never add a `FeatureSet` key.** The TypeScript `initialize` decoder refuses unknown feature keys (`appwire-client/typescript/client.ts:146-190`), so a new one breaks every older app's connection. A client learns a new method exists from the method answering (an older hub answers method not found, `-32601`, `appwire/errors.go:6`) and a new row field from its presence.
+- **Codec first.** The tolerant codec (#2473) is on main. A PR that adds a navigation summary field (PRs 17 and 19) also waits for a TestFlight build containing #2473 (the server plan's TestFlight checkpoint, which PR 3 already had to meet before #2508 merged).
+- **Never add a `FeatureSet` key.** The TypeScript `initialize` decoder refuses unknown feature keys (`appwire-client/typescript/client.ts:146-193`), so a new one breaks every older app's connection. A client learns a new method exists from the method answering (an older hub answers method not found, `-32601`, `appwire/errors.go:6`) and a new row field from its presence.
 - **Casing.** `hubapi` navigation JSON is snake_case (`turn_ended_at`); `appwire` JSON is camelCase (`lastTurnEndedAt`). The tagliatelle lint enforces both (`.golangci.yml`, and `.golangci-appwire.yml` for `server/`).
-- **A new summary field** goes in the `hubapi` struct, `projectShallow`, the hub schema (`navigationSessionValueValid`, `cmd/evener-hub/navigation_schema.go:412`), `cloneNavigationSummary`, the codec's `SESSION_KEYS` and `sessionValue` (`appwire-client/typescript/state/navigation/codec.ts:162-307`), and the shared fixture `cmd/evener-hub/testdata/navigation/value-records.json`.
-- **Clones and fingerprints.** A new pointer or slice on `ProbeResult`, `LiveEntry`, `TreeNode` or a summary is deep-copied in `cloneLiveEntry` (`hubcore/roster.go:156`), `liveEntryFromProbe` (`roster.go:1271`), `cloneNavigationLiveEntries` (`navigation_projection.go:272`) and `cloneNavigationSummary` (`navigation_projection.go:2022`) as it applies. Value fields need no copy. A `LiveEntry` field that changes a row is hashed in `rosterFingerprint` (`roster.go:377`); a field that must never move navigation is left out on purpose, with a test.
+- **A new summary field** goes in the `hubapi` struct, `projectShallow`, the hub schema (`navigationSessionValueValid`, `cmd/evener-hub/navigation_schema.go:419`), `cloneNavigationSummary`, the codec's `SESSION_KEYS` and `sessionValue` (`appwire-client/typescript/state/navigation/codec.ts:163-325`), and the shared fixture `cmd/evener-hub/testdata/navigation/value-records.json`. A nested record gets one validity predicate the schema and the projector share, so the projector drops a value the schema would refuse instead of failing the whole resource (`navigationTaskProgress` and `navigationTaskProgressValid`, PR 12).
+- **Clones and fingerprints.** A new pointer or slice on `ProbeResult`, `LiveEntry`, `TreeNode` or a summary is deep-copied in `CloneLiveEntry` (`hubcore/roster.go:165`, which `cloneNavigationLiveEntries` now calls), `liveEntryFromProbe` (`roster.go:1309`), `cloneTreeNodesContext` (`hubcore/tree.go:114`) and `cloneNavigationSummary` (`navigation_projection.go:2030`) as it applies. Value fields need no copy. A `LiveEntry` field that changes a row is hashed in `rosterFingerprint` (`roster.go:387`); a field that must never move navigation is left out on purpose, with a test.
 - **hubcore tests** are `fuzzScenario*` functions registered in `FuzzHubcoreScenarios` (`hubcore/scenarios_fuzz_test.go`), in alphabetical order. Run them with `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1`. An unregistered one never runs; `golangci-lint run ./cmd/evener-hub/internal/hubcore/` reports it unused.
 - **Methods.** A new hub method gets a catalog row (`appwire/protocol.go`), a handler registered beside `registerFavoriteHandler` (`cmd/evener-hub/app_rpc.go:1097`), and a line in `TestHubRPCRegistersExpectedHandlerSet` (`cmd/evener-hub/app_rpc_test.go:12665`); `TestHubRouterMatchesCatalog` then passes on its own. No change here alters what `internal/appprojector` emits and no notification is added, so no `cmd/evener-tui` case is needed.
 - **Generated files.** After any `appwire` or `hubapi` type change: `make generate`, then `go test ./internal/appwirets -run '^TestGeneratedFileCurrent$' -count=1` and `make lint-generated`. Commit `appwire-client/typescript/types.gen.ts` and `docs/appwire-protocol.md`.
@@ -42,27 +42,27 @@ Decisions the spec leaves open, with the reason for each.
 3. **The meter counts the whole tree.** Every in-process descendant's events reach the root's server through `RecordDescendantAppEvent` (`cmd/evener/serve.go:1283-1288`, inherited at every depth by `agent/subagents.go:841`), so a coordinator's meter shows its subagents' work (Jesse's ruling). The meter is not part of `threadEnvelope`: the envelope samples a fixed set of events and never a delta (`server/thread_envelope.go:166-176`), and the meter has to see every delta. It is a plain counter under `Server.mu`, which both commits already hold.
 4. **Bars are sliding minutes built from ten-second slots.** A clock-aligned minute restarts empty every sixty seconds, so the newest bar would flicker low at the top of each minute. Forty-two slots give seven one-minute bars that end at the moment the row is listed.
 5. **The quiet clock starts when the daemon starts serving the session.** A meter that has seen no motion reports the time its identity was installed, so a daemon that restarted into a stuck turn reads May be stuck ten minutes later instead of never.
-6. **The hub sends a quiet duration, withheld while any subagent runs.** Jesse ruled that an agent waiting on subagents is never stuck, and counting descendant events cannot keep that promise alone: a subagent inside one long model call emits nothing for minutes. So `evener/activity/read` carries `runningSubagents` (the #2493 shape) and, in place of #2493's `lastActivityAt`, a server-computed `quietForMs` that is present only while the session is working and no subagent runs. A duration computed on the hub from its own clock is immune to phone clock skew (phase 2's Review Focus 4 compares hub timestamps only), and withholding it puts Jesse's rule in one place that no client can get wrong. The shared `quietState` helper applies the spec's 3- and 10-minute thresholds and refuses both labels when `runningSubagents` is above zero, so the rule holds even against an older hub. The hub needs no S3 data for this: each live root's `RunningSubagentStates` (`hubcore/tree.go:932-952`) already names its running descendants.
-7. **`runningSubagents` counts listed descendants whose own status is active,** by the tree's rule (`runningSubagentState`, `tree.go:964-969`): a descendant with no reported state is not counted.
+6. **The hub sends a quiet duration, withheld while any subagent runs.** Jesse ruled that an agent waiting on subagents is never stuck, and counting descendant events cannot keep that promise alone: a subagent inside one long model call emits nothing for minutes. So `evener/activity/read` carries `runningSubagents` (the #2493 shape) and, in place of #2493's `lastActivityAt`, a server-computed `quietForMs` that is present only while the session is working and no subagent runs. A duration computed on the hub from its own clock is immune to phone clock skew (phase 2's Review Focus 4 compares hub timestamps only), and withholding it puts Jesse's rule in one place that no client can get wrong. The shared `quietState` helper applies the spec's 3- and 10-minute thresholds and refuses both labels when `runningSubagents` is above zero, so the rule holds even against an older hub. The hub needs no S3 data for this: each live root's `RunningSubagentStates` (`hubcore/tree.go:942-973`) already names its running descendants.
+7. **`runningSubagents` counts listed descendants whose own status is active,** by the tree's rule (`runningSubagentState`, `tree.go:989-994`): a descendant with no reported state is not counted.
 8. **Remote hosts answer through a fan-out,** one `evener/activity/read` per attached host in parallel, each bounded at three seconds; a host that fails or is not attached contributes nothing to that read. Carrying activity on the remote hub's list rows instead would make every 30-second remote walk a content change (`hubcore/remotecache.go:114-131`) and so a navigation invalidation.
-9. **Activity is keyed by the Live row's ref.** A daemon advertises a workspace ref that outlives `thread/clear` (`cmd/evener/serve.go:767`), and the Live row carries it (`tree.go:941-942`), so the read uses the same rule (`hubcore.LiveRowRef`) and a client joins activity to rows by ref.
+9. **Activity is keyed by the Live row's ref.** A daemon advertises a workspace ref that outlives `thread/clear` (`cmd/evener/serve.go:767`), and the Live row carries it (`tree.go:951-952`), so the read uses the same rule (`hubcore.LiveRowRef`) and a client joins activity to rows by ref.
 
 **S4, seen-through marker**
 
 10. **Finished is measured from a daemon-stamped turn-end time.** `SessionMeta.UpdatedAt` moves on every meta write, renames and each model round included (`agent/session_model_call.go:1493`, `agent/session_namer.go:637`), so it cannot say when a turn ended. The daemon stamps `lastTurnEndedAt` at the one boundary every turn end passes (`transitionProcessingAtBoundaryLocked`, `agent/session_state.go:273-280`), keeps it in `SessionMeta` so a restored session still knows it, and carries it on the thread envelope under `facetMeta`, which `TURN_ENDED` already re-samples (`facetAll`, `thread_envelope.go:198-200`). No new `EnvelopeSampling` method is needed: the envelope already reads `Meta()`.
 11. **No new meta write at the boundary.** The stamp persists with the next meta save: processInput's exit save, retirement and `Close` (`agent/session_lifecycle.go:1916-1932`, `agent/session_retirement_prepare.go:245`, and the `Close` autosave that `TestWorkMillis_InterruptThenCloseFlushesToDisk` pins). A daemon crash in between loses only that stamp, the same exposure `WorkMillis` has.
-12. **The hub computes `unseen` and sends it beside `turn_ended_at`;** clients never see the marker, the epoch or the unread flag. One rule in one place, and the phone's attention model keeps only its state precedence (Question and Failed outrank Finished).
+12. **The hub computes `unseen` and sends it beside `turn_ended_at`;** clients never see the marker, the epoch or the unread flag. One rule in one place, and the phone's attention model keeps only its state precedence (Question and Failed outrank Finished). The design section sent `seen_through` on the summary and left the comparison to clients; that would put the epoch and the unread flag in every client too.
 13. **The store's epoch is the time it first opened.** A turn that ended before the epoch counts as seen, so the first Board after the upgrade does not flood Finished with every live session (phase 2 Review Focus 4 avoided the same flood with a device epoch).
-14. **`seen/set` takes the row's own `turn_ended_at` as `seenThrough`,** never the phone's clock or the hub's "now": a device showing an older Board marks only the turn it showed, so a newer turn stays unseen. Seen-through only moves forward. "Mark as unread" is an explicit flag, because clearing a mark would leave a session whose turn ended before the epoch impossible to mark unread.
+14. **`seen/set` takes the row's own `turn_ended_at` as `seenThrough`,** never the phone's clock or the hub's "now": a device showing an older Board marks only the turn it showed, so a newer turn stays unseen. Seen-through only moves forward. "Mark as unread" is an explicit flag, because clearing a mark would leave a session whose turn ended before the epoch impossible to mark unread. So each mark is `{ref, seenThrough}` or `{ref, unread: true}` rather than the design section's `{refs, seenThrough?}`: one `seenThrough` cannot be right for several rows that ended at different times.
 15. **Per user means per hub.** The hub has no user identity (`initialize` carries only `clientInfo.name`); on a personal hub the two are the same.
-16. **Live rows never fold into a cluster.** `clusterable` (`tree.go:1806-1816`) let a live idle session fold, contradicting its caller's own rule that live signal is never hidden (`clusterRepeatedTitles`, `tree.go:1738-1745`), and an unseen Finished session is live by definition. After this change only ended rows fold; the existing cluster tests use ended rows and keep passing.
+16. **Live rows never fold into a cluster.** `clusterable` (`tree.go:1838-1848`) let a live idle session fold, contradicting its caller's own rule that live signal is never hidden (`clusterRepeatedTitles`, `tree.go:1768-1777`), and an unseen Finished session is live by definition. After this change only ended rows fold; the existing cluster tests use ended rows and keep passing. This is simpler than the design section's route of carrying the marker into `BuildTree` so `clusterable` could skip unseen rows, and it keeps a live row findable whether or not it is unseen.
 17. **The phone switches per row, by the presence of `turn_ended_at`.** A row carrying it is hub-authoritative. A row without it (an older hub, or a live session whose daemon predates PR 16 and has not ended a turn since) keeps the phone's local `SeenMarkers` fallback unchanged. The phone does not upload its local marks: they compare `updated_at` values, and the hub's epoch already covers the upgrade. The handoff section below has the details.
 18. **The web marks a session seen when its pane opens,** and when the page becomes visible again while the pane is open, so a session read on the web loses its blue dot on the phone (spec 18's "Finished-and-unseen vs Idle agrees across phone and web"). A turn that ends while the pane stays open is not "opened since", exactly as on the phone. Whether the web also draws blue dots is a later web design question.
 
 **S3, subagent tallies**
 
-19. **The tally comes from the delegate controller's folded journal, not from `aggregateActivity`.** `aggregateActivity` (`agent/jobs_activity.go:1519-1571`) runs over the bounded `JobActivityTree` projection, which loads child journals from disk, counts shell jobs beside delegates, and marks itself incomplete when a budget truncates it, so a 500-node tree could undercount. The controller already holds every delegate of the tree at every depth in memory (`delegatestore.State`, folded from the root's shared journal at open, `agent/delegate_tree_controller.go:275-282`). Walking it is a few microseconds and needs no memo.
-20. **It is read at list time through a seam, not sampled into the envelope.** A nested delegate's lifecycle change is emitted on its owner's stream, which reaches the root's server through `RecordDescendantAppEvent` and never samples the root's envelope (`server/appwire_runtime.go:683-690`), so an envelope facet would lag until the root's next event. `thread/list` already reads live watches through `SetDescendantLiveWatchesFunc` after releasing `s.mu` (`appwire_runtime.go:1322-1336`); the tally uses the same shape and the same lock order, and the controller lock it takes is the one `DetailedStatus` already takes (`agent/status.go:303-310`).
+19. **The tally comes from the delegate controller's folded journal, not from `aggregateActivity`.** `aggregateActivity` (`agent/jobs_activity.go:1519-1571`) runs over the bounded `JobActivityTree` projection, which loads child journals from disk, counts shell jobs beside delegates, and marks itself incomplete when a budget truncates it, so a 500-node tree could undercount. The controller already holds every delegate of the tree at every depth in memory (`delegatestore.State`, folded from the root's shared journal at open, `agent/delegate_tree_controller.go:275-282`). Walking it is a few microseconds and needs no memo, and because it never truncates, the row needs no `complete` flag (the design section's `NavigationSubagentCounts.complete`).
+20. **It is read at list time through a seam, not sampled into the envelope.** A nested delegate's lifecycle change is emitted on its owner's stream, which reaches the root's server through `RecordDescendantAppEvent` and never samples the root's envelope (`server/appwire_runtime.go:683-690`), so an envelope facet would lag until the root's next event. `thread/list` already reads live watches through `SetDescendantLiveWatchesFunc` after releasing `s.mu` (`appwire_runtime.go:1311-1323`); the tally uses the same shape and the same lock order, and the controller lock it takes is the one `DetailedStatus` already takes (`agent/status.go:303-310`).
 21. **Classification matches the Subagents list.** A delegate is running until a run has ended with no run open after it, failed when that run ended failed or exhausted, and done otherwise (completed, cancelled, stopped, or idle between runs), which is `projectStableActivityDelegate`'s `Terminal` and `activityDelegateOutcome` (`jobs_activity.go:1231-1234`, `:1573-1584`). The terminal rule moves into one shared function so the two cannot drift.
 22. **Live roots only.** Ended sessions carry no tally: it would cost a delegate journal fold per row, and an ended session's row is a quiet one-line row. Rows carry `subagents` only when the tree has at least one subagent.
 23. **Remote parity for S3 and S4 rides the remote hub's list rows,** the pattern PR 5 sets for approvals: the remote hub's `thread/list` root rows carry `subagents` and `lastTurnEndedAt`, and the controller reads them. Both change only on real events, so the 30-second remote walk does not churn.
@@ -70,6 +70,7 @@ Decisions the spec leaves open, with the reason for each.
 ## Questions for Jesse
 
 1. **Should a failed subagent count as failed on its coordinator's row for the rest of the session?** Spec 9 defines "failed" by how a subagent's latest run ended, so a subagent that failed and was never resumed keeps the row's red "2 subagents failed" for the session's whole life, even after the coordinator spawned a replacement that succeeded. I recommend yes, as the spec defines it: the row, the Subagents chip and the Subagents list must agree, and a coordinator that resumes a failed subagent moves it back to running and then done. The alternative (count a failure only until the coordinator has read its report) would need the phone to explain why the Subagents list shows failures the row does not.
+2. **Should a Finished session nobody has opened hold off the daemon's idle retirement?** The hub retires a daemon after an hour of proven inactivity (`daemon_idle_timeout`, default `1h`, `cmd/evener-hub/config.go:105`). A session whose turn finished while you were away then leaves the Live band, and its blue dot with it, although its marker still says unseen. I recommend leaving retirement as it is in this lane: the phone's fallback behaves the same today, the session stays one tap away in its project and resumes with its marker intact, and holding daemons for unread results trades memory on the host for a signal the Board could show another way. If testers miss finished work, the follow-up is a Board band for recently retired unseen sessions, read from the past index, not a longer-lived daemon.
 
 ## Review Focus
 
@@ -85,16 +86,16 @@ Decisions the spec leaves open, with the reason for each.
 
 | PR | Item | Tasks | Production lines (est.) | Depends on | Lane |
 |---|---|---|---|---|---|
-| 14 | S5a: the daemon's pulse meter | 14.1-14.2 | 130 | none | daemon |
-| 15 | S5b: `evener/activity/read` | 15.1-15.5 | 330 | PR 14 | hub |
-| 16 | S4a: the daemon stamps turn ends | 16.1-16.2 | 50 | none | daemon |
-| 17 | S4b: the seen marker, rows and the web | 17.1-17.6 | 420 | PR 16; a TestFlight build containing #2473 | hub |
+| 14 | S5a: the daemon's pulse meter | 14.1-14.2 | 140 | none | daemon |
+| 15 | S5b: `evener/activity/read` | 15.1-15.5 | 300 | PR 14 | hub |
+| 16 | S4a: the daemon stamps turn ends | 16.1-16.2 | 45 | none | daemon |
+| 17 | S4b: the seen marker, rows and the web | 17.1-17.6 | 480 | PR 16; a TestFlight build containing #2473 | hub |
 | 18 | S3a: the daemon's subagent tally | 18.1-18.2 | 110 | none | daemon |
-| 19 | S3b: tallies on rows | 19.1-19.3 | 170 | PR 18; a TestFlight build containing #2473 | hub |
+| 19 | S3b: tallies on rows | 19.1-19.3 | 80 | PR 18; a TestFlight build containing #2473 | hub |
 
 - **The three daemon PRs (14, 16, 18) can run as parallel lanes.** Each appends one field to the end of `EvenerThread` (`appwire/types.go:822`) and regenerates `types.gen.ts` and `docs/appwire-protocol.md`; PRs 14 and 18 both touch `handleAppThreadList` and `appwire/clone.go`. The second and third to merge rebase, keep both sides of those adjacent-line conflicts, and re-run `make generate`.
 - **The three hub PRs (15, 17, 19) can be built in parallel but merge one at a time,** in the order PR 15, PR 17, PR 19. They touch the same hub files (`prober.go`, `roster.go`, `tree.go`, `app_rpc.go`, `appwire/protocol.go`, the handler-set test; 17 and 19 also the summary, the codec and the fixture), so each rebases on the one before it and re-runs `make generate`.
-- The server plan's PRs 3, 5, 6 and 12 edit the same hub files; the coordinator sequences them with these.
+- The server plan's PRs 3 and 12 are on main and this plan is written against them. PRs 5 and 6 edit the same hub files (`roster.go`, `tree.go`, `local_daemon.go`, `web_api_tree.go`, the summary and the codec); the coordinator sequences them with these, and whichever merges second rebases.
 - S5 does not depend on S3 (ruling 6), so the roadmap's value order (S5, S4, S3) holds.
 
 ## Phone lane handoff
@@ -116,6 +117,9 @@ This lane changes `mobile-native/` only through the shared package. When each hu
 
 **S3 (after PR 19).**
 - When a row carries `subagents`, the last line's "2 subagents failed" comes from `subagents.failed`, and the Subagents chip's strip and counts come from `running`, `failed` and `done`. Without it, the children fallback stays.
+
+**Known limits.**
+- A NeedsYou row carries no workspace ref (the NeedsYou builder in `hubcore/tree.go:1563-1574` sets none), so after a `thread/clear` its ref is the new session's ID while the session's Live row keeps the workspace ref. Its `unseen` is keyed by that ref, so after a clear it can disagree with the Live row's. The Board reads Finished from the Live band and Question and Approval outrank it, so the Board is not affected; a client that joins the two bands by ref sees two refs for one session, as it does today.
 
 ---
 
@@ -459,7 +463,7 @@ git commit -m "feat(server): a pulse meter counts a session tree's transcript mo
 
 **Files:**
 - Modify: `server/server.go` (`Server`: an `appActivity activityMeter` field after `appEnvelopeSource`, `:366`)
-- Modify: `server/appwire_runtime.go` (`RecordAppEvent` `:413`; `RecordDescendantAppEvent` `:692`; `ReplaceAppIdentity` `:261`; `handleAppThreadList` `:1305`)
+- Modify: `server/appwire_runtime.go` (`RecordAppEvent` `:413`; `RecordDescendantAppEvent` `:692`; `ReplaceAppIdentity` `:261`; `handleAppThreadList` `:1293`)
 - Create: `server/appwire_activity_test.go`
 
 **Interfaces:**
@@ -624,10 +628,9 @@ Title "feat(server): the daemon's pulse meter (S5a, phase 7 PR 14)". The body sa
 ### Task 15.1: The probe keeps the tree's sample, off the fingerprint
 
 **Files:**
-- Modify: `cmd/evener-hub/internal/hubcore/prober.go` (the result literal at the end of `Probe`, `:148-166`)
-- Modify: `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry` `:28-83`; `ProbeResult` `:86-115`; `cloneLiveEntry` `:156`; `liveEntryFromProbe` `:1271`)
-- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`LiveRowRef` beside `liveWorkspaceIdentity`, `:846`)
-- Modify: `cmd/evener-hub/navigation_projection.go` (`cloneNavigationLiveEntries` `:272`)
+- Modify: `cmd/evener-hub/internal/hubcore/prober.go` (the result literal at the end of `Probe`, `:148-167`)
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry` `:28-87`; `ProbeResult` `:90-122`; `CloneLiveEntry` `:165`; `liveEntryFromProbe` `:1309`)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`LiveRowRef` beside `liveWorkspaceIdentity`, `:856`)
 - Create: `cmd/evener-hub/internal/hubcore/activity_test.go`
 - Modify: `cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go` (register the four scenarios)
 
@@ -694,10 +697,10 @@ func fuzzScenarioRoster_EntriesOwnTheirActivity(t *testing.T) {
 	if fromProbe.Activity.Minutes[6] != 1 {
 		t.Fatal("liveEntryFromProbe aliased the probe's minutes")
 	}
-	clone := cloneLiveEntry(fromProbe)
+	clone := CloneLiveEntry(fromProbe)
 	clone.Activity.Minutes[6] = 42
 	if fromProbe.Activity.Minutes[6] != 1 {
-		t.Fatal("cloneLiveEntry aliased the entry's minutes")
+		t.Fatal("CloneLiveEntry aliased the entry's minutes")
 	}
 }
 
@@ -733,7 +736,7 @@ Expected: FAIL to compile (`Activity` and `LiveRowRef` undefined).
 
 - [ ] **Step 3: Implement**
 
-`roster.go`, in `ProbeResult` after `ChildWatches`:
+`roster.go`, at the end of `ProbeResult`, after `Tasks`:
 
 ```go
 	// Activity is the root tree's pulse meter sample (S5), nil from a daemon
@@ -741,9 +744,9 @@ Expected: FAIL to compile (`Activity` and `LiveRowRef` undefined).
 	Activity *appwire.ThreadActivity
 ```
 
-and in `Probe`'s result literal (`prober.go`), after `ChildWatches: childWatches,`: `Activity: appwire.CloneThreadActivity(root.Evener.Activity),`.
+and in `Probe`'s result literal (`prober.go`), after `Tasks: root.Evener.Tasks,`: `Activity: appwire.CloneThreadActivity(root.Evener.Activity),`.
 
-`roster.go`, in `LiveEntry` after `LifecycleFresh`:
+`roster.go`, at the end of `LiveEntry`, after `Tasks`:
 
 ```go
 	// Activity is the daemon's pulse meter sample for the root's whole tree,
@@ -754,7 +757,7 @@ and in `Probe`'s result literal (`prober.go`), after `ChildWatches: childWatches
 	Activity *appwire.ThreadActivity
 ```
 
-`cloneLiveEntry`: `out.Activity = appwire.CloneThreadActivity(in.Activity)`. `liveEntryFromProbe`: `Activity: appwire.CloneThreadActivity(result.Activity),`.
+`CloneLiveEntry`, after its `Tasks` line: `out.Activity = appwire.CloneThreadActivity(in.Activity)`; `cloneNavigationLiveEntries` calls it, so navigation's copy needs nothing more. `liveEntryFromProbe`, after `Tasks:`: `Activity: appwire.CloneThreadActivity(result.Activity),`.
 
 `tree.go`, after `liveWorkspaceIdentity`:
 
@@ -772,19 +775,17 @@ func LiveRowRef(entry LiveEntry) string {
 }
 ```
 
-`navigation_projection.go`, in `cloneNavigationLiveEntries` after the `Watches` line: `out[i].Activity = appwire.CloneThreadActivity(entry.Activity)`.
-
 Run `$(go env GOROOT)/bin/gofmt -w` on the touched files.
 
 - [ ] **Step 4: Run them to verify they pass**
 
-Run: `go test ./cmd/evener-hub/internal/hubcore -count=1`, `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1`, `golangci-lint run ./cmd/evener-hub/internal/hubcore/`
+Run: `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1`, `golangci-lint run ./cmd/evener-hub/internal/hubcore/`
 Expected: PASS, and no unused scenario.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/evener-hub/internal/hubcore/prober.go cmd/evener-hub/internal/hubcore/roster.go cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/navigation_projection.go cmd/evener-hub/internal/hubcore/activity_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go
+git add cmd/evener-hub/internal/hubcore/prober.go cmd/evener-hub/internal/hubcore/roster.go cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/activity_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go
 git commit -m "feat(hub): the probe keeps each live root's pulse meter, off the fingerprint"
 ```
 
@@ -1841,7 +1842,7 @@ git commit -m "feat(agent): a session stamps when its last turn ended and keeps 
 
 **Files:**
 - Modify: `server/thread_envelope.go` (`threadEnvelope`'s `Name`/`Preview` comment and a new field, `:91-98`; `refreshFacets`' `facetMeta` branch, `:395-398`; `assign`'s `facetMeta` branch, `:518-521`)
-- Modify: `server/appwire_runtime.go` (`appThreadWithDiagnosticsLocked`, its envelope reads `:2489-2515` and its `EvenerThread` literal `:2528-2557`)
+- Modify: `server/appwire_runtime.go` (`appThreadWithDiagnosticsLocked`, its envelope reads `:2477-2503` and its `EvenerThread` literal `:2515-2545`)
 - Modify: `appwire/types.go` (`EvenerThread.LastTurnEndedAt` after `VisionModel`)
 - Create: `server/thread_envelope_turn_ended_test.go`
 - Regenerate: `appwire-client/typescript/types.gen.ts`, `docs/appwire-protocol.md`
@@ -2518,9 +2519,9 @@ git commit -m "feat(hub): a store for per-session seen-through markers"
 ### Task 17.2: Live entries and tree rows carry the turn end; live rows never fold
 
 **Files:**
-- Modify: `cmd/evener-hub/internal/hubcore/prober.go` (`Probe`'s result literal, `:148-166`)
-- Modify: `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry` `:28-83`; `ProbeResult` `:86-115`; `liveEntryFromProbe` `:1271`; `rosterFingerprint`, before the watches comment at `:513-517`)
-- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`TreeNode` `:424-463`; a `turnEndedAtFor` closure beside `askPendingFor` `:1011-1013`; `buildNode`'s `parentDead` clamp `:1175-1179` and literal `:1187-1203`; the live-only leaf `:1430-1444`; the NeedsYou node `:1533-1542`; `clusterable` `:1806-1816`)
+- Modify: `cmd/evener-hub/internal/hubcore/prober.go` (`Probe`'s result literal, `:148-167`)
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry` `:28-87`; `ProbeResult` `:90-122`; `liveEntryFromProbe` `:1309`; the end of `rosterFingerprint`'s loop, after `writeTaskFingerprint` `:532`)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`TreeNode` `:425-473`; a `turnEndedAtFor` closure after `tasksFor` `:1035-1037`; `buildNode`'s `parentDead` clamp `:1198-1205` and literal `:1213-1231`; the live-only leaf `:1458-1474`; the NeedsYou node `:1563-1574`; `clusterable` `:1838-1848`)
 - Modify: `cmd/evener-hub/internal/hubcore/prober_wire_test.go` (`wireProbeEnvelopeSource` gains a `meta` field)
 - Create: `cmd/evener-hub/internal/hubcore/turn_ended_test.go`
 - Modify: `cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go`
@@ -2650,7 +2651,7 @@ Expected: FAIL to compile (`LastTurnEndedAt` undefined on `ProbeResult`); once t
 
 - [ ] **Step 3: Implement**
 
-`roster.go`, in `ProbeResult` after `ChildWatches` (and after `Activity` if PR 15 is on main):
+`roster.go`, at the end of `ProbeResult` (after `Tasks`, and after `Activity` if PR 15 is on main):
 
 ```go
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
@@ -2658,9 +2659,9 @@ Expected: FAIL to compile (`LastTurnEndedAt` undefined on `ProbeResult`); once t
 	LastTurnEndedAt time.Time
 ```
 
-and in `Probe`'s literal (`prober.go`): `LastTurnEndedAt: UnixMilliTime(root.Evener.LastTurnEndedAt),`.
+and in `Probe`'s literal (`prober.go`), after `Tasks: root.Evener.Tasks,` (and `Activity`): `LastTurnEndedAt: UnixMilliTime(root.Evener.LastTurnEndedAt),`.
 
-`roster.go`, in `LiveEntry` after `LifecycleFresh`:
+`roster.go`, at the end of `LiveEntry` (after `Tasks`, and after `Activity` if PR 15 is on main):
 
 ```go
 	// LastTurnEndedAt is when the session's last turn ended, stamped by its
@@ -2670,7 +2671,7 @@ and in `Probe`'s literal (`prober.go`): `LastTurnEndedAt: UnixMilliTime(root.Eve
 	LastTurnEndedAt time.Time
 ```
 
-`liveEntryFromProbe`: `LastTurnEndedAt: result.LastTurnEndedAt,`. In `rosterFingerprint`, just before the `// Watches are rendered on the session row` comment:
+`liveEntryFromProbe`: `LastTurnEndedAt: result.LastTurnEndedAt,`. In `rosterFingerprint`, at the end of the loop body, after `writeTaskFingerprint(h, bySess[id].Tasks)`:
 
 ```go
 		_, _ = h.Write([]byte{0})
@@ -2679,7 +2680,7 @@ and in `Probe`'s literal (`prober.go`): `LastTurnEndedAt: UnixMilliTime(root.Eve
 		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
 ```
 
-`tree.go`, in `TreeNode` after `AskPending`:
+`tree.go`, in `TreeNode` after `Tasks`:
 
 ```go
 	// TurnEndedAt is when a live session's last turn ended (LiveEntry.
@@ -2688,7 +2689,7 @@ and in `Probe`'s literal (`prober.go`): `LastTurnEndedAt: UnixMilliTime(root.Eve
 	TurnEndedAt time.Time
 ```
 
-Beside `askPendingFor`:
+After `tasksFor`:
 
 ```go
 	// turnEndedAtFor resolves a live session's last turn end from the same live
@@ -2698,7 +2699,7 @@ Beside `askPendingFor`:
 	}
 ```
 
-`buildNode`: beside `askPending := askPendingFor(m.ID)` add `turnEndedAt := turnEndedAtFor(m.ID)`, clear it in the `parentDead` branch with `turnEndedAt = time.Time{}` (a row clamped to ended carries no turn end, exactly as it carries no ask), and set `TurnEndedAt: turnEndedAt,` after `AskPending: askPending,` in the literal. The live-only leaf: `TurnEndedAt: turnEndedAtFor(le.SessionID),` after its `AskPending`. The NeedsYou node: `TurnEndedAt: le.LastTurnEndedAt,` after `AskPending: le.PendingAsk,`.
+`buildNode`: after `approvalPending := approvalPendingFor(m.ID)` add `turnEndedAt := turnEndedAtFor(m.ID)`, clear it in the `parentDead` branch with `turnEndedAt = time.Time{}` (a row clamped to ended carries no turn end, exactly as it carries no ask or approval), and set `TurnEndedAt: turnEndedAt,` after `Tasks: tasksFor(m.ID),` in the literal. The live-only leaf: `TurnEndedAt: turnEndedAtFor(le.SessionID),` after its `Tasks`. The NeedsYou node: `TurnEndedAt: le.LastTurnEndedAt,` after its `Tasks`.
 
 `clusterable`, with its comment:
 
@@ -2723,7 +2724,7 @@ Run `$(go env GOROOT)/bin/gofmt -w` on the touched files.
 
 - [ ] **Step 4: Run them to verify they pass**
 
-Run: `go test ./cmd/evener-hub/internal/hubcore -count=1`, `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1`, `go test ./cmd/evener-hub -run 'Cluster' -count=1`
+Run: `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$|^TestBuildTreeDoesNotClusterSessionWithJobs$' -count=1`, `go test ./cmd/evener-hub -run 'Cluster' -count=1`, `golangci-lint run ./cmd/evener-hub/internal/hubcore/`
 Expected: PASS, the existing cluster scenarios and `TestNavigationCatalogGraphMergesCollidingClusterRows` unchanged (their repeated runs are ended).
 
 - [ ] **Step 5: Commit**
@@ -2736,11 +2737,11 @@ git commit -m "feat(hub): live entries and rows carry when the last turn ended; 
 ### Task 17.3: Rows carry `turn_ended_at` and `unseen`
 
 **Files:**
-- Modify: `hubapi/navigation.go` (`NavigationSessionSummary` `:225-270`, after `UpdatedAt` `:249`)
+- Modify: `hubapi/navigation.go` (`NavigationSessionSummary` `:239-294`, after `UpdatedAt` `:268`)
 - Modify: `cmd/evener-hub/internal/hubcore/config.go` (`WebConfig`, after `PinSections` `:85`)
-- Modify: `cmd/evener-hub/navigation_projection.go` (`navigationBuildInputs` `:94-114`; `cloneNavigationInputsContext` `:213`; `cloneNavigationInputs` `:258`; `projectShallow` `:1716`; an `unseen` method after `pinSectionIDFor` `:2014-2020`; `cloneNavigationSummary` `:2022`)
+- Modify: `cmd/evener-hub/navigation_projection.go` (`navigationBuildInputs` `:94-114`; `cloneNavigationInputsContext` `:213`; `cloneNavigationInputs` `:258`; `projectShallow` `:1701`; an `unseen` method after `pinSectionIDFor` `:2022-2028`; `cloneNavigationSummary` `:2030`)
 - Modify: `cmd/evener-hub/navigation_service.go` (`Capture` `:1328-1368`)
-- Modify: `appwire-client/typescript/state/navigation/codec.ts` (`SESSION_KEYS` `:162-181`; `sessionValue` `:278-307`)
+- Modify: `appwire-client/typescript/state/navigation/codec.ts` (`SESSION_KEYS` `:163-185`; `sessionValue` `:293-325`)
 - Modify: `appwire-client/typescript/state/navigation/codec.test.ts`
 - Modify: `cmd/evener-hub/testdata/navigation/value-records.json` (the session record, after `updated_at`)
 - Create: `cmd/evener-hub/navigation_seen_test.go`
@@ -3524,7 +3525,7 @@ git commit -m "feat(hub): remote hosts' rows carry their turn end"
 - Create: `cmd/evener-hub/frontend/src/panes/session/markSeen.ts`
 - Create: `cmd/evener-hub/frontend/src/panes/session/markSeen.test.ts`
 - Modify: `cmd/evener-hub/frontend/src/panes/session/Session.tsx` (import; one call after the `ensureThread` effect, which ends at `:268`)
-- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx` (`setNavigationTitle` `:573-614` gains an optional `fields` argument; one wiring test)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx` (`setNavigationTitle` `:545-586` gains an optional `fields` argument; one wiring test)
 
 **Interfaces:**
 - Consumes: `turn_ended_at` and `unseen` (Task 17.3); `evener/session/seen/set` (Task 17.4); `selectSessionSummary` (`stores/navigation/selectors.ts:43`); `connectionStore` (`stores/connection.ts`); `navigationStore` (`stores/navigation/store.ts`).
@@ -3996,7 +3997,7 @@ git commit -m "feat(agent): a root session tallies its whole delegate tree by st
 - Modify: `appwire/clone.go` (`cloneSubagentTally`; one line in `cloneEvenerThread`, `:104-117`)
 - Modify: `appwire/clone_test.go`
 - Modify: `server/server.go` (`Server`: `appSubagentTallyFunc` after `appDescendantLiveWatchesFunc`, `:393-400`)
-- Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:383-387`; `attachSubagentTally` after `attachLiveWatches`, `:2724-2742`; one call in `handleAppThreadList`, `:1305-1335`)
+- Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:383-387`; `attachSubagentTally` after `attachLiveWatches`, `:2712-2731`; one call in `handleAppThreadList`, `:1293-1325`)
 - Create: `server/appwire_subagent_tally_test.go`
 - Modify: `cmd/evener/serve.go` (`serveServer`: `SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:146`; one line in `bridgeSession` after the live-watches seam, `:1308-1310`)
 - Modify: `cmd/evener/serve_state_test.go` (`clearIdentityServer` `:775-790` records the installed tally)
@@ -4242,9 +4243,9 @@ Title "feat(server): the daemon's subagent tally (S3a, phase 7 PR 18)". The body
 ### Task 19.1: Live entries and tree rows carry the tally
 
 **Files:**
-- Modify: `cmd/evener-hub/internal/hubcore/prober.go` (`Probe`'s result literal, `:148-166`)
-- Modify: `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry` `:28-83`; `ProbeResult` `:86-115`; `liveEntryFromProbe` `:1271`; `rosterFingerprint`, before the watches comment `:513-517`)
-- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`TreeNode` `:424-463`; a `subagentsFor` closure beside `turnEndedAtFor`; `buildNode`; the live-only leaf; the NeedsYou node)
+- Modify: `cmd/evener-hub/internal/hubcore/prober.go` (`Probe`'s result literal, `:148-167`)
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry` `:28-87`; `ProbeResult` `:90-122`; `liveEntryFromProbe` `:1309`; the end of `rosterFingerprint`'s loop)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`TreeNode` `:425-473`; a `subagentsFor` closure beside `turnEndedAtFor`; `buildNode`; the live-only leaf; the NeedsYou node)
 - Create: `cmd/evener-hub/internal/hubcore/subagent_tally_test.go`
 - Modify: `cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go`
 
@@ -4371,7 +4372,7 @@ and in the literal: `Subagents: subagents,`.
 	Subagents appwire.SubagentTally
 ```
 
-`liveEntryFromProbe`: `Subagents: result.Subagents,`. In `rosterFingerprint`, after the turn-end line from Task 17.2:
+`liveEntryFromProbe`: `Subagents: result.Subagents,`. In `rosterFingerprint`, after the turn-end lines from Task 17.2, at the end of the loop body:
 
 ```go
 		// A subagent failing or finishing changes the row's last line (S3).
@@ -4399,13 +4400,13 @@ Beside `turnEndedAtFor`:
 	}
 ```
 
-`buildNode`: beside `turnEndedAt := turnEndedAtFor(m.ID)` add `subagentTally := subagentsFor(m.ID)` (not `subagents`: `buildNode` already declares a `subagents` slice of child metas further down), clear it in the `parentDead` branch with `subagentTally = appwire.SubagentTally{}`, and set `Subagents: subagentTally,` after `TurnEndedAt: turnEndedAt,`. The live-only leaf: `Subagents: subagentsFor(le.SessionID),`. The NeedsYou node: `Subagents: le.Subagents,`.
+`buildNode`: after `turnEndedAt := turnEndedAtFor(m.ID)` add `subagentTally := subagentsFor(m.ID)` (not `subagents`: `buildNode` already declares a `subagents` slice of child metas further down), clear it in the `parentDead` branch with `subagentTally = appwire.SubagentTally{}`, and set `Subagents: subagentTally,` after `TurnEndedAt: turnEndedAt,`. The live-only leaf: `Subagents: subagentsFor(le.SessionID),` after its `TurnEndedAt`. The NeedsYou node: `Subagents: le.Subagents,` after its `TurnEndedAt`.
 
 Run `$(go env GOROOT)/bin/gofmt -w` on the touched files.
 
 - [ ] **Step 4: Run them to verify they pass**
 
-Run: `go test ./cmd/evener-hub/internal/hubcore -count=1`, `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1`, `golangci-lint run ./cmd/evener-hub/internal/hubcore/`
+Run: `go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1`, `golangci-lint run ./cmd/evener-hub/internal/hubcore/`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -4420,7 +4421,7 @@ git commit -m "feat(hub): live entries and root rows carry the tree's subagent t
 **Files:**
 - Modify: `hubapi/navigation.go` (`NavigationSubagentTally`; `NavigationSessionSummary.Subagents` after `MoreSubagents`)
 - Modify: `cmd/evener-hub/navigation_projection.go` (`projectShallow`; `cloneNavigationSummary`)
-- Modify: `cmd/evener-hub/navigation_schema.go` (`navigationSessionValueValid` `:412-440`)
+- Modify: `cmd/evener-hub/navigation_schema.go` (`navigationSessionValueValid`'s final return `:445`; a `navigationSubagentTallyValid` predicate after `navigationTaskProgressValid` `:448-457`)
 - Modify: `appwire-client/typescript/state/navigation/codec.ts` (`SUBAGENT_TALLY_KEYS`; `SESSION_KEYS`; `sessionValue`)
 - Modify: `appwire-client/typescript/state/navigation/codec.test.ts`
 - Modify: `cmd/evener-hub/testdata/navigation/value-records.json`
@@ -4496,6 +4497,21 @@ func TestNavigationRowsCarryTheWholeTreesSubagentTally(t *testing.T) {
 	}
 }
 
+// A tally the schema would refuse, which only a malformed daemon answer can
+// carry, is dropped from the row instead of failing the whole resource.
+func TestNavigationRowsDropAMalformedSubagentTally(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "01ROOT", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	live := []hubcore.LiveEntry{{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, Subagents: appwire.SubagentTally{Running: 2, Failed: -1}}}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.BuildTreeAt(metas, live, nil, now)})
+	if err != nil {
+		t.Fatalf("a malformed tally failed the build: %v", err)
+	}
+	if rows := projection.LivePage(0, 0).Sessions; len(rows) != 1 || rows[0].Subagents != nil {
+		t.Fatalf("rows = %+v, want the root with no tally", rows)
+	}
+}
+
 // The hub schema refuses a tally the codec would refuse.
 func TestNavigationSchemaRefusesANegativeSubagentCount(t *testing.T) {
 	valid := hubapi.NavigationSessionSummary{Ref: "local:01A", HostID: "local", SessionID: "01A", State: "active", Kind: "session", Subagents: &hubapi.NavigationSubagentTally{Running: 1}}
@@ -4540,7 +4556,7 @@ In `value-records.json`, after `"more_subagents": 3,` in the session record:
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `go test ./cmd/evener-hub -run 'TestNavigationRowsCarryTheWholeTreesSubagentTally|TestNavigationSchemaRefusesANegativeSubagentCount|TestNavigationValueRecordFixtureNamesEveryWireField' -count=1`
+Run: `go test ./cmd/evener-hub -run 'TestNavigationRowsCarryTheWholeTreesSubagentTally|TestNavigationRowsDropAMalformedSubagentTally|TestNavigationSchemaRefusesANegativeSubagentCount|TestNavigationValueRecordFixtureNamesEveryWireField' -count=1`
 Expected: FAIL to compile (`hubapi.NavigationSubagentTally` undefined).
 
 Run: `cd cmd/evener-hub/frontend && npx vitest run ../../../appwire-client/typescript/state/navigation/codec.test.ts`
@@ -4574,13 +4590,16 @@ and in `NavigationSessionSummary` after `MoreSubagents`:
 `navigation_projection.go`, in `projectShallow`'s literal after `MoreSubagents: node.MoreSubagents,`: `Subagents: navigationSubagentTally(node.Subagents),`; after `projectShallow`:
 
 ```go
-// navigationSubagentTally is a root row's tally on the wire, absent when the
-// tree has no subagent.
+// navigationSubagentTally is a root row's tally on the wire: absent when the
+// tree has no subagent, and dropped when the schema would refuse it (a
+// negative count, which only a malformed daemon answer can carry), the way
+// navigationTaskProgress drops bad progress rather than fail the resource.
 func navigationSubagentTally(tally appwire.SubagentTally) *hubapi.NavigationSubagentTally {
-	if tally.Running+tally.Failed+tally.Done == 0 {
+	wire := hubapi.NavigationSubagentTally{Running: tally.Running, Failed: tally.Failed, Done: tally.Done}
+	if wire.Running+wire.Failed+wire.Done == 0 || !navigationSubagentTallyValid(wire) {
 		return nil
 	}
-	return &hubapi.NavigationSubagentTally{Running: tally.Running, Failed: tally.Failed, Done: tally.Done}
+	return &wire
 }
 ```
 
@@ -4593,12 +4612,22 @@ In `cloneNavigationSummary`, after the `TurnEndedAt` copy:
 	}
 ```
 
-`navigation_schema.go`, in `navigationSessionValueValid`, after the `OmittedArmedWatches` check and before the jobs loop:
+`navigation_schema.go`: end `navigationSessionValueValid` with
 
 ```go
-	if tally := value.Subagents; tally != nil && (!navigationIntCount(tally.Running) || !navigationIntCount(tally.Failed) || !navigationIntCount(tally.Done)) {
-		return false
-	}
+	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
+		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents))
+```
+
+and add after `navigationTaskProgressValid`:
+
+```go
+// navigationSubagentTallyValid mirrors the web codec's subagentTallyValue: every
+// count is a safe non-negative integer. The projector drops a tally this
+// refuses rather than failing the whole resource over it.
+func navigationSubagentTallyValid(tally hubapi.NavigationSubagentTally) bool {
+	return navigationIntCount(tally.Running) && navigationIntCount(tally.Failed) && navigationIntCount(tally.Done)
+}
 ```
 
 `codec.ts`, before `SESSION_KEYS`:
@@ -4607,7 +4636,7 @@ In `cloneNavigationSummary`, after the `TurnEndedAt` copy:
 const SUBAGENT_TALLY_KEYS = valueRecordKeys(["running", "failed", "done"]);
 ```
 
-add `"subagents"` to `SESSION_KEYS`' optional list after `"more_subagents"` and `subagents: SUBAGENT_TALLY_KEYS` to its nested map; after `watchValue`:
+add `"subagents"` to `SESSION_KEYS`' optional list after `"more_subagents"` and `subagents: SUBAGENT_TALLY_KEYS` to its nested map; after `tasksValue`:
 
 ```ts
 const subagentTallyValue = (value: unknown): boolean =>
@@ -4791,3 +4820,14 @@ git commit -m "feat(hub): remote hosts' rows carry their subagent tally"
 ```
 
 Title "feat(hub): subagent tallies on rows (S3b, phase 7 PR 19)". The body says live root rows carry `subagents` (running, failed, done over the whole tree, from the daemon's controller), remote rows too, and names the TestFlight build containing #2473 that it waited for.
+
+---
+
+## Self-review
+
+- **Spec coverage.** Spec 18's S5 row (activity buckets per live session over the last 7 to 10 minutes, and the last activity time): PRs 14 and 15, seven one-minute bars and a quiet time the hub withholds while subagents run (ruling 6). The S4 row (a per-user seen-through marker, a method to set it, included in summaries): PRs 16 and 17, the `session_seen` store, `evener/session/seen/set`, and `turn_ended_at` and `unseen` on rows. The S3 row (running, failed and done per top-level session, omitted descendants included): PRs 18 and 19. Spec 13.1's Quiet (3 minutes) and May be stuck (10 minutes): `quietState` (Task 15.4). Spec 7.3's Mark as read and Mark as unread: `seenThrough` and `unread` marks (Task 17.4). Spec 9's failed subagent: ruling 21 and Question 1. Jesse's S5 ruling: rulings 3 and 6 and Review Focus 1.
+- **Checked by running it.** Every task's code was applied in order onto main `f667e4e97`, PRs 14 to 19 together, and each task's named tests passed, with `make generate` and `TestGeneratedFileCurrent`, the pinned golangci-lint (default and `.golangci-appwire.yml`, root module and `agent/`), `go vet -tags evenerfuzz` for the host and `GOOS=windows`, vitest, `npm run typecheck` and Biome. Not exercised: the package qualification smoke calls (Task 15.4, `make test-api-package`) and the README line. On macOS three existing tests fail on unmodified main and have nothing to do with this plan: `agent`'s `TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability` and `TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs`, and `cmd/evener`'s `TestRunServeClearRetainsReferencedScratchWhenConstructionFailsAfterRetention` (a `/var` against `/private/var` temp path mismatch). An implementer who meets them should not chase them in these PRs.
+- **Placeholders.** None: every task carries its code, and the phone lane's changes are a handoff, not tasks.
+- **Names.** `ThreadActivity`, `CloneThreadActivity`, `activityMeter`; `ActivityReadParams`, `ActivityReadResponse`, `SessionActivity` (`quietForMs`), `LiveRowRef`, `maxActivityReadRefs`, `decodeActivityRead`, `quietState`; `SessionMeta.LastTurnEndedAt`, `EvenerThread.LastTurnEndedAt`, `LiveEntry.LastTurnEndedAt`, `TreeNode.TurnEndedAt`, `turn_ended_at`, `unseen`; `SessionSeenStore`, `SessionSeenSnapshot`, `SessionSeenRecord`, `UnixMilliTime`, `UnixMilliseconds`, `SessionSeenSetParams`, `SessionSeenMark`, `SessionSeenSetResponse`, `maxSessionSeenMarks`, `commitNavigationChange`, `seenThroughToMark`, `useMarkSessionSeenOnOpen`; `appwire.SubagentTally`, `delegateRunTerminal`, `Session.SubagentTally`, `SetSubagentTallyFunc`, `NavigationSubagentTally`, `navigationSubagentTally`, `navigationSubagentTallyValid`. Each is used the same way wherever it appears.
+- **Review Focus.** Item 1: Tasks 15.3 and 15.4. Item 2: Task 15.1. Item 3: Tasks 17.2 and 17.3. Item 4: Tasks 17.1 and 17.3. Item 5: Tasks 18.1 and 19.2.
+- **Against the server plan's sketches.** The server plan's S5, S4 and S3 sections now point here. This plan departs from their sketches where the code argued for it: a quiet time instead of `lastActivityAt` (ruling 6), ten-second slots (ruling 4), `unseen` computed on the hub instead of `seen_through` on rows (ruling 12), one mark per row with an explicit unread (ruling 14), live rows never cluster (ruling 16), and the controller's journal instead of `aggregateActivity`, with no `complete` flag (ruling 19).
