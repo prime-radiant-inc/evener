@@ -18,6 +18,7 @@ import (
 )
 
 func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	for _, tc := range []struct {
 		name      string
@@ -70,6 +71,7 @@ func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 }
 
 func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	id := "dlg_status_metadata"
 	seedStableToolDelegate(t, s, id, "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
@@ -118,6 +120,7 @@ func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
 }
 
 func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	settlingID := "dlg_public_settling"
 	seedStableToolRunningDelegate(t, s, settlingID, "", time.Unix(10, 0).UTC())
@@ -205,6 +208,7 @@ func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 }
 
 func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	started := time.Unix(10, 0).UTC()
 	if err := s.jobManager.appendEvent(jobstore.Event{
@@ -219,6 +223,7 @@ func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 }
 
 func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	c := s.delegateController
 	seedStableToolRunningDelegate(t, s, "dlg_stop_parent", "", time.Unix(10, 0).UTC())
@@ -261,6 +266,7 @@ func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *te
 }
 
 func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
+	t.Parallel()
 	value, err := marshalDelegateSendResult(sendMessageResult{
 		DelegateID: "dlg_live", Type: "delegate", Status: jobstore.StatusRunning, Action: "steered",
 		WaitIgnoredReason: "live steer returns on delivery",
@@ -305,6 +311,7 @@ func TestStableDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 }
 
 func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_list", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolShell(t, s.jobManager, "job_shell", time.Unix(30, 0).UTC(), jobstore.StatusRunning)
@@ -319,6 +326,7 @@ func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T)
 }
 
 func TestStableDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_direct_idle", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_direct_running", "", time.Unix(30, 0).UTC())
@@ -362,6 +370,7 @@ func TestStableDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.
 }
 
 func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_page_1", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolDelegate(t, s, "dlg_page_2", "", time.Unix(30, 0).UTC(), time.Unix(40, 0).UTC())
@@ -378,6 +387,7 @@ func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 }
 
 func TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.treeCounter = newTreeCounter(7)
 	s.driveCounter = newTreeCounter(3)

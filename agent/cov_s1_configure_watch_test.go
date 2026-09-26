@@ -9,6 +9,7 @@ import (
 
 // configureWatch rejects an empty target before any normalization.
 func TestS1Cov_configureWatch_EmptyTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	if _, err := jm.configureWatch(watchArgs{Target: ""}); err == nil || !strings.Contains(err.Error(), "target is required") {
 		t.Fatalf("empty target err = %v, want target-is-required", err)
@@ -18,6 +19,7 @@ func TestS1Cov_configureWatch_EmptyTarget(t *testing.T) {
 // A clear request against a not-found, non-terminal target returns the original
 // target error rather than a no-op success.
 func TestS1Cov_configureWatch_ClearMissingTargetReturnsError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	if _, err := jm.configureWatch(watchArgs{Target: "job_missing", Clear: true}); err == nil {
 		t.Fatal("clear on a missing target must surface the target error")
@@ -27,6 +29,7 @@ func TestS1Cov_configureWatch_ClearMissingTargetReturnsError(t *testing.T) {
 // A clear request against a valid session target with no active watch is an
 // idempotent no-op success.
 func TestS1Cov_configureWatch_ClearSessionTargetNoActiveWatch(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Clear: true})
 	if err != nil {
@@ -41,6 +44,7 @@ func TestS1Cov_configureWatch_ClearSessionTargetNoActiveWatch(t *testing.T) {
 // rather than a self-generated kind: under the old create-time forbid the
 // communicate shape errored BEFORE the append, passing this test vacuously.)
 func TestS1Cov_configureWatch_RegisterAppendFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// The registry append prefers the batch seam; drop to the singular seam so
 	// failAppendN (which wraps appendEvent) can inject the failure.

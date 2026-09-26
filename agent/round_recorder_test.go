@@ -38,6 +38,7 @@ func rejectedGroup(model string) groupRecord {
 // fallback group that failed with a trickle never shadows the primary group's
 // far larger partial.
 func TestRoundRecorder_BestSalvageSpansAllGroups(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{
 		salvagedGroup("primary", 10_000),
 		salvagedGroup("fallback-b", 12),
@@ -61,6 +62,7 @@ func TestRoundRecorder_BestSalvageSpansAllGroups(t *testing.T) {
 // TestRoundRecorder_BestSalvageIsLargestNotLatest: within a group, the retry
 // that trickled must not replace the attempt that streamed most of the answer.
 func TestRoundRecorder_BestSalvageIsLargestNotLatest(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{salvagedGroup("primary", 100, 4)}}
 
 	partial, from := rec.BestSalvage()
@@ -76,6 +78,7 @@ func TestRoundRecorder_BestSalvageIsLargestNotLatest(t *testing.T) {
 // a single salvaged byte is salvage, and a reasoning-only partial (zero
 // salvaged bytes) is not.
 func TestRoundRecorder_BestSalvageCountsAnyNonzeroBytes(t *testing.T) {
+	t.Parallel()
 	oneByte := &roundRecorder{Groups: []groupRecord{salvagedGroup("primary", 1)}}
 	if partial, from := oneByte.BestSalvage(); partial == nil || from == nil {
 		t.Fatalf("BestSalvage with 1 salvaged byte = (%+v, %+v), want the snapshot", partial, from)
@@ -90,6 +93,7 @@ func TestRoundRecorder_BestSalvageCountsAnyNonzeroBytes(t *testing.T) {
 // the group whose output was salvaged, even when a LATER group also failed in
 // the consume phase.
 func TestRoundRecorder_SteeringGroupPrefersSalvageProducer(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{
 		salvagedGroup("primary", 900),
 		salvagedGroup("fallback-b", 0),
@@ -108,6 +112,7 @@ func TestRoundRecorder_SteeringGroupPrefersSalvageProducer(t *testing.T) {
 // anywhere, a chain walk that ends on an open-phase fallback rejection still
 // describes the group that actually broke mid-stream.
 func TestRoundRecorder_SteeringGroupFallsBackToLastConsumeGroup(t *testing.T) {
+	t.Parallel()
 	rec := &roundRecorder{Groups: []groupRecord{
 		salvagedGroup("primary", 0),
 		rejectedGroup("fallback-b"),
@@ -125,6 +130,7 @@ func TestRoundRecorder_SteeringGroupFallsBackToLastConsumeGroup(t *testing.T) {
 // TestRoundRecorder_SteeringGroupNilWithoutConsumePhase: nothing streamed,
 // nothing to steer about.
 func TestRoundRecorder_SteeringGroupNilWithoutConsumePhase(t *testing.T) {
+	t.Parallel()
 	empty := &roundRecorder{}
 	if g := empty.SteeringGroup(); g != nil {
 		t.Fatalf("SteeringGroup on an empty recorder = %+v, want nil", g)
@@ -139,6 +145,7 @@ func TestRoundRecorder_SteeringGroupNilWithoutConsumePhase(t *testing.T) {
 // the two consume-phase shapes count, the two zero-content-fast shapes do not,
 // and a successful attempt never counts whatever phase it reports.
 func TestRoundRecorder_HasConsumePhaseFailure(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		phase llm.AttemptPhase
@@ -170,6 +177,7 @@ func TestRoundRecorder_HasConsumePhaseFailure(t *testing.T) {
 // draft, and the steering group must be the primary — not whichever group
 // happened to fail last.
 func TestRoundRecorder_FallbackTrickleNeverShadowsPrimaryPartial(t *testing.T) {
+	t.Parallel()
 	primaryDraft := strings.Repeat("draft ", 200)
 	const trickle = "he"
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "cut off", nil, nil)
@@ -263,6 +271,7 @@ func TestRoundRecorder_EmptyRecorderSettlesNothing(t *testing.T) {
 // multi-round turn never settles on a previous round's salvage — after two
 // rounds the session holds only the second round's groups.
 func TestRoundRecorder_FreshPerRound(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withSteps(
 		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(shellExecCall("s1")) },
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },

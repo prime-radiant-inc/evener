@@ -437,6 +437,7 @@ func runParkedAtomicCut(t *testing.T, s *Session, mutate func(*Session) error) (
 // parked in its metadata save the tuple must equal the previous cut as a
 // whole; after the save commits it must advance as a whole.
 func TestNotesProjectionSnapshotIsOneAtomicCut(t *testing.T) {
+	t.Parallel()
 	seed := func(t *testing.T) *Session {
 		t.Helper()
 		s := newNotesToolSession(t)
@@ -498,6 +499,7 @@ func TestNotesProjectionSnapshotIsOneAtomicCut(t *testing.T) {
 // holds it too, but the property is pinned at the store level so a future caller
 // without the lock cannot reintroduce the leak (roborev's ninth round).
 func TestNotesProjectionPublishesTheCommittedCutNotTheStagingStore(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	s.stateDir = t.TempDir()
 	if _, err := s.SetHumanNote("seed-human", "committed human note"); err != nil {

@@ -20,6 +20,7 @@ import (
 // and turn/steer is not notes/human/set, so provenance decides and the
 // note-origin guess never strips a normal steer.
 func TestRestoredKindlessOrdinarySteerWithNotePrefixKeepsBytes(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	defer s.Close()
 	const text = "human updated their whiteboard: \x1b[31mred\x1b[0m bytes"
@@ -72,6 +73,7 @@ func TestRestoredKindlessOrdinarySteerWithNotePrefixKeepsBytes(t *testing.T) {
 // normalizes: notes/human/set is the persisted mutation method, so provenance
 // proves the text came from the whiteboard and the load path strips it.
 func TestRebuiltKindlessNoteSteerWithMethodStillNormalizes(t *testing.T) {
+	t.Parallel()
 	snapshot := clientMutationSnapshot{
 		SteeringOrder: []string{"cm-note"},
 		Journal: map[string]clientMutationRecord{
@@ -107,6 +109,7 @@ func TestRebuiltKindlessNoteSteerWithMethodStillNormalizes(t *testing.T) {
 // entry still normalizes, while text that does not imitate the shape keeps its
 // bytes. This pins the fallback that must survive for truly old records.
 func TestRebuiltSteerWithoutProvenanceKeepsPrefixFallback(t *testing.T) {
+	t.Parallel()
 	rebuild := func(text string) string {
 		snapshot := clientMutationSnapshot{
 			SteeringOrder: []string{"cm-legacy"},
@@ -210,6 +213,7 @@ func TestRestoredHistoryCopyKeepsOrdinarySteerThatImitatesTheNotePrefix(t *testi
 // in both directions. Without a record the kind decides, and without either the
 // write-path shape is the last marker left.
 func TestHistoryCopyDecidesKindlessSteerProvenanceFromTheRecord(t *testing.T) {
+	t.Parallel()
 	steer := func(id, text string) schema.Turn {
 		return schema.Turn{Kind: schema.TurnSteering, ClientMutationID: id, Message: llm.User(text)}
 	}
@@ -259,6 +263,7 @@ func TestHistoryCopyDecidesKindlessSteerProvenanceFromTheRecord(t *testing.T) {
 // retired derivation keeps every byte the user typed and its empty kind, because
 // nothing but a recorded kind or method is evidence (see steeringOriginFromJournal).
 func TestRebuiltSteerWithNoteSteerSuffixButNoOuterRecordKeepsBytes(t *testing.T) {
+	t.Parallel()
 	const id = "cm-impostor/note-steer"
 	const text = "human updated their whiteboard: \x1b[31mtyped\x1b[0m bytes"
 	snapshot := clientMutationSnapshot{
@@ -292,6 +297,7 @@ func TestRebuiltSteerWithNoteSteerSuffixButNoOuterRecordKeepsBytes(t *testing.T)
 // already marked; the reverse -- a record that proves note origin -- is covered
 // by the table test above.
 func TestHistoryCopyKeepsTheTurnsOwnNoteKindOverAKindlessRecord(t *testing.T) {
+	t.Parallel()
 	const text = "human updated their whiteboard: \x1b[31mnote\x1b[0m"
 	cases := map[string]struct {
 		turn    schema.Turn
@@ -327,6 +333,7 @@ func TestHistoryCopyKeepsTheTurnsOwnNoteKindOverAKindlessRecord(t *testing.T) {
 // note kind decides a record that kept none. The record's own rule decides it:
 // with no kind, notes/human/set is the note write (isHumanNoteSteer).
 func TestHistoryCopyKeepsARecordsNoteMethodOverAnUnrelatedTurnKind(t *testing.T) {
+	t.Parallel()
 	turn := schema.Turn{
 		Kind: schema.TurnSteering, SteeringKind: events.SteeringKindInterrupted,
 		ClientMutationID: "cm-note",
@@ -346,6 +353,7 @@ func TestHistoryCopyKeepsARecordsNoteMethodOverAnUnrelatedTurnKind(t *testing.T)
 // is still normalized by the write-path shape, and a steer that does not imitate
 // it keeps every byte.
 func TestInheritedHistoryIsEscapedWithoutAJournalInReach(t *testing.T) {
+	t.Parallel()
 	const id = "cm-parent"
 	const ordinary = "run the tests \x1b[31mnow\x1b[0m"
 	inherited := []transcript.Entry{
@@ -624,6 +632,7 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 // a steer whose id merely imitates an old derivation keeps its bytes and its empty
 // kind.
 func TestRebuiltSteerImitatingTheGrammarBesideAModernNoteRecordKeepsBytes(t *testing.T) {
+	t.Parallel()
 	const id = "cm-note/note-steer"
 	const text = "human updated their whiteboard: \x1b[31mforged\x1b[0m bytes"
 	snapshot := clientMutationSnapshot{

@@ -14,8 +14,8 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/hubapi"
-	"primeradiant.com/evener/internal/shellquote"
 )
 
 // defaultHubAddr is the host hub's default loopback listen address

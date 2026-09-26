@@ -10,6 +10,7 @@ import (
 )
 
 func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -25,6 +26,7 @@ func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
 }
 
 func TestResponsesContinuationAnchorCandidateUsesLatestContextBoundary(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("before")),
 		responsesContinuationEligibleAssistantTurn("resp_before"),
@@ -40,6 +42,7 @@ func TestResponsesContinuationAnchorCandidateUsesLatestContextBoundary(t *testin
 }
 
 func TestResponsesContinuationAnchorCandidateTreatsSummaryAsBoundary(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("before")),
 		responsesContinuationEligibleAssistantTurn("resp_before"),
@@ -55,6 +58,7 @@ func TestResponsesContinuationAnchorCandidateTreatsSummaryAsBoundary(t *testing.
 }
 
 func TestResponsesContinuationAnchorCandidateSelectsLatestActiveAssistant(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("before")),
 		responsesContinuationEligibleAssistantTurn("resp_before"),
@@ -78,6 +82,7 @@ func TestResponsesContinuationAnchorCandidateSelectsLatestActiveAssistant(t *tes
 }
 
 func TestResponsesContinuationAnchorCandidateSystemPromptAsUserUsesFullHistory(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -92,6 +97,7 @@ func TestResponsesContinuationAnchorCandidateSystemPromptAsUserUsesFullHistory(t
 }
 
 func TestResponsesContinuationAnchorCandidateRejectsEmptyDelta(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -105,6 +111,7 @@ func TestResponsesContinuationAnchorCandidateRejectsEmptyDelta(t *testing.T) {
 }
 
 func TestResponsesContinuationAnchorCandidateRejectsUnsupportedDeltaTurnKind(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -119,6 +126,7 @@ func TestResponsesContinuationAnchorCandidateRejectsUnsupportedDeltaTurnKind(t *
 }
 
 func TestResponsesContinuationAnchorCandidateIgnoresAttentionResolution(t *testing.T) {
+	t.Parallel()
 	marker := delegateAttentionResolutionTurn("private-attention", delegateAttentionConsumed)
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
@@ -137,6 +145,7 @@ func TestResponsesContinuationAnchorCandidateIgnoresAttentionResolution(t *testi
 }
 
 func TestResponsesContinuationAnchorCandidateAllowsEnvironmentDelta(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -155,6 +164,7 @@ func TestResponsesContinuationAnchorCandidateAllowsEnvironmentDelta(t *testing.T
 }
 
 func TestResponsesContinuationAnchorCandidateRejectsUnsafeEnvironmentDeltaContent(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -171,6 +181,7 @@ func TestResponsesContinuationAnchorCandidateRejectsUnsafeEnvironmentDeltaConten
 }
 
 func TestResponsesContinuationAnchorCandidateAllowsLinkedToolResultDelta(t *testing.T) {
+	t.Parallel()
 	anchor := responsesContinuationEligibleAssistantTurn("resp_1")
 	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolCall,
@@ -197,6 +208,7 @@ func TestResponsesContinuationAnchorCandidateAllowsLinkedToolResultDelta(t *test
 }
 
 func TestResponsesContinuationAnchorCandidateRejectsOrphanedToolResultDelta(t *testing.T) {
+	t.Parallel()
 	anchor := responsesContinuationEligibleAssistantTurn("resp_1")
 	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolCall,
@@ -220,6 +232,7 @@ func TestResponsesContinuationAnchorCandidateRejectsOrphanedToolResultDelta(t *t
 }
 
 func TestResponsesContinuationAnchorCandidateRejectsUnsafeDeltaContent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		part llm.ContentPart
@@ -251,6 +264,7 @@ func TestResponsesContinuationAnchorCandidateRejectsUnsafeDeltaContent(t *testin
 }
 
 func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
@@ -294,6 +308,7 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 }
 
 func TestResponsesContinuationHistoryReservationStillCurrentForSameBase(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -306,6 +321,7 @@ func TestResponsesContinuationHistoryReservationStillCurrentForSameBase(t *testi
 }
 
 func TestResponsesContinuationHistoryReservationRejectsAppendedTurn(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -319,6 +335,7 @@ func TestResponsesContinuationHistoryReservationRejectsAppendedTurn(t *testing.T
 }
 
 func TestResponsesContinuationHistoryReservationRejectsCompactedOrShortenedHistory(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -337,6 +354,7 @@ func TestResponsesContinuationHistoryReservationRejectsCompactedOrShortenedHisto
 }
 
 func TestResponsesContinuationHistoryReservationRejectsSameLengthDifferentLastTurn(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
 		responsesContinuationEligibleAssistantTurn("resp_1"),
@@ -353,6 +371,7 @@ func TestResponsesContinuationHistoryReservationRejectsSameLengthDifferentLastTu
 }
 
 func TestResponsesContinuationHistoryReservationAllowsEmptyHistoryUntilChanged(t *testing.T) {
+	t.Parallel()
 	var history []schema.Turn
 	reservation := reserveResponsesContinuationHistoryBase(history)
 	if !responsesContinuationHistoryBaseStillCurrent(reservation, history) {

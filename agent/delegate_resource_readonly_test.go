@@ -25,6 +25,7 @@ func TestStableDelegateReadOnly_HistoricalSendRendersWithoutLiveAlias(t *testing
 }
 
 func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostics(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -114,6 +115,7 @@ func TestStableDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiag
 }
 
 func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolRunningDelegate(t, s, "dlg_clock_a", "", time.Unix(100, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_clock_b", "", time.Unix(200, 0).UTC())
@@ -147,6 +149,7 @@ func TestStableDelegateReadOnly_OneSampledClockDrivesQuietRunningAndDuration(t *
 }
 
 func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -177,6 +180,7 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 }
 
 func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t,
 		withDir(stateDir),
@@ -247,6 +251,7 @@ func TestStableDelegateReadOnly_ActivityProjectsPublicLifecycleAndInternalPhase(
 }
 
 func TestStableDelegateReadOnly_MissingFilesRemainMissing(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	sessionDir := jobsDir(stateDir, sessionID)

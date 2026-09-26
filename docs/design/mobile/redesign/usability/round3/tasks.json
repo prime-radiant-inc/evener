@@ -1,0 +1,83 @@
+[
+  {
+    "id": "T1",
+    "preset": "default",
+    "prompt": "You just picked up your phone between meetings. Figure out what needs your attention right now. One of your sessions is waiting for an answer from you: give it one."
+  },
+  {
+    "id": "T2",
+    "preset": "default",
+    "prompt": "An agent finished a plan about showing hosts and projects together and wants your review. Read it. You're happy with it, except that host badges should be hidden when there's only one host. Send the agent your review."
+  },
+  {
+    "id": "T2b",
+    "preset": "default",
+    "prompt": "An agent finished a plan about showing hosts and projects together and wants your review. Read it. You like it. It ends with open questions; answer the one about archived sessions: yes, archived sessions keep their host badge. Send the agent your review."
+  },
+  {
+    "id": "T3",
+    "preset": "default",
+    "prompt": "The agent that wrote the hosts-and-projects plan also built an interactive comparison of three layouts. Use it to tell the agent you'd rather go with layout C."
+  },
+  {
+    "id": "T4",
+    "preset": "default",
+    "prompt": "Start a new session on the paradise-park machine, in the evener project. Use GLM 5.3 Vision at maximum effort, and turn on only the superpowers and go plugins. Ask it to profile why the hub's roster takes so long to load."
+  },
+  {
+    "id": "T5",
+    "preset": "default",
+    "prompt": "Your big job 'Get PR 2138 Test Clean' has a subagent that keeps failing while trying to fix a race. Find that subagent and get it stopped."
+  },
+  {
+    "id": "T6",
+    "preset": "in-tasklist",
+    "prompt": "You're watching 'Rework Inline Task List Display' while it works. You want it to also handle the empty state, but only after it finishes what it's doing right now. Tell it."
+  },
+  {
+    "id": "T7",
+    "preset": "default",
+    "prompt": "One of your sessions failed. Find out why, fix whatever caused it, and get that session going again."
+  },
+  {
+    "id": "T8",
+    "preset": "default",
+    "prompt": "Tidy up: put 'Fix Endless Provider Retry Loop' in your Release category. Then change how your projects are listed so they're grouped under the machines they run on."
+  },
+  {
+    "id": "T9",
+    "preset": "default",
+    "prompt": "About a week ago, one of your sessions figured out why Go test caching wasn't working in CI. Find it and report what it concluded."
+  },
+  {
+    "id": "T10",
+    "preset": "reading",
+    "events": [
+      {
+        "name": "question",
+        "afterActions": 3
+      }
+    ],
+    "prompt": "You're in the middle of reading a plan. Find what it says about risks. If anything else comes up while you're reading, deal with it the way you'd normally want to, then come back and finish reading."
+  },
+  {
+    "id": "T11",
+    "preset": "default",
+    "prompt": "One session is stuck waiting for your permission to write some files. Let it continue."
+  },
+  {
+    "id": "T12",
+    "preset": "in-pr2138",
+    "prompt": "In this session you want to see exactly which commands the agent ran and what they printed, not summaries. Make the conversation show that."
+  },
+  {
+    "id": "T13",
+    "preset": "host-offline",
+    "prompt": "Something's wrong with one of your machines. Find out what's going on and try to fix it."
+  },
+  {
+    "id": "T14",
+    "preset": "in-pr2138",
+    "prompt": "For its next turn, switch this session to Claude Sonnet 5 at high effort."
+  }
+]

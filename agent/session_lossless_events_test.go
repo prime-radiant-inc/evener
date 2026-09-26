@@ -81,6 +81,7 @@ func registerConsumer(t *testing.T, s *Session, consume func(events.SessionEvent
 // production passes the entire suite. The threshold has to be crossed on
 // purpose or it is not covered at all.
 func TestSessionWithNoConsumerDropsRatherThanWedging(t *testing.T) {
+	t.Parallel()
 	s := losslessTestSession("no-consumer")
 
 	// TRIPWIRE: emitN sends on a buffered in-process channel with nothing
@@ -153,6 +154,7 @@ func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
 // publisher of either. So without a lifetime arm the wait and the publisher are
 // each waiting on the other.
 func TestBlockedAuthoritativeSendReleasedByTheSessionLifetime(t *testing.T) {
+	t.Parallel()
 	owner, shutdown := context.WithCancel(context.Background())
 	s := losslessTestSession("lifetime-release")
 	s.sessionCtx = owner
@@ -200,6 +202,7 @@ func TestBlockedAuthoritativeSendReleasedByTheSessionLifetime(t *testing.T) {
 // event the budget still had time to deliver -- silently truncating the tail
 // shutdown exists to flush.
 func TestPublishedCloseBudgetOutranksTheSessionLifetimeForBlockedSends(t *testing.T) {
+	t.Parallel()
 	owner, shutdown := context.WithCancel(context.Background())
 	s := losslessTestSession("budget-outranks-lifetime")
 	s.sessionCtx = owner
@@ -404,6 +407,7 @@ func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
 // runAll announces HookStart before it runs the hook -- so a decline that stops
 // being taken shows up as an announced hook.
 func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
+	t.Parallel()
 	owner, shutdown := context.WithCancel(context.Background())
 	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
@@ -450,6 +454,7 @@ func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
 }
 
 func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	runner := hooks.NewRunner(nil, "test-model")
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
@@ -491,6 +496,7 @@ func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 // event, nothing may be dropped -- including well past the buffer, and
 // including while the consumer is slower than the producer.
 func TestAuthoritativeConsumerReceivesEveryEventPastTheBuffer(t *testing.T) {
+	t.Parallel()
 	s := losslessTestSession("authoritative")
 	const total = testEventBuffer * 4
 
@@ -547,6 +553,7 @@ func TestAuthoritativeConsumerReceivesEveryEventPastTheBuffer(t *testing.T) {
 // crash straight back. Making it a parameter fixes that -- but only while nil is
 // refused, because nil is the same omission wearing a different hat.
 func TestConsumeEventsLosslessRejectsANilOnDrained(t *testing.T) {
+	t.Parallel()
 	s := losslessTestSession("nil-ondrained")
 	defer func() {
 		if recover() == nil {
@@ -564,6 +571,7 @@ func TestConsumeEventsLosslessRejectsANilOnDrained(t *testing.T) {
 }
 
 func TestConsumeEventsLosslessRejectsASecondConsumer(t *testing.T) {
+	t.Parallel()
 	s := losslessTestSession("double")
 	registerConsumer(t, s, func(events.SessionEvent) {})
 
@@ -601,6 +609,7 @@ func TestConsumeEventsLosslessRejectsASecondConsumer(t *testing.T) {
 // misses it does not get an error, it waits forever. serve.go's teardown is
 // exactly such a caller.
 func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
+	t.Parallel()
 	s := losslessTestSession("closed")
 	s.eventsMu.Lock()
 	s.eventsClosed = true
@@ -647,6 +656,7 @@ func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
 // It asserts on a REAL prepared subagent rather than a hand-built Session,
 // because the claim is about the spawn path, not about the struct.
 func TestPreparedSubagentGetsNoAuthoritativeConsumer(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 
 	prepared, err := parent.prepareSubagentRun(context.Background(), "child task", "", "", 0, "", "", nil, nil)
@@ -680,6 +690,7 @@ func TestPreparedSubagentGetsNoAuthoritativeConsumer(t *testing.T) {
 // child's SESSION_START is observable too, and it must not make the child an
 // authoritative consumer: nothing drains that channel.
 func TestPreparedSubagentForwardsEventsToRootObserver(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	var observed []events.SessionEvent
 	parent.SetDescendantEventFunc(func(event events.SessionEvent) {
@@ -755,6 +766,7 @@ func TestPreparedSubagentForwardsEventsToRootObserver(t *testing.T) {
 // The margin is asserted rather than assumed. If this fails, the fix is to
 // raise the buffer or to attach earlier, not to relax the bound.
 func TestSessionConstructionStaysWellInsideTheBuffer(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	buffered := len(s.events)

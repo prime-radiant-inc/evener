@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/procgroup"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // makeJWT builds a three-segment token whose payload carries exp, the shape

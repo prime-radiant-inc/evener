@@ -84,6 +84,7 @@ func TestExecTool_SandboxWriteEscalatesApproveReruns(t *testing.T) {
 }
 
 func TestExecTool_SandboxWriteDenyReturnsTypedError(t *testing.T) {
+	t.Parallel()
 	sess, worktree := sbxReadOnlySession(t)
 	target := filepath.Join(worktree, "denied.txt")
 	call := writeFileCall("c1", target, "should not be written")
@@ -105,6 +106,7 @@ func TestExecTool_SandboxWriteDenyReturnsTypedError(t *testing.T) {
 }
 
 func TestExecTool_ApplyPatchDenialStaysFinal(t *testing.T) {
+	t.Parallel()
 	sess, _ := sbxReadOnlySession(t)
 	patch := "*** Begin Patch\n*** Add File: newfile.txt\n+hello\n*** End Patch\n"
 	args, _ := json.Marshal(map[string]string{"patch": patch})

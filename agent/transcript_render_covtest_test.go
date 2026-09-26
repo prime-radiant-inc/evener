@@ -68,6 +68,7 @@ func TestRenderMarkdown_UnknownTurnKindFullTurn(t *testing.T) {
 // TestJobResultMetadata_MalformedJSON covers the decode-error path in
 // jobResultMetadata: malformed JSON returns "".
 func TestJobResultMetadata_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	if got := jobResultMetadata("{not valid json"); got != "" {
 		t.Errorf("jobResultMetadata(malformed) = %q, want empty", got)
 	}
@@ -76,6 +77,7 @@ func TestJobResultMetadata_MalformedJSON(t *testing.T) {
 // TestJobResultMetadata_KnownKeys covers the happy path: a valid JSON object
 // with known metadata keys produces a "k=v k=v" summary string.
 func TestJobResultMetadata_KnownKeys(t *testing.T) {
+	t.Parallel()
 	raw := `{"child_session_id":"child_01","model":"gpt-4","agent_type":"worker"}`
 	got := jobResultMetadata(raw)
 	for _, want := range []string{"child_session_id=child_01", "model=gpt-4", "agent_type=worker"} {
@@ -88,6 +90,7 @@ func TestJobResultMetadata_KnownKeys(t *testing.T) {
 // TestHasNonJobResultKeys_Unparseable covers the unparseable-body path in
 // hasNonJobResultKeys: bad JSON returns false.
 func TestHasNonJobResultKeys_Unparseable(t *testing.T) {
+	t.Parallel()
 	if hasNonJobResultKeys("{not json") {
 		t.Error("hasNonJobResultKeys(malformed) = true, want false")
 	}
@@ -96,6 +99,7 @@ func TestHasNonJobResultKeys_Unparseable(t *testing.T) {
 // TestHasNonJobResultKeys_UnknownKey covers the positive case: a body with an
 // unknown key returns true.
 func TestHasNonJobResultKeys_UnknownKey(t *testing.T) {
+	t.Parallel()
 	if !hasNonJobResultKeys(`{"job_id":"j1","unknown_field":"x"}`) {
 		t.Error(`hasNonJobResultKeys({"job_id":"j1","unknown_field":"x"}) = false, want true`)
 	}
@@ -104,6 +108,7 @@ func TestHasNonJobResultKeys_UnknownKey(t *testing.T) {
 // TestHasNonJobResultKeys_OnlyKnownKeys covers the negative case: a body with
 // only known keys returns false.
 func TestHasNonJobResultKeys_OnlyKnownKeys(t *testing.T) {
+	t.Parallel()
 	if hasNonJobResultKeys(`{"job_id":"j1","exit_code":0}`) {
 		t.Error(`hasNonJobResultKeys(only known keys) = true, want false`)
 	}
@@ -111,6 +116,7 @@ func TestHasNonJobResultKeys_OnlyKnownKeys(t *testing.T) {
 
 // TestPrettyJSONValue covers prettyJSONValue's happy and error paths.
 func TestPrettyJSONValue(t *testing.T) {
+	t.Parallel()
 	// A simple map encodes fine.
 	got, ok := prettyJSONValue(map[string]any{"a": 1})
 	if !ok || !strings.Contains(got, `"a"`) {

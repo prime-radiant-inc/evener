@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/mcpconfig"
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 func TestValidatePluginName(t *testing.T) {

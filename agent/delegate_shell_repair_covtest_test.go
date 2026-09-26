@@ -15,6 +15,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestStableShellNotificationExcerpt_NilRecord(t *testing.T) {
+	t.Parallel()
 	got := stableShellNotificationExcerpt("/some/store/jobs.jsonl", nil)
 	if got.text != "" || got.complete {
 		t.Fatalf("expected empty excerpt for nil record, got %#v", got)
@@ -22,6 +23,7 @@ func TestStableShellNotificationExcerpt_NilRecord(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_NonTerminalRecord(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "j1", Status: jobstore.StatusRunning}
 	got := stableShellNotificationExcerpt("/some/store/jobs.jsonl", rec)
 	if got.text != "" || got.complete {
@@ -30,6 +32,7 @@ func TestStableShellNotificationExcerpt_NonTerminalRecord(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_OutputPathError(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{
 		JobID:       "j1",
 		Status:      jobstore.StatusCompleted,
@@ -44,6 +47,7 @@ func TestStableShellNotificationExcerpt_OutputPathError(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_OutputBytesMismatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	outputPath := filepath.Join(dir, "output.log")
 	if err := os.WriteFile(outputPath, []byte("hello world"), 0o644); err != nil {
@@ -62,6 +66,7 @@ func TestStableShellNotificationExcerpt_OutputBytesMismatch(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_ValidOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	content := "line one\nline two\nline three\n"
 	outputPath := filepath.Join(dir, "output.log")
@@ -84,6 +89,7 @@ func TestStableShellNotificationExcerpt_ValidOutput(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_EmptyOutputFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	outputPath := filepath.Join(dir, "output.log")
 	if err := os.WriteFile(outputPath, []byte{}, 0o644); err != nil {
@@ -102,6 +108,7 @@ func TestStableShellNotificationExcerpt_EmptyOutputFile(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_DefaultPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	jobsDir := filepath.Join(dir, "jobs")
 	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
@@ -126,6 +133,7 @@ func TestStableShellNotificationExcerpt_DefaultPath(t *testing.T) {
 }
 
 func TestStableShellNotificationExcerpt_TruncatedOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// Create output larger than terminalExcerptBytes.
 	content := make([]byte, terminalExcerptBytes+100)
@@ -159,6 +167,7 @@ func TestStableShellNotificationExcerpt_TruncatedOutput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableShellAttentionContent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	content := "completed output\n"
 	outputPath := filepath.Join(dir, "output.log")
@@ -183,6 +192,7 @@ func TestStableShellAttentionContent(t *testing.T) {
 }
 
 func TestStableShellAttentionContent_NoReadTranscriptCeiling(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	content := "completed output\n"
 	outputPath := filepath.Join(dir, "output.log")
@@ -211,6 +221,7 @@ func TestStableShellAttentionContent_NoReadTranscriptCeiling(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRepairStableShellAttentionForBootstrap_NilController(t *testing.T) {
+	t.Parallel()
 	err := repairStableShellAttentionForBootstrap(nil)
 	if err == nil || !contains(err.Error(), "controller is nil") {
 		t.Fatalf("expected nil controller error, got %v", err)
@@ -253,6 +264,7 @@ func TestRepairStableShellAttentionForBootstrap_DirectoryStoreFile(t *testing.T)
 // ---------------------------------------------------------------------------
 
 func TestCollectShellRuntimeLossEvidence_Empty(t *testing.T) {
+	t.Parallel()
 	path := seedDelegateShellStore(t, false, false)
 	got, err := collectShellRuntimeLossEvidence(path)
 	if err != nil {
@@ -264,6 +276,7 @@ func TestCollectShellRuntimeLossEvidence_Empty(t *testing.T) {
 }
 
 func TestCollectShellRuntimeLossEvidence_RunningAndPending(t *testing.T) {
+	t.Parallel()
 	path := seedDelegateShellStore(t, true, true)
 	got, err := collectShellRuntimeLossEvidence(path)
 	if err != nil {
@@ -282,6 +295,7 @@ func TestCollectShellRuntimeLossEvidence_RunningAndPending(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteDelegateShellRepair_EmptyStorePath(t *testing.T) {
+	t.Parallel()
 	plan := delegateShellRepairPlan{delegateID: "dlg_1", storePath: ""}
 	err := executeDelegateShellRepair(plan, testNow())
 	if err == nil || !contains(err.Error(), "store path is empty") {
@@ -290,6 +304,7 @@ func TestExecuteDelegateShellRepair_EmptyStorePath(t *testing.T) {
 }
 
 func TestExecuteDelegateShellRepair_DirectoryStorePath(t *testing.T) {
+	t.Parallel()
 	plan := delegateShellRepairPlan{
 		delegateID: "dlg_1",
 		storePath:  t.TempDir(), // a directory, not a file
@@ -301,6 +316,7 @@ func TestExecuteDelegateShellRepair_DirectoryStorePath(t *testing.T) {
 }
 
 func TestExecuteDelegateShellRepair_NonexistentStorePath(t *testing.T) {
+	t.Parallel()
 	plan := delegateShellRepairPlan{
 		delegateID: "dlg_1",
 		storePath:  "/nonexistent/path/jobs.jsonl",

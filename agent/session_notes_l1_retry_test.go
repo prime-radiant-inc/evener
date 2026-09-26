@@ -10,6 +10,7 @@ import (
 // A definite refusal records no write; a fresh request after the fence lifts
 // can accept the note. Reusing the rejected ID remains a definite rejection.
 func TestSetHumanNoteFreshIDAfterRefusal(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "stop"}
@@ -41,6 +42,7 @@ func TestSetHumanNoteFreshIDAfterRefusal(t *testing.T) {
 }
 
 func TestSetHumanNoteFreshIDAfterUncertainCommit(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
 	if _, err := s.SetHumanNote("first", "sentinel"); err == nil {
@@ -60,6 +62,7 @@ func TestSetHumanNoteFreshIDAfterUncertainCommit(t *testing.T) {
 }
 
 func TestSetHumanNoteFreshIDDifferentValueKeepsNewer(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if _, err := s.SetHumanNote("first", "A"); err != nil {
 		t.Fatal(err)

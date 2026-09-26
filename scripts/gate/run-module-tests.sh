@@ -62,7 +62,7 @@ if ! . "$gate_budgets_lib"; then
 fi
 gate_source_helper "$script_dir/../lib/load-aware-workers.sh"
 
-MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
+MODULES=${MODULES:-". agent llm auth envvars invariant identifier execsupport"}
 ROOT_FULL=${ROOT_FULL:-0}
 
 # WEB controls the concurrent frontend gate. It is skipped automatically when

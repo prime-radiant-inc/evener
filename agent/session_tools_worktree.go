@@ -2512,10 +2512,10 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// Step 8: remove the worktree itself. --force covers git's own
 	// dirty/untracked refusal — never locks, which step 3 already resolved
 	// (spec §5 remove step 8). A dirty tree only reaches here under
-	// force_dirty (step 6), so git's --force is needed whenever either flag is
-	// set.
+	// force_dirty (step 6), so force alone must leave Git's final dirty check
+	// active.
 	rmArgs := []string{"worktree", "remove"}
-	if force || forceDirty {
+	if forceDirty {
 		rmArgs = append(rmArgs, "--force")
 	}
 	rmArgs = append(rmArgs, "--", target)

@@ -10,6 +10,7 @@ import (
 )
 
 func TestIsAbortError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error

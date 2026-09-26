@@ -438,6 +438,7 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 }
 
 func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	executor := newSignalCompletesStreamingExecutor()
 	result := runShell(context.Background(), sess.jobManager, executor, shellArgs{
@@ -663,6 +664,7 @@ func TestRematerializeOwnedDrainJobPendings(t *testing.T) {
 // arises when a finalize's in-memory enqueue never lands or a revived job's
 // deferred restore side effects are interrupted before arm_notifications.
 func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -707,6 +709,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 // injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to
 // history — so the drain settles and the block is not duplicated.
 func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -779,6 +782,7 @@ func countHistoryNeedle(s *Session, needle string) int {
 // re-materialize the child's stranded pending so the existing drive-down path
 // delivers it.
 func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -828,6 +832,7 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 }
 
 func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
@@ -862,6 +867,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 }
 
 func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_drain/delivery/1"
@@ -959,6 +965,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 }
 
 func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	adapter := &fakeAdapter{
 		name: "openai",

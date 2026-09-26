@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // TestGrepPassesRipgrepArgsAsArgv pins the fix for the Windows cmd.exe quoting

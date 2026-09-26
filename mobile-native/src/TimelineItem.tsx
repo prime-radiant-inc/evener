@@ -253,7 +253,7 @@ export function TimelineItem({
 				{ gap: 8 },
 				item.kind === "user"
 					? {
-							backgroundColor: colors.surface,
+							backgroundColor: colors.palette.bubble,
 							borderRadius: 18,
 							borderBottomRightRadius: 5,
 							padding: 14,

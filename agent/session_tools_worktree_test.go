@@ -26,6 +26,7 @@ func resolvedProjectID(t *testing.T, env execenv.ExecutionEnvironment, path stri
 // RuntimeDir failure is returned to the worktree caller rather than silently
 // switching storage to <mainRepoRoot>/.evener/worktrees.
 func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) {
+	t.Parallel()
 	s := newSession(t)
 	missingRoot := filepath.Join(t.TempDir(), "missing-main-checkout")
 
@@ -47,6 +48,7 @@ func installWorktreeSeams(t *testing.T, s *Session, seams worktreeTestSeams) {
 }
 
 func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
@@ -138,6 +140,7 @@ func TestManageWorktreeToolUnknownOperationErrors(t *testing.T) {
 // shortSHA with a full 40-char SHA (base_sha in create results), so the
 // short-input branch is otherwise never reached.
 func TestShortSHA_UntruncatedWhenShort(t *testing.T) {
+	t.Parallel()
 	cases := []string{"", "abc", "0123456789ab"} // len 0, 3, 12 (== the cutoff)
 	for _, c := range cases {
 		if got := shortSHA(c); got != c {
@@ -157,6 +160,7 @@ func TestShortSHA_UntruncatedWhenShort(t *testing.T) {
 // the tool surface — it exists as this function's own contract
 // (worktreeControlEnv is usable standalone), verified directly.
 func TestWorktreeControlEnv_NonLocalEnvErrors(t *testing.T) {
+	t.Parallel()
 	s := newSession(t)
 	s.mu.Lock()
 	s.env = &timeoutEnv{wd: "/tmp"}
@@ -206,6 +210,7 @@ func (fakeZeroExitErrEnv) ExecCommand(context.Context, string, int, string, map[
 // function's own standalone contract, mirroring
 // TestWorktreeControlEnv_NonLocalEnvErrors above.
 func TestEnterWorktree_NonLocalEnvNoOps(t *testing.T) {
+	t.Parallel()
 	s := newSession(t)
 	s.mu.Lock()
 	s.env = &timeoutEnv{wd: "/tmp"}
@@ -229,6 +234,7 @@ func TestEnterWorktree_NonLocalEnvNoOps(t *testing.T) {
 // contract: a fresh session that never entered a worktree has no saved
 // restore env.
 func TestExitWorktree_NoSavedRestoreEnvReturnsFalse(t *testing.T) {
+	t.Parallel()
 	s := newSession(t)
 	root, ok, err := s.exitWorktree()
 	if err != nil || ok || root != "" {
@@ -244,6 +250,7 @@ func TestExitWorktree_NoSavedRestoreEnvReturnsFalse(t *testing.T) {
 // already-canonicalized paths, so this is only reachable via a direct call
 // with deliberately mismatched inputs, exactly as exercised here.
 func TestRelPathUnderManagedDir_RelErrorReturnsFalse(t *testing.T) {
+	t.Parallel()
 	_, ok := relPathUnderManagedDir("relative/path", "/absolute/dir")
 	if ok {
 		t.Fatalf("relPathUnderManagedDir with mismatched absolute/relative args: ok=true, want false")
@@ -251,6 +258,7 @@ func TestRelPathUnderManagedDir_RelErrorReturnsFalse(t *testing.T) {
 }
 
 func TestGitRunner_ExitZeroButErrorPropagates(t *testing.T) {
+	t.Parallel()
 	run := gitRunner(context.Background(), fakeZeroExitErrEnv{})
 	out, err := run("status")
 	if err == nil || err.Error() != "wait: unexpected I/O error" {
@@ -267,6 +275,7 @@ func TestGitRunner_ExitZeroButErrorPropagates(t *testing.T) {
 // model ignore the rich entries array and shell out to git log because the
 // message alone read as uninformative.
 func TestWorktreeListSummaryLine(t *testing.T) {
+	t.Parallel()
 	entries := []WorktreeListEntry{
 		{Name: "untouched-lane", AheadCommits: 0, Dirty: false, Merged: true},
 		{Name: "work-lane", AheadCommits: 1, Dirty: false, Merged: false},
@@ -286,6 +295,7 @@ func TestWorktreeListSummaryLine(t *testing.T) {
 // read instead of the entries array, so an unreadable lane must not be rendered
 // with the zero values that read as "empty and clean".
 func TestWorktreeListSummaryUnknownState(t *testing.T) {
+	t.Parallel()
 	got := worktreeListSummary([]WorktreeListEntry{
 		{Name: "unreadable", DirtyUnknown: true, AheadUnknown: true},
 	}, nil)
@@ -306,6 +316,7 @@ func TestWorktreeListSummaryUnknownState(t *testing.T) {
 // (including from finished sessions), not read as a narrow "stale
 // registrations" chore — no live run reached for prune under the old wording.
 func TestPruneDescriptionConveysBulkCleanup(t *testing.T) {
+	t.Parallel()
 	desc := tool.DefManageWorktree().Description
 	if strings.Contains(desc, "stale worktree registrations") {
 		t.Fatal("prune still described as 'stale worktree registrations' — undersells it")

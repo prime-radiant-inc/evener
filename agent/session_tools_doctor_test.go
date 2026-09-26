@@ -393,6 +393,7 @@ func TestDoctorEvener_SessionsRowCapDisclosed(t *testing.T) {
 // the single-source list both the schema and the dispatcher derive from —
 // the definition must carry exactly that list in its schema.
 func TestDoctorEvener_EnumSinglesource(t *testing.T) {
+	t.Parallel()
 	def := tool.DefDoctorEvener()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
