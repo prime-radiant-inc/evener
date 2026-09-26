@@ -820,6 +820,24 @@ type EvenerThread struct {
 	// a model ref. Snapshot-only like the effort fields beside it; live updates
 	// arrive as thread/vision-model/changed.
 	VisionModel string `json:"visionModel,omitempty"`
+	// Activity is the pulse meter of a live root session's whole tree (spec
+	// 16.4, S5): the root and every in-process descendant. It rides thread/list
+	// rows only, never a thread/read snapshot, because nothing announces its
+	// changes to a subscriber; the hub serves it through evener/activity/read,
+	// never navigation. Absent on descendant rows and from an older daemon.
+	Activity *ThreadActivity `json:"activity,omitempty"`
+}
+
+// ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
+// counts, oldest first, the last ending when the row was listed; each counts
+// the transcript items that finished and the tool output events in that minute.
+// LastActivityAt is the Unix-millisecond time of the tree's newest transcript
+// motion (a turn or item starting, a message or reasoning summary streaming, an
+// item finishing, a tool writing output), or the time the daemon began serving
+// this session when nothing has moved since.
+type ThreadActivity struct {
+	Minutes        []int `json:"minutes"`
+	LastActivityAt int64 `json:"lastActivityAt"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
