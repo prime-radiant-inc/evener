@@ -374,3 +374,133 @@ func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
 		t.Fatalf("notifies after the replay = %d, want %d (the replayed Stop re-parked and re-armed nothing)", got, afterReEngage)
 	}
 }
+
+// A replayed accept must not unpark the rail: replay re-runs no effect
+// callback, so it releases no QueueHeld, and a Stop that landed after the
+// original application must keep the session silent. A client retrying a
+// turn/queue whose response was lost wakes nothing.
+func TestReplayedAcceptAfterStopDoesNotWakeTheSession(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_replay_accept", "delegate:dlg_replay_accept/delivery/1")
+
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-replayed-accept",
+	}, func() {}); err != nil {
+		t.Fatalf("first stop: %v", err)
+	}
+
+	// Fresh re-engagement: the queue accept unparks and re-arms.
+	queueOneMutation(t, s, "q-retry-me", "the user re-engages")
+	wake, _, pending := attentionRailState(s)
+	if !wake || pending != 1 {
+		t.Fatalf("re-engagement left wake=%t pending=%d; this test is not in the state it means to be", wake, pending)
+	}
+
+	// A second Stop parks again, now over the re-armed wake.
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-after-re-engagement",
+	}, func() {}); err != nil {
+		t.Fatalf("second stop: %v", err)
+	}
+	wake, _, _ = attentionRailState(s)
+	if wake {
+		t.Fatal("the second stop did not park the re-armed rail; this test is not in the state it means to be")
+	}
+	// The queue accept's client retries it after its response was lost: the
+	// store replays the terminal mutation, and the replayed accept must not
+	// unpark.
+	queueOneMutation(t, s, "q-retry-me", "the user re-engages")
+
+	wake, _, pending = attentionRailState(s)
+	if wake {
+		t.Fatal("a replayed accept unparked the attention rail past the Stop that landed after its original application")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the replayed accept = %d, want 1", pending)
+	}
+	// The replayed accept may still re-provoke the pending-input wake — a
+	// replayed queue accept owes the queue its run (wms7), and the parked
+	// claim path declines the nudge. That wake is the queue's business; the
+	// attention rail's state is this test's contract, asserted above and
+	// below.
+
+	// And the rail still suppresses a fresh arm.
+	armOneRootAttention(t, s, "dlg_replay_accept", "delegate:dlg_replay_accept/delivery/2")
+	wake, _, pending = attentionRailState(s)
+	if wake {
+		t.Fatal("a fresh delegate notification woke a session the replay left unparked")
+	}
+	if pending != 2 {
+		t.Fatalf("pending attention ids after the fresh arm = %d, want 2", pending)
+	}
+}
+
+// A replayed Stop parks while either durable hold its fresh application
+// mirrored still stands. Today's re-engagements release QueueHeld and
+// SteeringHeld together, so a steering hold outliving its queue hold takes
+// the same hand-seeded shape the steering-hold tests use — the guard reads
+// both precisely so a future asymmetric release cannot leave a stopped rail
+// live.
+func TestReplayedStopParksWhileASteeringHoldStands(t *testing.T) {
+	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_steer_hold", "delegate:dlg_steer_hold/delivery/1")
+
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-with-a-steer-hold",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Fresh re-engagement releases both holds and unparks.
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-after-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the user re-engages"}},
+	}); err != nil {
+		t.Fatalf("turn/start after the stop: %v", err)
+	}
+	wake, _, _ := attentionRailState(s)
+	if !wake {
+		t.Fatal("re-engagement did not re-arm; this test is not in the state it means to be")
+	}
+
+	// The asymmetric hold: steering standing, queue released.
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = false
+		snapshot.SteeringHeld = true
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the steering-only hold: %v", err)
+	}
+	beforeReplay := notifies.Load()
+
+	// The Stop's client retries it: the replay must park against the standing
+	// steering hold.
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-with-a-steer-hold",
+	}, func() {}); err != nil {
+		t.Fatalf("replayed stop: %v", err)
+	}
+
+	wake, _, pending := attentionRailState(s)
+	if wake {
+		t.Fatal("the replayed Stop left the attention rail live beside a standing steering hold it should have parked against")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the replayed stop = %d, want 1", pending)
+	}
+	if got := notifies.Load(); got != beforeReplay {
+		t.Fatalf("notifies after the replayed stop = %d, want %d (the park asks for no wake)", got, beforeReplay)
+	}
+}

@@ -370,7 +370,12 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnStartResponse{}, clientMutationRejectionError(lookup.Record)
 	}
-	s.unparkRootDelegateAttention()
+	// Only a FRESH application unparks: a replayed accept re-runs no effect
+	// callback, so it releases no QueueHeld, and a Stop that landed after the
+	// original must keep the rail parked.
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
+	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
 			return appwire.TurnStartResponse{}, err
@@ -970,11 +975,12 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, clientMutationRejectionError(lookup.Record)
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
-		// Park on replay only when the durable hold it mirrors is still set.
-		// Replay re-runs no accept callback, so QueueHeld/SteeringHeld are
-		// not re-taken — a Stop retried after the user re-engaged must not
-		// re-park the rail past their live engagement.
-		if s.clientMutations.snapshot().QueueHeld {
+		// Park on replay only while a durable hold the fresh Stop mirrored is
+		// still set. Replay re-runs no accept callback, so neither hold is
+		// re-taken — a Stop retried after the user re-engaged must not
+		// re-park the rail past their live engagement, and a Stop whose
+		// steering hold outlived its queue hold still owes the rail silence.
+		if snapshot := s.clientMutations.snapshot(); snapshot.QueueHeld || snapshot.SteeringHeld {
 			s.parkRootDelegateAttention()
 		}
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
