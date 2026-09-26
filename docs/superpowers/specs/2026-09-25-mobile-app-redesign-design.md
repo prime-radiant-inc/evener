@@ -284,7 +284,7 @@ These are the hub's levels and names, shared with the web because the setting is
 | Time marker | Centered caption, ink-low: "Today 2:14 PM". Shown at a turn start after a gap of 10 minutes or more, and at day changes. |
 | Your message | Right-aligned bubble, max 85% width, a `bubble` fill (the accent tint in both themes, as on the web), Source Serif 4 17/25 as on the web, continuous 18pt radius. Steered messages carry a small "Steered in mid-turn" caption; queued messages that were delivered carry "Queued". Long-press: Copy, Fork from here, Quote. |
 | Agent message | No bubble. Source Serif 4, 17/26, ink-hi, full width with 16pt margins. Markdown: headings in SF Pro semibold (20/17/15), lists, block quotes with a 2pt ink-low rule, tables and code blocks in their own horizontally scrolling insets, links in accent ink. Paths to files become document chips. Long-press: Copy, Quote in reply, Select text. |
-| Activity run | One collapsed line per run of tool calls: "▸ 12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files" in 14pt ink-mid, with how long the run took. A live run lists only its finished steps; the step in progress is the status tray's one live line, so "working" is said once. Failure counts show in red ink even when collapsed. Tap to expand into one line per step: intent sentence, target in SF Mono, and a status mark. Tapping a step shows its evidence: command output in an SF Mono inset (first 40 lines, then "Show all 412 lines" which opens a full-screen log viewer), diffs as unified hunks with the web's add/delete washes and a "+18 −4" summary. A live run never folds. |
+| Activity run | One collapsed line per run of tool calls: "▸ 12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files" in 14pt ink-mid, with how long the run took. A live run lists only its finished steps; the step in progress is the status tray's one live line, so "working" is said once. Failure counts show in red ink even when collapsed. Tap to expand into one line per step: intent sentence, target in Menlo, and a status mark. Tapping a step shows its evidence: command output in an Menlo inset (first 40 lines, then "Show all 412 lines" which opens a full-screen log viewer), diffs as unified hunks with the web's add/delete washes and a "+18 −4" summary. A live run never folds. |
 | Thinking | Settled: "Thought for 12s ›" (collapsed). Live: "Thinking… ~1.2K tokens" with the one sanctioned pulse. |
 | Subagent | The web's shape: a 2pt left rail in the state's hue (green running, red failed, edge-strong done), square corners, no card and no pill. The title in SF Pro semibold 15 with the state word and its time in that state at the trailing edge ("failed · 6m", in red ink when failed), and the latest activity beneath in SF Pro 14/19, ink-mid (it's status, not prose, and it reads the same as in the Subagents list). Tap opens the subagent. |
 | Document chip | The kind (Plan, Spec, Doc, Code, Image), the document's own title from its first heading in the reading serif, then the file name, line count and age. Tap opens the Reader. A blue dot and "changed since you last read" mark a document that changed since you last opened it. |
@@ -364,7 +364,7 @@ When the session has a pending question or approval, an amber-edged dock replace
 └─────────────────────────────────────────────┘
 ```
 
-- No header: the ✋ mark and the amber edge say what this is. What it wants in SF Pro semibold (the hub's sentence, not the agent's prose); the tool and target in SF Mono; one plain sentence of scope in ink-mid.
+- No header: the ✋ mark and the amber edge say what this is. What it wants in SF Pro semibold (the hub's sentence, not the agent's prose); the tool and target in Menlo; one plain sentence of scope in ink-mid.
 - The choices are buttons, because each acts on the first tap, and they run from the narrowest grant to the broadest, so a reflex tap grants the least: "Allow this file only" as the filled primary, "Allow all of <folder>" accent-tinted, each with its consequence on a second line, then Deny as a plain text button in ink. Deny is the safe outcome, so it isn't red. The result shows as a toast ("Allowed once") and in the transcript history.
 - "Allow this file only" covers exactly one action, so a batch job asks again for its next file. "Allow all of <folder>" appears when the action targets a folder and ends the prompts for this session (server addition S12). When the action has no folder scope, the first button is "Allow once · Just this action".
 
@@ -400,7 +400,7 @@ Controls row, left to right:
 Opened by tapping the title. A large-detent sheet:
 
 - **Title** (tap to rename) and state line.
-- **Where:** host (with its connection dot), project, working directory (SF Mono), branch or worktree lane.
+- **Where:** host (with its connection dot), project, working directory (Menlo), branch or worktree lane.
 - **Model:** model and effort (tappable, same sheet as the composer chip); vision model if set.
 - **Plugins:** "10 plugins · chosen at start" and the list. Footer: "Plugins are chosen when a session starts. To change them, start a new session or fork this one."
 - **Access:** sandbox mode and network, read-only.
@@ -420,7 +420,7 @@ The same shared notes the web shows in its Notes panel: your note, the agent's n
 - **Sheet** ("Notes & links", large detent, Done). Three groups, as on the web:
   - **Your note.** A serif editor that looks like one: a visible field border, a focus ring in the accent color, and the placeholder "Make a note…" when empty. Below it one status line: "Your note stays on this session. Saving it will wake the agent." when the agent isn't in a turn, "Your note stays on this session. The agent is told when it changes." otherwise, "Saves in 10 seconds, or when you close this." once you leave the field, then "Saved". (The earlier "The agent gets your note at its next step" echoed Steer's own wording, and a round-4 participant sent a steer instead of a note.) Opening the sheet from the notes bar while it shows your note puts the cursor at the end of your note, ready to add to it: in round 4, without a visible field and focus, one participant twice typed into the middle of the note and another concluded the note couldn't be edited at all.
   - **Agent.** The agent's note in the serif, or "No agent note yet".
-  - **Links.** Each row shows the label and, beneath it, the full URL in SF Mono, wrapping only after a slash. The URL is never hidden, so a trusted-looking label can't disguise where a link goes. Web links show a globe, file links a document. A web link opens in an in-app browser (SFSafariViewController) over the sheet, with Done coming back. A `file://` link opens in the Reader when it names a document the phone can show; any other file keeps its text and isn't tappable, as on the web. Swipe left for Remove; long-press for Open, Copy link and Remove link. Removal can't be undone from the phone, because only the agent adds links (`urls/add` is agent-only), and the toast says so. Footer: "The agent adds links as it works. Swipe left on one to remove it." Empty: "No links yet".
+  - **Links.** Each row shows the label and, beneath it, the full URL in Menlo, wrapping only after a slash. The URL is never hidden, so a trusted-looking label can't disguise where a link goes. Web links show a globe, file links a document. A web link opens in an in-app browser (SFSafariViewController) over the sheet, with Done coming back. A `file://` link opens in the Reader when it names a document the phone can show; any other file keeps its text and isn't tappable, as on the web. Swipe left for Remove; long-press for Open, Copy link and Remove link. Removal can't be undone from the phone, because only the agent adds links (`urls/add` is agent-only), and the toast says so. Footer: "The agent adds links as it works. Swipe left on one to remove it." Empty: "No links yet".
   - Ended sessions show what was saved, read-only, with no editor and no Remove; with nothing saved, "No shared notes".
 - **Saving.** Saving your note is a steer: the daemon hands it to the agent at its next step and wakes an agent that isn't in a turn (`SetHumanNote` in agent/session_notes_rpc.go). Closing the sheet (Done or a swipe down) saves at once and confirms with a toast ("Note saved", or "Note saved. The agent is reading it." when it woke the agent): closing is a clear "done", and round 4 showed a delayed, unconfirmed save left people unsure anything was saved. Leaving the field while the sheet stays open schedules the save 10 seconds later, as the web does, and returning to it cancels that, so a burst of edits reaches the agent once.
 - **Transcript.** A saved note shows where it reached the agent: "You updated your note" over the text in the serif, with a left rule, at every detail level (the web shows the same moment as a divider labeled "Human note").
@@ -460,7 +460,7 @@ Plans and artifacts are the main things reviewed on the phone.
 
 ### 10.1 Files & artifacts
 
-A sheet listing everything the session wrote or linked, newest first: documents (with type labels Plan, Spec, Doc, Code, Image, the path in SF Mono, line count and last update) and artifacts (title, version, last update). Blue dots mark items new or changed since you last opened them.
+A sheet listing everything the session wrote or linked, newest first: documents (with type labels Plan, Spec, Doc, Code, Image, the path in Menlo, line count and last update) and artifacts (title, version, last update). Blue dots mark items new or changed since you last opened them.
 
 ### 10.2 Reader
 
@@ -477,7 +477,7 @@ both take the tree lock, but…              💬 1
 💬 2        ‹ Change 1 of 3 ›         Send review
 ```
 
-- Full-screen reading surface: Source Serif 4 18/28 in the `prose` color on page, 16pt margins. Headings in serif semibold, ink-hi. Code blocks in SF Mono 13 insets that scroll horizontally. Task lists render as checkboxes (read-only). Tables scroll horizontally.
+- Full-screen reading surface: Source Serif 4 18/28 in the `prose` color on page, 16pt margins. Headings in serif semibold, ink-hi. Code blocks in Menlo 13 insets that scroll horizontally. Task lists render as checkboxes (read-only). Tables scroll horizontally.
 - Header: an empty nav bar until the document's own first heading scrolls away; then its title takes the nav bar, with the kind and age beneath. Above the heading, one caption line in ink-low: "Plan · updated 3m ago", then "3 changes since you read it yesterday" in accent when there are changes. The outline button (headings list for jumping) and ⋯ (Open session, Copy path, Copy text). Back carries a small amber dot while alerts are held (section 13.3).
 - **Changes since you last read:** changed paragraphs get a blue left rule, and nothing else (no "Changed" label); the caption says how many ("3 changes since you read it yesterday"), and the bottom bar steps through them ("‹ Change 1 of 3 ›"), within thumb reach. The caption says when you read it, so it can't be mistaken for a first read.
 - **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item, and its marker (with a count) sits on that paragraph or on that list item, never on the list's first line. Comments are drafts until sent and persist per document. Until you comment, a one-line caption above the bottom bar says "Touch and hold a paragraph to comment on it"; there is no tip card over the text.
@@ -494,7 +494,7 @@ Overall: close. Fix the ordering and go.
 ```
 
 - Documents over 512 KB show the first 512 KB with "Showing the first 512 KB of 1.3 MB".
-- Non-markdown files render as code with line numbers (SF Mono) or as images; binary files show a notice.
+- Non-markdown files render as code with line numbers (Menlo) or as images; binary files show a notice.
 - Reading position persists per document. Leaving before the end leaves the Board's "Continue reading" row (section 7.1).
 
 ### 10.3 Artifact viewer
@@ -535,7 +535,7 @@ More options                                   ›
 - **Project:** recent projects on the chosen host (name and path), then "Browse folders on <host>…" with path completion and "New folder".
 - **Model:** recent (up to five), then all models grouped by provider profile. Each row: display name, provider profile, capability icons (vision, tools), context size, price per million tokens. The launch row shows the provider as "via lunaroute"; a bare profile name meant nothing to first-glance participants.
 - **Effort:** "How long it thinks before acting" under the label, then a segmented control showing only the levels the model supports. The model sheet opened from here has no effort control of its own, so effort lives in one place in this flow.
-- **Plugins:** "10 of 14" opens a checklist grouped by marketplace (headers as typed, in SF Mono, never uppercased), with All and None. Its footer says "10 of 14 on" without re-listing names the checkmarks already show. Each row: name, one-line description, counts (skills, agents, commands, hooks, MCP servers), and any preview warning. Footer: "Plugins can't be changed after the session starts." Start is disabled with an explanation while a selected plugin has a blocking problem.
+- **Plugins:** "10 of 14" opens a checklist grouped by marketplace (headers as typed, in Menlo, never uppercased), with All and None. Its footer says "10 of 14 on" without re-listing names the checkmarks already show. Each row: name, one-line description, counts (skills, agents, commands, hooks, MCP servers), and any preview warning. Footer: "Plugins can't be changed after the session starts." Start is disabled with an explanation while a selected plugin has a blocking problem.
 - **Access:** Full access, Workspace write, Read-only, Restricted; network on or off.
 - **Branch:** current branch, or a new worktree branch (name field).
 - **More options:** the few launch settings worth touching on a phone (context strategy, max subagent depth, max turns), each showing the hub default. Everything else stays at hub defaults.
@@ -586,7 +586,7 @@ Marks always pair shape with color so they read without color.
 
 ### 13.3 In-app alerts (this version's push)
 
-- **When:** a session you are not looking at becomes Failed, Question, Approval, Warning or Restart needed; or a hub notice appears.
+- **When:** a session you are not looking at becomes Failed, Question, Approval, Warning or Restart needed; or a hub notice appears; or, with finished results turned on in Hub > Alerts, a session finishes its turn. A finished alert has a blue edge and the finished mark, and never joins, replaces or waits with alerts about sessions that need you.
 - **Alert card:** drops in just below the nav bar (never over it, so Back, the title and the ask dock stay reachable), with an amber edge, the mark, session title and why line. It stays 8 seconds and never goes away while a finger is on it; swipe up to dismiss. Tap opens the session at the relevant spot, pushed onto the stack so Back returns to where you were.
 - **Coalescing:** events within 5 seconds combine: "3 sessions need you". Tapping opens the Board scrolled to Needs you.
 - **Quiet while reading:** in the Reader, the Artifact viewer, or while typing in the composer, banners are held; the Back button shows how many are waiting as an amber count (a bare dot meant nothing to a round-4 participant). Neither screen shows the Next capsule. Held banners show when you leave, combined, and Next serves the held sessions first.
@@ -659,9 +659,9 @@ Each hue has one job, including in the details: switches are accent, not the wor
 | Section labels | SF Pro semibold | 12, uppercase, +0.06em | one or two words |
 | Agent prose | Source Serif 4 | 17/26 | scales with Dynamic Type; optical size on |
 | Documents | Source Serif 4 | 18/28; headings semibold 24/20/18 | Reader |
-| Machine text | SF Mono | 13/18; tags 12 | paths, commands, model ids, code |
+| Machine text | Menlo, the app's existing machine face (the markdown renderer picks faces by name and can't reach SF Mono) | 13/18; tags 12 | paths, commands, model ids, code |
 
-The serif is the conversation's voice, as on the web: what the agent wrote, what you wrote, the dock's question, notes, and the Board's finished excerpts. SF Pro is the phone's voice for everything you operate. SF Mono marks only what a machine reads (paths, commands, branch names, code), never counts or model names. Status lines (a subagent's latest activity, the hub's approval prompt) are SF Pro: the serif is for words someone wrote. "Reading font: Sans" in Display swaps the serif for SF Pro.
+The serif is the conversation's voice, as on the web: what the agent wrote, what you wrote, the dock's question, notes, and the Board's finished excerpts. SF Pro is the phone's voice for everything you operate. Menlo marks only what a machine reads (paths, commands, branch names, code), never counts or model names. Status lines (a subagent's latest activity, the hub's approval prompt) are SF Pro: the serif is for words someone wrote. "Reading font: Sans" in Display swaps the serif for SF Pro.
 
 ### 16.3 Layout, shape, elevation
 
@@ -672,7 +672,7 @@ The serif is the conversation's voice, as on the web: what the agent wrote, what
 
 ### 16.4 The pulse meter (signature element)
 
-The one piece of expression in the app: a live 7-bar activity meter (22×15pt). Each bar is one minute of activity (transcript items and tool output events), newest on the right, older bars fainter so time reads left to right. Every meter shares one fixed, fleet-wide log scale, so two meters can be compared and a trickle never looks like a flood. A 1pt baseline is always drawn, and a minute with nothing in it leaves only the baseline, so a session going quiet shows a flat right end and a stuck one lies flat before turning into the amber hollow ring after 10 minutes. It is green in the alive hue and grays when the connection is lost. With Reduce Motion, bars change height without animation.
+The one piece of expression in the app: a live 7-bar activity meter (22×15pt). Each bar is one minute of activity (transcript items and tool output events), newest on the right, older bars fainter so time reads left to right. Every meter shares one fixed, fleet-wide log scale, so two meters can be compared and a trickle never looks like a flood. A 1pt baseline is always drawn, and a minute with nothing in it leaves only the baseline, so a session going quiet shows a flat right end and a stuck one lies flat, then turns amber after 10 minutes (the "May be stuck" mark, 13.1). It is green in the alive hue and grays when the connection is lost. With Reduce Motion, bars change height without animation.
 
 One meter per view, so motion means the thing you're watching moved:
 

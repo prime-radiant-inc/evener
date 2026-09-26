@@ -666,7 +666,7 @@ it("uses the dimmer prose ink in dark mode", () => {
 });
 ```
 
-Add to `mobile-native/src/TimelineItem.test.tsx` a case that renders a `user` row (build it the way the file's existing user-row cases do) and asserts that the message text node's style has `fontFamily: "SourceSerif4-Regular"`, `fontSize: 17`, `lineHeight: 25`, and that the bubble view's `backgroundColor` is `#DDEBFC` in light mode. The text itself and its accessibility label ("You: …") must not change.
+Add to `mobile-native/src/TimelineItem.test.tsx` a case that renders a `user` row (a `MobileTimelineItem` from `src/projectedRows.ts` such as `{ kind: "user", id: "u-1", text: "Ship it" }`, with the `MarkdownResponse` and `TranscriptImages` mocks the file's question case uses) and asserts that the message text node's style has `fontFamily: "SourceSerif4-Regular"`, `fontSize: 17`, `lineHeight: 25`, and that the bubble view's `backgroundColor` is `#DDEBFC` in light mode. The text itself and its accessibility label ("You: …") must not change.
 
 - [ ] **Step 2: Run them to verify they fail**
 
