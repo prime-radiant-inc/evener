@@ -452,6 +452,58 @@ func TestReplaySurveyFailuresKeepsNestedMultilineContinuation(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsNestedMultilineContinuationWithParentDiagnostic
+// covers the same tail when expansion also finds one parent-owned diagnostic.
+// The ordinary tail must win over older source diagnostics so a failing
+// subtest's multiline diff remains readable.
+func TestReplaySurveyFailuresKeepsNestedMultilineContinuationWithParentDiagnostic(t *testing.T) {
+	const continuation = "        - last subtest diff continuation line 2"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("    parent_test.go:1: parent diagnostic\n")
+	log.WriteString("=== RUN   TestParent/earlier\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    earlier_test.go:%d: earlier diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/last\n")
+	log.WriteString("        - last subtest diff line 1\n")
+	log.WriteString(continuation + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/last (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, continuation) {
+		t.Fatalf("nested multiline continuation was replaced by parent diagnostics: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresExpandsChildDiagnosticWithEmptyWindow covers a
+// mismatched NAME owner whose verdict leaves no ordinary context before the
+// parent marker. Expansion must still surface the failing child's diagnostic.
+func TestReplaySurveyFailuresExpandsChildDiagnosticWithEmptyWindow(t *testing.T) {
+	const diagnostic = "    child_test.go:7: boom"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== CONT  TestParent\n"+
+			"=== RUN   TestParent/child\n"+
+			diagnostic+"\n"+
+			"=== NAME  TestSibling\n"+
+			"--- PASS: TestSibling (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n"+
+			"    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, path, 10), "\n")
+	if !strings.Contains(got, diagnostic) {
+		t.Fatalf("child diagnostic was omitted from empty-window expansion: %q", got)
+	}
+}
+
+func TestSurveyFailureNameIgnoresPanicMarker(t *testing.T) {
+	if got := surveyFailureName("panic: child process died"); got != "" {
+		t.Fatalf("panic marker got failure name %q, want empty", got)
+	}
+}
+
 // TestReplaySurveyFailuresHandlesBufferedNestedVerdicts is a source-order
 // smoke/contract test for the Go 1.27 flushToParent shape: a sibling's
 // top-level PASS precedes its indented nested verdicts, then the parent's

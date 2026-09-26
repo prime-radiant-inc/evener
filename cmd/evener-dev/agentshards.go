@@ -810,7 +810,7 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 			end++
 		}
 		if start == i || surveyFailureHasMismatchedOwner(lines, i, emitted) {
-			if expanded, ok := expandSurveyFailure(lines, i, emitted); ok {
+			if expanded, ok := expandSurveyFailure(lines, i, emitted, start); ok {
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
 				}
@@ -843,6 +843,9 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 // treating a completed subtest or an interleaved parallel test as the parent's
 // boundary.
 func surveyFailureName(line string) string {
+	if strings.HasPrefix(line, "panic:") {
+		return ""
+	}
 	name := strings.TrimPrefix(line, "--- FAIL:")
 	if end := strings.Index(name, " ("); end >= 0 {
 		name = name[:end]
@@ -875,13 +878,17 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 
 // expandSurveyFailure recovers a bounded set of a parent's output when the
 // nearby excerpt contains only its verdict or a different test owns the
-// nearest context. Ordinary blocks retain their established context (including
-// nested failure markers). Source diagnostics are associated with the most
-// recent go test RUN/CONT/NAME frame; a completed child or sibling returns
+// nearest context. The lines from ordinaryStart up to marker are the
+// already-selected ordinary context; its non-diagnostic tail is preferred so
+// multiline output remains intact. Source diagnostics are associated with the
+// most recent go test RUN/CONT/NAME frame; a completed child or sibling returns
 // ownership to its parent. Parent-owned diagnostics are preferred over nested
-// or sibling diagnostics. The result is still no larger than one block's
-// existing before bound plus its marker.
-func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
+// or sibling diagnostics. If ordinary context exists, expansion requires a
+// parent-owned source diagnostic; an empty ordinary window can still expand
+// child output.
+// The result is still no larger than one block's existing before bound plus its
+// marker.
+func expandSurveyFailure(lines []string, marker, emitted, ordinaryStart int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
 		return nil, false
@@ -923,46 +930,43 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 			parentDiagnostic = true
 		}
 		candidates = append(candidates, candidate{
-			index:       index,
+			index:       run + 1 + index,
 			line:        line,
 			diagnostic:  diagnostic,
 			parentLevel: parentLevel,
 		})
 	}
-	if len(candidates) == 0 || !parentDiagnostic {
+	if len(candidates) == 0 || (ordinaryStart < marker && !parentDiagnostic) {
 		return nil, false
 	}
 
 	const maxExpandedLines = surveyContextBefore
-	keep := make(map[int]bool, min(len(candidates), maxExpandedLines))
+	keep := make([]bool, len(candidates))
 	selectedCount := 0
-	for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
-		candidate := candidates[i]
-		if candidate.diagnostic && candidate.parentLevel {
-			keep[candidate.index] = true
-			selectedCount++
-		}
-	}
-	for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
-		candidate := candidates[i]
-		if candidate.diagnostic && !keep[candidate.index] {
-			keep[candidate.index] = true
-			selectedCount++
-		}
-	}
-	if selectedCount < maxExpandedLines {
+	selectNewest := func(selectCandidate func(candidate) bool) {
 		for i := len(candidates) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
-			candidate := candidates[i]
-			if candidate.diagnostic {
+			if keep[i] || !selectCandidate(candidates[i]) {
 				continue
 			}
-			keep[candidate.index] = true
+			keep[i] = true
 			selectedCount++
 		}
 	}
+	selectNewest(func(candidate candidate) bool {
+		return candidate.index >= ordinaryStart && !candidate.diagnostic
+	})
+	selectNewest(func(candidate candidate) bool {
+		return candidate.diagnostic && candidate.parentLevel
+	})
+	selectNewest(func(candidate candidate) bool {
+		return candidate.diagnostic
+	})
+	selectNewest(func(candidate candidate) bool {
+		return !candidate.diagnostic
+	})
 	selected := make([]candidate, 0, selectedCount)
-	for _, candidate := range candidates {
-		if keep[candidate.index] {
+	for index, candidate := range candidates {
+		if keep[index] {
 			selected = append(selected, candidate)
 		}
 	}
