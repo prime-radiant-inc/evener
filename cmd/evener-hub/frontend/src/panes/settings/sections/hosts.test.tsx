@@ -1,10 +1,11 @@
 import { type HostRow, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
+import { enterText } from "../../../textEntryTestUtils";
 import { HOST_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
@@ -71,26 +72,6 @@ test("an offline row keeps rendering its retained facts", async () => {
   expect(screen.getByText(/linux\/arm64/)).toBeTruthy();
 });
 
-test("add dialog submits name, address, and key", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("evener/host/list", () => ({ hosts: [] }));
-  fake.on("evener/host/add", () => row({ name: "gamma", address: "g.example", keyPath: "/keys/g" }));
-  render(<HostsSection sectionId="hosts" />);
-  await user.click(await screen.findByRole("button", { name: "Add host" }));
-  await user.type(screen.getByLabelText("Name"), "gamma");
-  await user.type(screen.getByLabelText("SSH address"), "g.example");
-  await user.type(screen.getByLabelText("Key path"), "/keys/g");
-  const dialog = screen.getByRole("dialog");
-  await user.click(within(dialog).getByRole("button", { name: "Add host" }));
-  await waitFor(() => {
-    expect(fake.calls.filter((c) => c.method === "evener/host/add")).toHaveLength(1);
-  });
-  expect(fake.calls.find((c) => c.method === "evener/host/add")?.params).toMatchObject({
-    entry: { name: "gamma", address: "g.example", keyPath: "/keys/g" },
-  });
-});
-
 test("the add dialog submits every entry field", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -99,13 +80,13 @@ test("the add dialog submits every entry field", async () => {
   render(<HostsSection sectionId="hosts" />);
   await user.click(await screen.findByRole("button", { name: "Add host" }));
   await user.type(screen.getByLabelText("Name"), "gamma");
-  await user.type(screen.getByLabelText("SSH address"), "g.example");
-  await user.type(screen.getByLabelText("User"), "operator");
+  await enterText(user, screen.getByLabelText("SSH address"), "g.example");
+  await enterText(user, screen.getByLabelText("User"), "operator");
   await user.type(screen.getByLabelText("Key path"), "/keys/g");
-  await user.type(screen.getByLabelText("Evener path"), "/opt/evener");
-  await user.type(screen.getByLabelText("Hub config path"), "/etc/evener/hub.toml");
-  await user.type(screen.getByLabelText("Hub address"), "127.0.0.1:9180");
-  await user.type(screen.getByLabelText("Roots"), "/srv/one{enter}/srv/two");
+  await enterText(user, screen.getByLabelText("Evener path"), "/opt/evener");
+  await enterText(user, screen.getByLabelText("Hub config path"), "/etc/evener/hub.toml");
+  await enterText(user, screen.getByLabelText("Hub address"), "127.0.0.1:9180");
+  await enterText(user, screen.getByLabelText("Roots"), "/srv/one\n/srv/two");
   const dialog = screen.getByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "Add host" }));
   await waitFor(() => {
@@ -145,7 +126,7 @@ test("a host row offers Edit, prefills the whole entry, and sends no name input"
   expect(within(dialog).queryByLabelText("Name")).toBeNull();
 
   await user.clear(within(dialog).getByLabelText("SSH address"));
-  await user.type(within(dialog).getByLabelText("SSH address"), "b2.example");
+  await enterText(user, within(dialog).getByLabelText("SSH address"), "b2.example");
   await user.click(within(dialog).getByRole("button", { name: "Save" }));
   await waitFor(() => {
     expect(fake.calls.filter((c) => c.method === "evener/host/update")).toHaveLength(1);
@@ -228,7 +209,7 @@ test("add validation error renders inline", async () => {
   render(<HostsSection sectionId="hosts" />);
   await user.click(await screen.findByRole("button", { name: "Add host" }));
   await user.type(screen.getByLabelText("Name"), "gamma");
-  await user.type(screen.getByLabelText("SSH address"), "g.example");
+  await enterText(user, screen.getByLabelText("SSH address"), "g.example");
   const dialog = screen.getByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "Add host" }));
   expect(await within(dialog).findByRole("alert")).toBeTruthy();
@@ -288,7 +269,7 @@ test("an external detach converges via the mounted poll: online -> offline", asy
     // mid-attach, so only the pane's mounted poll re-reads the rows
     // (round-4 M3): without it the row stays "online" with no Connect button.
     detached = true;
-    await vi.advanceTimersByTimeAsync(HOST_POLL_MS);
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
 
     await waitFor(() => expect(screen.getByText("offline")).toBeTruthy());
     expect(screen.queryByText("online")).toBeNull();
@@ -322,13 +303,16 @@ test("load failure shows retry", async () => {
   });
   render(<HostsSection sectionId="hosts" />);
   expect(await screen.findByText("Couldn't load hosts")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  vi.useFakeTimers();
-  try {
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  } finally {
-    vi.useRealTimers();
-  }
+  const reads = () => fake.calls.filter((call) => call.method === "evener/host/list").length;
+  const before = reads();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  // Retry re-reads the registry, and the test ends once that read has failed
+  // again rather than letting its update land in the next test.
+  await waitFor(() => {
+    expect(reads()).toBe(before + 1);
+    expect(hostsStore.getState().load.phase).toBe("error");
+  });
+  expect(screen.getByText("Couldn't load hosts")).toBeTruthy();
 });
 
 test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {
@@ -352,7 +336,7 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
     // reconnect, another client's Connect — so no local action triggers a
     // refresh. The mid-attach poll re-reads the row.
     settled = true;
-    await vi.advanceTimersByTimeAsync(HOST_POLL_MS);
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
 
     const settledRow = screen.getByText("beta").closest("li")!;
     await waitFor(() => {

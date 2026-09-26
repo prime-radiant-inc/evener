@@ -1,4 +1,4 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -273,6 +273,97 @@ test("a failed save while removing a config file toasts failure", async () => {
   expect(getToasts().some((t) => t.text.includes("disk full"))).toBe(false);
 });
 
+test("adding a config file with invalid path shows error without saving", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", () => ({ path: "", valid: false, error: "path does not exist" }));
+  const setLayerSpy = vi.fn();
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("No MCP config files. Add one below.");
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+  await user.keyboard("/bad/path");
+  await user.keyboard("{Enter}");
+  const addButtons = screen.getAllByRole("button", { name: "Add" });
+  await user.click(addButtons[0]!);
+  expect(await screen.findByText("path does not exist")).toBeTruthy();
+  expect(setLayerSpy).not.toHaveBeenCalled();
+});
+
+test("adding a config file when setLayer fails returns error to PathListEditor", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", () => ({ path: "/etc/mcp.json", valid: true }));
+  fake.on("evener/launch/setLayer", () => {
+    throw new WireError("server error", -1);
+  });
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("No MCP config files. Add one below.");
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+  await user.keyboard("/etc/mcp.json");
+  await user.keyboard("{Enter}");
+  const addButtons = screen.getAllByRole("button", { name: "Add" });
+  await user.click(addButtons[0]!);
+  // The add fails — the error text should appear (friendlyErrorMessage converts WireError)
+  await screen.findByText("server error");
+});
+
+test("adding an inline server when setLayer fails shows error message", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/srv", valid: true }));
+  fake.on("evener/launch/setLayer", () => {
+    throw new WireError("persist failed", -1);
+  });
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("No inline MCP servers. Add one below.");
+  await user.type(screen.getByPlaceholderText("name"), "srv");
+  await user.type(screen.getByPlaceholderText("command"), "/usr/bin/srv");
+  const addButtons = screen.getAllByRole("button", { name: "Add" });
+  await user.click(addButtons[addButtons.length - 1]!);
+  expect(await screen.findByText("persist failed")).toBeTruthy();
+});
+
+test("removing an inline server when setLayer fails shows error toast", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({
+    mcpConfigs: [],
+    mcps: [{ name: "srv", command: "/usr/bin/srv", args: [] }],
+  }));
+  fake.on("evener/launch/setLayer", () => {
+    throw new WireError("remove denied", -1);
+  });
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("srv → /usr/bin/srv");
+  await user.click(screen.getByRole("button", { name: "Remove srv" }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toContain("Remove failed: remove denied"));
+});
+
+test("cancelling the remove server dialog does not call setLayer", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({
+    mcpConfigs: [],
+    mcps: [{ name: "srv", command: "/usr/bin/srv", args: [] }],
+  }));
+  const setLayerSpy = vi.fn();
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("srv → /usr/bin/srv");
+  await user.click(screen.getByRole("button", { name: "Remove srv" }));
+  expect(screen.getByRole("dialog", { name: "Remove MCP server" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(setLayerSpy).not.toHaveBeenCalled();
+});
+
 // The discovered-servers block reads evener/settings/overview, which is this
 // hub's own read (settingsOverview.ts) and is NOT on the proxy allow-list - so
 // it can only ever describe the controller's hub. Under a remote selection it
@@ -306,4 +397,6 @@ test("the local hub still renders the discovered-servers block", async () => {
 
   expect(screen.getByText("Discovered servers")).toBeTruthy();
   expect(screen.getByText(/local-tool/)).toBeTruthy();
+  // The mount's launch-layer read lands before the test ends, not in the next.
+  await screen.findByText("No inline MCP servers. Add one below.");
 });
