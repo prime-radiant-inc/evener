@@ -104,8 +104,31 @@ function mount(overrides: Partial<HubConnectionInputs> = {}) {
 	return { hook, input, renders, setError: input.setError };
 }
 
+/** Fails `current` with `reason`, after installing a fresh client as the one
+ * the hook's next dial gets; returns that client. */
+async function failInto(
+	current: FakeHubClient,
+	reason: TerminalReason = null,
+): Promise<FakeHubClient> {
+	const next = new FakeHubClient();
+	harness.client = next;
+	await act(async () => {
+		current.fail(reason);
+	});
+	return next;
+}
+
+/** Advances the fake clock by `ms` inside act(), so a retry that falls due
+ * redials before the test looks. */
+async function elapse(ms: number): Promise<void> {
+	await act(async () => {
+		vi.advanceTimersByTime(ms);
+	});
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 it("stays idle with no client until a profile, origin and foreground are all present", () => {
@@ -213,6 +236,8 @@ it("reports fatal only for a protocol close, clearing again once a fresh attempt
 });
 
 it("does not report fatal for an ordinary transport close", async () => {
+	// Fake timers hold the retry this close arms, so the test sees the close.
+	vi.useFakeTimers();
 	const fake = new FakeHubClient();
 	harness.client = fake;
 	const { hook } = mount();
@@ -226,10 +251,6 @@ it("does not report fatal for an ordinary transport close", async () => {
 		state: "closed",
 		fatal: false,
 	});
-	// An ordinary close is one the reconnect wall retries: unmount before this
-	// test ends so its real backoff timer never fires later, against whichever
-	// client a later test's `harness.client` names by then.
-	hook.unmount();
 });
 
 it("releases the client's listener on unmount", async () => {
@@ -279,9 +300,8 @@ it("does not record a client that never proved ready", async () => {
 	expect(hook.result.current.state).toBe("closed");
 	// A failed dial establishes nothing either — the client stays unknown.
 	expect(clientServesHub(fake, "hub-b")).toBe(true);
-	// This close is one the reconnect wall retries: unmount before this test
-	// ends so its real backoff timer never fires later, against whichever
-	// client a later test's `harness.client` names by then.
+	// Unmount before the test ends, or the failed dial's catch handler and the
+	// retry timer this close armed run after it, outside act().
 	hook.unmount();
 });
 
@@ -324,128 +344,67 @@ it("waits at once, then 1, 2, 4, 8 and 16 seconds, then every 30 seconds", () =>
 
 it("tries a closed connection again on its own, backing off between attempts", async () => {
 	vi.useFakeTimers();
-	try {
-		const first = new FakeHubClient();
-		harness.client = first;
-		const { hook } = mount();
-		await act(async () => {});
-		const second = new FakeHubClient();
-		harness.client = second;
-		await act(async () => {
-			first.fail();
-		});
-		expect(hook.result.current.state).toBe("closed");
-		await act(async () => {
-			vi.advanceTimersByTime(0);
-		});
-		await act(async () => {});
-		expect(second.state).toBe("connecting");
-		const third = new FakeHubClient();
-		harness.client = third;
-		await act(async () => {
-			second.fail();
-		});
-		await act(async () => {
-			vi.advanceTimersByTime(999);
-		});
-		await act(async () => {});
-		expect(third.state).toBe("idle");
-		await act(async () => {
-			vi.advanceTimersByTime(1);
-		});
-		await act(async () => {});
-		expect(third.state).toBe("connecting");
-		await act(async () => {
-			third.succeed();
-		});
-		expect(hook.result.current.state).toBe("ready");
-	} finally {
-		vi.useRealTimers();
-	}
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook } = mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	expect(hook.result.current.state).toBe("closed");
+	await elapse(0);
+	expect(second.state).toBe("connecting");
+	const third = await failInto(second);
+	await elapse(999);
+	expect(third.state).toBe("idle");
+	await elapse(1);
+	expect(third.state).toBe("connecting");
+	await act(async () => {
+		third.succeed();
+	});
+	expect(hook.result.current.state).toBe("ready");
 });
 
 it("starts the backoff over once a connection reaches ready", async () => {
 	vi.useFakeTimers();
-	try {
-		const first = new FakeHubClient();
-		harness.client = first;
-		mount();
-		await act(async () => {});
-		const second = new FakeHubClient();
-		harness.client = second;
-		await act(async () => {
-			first.fail();
-		});
-		await act(async () => {
-			vi.advanceTimersByTime(0);
-		});
-		await act(async () => {});
-		await act(async () => {
-			second.succeed();
-		});
-		const third = new FakeHubClient();
-		harness.client = third;
-		await act(async () => {
-			second.fail();
-		});
-		await act(async () => {
-			vi.advanceTimersByTime(0);
-		});
-		await act(async () => {});
-		expect(third.state).toBe("connecting");
-	} finally {
-		vi.useRealTimers();
-	}
+	const first = new FakeHubClient();
+	harness.client = first;
+	mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	await elapse(0);
+	await act(async () => {
+		second.succeed();
+	});
+	const third = await failInto(second);
+	await elapse(0);
+	expect(third.state).toBe("connecting");
 });
 
 it("never retries a connection no retry can fix", async () => {
 	vi.useFakeTimers();
-	try {
-		const first = new FakeHubClient();
-		harness.client = first;
-		const { hook } = mount();
-		await act(async () => {});
-		const second = new FakeHubClient();
-		harness.client = second;
-		await act(async () => {
-			first.fail("protocol");
-		});
-		expect(hook.result.current.fatal).toBe(true);
-		await act(async () => {
-			vi.advanceTimersByTime(60_000);
-		});
-		await act(async () => {});
-		expect(second.state).toBe("idle");
-	} finally {
-		vi.useRealTimers();
-	}
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook } = mount();
+	await act(async () => {});
+	const second = await failInto(first, "protocol");
+	expect(hook.result.current.fatal).toBe(true);
+	await elapse(60_000);
+	expect(second.state).toBe("idle");
 });
 
 it("leaves a backgrounded app alone and tries at once on returning", async () => {
 	vi.useFakeTimers();
-	try {
-		const first = new FakeHubClient();
-		harness.client = first;
-		const { hook, input } = mount();
-		await act(async () => {});
-		const second = new FakeHubClient();
-		harness.client = second;
-		await act(async () => {
-			first.fail();
-		});
-		// rerender() runs its own act(), so it stays outside the async ones.
-		input.foreground = false;
-		hook.rerender();
-		await act(async () => {
-			vi.advanceTimersByTime(60_000);
-		});
-		await act(async () => {});
-		expect(second.state).toBe("idle");
-		input.foreground = true;
-		hook.rerender();
-		await act(async () => {});
-		expect(second.state).toBe("connecting");
-	} finally {
-		vi.useRealTimers();
-	}
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook, input } = mount();
+	await act(async () => {});
+	const second = await failInto(first);
+	// rerender() runs its own act(), so it stays outside the async ones.
+	input.foreground = false;
+	hook.rerender();
+	await elapse(60_000);
+	expect(second.state).toBe("idle");
+	input.foreground = true;
+	hook.rerender();
+	await act(async () => {});
+	expect(second.state).toBe("connecting");
 });
