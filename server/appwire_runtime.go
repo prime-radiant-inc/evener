@@ -343,7 +343,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			return nil
 		}
 		if sessionEventClosesSession(event) {
-			s.setProcessingLocked(false)
+			s.endProcessingLocked()
 			s.status.State = string(agent.SessionClosed)
 			s.appDeferredTerminalNotifications = nil
 		}
@@ -534,7 +534,7 @@ func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		wasProcessing := s.processing
-		s.setProcessingLocked(false)
+		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
 		for _, item := range s.appDeferredTerminalNotifications {

@@ -50,31 +50,22 @@ func (s *Server) WireTranscriptHistory(sess *agent.Session) {
 	threadID := sess.ID()
 	sess.SetTranscriptRecordedFunc(func(rec transcript.Record) { s.recordTranscriptEntry(threadID, rec) })
 	sess.SetDescendantRecordedFunc(func(childID string, rec transcript.Record) {
-		s.recordDescendantTranscriptEntry(threadID, childID, rec)
+		s.recordTranscriptEntry(childID, rec)
 	})
 }
 
-// recordTranscriptEntry is the root session's recorded-entry hook: it hands
-// rec to the history of threadID, the session that recorded it. A session
-// whose identity is no longer served has no history, and its records are
-// dropped. It runs under the transcript append lock, so it takes only the
-// history's queue mutex: the registry lookup is lock-free.
+// recordTranscriptEntry is the recorded-entry hook for both the root session
+// and its descendants (installed on the owning root's session for the
+// latter): it hands rec to the history of threadID, the session that
+// recorded it. A session whose identity is no longer served has no history,
+// and its records are dropped. It runs under the transcript append lock (the
+// root's own, or a descendant's), so it takes only the history's queue
+// mutex: the registry lookup is lock-free. For a descendant, the history is
+// created on the event path (RecordDescendantAppEvent) and covers what was
+// recorded before it through its recorded-length source; a detached history
+// (its tree replaced, its delegate released) is no longer found, so a
+// replaced tree's records go nowhere.
 func (s *Server) recordTranscriptEntry(threadID string, rec transcript.Record) {
-	if h := s.appHistories.get(threadID); h != nil {
-		h.recorded(rec)
-	}
-}
-
-// recordDescendantTranscriptEntry is the descendants' recorded-entry hook
-// installed on the owning root's session: it hands rec to threadID's
-// history. It runs under the child's transcript append lock, so it takes only
-// the history's queue mutex: the lookup is lock-free, and a record that finds
-// no history is dropped. The history is created on the event path
-// (RecordDescendantAppEvent), and covers what was recorded before it through
-// its recorded-length source. A detached history (its tree replaced, its
-// delegate released) is no longer found, so a replaced tree's records go
-// nowhere.
-func (s *Server) recordDescendantTranscriptEntry(_, threadID string, rec transcript.Record) {
 	if h := s.appHistories.get(threadID); h != nil {
 		h.recorded(rec)
 	}

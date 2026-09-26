@@ -222,7 +222,7 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 			return nil
 		}
 		return func(s *Server) {
-			s.setProcessingLocked(false)
+			s.endProcessingLocked()
 			s.status.State = string(agent.SessionClosed)
 			if ok && d.State != "" {
 				s.status.State = d.State

@@ -893,14 +893,12 @@ func (s *Server) SetProcessingTurn(turnID string) {
 	})
 }
 
-// setProcessingLocked(false) ends the running input: nothing runs, so no turn
-// is active and no execution is pending its start. Callers hold s.mu.
-func (s *Server) setProcessingLocked(processing bool) {
-	s.processing = processing
-	if !processing {
-		s.appActiveTurnID = ""
-		s.appPendingStableTurnID = ""
-	}
+// endProcessingLocked ends the running input: nothing runs, so no turn is
+// active and no execution is pending its start. Callers hold s.mu.
+func (s *Server) endProcessingLocked() {
+	s.processing = false
+	s.appActiveTurnID = ""
+	s.appPendingStableTurnID = ""
 }
 
 // InputCh returns the channel that receives user input messages.

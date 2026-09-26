@@ -503,7 +503,7 @@ func TestDescendantRecordedEntriesPublishToTheDescendant(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = child.Close() })
-	child.OnRecorded(func(rec transcript.Record) { srv.recordDescendantTranscriptEntry("root", "child", rec) })
+	child.OnRecorded(func(rec transcript.Record) { srv.recordTranscriptEntry("child", rec) })
 	srv.RecordDescendantAppEvent("root", threadEvent("child", events.SessionStartData{}))
 	history := srv.appHistoryForID("child")
 	if history == nil {
@@ -532,7 +532,7 @@ func TestDescendantRecordedEntriesPublishToTheDescendant(t *testing.T) {
 		t.Fatal("the descendant's recorded entry was not published to it")
 	}
 
-	srv.recordDescendantTranscriptEntry("old-root", "stranger", rec)
+	srv.recordTranscriptEntry("stranger", rec)
 	if srv.appHistoryForID("stranger") != nil {
 		t.Fatal("a record from a tree no longer served created a history")
 	}

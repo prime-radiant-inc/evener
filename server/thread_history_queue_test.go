@@ -161,7 +161,7 @@ func TestDescendantHookDropsARecordWithNoHistory(t *testing.T) {
 	srv := root.srv
 	childPath := writeDelegateTranscript(t, "child", "child history")
 	srv.SetDescendantTranscriptPathFunc(func(string) string { return childPath })
-	srv.recordDescendantTranscriptEntry("root", "child", transcript.Record{Recorded: true, Ordinal: 0, Offset: 1, Length: 1})
+	srv.recordTranscriptEntry("child", transcript.Record{Recorded: true, Ordinal: 0, Offset: 1, Length: 1})
 	if srv.appHistories.get("child") != nil {
 		t.Fatal("the descendant hook created a history")
 	}
@@ -537,7 +537,7 @@ func TestAClosingDelegatePublishesItsLastEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = child.Close() })
-	child.OnRecorded(func(rec transcript.Record) { srv.recordDescendantTranscriptEntry("root", "child", rec) })
+	child.OnRecorded(func(rec transcript.Record) { srv.recordTranscriptEntry("child", rec) })
 	park := parkPublish(t, 1, nil)
 	cursor := srv.appNotifier.CurrentSequence()
 	if _, err := child.Record(schema.NewTurn(schema.TurnUserInput, llm.User("parked")), transcript.RecordOptions{}); err != nil {
