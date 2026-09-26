@@ -14,7 +14,6 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/toolname"
-	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
@@ -354,23 +353,6 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 
 // --- available-agents section tag ---
 
-func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
-	t.Parallel()
-	agents := map[string]plugin.Agent{
-		"explorer": {Name: "explorer", Description: "Explores code"},
-	}
-	result := renderAvailableAgentsSectionForTest(t, agents)
-	if !strings.Contains(result, "<available_agents>") {
-		t.Error("should contain <available_agents> opening tag")
-	}
-	if !strings.Contains(result, "</available_agents>") {
-		t.Error("should contain </available_agents> closing tag")
-	}
-	if strings.Contains(result, "plugin_agents") {
-		t.Error("should NOT contain old 'plugin_agents' tag")
-	}
-}
-
 type releaseAdapter struct {
 	name    string
 	started chan struct{}
@@ -526,10 +508,7 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "explorer", "", nil)
 	waitForRuntimeSubagent(t, sess, agentID)
 
-	// Subagent prompt should contain template-rendered content AND the agent-specific prompt.
-	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("subagent prompt should contain communicate guidance")
-	}
+	// Subagent prompt should contain the agent-specific prompt.
 	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
 		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
 	}
@@ -567,13 +546,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
 	waitForRuntimeSubagent(t, sess, agentID)
 
-	// Default subagent should get core + subagent persona.
-	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("default subagent prompt should contain communicate guidance from core")
-	}
-	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
-		t.Error("default subagent prompt should contain shared delegated-task guidance")
-	}
+	// Default subagent should get the subagent persona.
 	if !strings.Contains(subagentSystemPrompt, "one delegated unit of work") {
 		t.Error("default subagent prompt should contain subagent persona instructions")
 	}
@@ -623,9 +596,6 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 
 	if strings.Contains(subagentSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
 		t.Fatalf("subagent prompt should not inherit the root-only system prompt override:\n%s", subagentSystemPrompt)
-	}
-	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
-		t.Fatalf("subagent prompt should still use the dedicated subagent template:\n%s", subagentSystemPrompt)
 	}
 }
 

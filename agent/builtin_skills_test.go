@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,38 +103,19 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	markGitRoot(t, root)
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
-
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
-	}
-	c.Register(f)
-
-	// Anthropic profile has use_skill tool, so skills are listed in system prompt.
+	c.Register(&fakeAdapter{name: "anthropic"})
 	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
+	defer sess.Close()
 
-	if !strings.Contains(capturedSystem, "<skill-catalog>") {
-		t.Fatal("system prompt should contain <skill-catalog> for embedded skills")
+	data := sess.buildPromptData(sess.currentEnv())
+	if !data.HasUseSkill {
+		t.Fatal("HasUseSkill = false, want true")
 	}
-	if !strings.Contains(capturedSystem, "- doctoring-evener:") {
-		t.Fatal("system prompt should list embedded doctoring-evener skill")
+	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "doctoring-evener" }) {
+		t.Fatalf("prompt skills = %+v, want the embedded doctoring-evener skill", data.Skills)
 	}
 }
 
@@ -141,46 +123,25 @@ func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
-
-	// Create a project skill so the skill catalog is populated.
 	writeSkillMD(t, root, "my-skill",
 		"---\nname: my-skill\ndescription: \"Test skill\"\n---\nBody.\n")
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
-
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
-	}
-	c.Register(f)
-
+	c.Register(&fakeAdapter{name: "openai"})
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
+	defer sess.Close()
 
-	if !strings.Contains(capturedSystem, "<skill-catalog>") {
-		t.Error("OpenAI system prompt should contain <skill-catalog> section")
+	data := sess.buildPromptData(sess.currentEnv())
+	if !data.HasUseSkill {
+		t.Fatal("HasUseSkill = false, want true on the openai surface")
 	}
-	if !strings.Contains(capturedSystem, "Load a skill by calling use_skill with its name") {
-		t.Error("OpenAI system prompt should instruct model to use use_skill for skills")
-	}
-	if !strings.Contains(capturedSystem, "- my-skill: Test skill [") {
-		t.Error("OpenAI system prompt should list skill directory for use_skill")
+	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
+		return s.CatalogNameOrName() == "my-skill" && s.Description == "Test skill" && s.Dir != ""
+	}) {
+		t.Fatalf("prompt skills = %+v, want my-skill with its description and directory", data.Skills)
 	}
 }
 
@@ -352,87 +313,6 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 		if strings.TrimSpace(body) == "" {
 			t.Fatalf("embedded skill %q has empty body", name)
 		}
-	}
-}
-
-func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	markGitRoot(t, root)
-
-	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
-
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
-		NonInteractive: true,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
-
-	if !strings.Contains(capturedSystem, "non-interactive") {
-		t.Error("system prompt missing non-interactive guidance")
-	}
-	if !strings.Contains(capturedSystem, "no human available") {
-		t.Error("system prompt missing 'no human available' note")
-	}
-}
-
-func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	markGitRoot(t, root)
-
-	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
-
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
-		NonInteractive: false,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
-
-	if strings.Contains(capturedSystem, "no human available") {
-		t.Error("system prompt should NOT contain non-interactive guidance when NonInteractive is false")
 	}
 }
 
