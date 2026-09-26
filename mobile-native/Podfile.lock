@@ -84,6 +84,8 @@ PODS:
     - ExpoModulesCore
   - ExpoSQLite (57.0.2):
     - ExpoModulesCore
+  - ExpoSymbols (57.0.3):
+    - ExpoModulesCore
   - ExpoSystemUI (57.0.3):
     - ExpoModulesCore
   - FBLazyVector (0.86.3)
@@ -2085,6 +2087,7 @@ DEPENDENCIES:
   - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
   - ExpoSQLite (from `../node_modules/expo-sqlite/ios`)
+  - ExpoSymbols (from `../node_modules/expo-symbols/ios`)
   - ExpoSystemUI (from `../node_modules/expo-system-ui/ios`)
   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
@@ -2209,6 +2212,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-splash-screen/ios"
   ExpoSQLite:
     :path: "../node_modules/expo-sqlite/ios"
+  ExpoSymbols:
+    :path: "../node_modules/expo-symbols/ios"
   ExpoSystemUI:
     :path: "../node_modules/expo-system-ui/ios"
   FBLazyVector:
@@ -2388,6 +2393,7 @@ SPEC CHECKSUMS:
   ExpoSecureStore: 536804a6aea15cafa49dc969609cd6636d506e68
   ExpoSplashScreen: 6f422fd595600d78520c6b7dcf8a908fb8a7fec0
   ExpoSQLite: 57b23ab9fbb72215fa33763246d00ce6e6e531b4
+  ExpoSymbols: 37a3a6e5847edb08b83a5ee04d3b46525e205f00
   ExpoSystemUI: e5f9a81b45481222f6b8b45b86fa37b18d0a86c9
   FBLazyVector: 2138c6c2ab66c31bf5754dc18097fbc498a49c7f
   hermes-engine: 63c5db7d529c36335fada6582fd293ae2a105d77
