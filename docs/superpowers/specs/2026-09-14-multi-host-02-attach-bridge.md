@@ -108,9 +108,13 @@ capability token is never on the argv.
   lands the marker is documented as cooperative-only, never as "explicit and
   verifiable". Component 05, §"Ref translation detail", defines how the edge's
   role becomes the request-context `origin` and the loop-guard refusal that
-  reads it. **Implementation status:** neither the header nor the edge's
-  role classification exists today; this is the design record and a tracked code
-  follow-up.
+  reads it. **Implementation status:** the header and the edge's role
+  classification are shipped: the bridge sets `X-Evener-Bridge: 1` on its dial
+  (`cmd/evener-hub/attach.go:145-151`), and the
+  `/rpc` edge classifies the connection from the marker and stamps the origin
+  into the request context (`cmd/evener-hub/host_routing_origin.go:20,47-48`;
+  `cmd/evener-hub/web.go`). Binding the role to a server-verifiable signal is
+  the part that remains a tracked code follow-up.
 
 ## Implementation
 
