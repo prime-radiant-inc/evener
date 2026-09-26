@@ -9,10 +9,10 @@ Spikes: `2026-09-14-multi-host-spikes-findings.md` (Spikes A and C).
 **Citation convention.** Symbols (package, type, method, constant, file) are
 authoritative and were verified on the implementation branches
 (`multi-host-pr04a-ssh-channel`, `multi-host-pr04b-deploy-restart`,
-`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`). Line numbers are not
-used for Go or TypeScript sources; where a non-Go line reference survives
-(docs, `install.sh`, Makefiles) treat it as a hint from the `multi-host-specs`
-working tree, not as pinning — the reviewer's base is `origin/main`.
+`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`), all since landed on
+`origin/main`. Line numbers are not used for Go or TypeScript sources; where
+a non-Go line reference survives (docs, `install.sh`, Makefiles) treat it as a
+hint, not as pinning; the reviewer's base is `origin/main`.
 
 ## Purpose
 
@@ -27,10 +27,10 @@ component is the only place that runs `ssh`. It
    evener `version`/`protocol`/`launch_flags`);
 4. deploys a matching `evener` binary for the host's `GOOS`/`GOARCH` and/or runs
    the installer;
-5. on attach, compares the controller's build with the host's and, when they
-   differ, deploys the matching build, restarts the host hub, and verifies the
-   restarted hub's build identity **by running the health probe on the host**
-   (never from the controller's own loopback) before attaching.
+5. on attach, compares the controller's build with the host's and, where a deploy
+   path is configured, deploys the matching build, restarts the host hub, and
+   verifies the restarted hub's build identity **by running the health probe on
+   the host**; with no deploy path the host keeps its build and reports the skew.
 
 It produces a connected AppWire transport + initialized client per host; it does
 **not** map that client onto `appsource.Source` (component 05) or render hosts
@@ -59,12 +59,15 @@ register/unregister path anywhere in this component or in 05.
 - Deploy: obtain the matching controller build for the host's `GOOS`/`GOARCH`
   (cross-compile, mirroring `make build-linux`) and push it (`scp`/`ssh cat`) or
   run `install.sh` on the host; `chmod +x`.
-- Version auto-match on attach: compare controller `buildinfo.Version()` with the
-  host's **running** hub `version` (`/api/health`) and its on-disk
-  `launch-check` `version`; deploy when the on-disk binary differs and restart
-  the host hub when the running version differs, then verify the **restarted**
-  hub reports the expected `version` through `/api/health`, probed on the host,
-  before re-attaching.
+- Version auto-match on attach, where a deploy path is configured: compare
+  controller `buildinfo.Version()` with the host's **running** hub `version`
+  (`/api/health`) and its on-disk `launch-check` `version`; deploy when the
+  on-disk binary differs and restart the host hub when the running version
+  differs, then verify the **restarted** hub reports the expected `version`
+  through `/api/health`, probed on the host, before re-attaching. With no
+  deploy path there is nothing to converge: a protocol-compatible host on
+  another build is attached and the difference is reported rather than refused
+  (§5).
 - Client handoff: publish the current client per host so component 05 can rebind
   after a reconnect without ever caching a dead client (§"Client handoff").
 
@@ -244,9 +247,9 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   pseudo-terminal for the bridge. A PTY rewrites newlines and folds remote
   diagnostics into the framed stream; `-T` keeps stdout the raw AppWire byte
   stream and stderr the diagnostic channel (component 02's stdout discipline).
-  **Implementation status:** `-T` is on the 04a component branch
-  (`multi-host-pr04a-ssh-channel`), **pending merge**; the 04b branch predates
-  it.
+  **Implementation status:** shipped — `sshBaseArgv` passes `-T` on every ssh
+  invocation (`sshconn/runner.go`), so a user's `ssh_config` cannot allocate a
+  PTY for the bridge.
 - **`--` ends ssh's own option parsing.** The destination is emitted as
   `-- <dest>` (shipped: `sshDest` in `sshconn/runner.go`). A registry `ssh`
   value that begins with `-` must be read as a hostname and never as an ssh
@@ -344,14 +347,15 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   and refuses a restart it cannot match to the configured address (§5) rather
   than restarting whatever holds the default port; it cannot read the host's
   file to detect the mismatch before probing, which is why the operator sets
-  `addr` for a custom-address host. **Implementation
-  status:** the shipped `hostreg` stores `ConfigPath` and `Addr` as independent
-  optional fields and `channelArgv` passes whichever is present. The
-  restart/health path now consumes the per-host `addr` through `Manager.hostAddr`
-  (per-host `Addr`, else manager-wide `Options.HubAddr`, else the default) on
-  the 04b component branch (`multi-host-pr04b-deploy-restart`), **pending merge,
-  not on `main`**. The paired `config_path`/`addr` validation remains a
-  requirement for the implementing PR rather than a present fact.
+  `addr` for a custom-address host. **Implementation status:** shipped. The
+  `hostreg` entry stores `ConfigPath` and `Addr` as independent optional fields
+  and `channelArgv` passes whichever is present; the restart, port, and health
+  probes resolve the address through `Manager.hostAddr` (`sshconn/version.go`,
+  `hostAddrFor`; per-host `Addr`, else `Options.HubAddr`, else
+  `127.0.0.1:9180`), and `checkHostAddr` (`sshconn/version.go`) refuses a
+  non-loopback or malformed address — and a `config_path` with no address —
+  before any ssh command runs. The paired `config_path`/`addr` validation
+  remains a requirement for the implementing PR.
 - `BatchMode=yes` and a connect timeout make the channel strictly
   non-interactive, so a credential prompt fails fast instead of hanging; mirrors
   the spike invocation `spike/client/main.go`
@@ -678,13 +682,13 @@ Run over non-interactive SSH (no login shell, no TTY):
   `ErrPreflightDecode`, `ErrLaunchContract`) and never run the installer,
   because an unreachable host would otherwise be treated as an empty one and the
   deploy ladder would push a binary at a host that never answered.
-  **Implementation status:** the shipped 04a preflight surfaces the missing
-  binary as `ErrSSHStart` from the failed `launch-check` run
-  (`sshconn/preflight.go`) by recognizing the remote shell's `127`/not-found
-  text; that text-based recognition is the fragile form this requirement
-  supersedes. The dedicated probe, the ssh-diagnostic separation it relies on,
-  and the routed deploy/install branch are the 04b/round-19 requirement (keystone
-  follow-ups), not a present fact.
+  **Implementation status:** shipped for the classification and the route: a
+  `launch-check` whose shell reports a missing command is classified
+  `errExecutableMissing` (`sshconn/preflight.go`), and with a deploy path
+  configured `preflight` defers it into deploy/install, while an unreachable
+  host, an auth refusal, an unparseable answer, or a protocol/launch-contract
+  refusal never runs the installer (`sshconn/preflight.go`'s deploy deferral). The
+  dedicated `test -x` probe and its ssh-diagnostic separation remain round 19.
 - **Roots (probed).** Preflight resolves the host's config root and state root
   from the probed environment with the same chain the host binary uses
   (`resolveRoots`, `cmdutil.StateRootFromLookup`, `envvars/userdirs.ConfigRoot`)
@@ -709,11 +713,12 @@ Run over non-interactive SSH (no login shell, no TTY):
   `127.0.0.1:9180`, so a host whose config names a non-default address must set
   both; a restart the manager cannot match to the configured address is refused
   (§5) rather than guessed.
-  **Implementation status:** `Manager.hostAddr` and its use on the
-  restart/health path are implemented on the 04b component branch
-  (`multi-host-pr04b-deploy-restart`), **pending merge, not on `main`**; the
-  paired `config_path`/`addr` validation remains a requirement for the
-  implementing PR.
+  **Implementation status:** shipped — `Manager.hostAddr`
+  (`sshconn/version.go`'s `hostAddr`) resolves the per-host `addr` for the restart,
+  port probe, and health probe, and `checkHostAddr` refuses a non-loopback or
+  malformed address — and a `config_path` with no address — before any ssh
+  command runs; the paired `config_path`/`addr` validation remains a
+  requirement for the implementing PR.
   `hub.lock` lives at `<hub_state_root>/hub.lock` (`cmd/evener-hub/main.go`)
   and names no address or PID — it cannot be used to find the listener.
 - **Target support.** Only `linux/amd64` and `darwin/arm64` ship
@@ -934,10 +939,10 @@ Two paths, chosen per host (open question: which wins when both are viable):
     hub-capable development artifact in this series: a dev build reaches a host
     only through the atomic push path (§"Push target resolution",
     `Options.BuildBinary`) at an `evener`-named target.
-    **Implementation status:** the shipped `installableEvenerBasename`
-    (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts both
-    `evener` and `evener-dev`, so the narrowing is the implementing PR's
-    requirement, not a present fact.
+    **Implementation status:** shipped — `installableEvenerBasename`
+    (`sshconn/version.go`) accepts only `evener`, and `checkRunTarget`
+    (`sshconn/deploy.go`) refuses any other run-target basename terminally
+    (`ErrRunTargetUnservable`) before any probe, push, or install.
   - When `evener_path` is empty, the installer targets the host's resolved
     `run_path` (`BINDIR=dirname(run_path)`, the same value the push path
     resolves): when `command -v evener` resolved, that is its directory, and
@@ -1208,8 +1213,7 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
     reachable on this path. `appwire.ServerInfo` carries only `Name`/`Version`,
     where `Version` is the static `"0.1.0"` hub constant, so it must never be
     used for this comparison.) There is no `evener hub health` subcommand today.
-  - **Implementation status:** this is the shipped 04b contract
-    (`multi-host-pr04b-deploy-restart`, **pending merge, not on `main`**):
+  - **Implementation status:** this is the shipped 04b contract (on `main`):
     `ensureOnce` probes the running version to drive the restart,
     `waitHealthy`/`parseHealthVersion` parse `/api/health` and require the
     expected `version`, and the probe URL is built from the configured host
@@ -1235,11 +1239,10 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
      `HostConfig`, so it is empty for hosts written as `ssh = "jesse@m4.local"`
      or resolved through ambient `~/.ssh/config`; comparing the process user
      against `""` would refuse legitimate hubs with `ErrRestart` and block
-     automated restarts. **Implementation status:** the shipped 04b path
-     (`multi-host-pr04b-deploy-restart`, pending merge) identifies by executable,
-     hub-subcommand position, and `--addr` agreement and does not yet compare
-     users; the effective-user rule above is the required contract for that
-     check.
+     automated restarts. **Implementation status:** the shipped 04b path (on
+     `main`) identifies by executable, hub-subcommand position, and `--addr`
+     agreement and does not yet compare users; the effective-user rule above is
+     the required contract for that check.
   4. the listening socket matches the configured `addr` (host and port)
      **after the same wildcard→loopback normalization the bridge applies**
      (component 02, `loopbackAddr`): `0.0.0.0:<port>` and `:<port>` are compared
@@ -1317,8 +1320,8 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   names by substring in `isEvenerHubName`, and `pickSupervisor` already
   refuses ambiguity rather than taking the first match — it returns
   `ErrRestart` for more than one match, "an ambiguous listing is fatal, not a
-  fallback" (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`, pending
-  merge) — while `findHubPID` requires exactly one pid from
+  fallback" (`sshconn/version.go`, shipped with
+  `multi-host-pr04b-deploy-restart`) — while `findHubPID` requires exactly one pid from
   `lsof -ti :<port> -sTCP:LISTEN`; what it does not do is check that the named
   hub *owns the configured address*, and the bare path does not compare the
   effective user. The contract above is stricter, and the definition-matching
@@ -1586,18 +1589,18 @@ with the remote hub and its daemons still running.
   An `Initialize` mismatch on a channel whose preflight matched means the
   *running* hub is stale while the on-disk binary is right: restart once and
   re-attach. Only a mismatch that survives the restart becomes terminal
-  `ErrProtocolIncompatible`. (Implementation status: `ensureOnce` compares
-  versions only after a successful preflight, and `preflight` returns
-  `ErrProtocolIncompatible` on a protocol refusal, so this routing is the
-  corrective contract for the implementing PR, not a description of the shipped
-  code.)
+  `ErrProtocolIncompatible`. (Implementation status: shipped. `probeLaunchCheck`
+  classifies a protocol refusal (`sshconn/preflight.go`); with a deploy
+  path configured, `preflight` lets the ladder deploy, re-probe, restart, and
+  refuse terminally only when the protocol still mismatches
+  (`sshconn/preflight.go`'s deploy deferral; `sshconn/manager.go`, after the restart).)
 - **Missing `api-log` launch flag** (`spawn.go`) → `ErrLaunchContract`. A
   too-old host binary cannot be launched, and the version-match deploy is
   exactly its fix, so this is an auto-match trigger first (deploy, restart,
   re-preflight) and terminal only if it survives that. (Implementation status:
-  `isTerminal` lists `ErrLaunchContract` and `preflight` returns it before the
-  version comparison, so the shipped code stops instead of auto-matching; the
-  contract above is the corrective one.)
+  shipped — `preflight` no longer judges the launch flags; `ensureOnce` refuses
+  `ErrLaunchContract` only after the deploy/restart path has had its chance
+  (`sshconn/manager.go`), and `isTerminal` then stops the retry loop.)
 - **Unsupported host os/arch** → terminal `ErrUnsupportedHost`; no build exists
   (`install.sh:39-45`).
 - **`launch-check` output unparseable** (`launchcheck.go` JSON; local
@@ -1939,9 +1942,9 @@ from the component-03 registry.
 - **Per-host config path and address (corrected contract, coupled fields).**
   `hostreg.Host` carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and
   `channelArgv` passes whichever is present. `Manager.hostAddr`
-  (`multi-host-pr04b-deploy-restart`, pending merge) now reads the per-host
-  `addr` on the restart/health path, falling back to `Options.HubAddr` and then
-  the default. The contract (component 03, §"`config_path` / `addr`") is that
+  (`sshconn/version.go`, shipped on `main`) reads the per-host `addr` on
+  the restart/health path, falling back to `Options.HubAddr` and then the
+  default. The contract (component 03, §"`config_path` / `addr`") is that
   the two fields are set together; the remaining implementation choice is how an
   omitted pair resolves —
   "use the config's own `addr` by having the bridge report it" (an extra round

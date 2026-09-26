@@ -117,6 +117,16 @@ func call(id, name, args string) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(args)}}
 }
 
+// callRaw is a communicate call whose arguments arrived malformed: Arguments
+// is {} and rawArgs is the bare bytes the model actually sent. The assistant
+// turn alone cannot tell whether this will be rejected or healed-and-executed
+// (see apptranscript.TestProjectTurn_RejectedCommunicateRendersAsToolError and
+// TestProjectTurn_HealedCommunicateRendersDeliveredMessage); the paired result
+// entry's IsError/PrevalOnly disambiguates.
+func callRaw(id, name, rawArgs string) llm.ContentPart {
+	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: rawArgs}}
+}
+
 func result(id, name, content string) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: id, Name: name, Content: content}}
 }
@@ -161,6 +171,39 @@ func fixtures() []fixture {
 		entryLine(results(result("k1", "communicate", "delivered"))),
 		entryLine(assistant(call("k2", "communicate", `{"output":{"message":"a fresh message"}}`))),
 		entryLine(results(result("k2", "", "delivered"))),
+	}
+
+	// communicateRejected: a communicate call rejected at prevalidation
+	// (IsError=true, PrevalOnly=true). Live never delivered it, so the index
+	// must render it as a failed commandExecution (the raw bytes), not
+	// silently drop it — and it must do so even though the ASSISTANT entry
+	// that carries the deferred raw bytes is not the item's own entry, and a
+	// standalone turn closes the group between the call and its result.
+	rejected := result("k3", "communicate", "")
+	rejected.ToolResult.IsError = true
+	rejected.ToolResult.PrevalOnly = true
+	communicateRejected := []fixtureLine{
+		entryLine(user("reject")),
+		entryLine(assistant(callRaw("k3", "communicate", `{message: "bad"}`))),
+		entryLine(standalone(schema.TurnHookCompleted, "unrelated")),
+		entryLine(results(rejected)),
+	}
+
+	// communicateDistant: the healed message's echo check needs
+	// LastAssistantText from an assistant entry that is NEITHER the call's
+	// opener NOR in the same group as the result — the text lives in an
+	// earlier entry of the SAME group the call opened, which a
+	// TurnHookCompleted then closes before the result arrives in a new
+	// group. The index must reconstruct that text (not just the call's own
+	// opener entry) to reproduce the same echo decision the whole-file
+	// projection makes.
+	distant := result("k4", "communicate", "delivered")
+	communicateDistant := []fixtureLine{
+		entryLine(user("distant")),
+		entryLine(assistant(text("intro"))),
+		entryLine(assistant(callRaw("k4", "communicate", `{message: "hi"}`))),
+		entryLine(standalone(schema.TurnHookCompleted, "closes the group")),
+		entryLine(results(distant)),
 	}
 
 	orphans := []fixtureLine{
@@ -246,6 +289,8 @@ func fixtures() []fixture {
 		{name: "communicate", header: header, lines: communicate},
 		{name: "orphans", header: header, lines: orphans},
 		{name: "communicate names", header: header, lines: communicateNames},
+		{name: "communicate rejected", header: header, lines: communicateRejected},
+		{name: "communicate distant echo", header: header, lines: communicateDistant},
 		{name: "reused call ids", header: header, lines: reused},
 		{name: "steering", header: header, lines: steerings},
 		{name: "failures", header: header, lines: failures},

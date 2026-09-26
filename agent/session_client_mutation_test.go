@@ -32,6 +32,7 @@ type clientMutationInterruptLifecycle interface {
 }
 
 func TestClientMutationStore_ReserveReplayAndReject(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		terminal  clientMutationOperationState
@@ -107,6 +108,7 @@ func TestClientMutationStore_ReserveReplayAndReject(t *testing.T) {
 }
 
 func TestClientMutationStore_SameIDPayloadMismatch(t *testing.T) {
+	t.Parallel()
 	store := newTestClientMutationStore(t, clientMutationFaults{})
 	original := testClientMutationRequest(t, "turn/queue", "mutation-1", appwire.TurnQueueParams{
 		ClientMutationID: "mutation-1",
@@ -146,6 +148,7 @@ func TestClientMutationStore_SameIDPayloadMismatch(t *testing.T) {
 }
 
 func TestClientMutationStore_RejectionIsIsolatedAcrossReplayAndRestart(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
 	if err != nil {
@@ -237,6 +240,7 @@ func TestClientMutationStore_RejectionIsIsolatedAcrossReplayAndRestart(t *testin
 }
 
 func TestClientMutationOwnership_JoinReleaseAndTakeover(t *testing.T) {
+	t.Parallel()
 	store := newTestClientMutationStore(t, clientMutationFaults{})
 	request := testClientMutationRequest(t, "turn/start", "mutation-1", appwire.TurnStartParams{
 		ClientMutationID: "mutation-1",
@@ -279,6 +283,7 @@ func TestClientMutationOwnership_JoinReleaseAndTakeover(t *testing.T) {
 }
 
 func TestClientMutationOwnership_AfterReservationFaultReleasesOwner(t *testing.T) {
+	t.Parallel()
 	injected := errors.New("after reservation")
 	store := newTestClientMutationStore(t, clientMutationFaults{
 		AfterReservation: func() error { return injected },
@@ -307,6 +312,7 @@ func TestClientMutationOwnership_AfterReservationFaultReleasesOwner(t *testing.T
 }
 
 func TestClientMutation_StartAcceptedRecordRestoresAsRunnableStart(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -387,6 +393,7 @@ func TestClientMutation_StartAcceptedRecordRestoresAsRunnableStart(t *testing.T)
 }
 
 func TestClientMutation_StartAcceptanceOwnsRunnableInputBeforeWake(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	lifecycle, ok := any(sess).(clientMutationStartLifecycle)
 	if !ok {
@@ -470,6 +477,7 @@ func TestClientMutation_StartAcceptanceOwnsRunnableInputBeforeWake(t *testing.T)
 }
 
 func TestClientMutation_ProcessStartUsesDurablePayloadAndIdentity(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t,
 		withSteps(func(llm.Request) llm.Response { return finalResponse("done") }),
 		withConfig(SessionConfig{
@@ -538,6 +546,7 @@ func TestClientMutation_ProcessStartUsesDurablePayloadAndIdentity(t *testing.T) 
 }
 
 func TestClientMutation_StartCrashAfterReservationRecoversCompleteIntent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -591,6 +600,7 @@ func TestClientMutation_StartCrashAfterReservationRecoversCompleteIntent(t *test
 }
 
 func TestClientMutation_StartClaimedWithoutTranscriptRestoresRunnableSameTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -646,6 +656,7 @@ func TestClientMutation_StartClaimedWithoutTranscriptRestoresRunnableSameTurn(t 
 // (mutationOutboxIndexedDB.ts:172 retains only on "pending"), reached through
 // the primary start entry point rather than the queue path.
 func TestClientMutation_StartReplayStaysPendingWhileClaimed(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnStartParams{
 		ClientMutationID: "start-claimed-reflection",
@@ -681,6 +692,7 @@ func TestClientMutation_StartReplayStaysPendingWhileClaimed(t *testing.T) {
 // reclaims it straight off the queue head. That reclaim must report pending,
 // not reflected.
 func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-head-reclaim",
@@ -717,6 +729,7 @@ func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
 }
 
 func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplicateAppend(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -802,6 +815,7 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 }
 
 func TestClientMutation_IncorporationFailureWritesOneFailedIdentityBearingUserItem(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -901,6 +915,7 @@ eventsDrained:
 }
 
 func TestClientMutation_StartTranscriptIOFailureRemainsRunnable(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	params := appwire.TurnStartParams{
@@ -994,6 +1009,7 @@ func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *te
 }
 
 func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{
@@ -1058,6 +1074,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 }
 
 func TestClientMutation_IncorporationFailureCrashBoundariesRecoverWithoutDuplicates(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"after_user", "after_failure"} {
 		t.Run(boundary, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1139,6 +1156,7 @@ func TestClientMutation_IncorporationFailureCrashBoundariesRecoverWithoutDuplica
 // from it). A restore that retained the pre-recovery list would seed serve one
 // turn behind the file the recovery just appended to.
 func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"after_user", "after_failure"} {
 		t.Run(boundary, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1184,7 +1202,7 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			}
 			entries := captured.entries
 			path := transcriptPath(restored.stateDir, restored.id)
-			onDisk, err := readTranscriptFull(path)
+			onDisk, err := readTranscriptFull(path, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}
@@ -1210,6 +1228,7 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 }
 
 func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFence(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	params := appwire.TurnStartParams{
@@ -1347,6 +1366,7 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 }
 
 func TestClientMutation_InterruptCrashAfterFenceRecoversTerminalReceipt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -1421,6 +1441,7 @@ func TestClientMutation_InterruptCrashAfterFenceRecoversTerminalReceipt(t *testi
 }
 
 func TestClientMutation_InterruptReservationFaultSameProcessRetryTakesOverAndCancels(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	start := appwire.TurnStartParams{
@@ -1490,6 +1511,7 @@ func TestClientMutation_InterruptReservationFaultSameProcessRetryTakesOverAndCan
 }
 
 func TestClientMutation_InterruptAcceptedStartFallbackTerminalizesTargetAtomically(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	start := appwire.TurnStartParams{
@@ -1548,6 +1570,7 @@ func TestClientMutation_InterruptAcceptedStartFallbackTerminalizesTargetAtomical
 }
 
 func TestClientMutation_InterruptPostSignalEffectFailureDirectRetryDoesNotCancelTwice(t *testing.T) {
+	t.Parallel()
 	sess, start, started := newIncorporatedInterruptTestStart(t, "direct")
 	defer sess.Close()
 	interrupt := appwire.TurnInterruptParams{
@@ -1597,6 +1620,7 @@ func TestClientMutation_InterruptPostSignalEffectFailureDirectRetryDoesNotCancel
 }
 
 func TestClientMutation_InterruptPostSignalEffectFailureJoinedRetryDoesNotCancelTwice(t *testing.T) {
+	t.Parallel()
 	sess, start, started := newIncorporatedInterruptTestStart(t, "joined")
 	defer sess.Close()
 	interrupt := appwire.TurnInterruptParams{
@@ -1883,6 +1907,7 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 // while nothing had replaced it. Only interrupt and cancel describe an effect
 // the authoritative state already carries.
 func TestClientMutation_InitialReceiptProjectionState(t *testing.T) {
+	t.Parallel()
 	for _, tc := range clientMutationProjectionCases() {
 		t.Run(tc.method, func(t *testing.T) {
 			sess := newQueuePersistTestSession(t, t.TempDir())
@@ -1924,6 +1949,7 @@ func TestClientMutation_InitialReceiptProjectionState(t *testing.T) {
 // retries the same mutation ID after a daemon restart, still before
 // incorporation, must be told the same thing it was told the first time.
 func TestClientMutation_PendingReceiptReplaysAfterRestart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range clientMutationProjectionCases() {
 		if !tc.projected {
 			continue

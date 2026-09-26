@@ -13,8 +13,9 @@
 // (their provider request logs and durable transcripts). Nothing here adds a
 // testing endpoint to production serve.go or hub routes.
 //
-// The build tag keeps Chrome out of the default suites; scripts/web/
-// test-web-browser.sh registers this test so `make test-web-browser` runs it.
+// The build tag keeps Chrome out of the default suites; the browser gate
+// (cmd/evener-dev/webbrowser.go) registers this test so `make test-web-browser`
+// runs it.
 package hub
 
 import (

@@ -14,7 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/internal/orphanpipe"
+	"primeradiant.com/evener/execsupport/orphanpipe"
 )
 
 // commandHookWaitDelay bounds how long a hook's output pipes may stay open

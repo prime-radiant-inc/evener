@@ -9,6 +9,7 @@ import (
 // historical watches that belong to the given receiver, skipping non-matching
 // ones, and orders the live set by source then watch id.
 func TestS1Cov_watchListToolResultForReceiver(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	const rsID, rdID = "RS", "RD"

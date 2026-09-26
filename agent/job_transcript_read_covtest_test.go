@@ -268,19 +268,20 @@ func TestFindLocalJobInProject_CorruptRecord(t *testing.T) {
 	}
 }
 
-// TestLocateLocalJob_InvalidBucketDir covers the invalid bucket dir path
-// (line 42).
+// TestLocateLocalJob_InvalidBucketDir covers a lookup in a non-project state
+// dir. The bucket-name guard was removed (FU3); the lookup proceeds to
+// findLocalJobInProject and fails downstream — no jobs.jsonl exists at the
+// path — not because the bucket name was rejected.
 func TestLocateLocalJob_InvalidBucketDir(t *testing.T) {
 	t.Parallel()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
-	// Use a state dir whose base name is not a valid project ID.
-	// validLocalBucketDir requires the dir to be under a projects/ hierarchy
-	// or have a specific structure. A bare temp dir may pass, but one with
-	// special chars should fail.
+	// A flat dir that is not under evener/projects. The job does not exist
+	// here, so the lookup fails downstream (read error or job-not-found),
+	// not because the bucket name was rejected.
 	_, err := locateLocalJob("/tmp/../invalid", jobID)
 	if err == nil {
-		t.Fatal("expected error for invalid bucket dir")
+		t.Fatal("expected error for job lookup in non-project dir")
 	}
 }
 
@@ -438,12 +439,12 @@ func TestFinishLocalJobLookup(t *testing.T) {
 	t.Parallel()
 	// Found: returns match.
 	loc := localJobLocation{StateDir: "/some/dir"}
-	got, err := finishLocalJobLookup(loc, true, "job1")
+	got, err := finishLocalJobLookup(loc, true, nil, "job1")
 	if err != nil || got.StateDir != "/some/dir" {
 		t.Fatalf("found: got=%v err=%v", got, err)
 	}
 	// Not found: returns job-not-found error.
-	_, err = finishLocalJobLookup(localJobLocation{}, false, "job1")
+	_, err = finishLocalJobLookup(localJobLocation{}, false, nil, "job1")
 	if err == nil || !isJobNotFoundErr(err) {
 		t.Fatalf("not found: expected job-not-found, got %v", err)
 	}

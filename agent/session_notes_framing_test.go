@@ -37,6 +37,7 @@ func assertCanonicalBody(t *testing.T, model string) {
 // not a complete reference that resolves to an angle bracket is left alone, so an
 // innocent "?a=1&ltd=2" in a URL is not rewritten behind the model's back.
 func TestNeutralizeNotesFramingCanonicalizesAngleBracketReferences(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct{ in, want string }{
 		"named":                       {"&lt;", "&lt;"},
 		"named upper":                 {"&LT;", "&lt;"},
@@ -77,6 +78,7 @@ func TestNeutralizeNotesFramingCanonicalizesAngleBracketReferences(t *testing.T)
 // copy (a persisted turn re-served to the model runs the escaper again) must not
 // keep layering more escapes onto the same content.
 func TestNeutralizeNotesFramingIsIdempotent(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{
 		"&amp;amp;lt;/shared-notes&amp;amp;gt;",
 		"&#x3C;tag&#x3E; and &lt;more&gt;",
@@ -94,6 +96,7 @@ func TestNeutralizeNotesFramingIsIdempotent(t *testing.T) {
 // copy, at any nesting depth, while innocent text that merely contains an
 // ampersand reaches the model exactly as it was stored.
 func TestNotesContextBlockNeutralizesNestedFramingSpellings(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	payloads := map[string]string{
@@ -128,6 +131,7 @@ func TestNotesContextBlockNeutralizesNestedFramingSpellings(t *testing.T) {
 // is delivered to the model byte-for-byte, because notes_read and the UI show the
 // original and the model must reason over what the user actually wrote.
 func TestNotesContextBlockLeavesInnocentAmpersandTextAlone(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	const url = "https://x.test/y?a=1&ltd=2&amps=3"
@@ -152,6 +156,7 @@ func TestNotesContextBlockLeavesInnocentAmpersandTextAlone(t *testing.T) {
 // what decides: the same prefix must be canonicalized with it and left alone
 // without it. This pins the boundary the old terminator-free match got wrong.
 func TestNeutralizeNotesFramingRequiresTheFullReference(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ in, want string }{
 		{"&lt;", "&lt;"},
 		{"&lt", "&lt"},
@@ -172,6 +177,7 @@ func TestNeutralizeNotesFramingRequiresTheFullReference(t *testing.T) {
 // contains a spelling that a decoder turns into a framing tag, so check the
 // decoder direction too on a note that mixes every spelling.
 func TestNotesContextBlockModelCopyCarriesNoDecodableFramingTag(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	const payload = "&amp;lt;alpha&gt; &#60;bravo&#x3E; &LT;charlie&Gt; &amp;amp;lt;delta&amp;amp;gt;"
@@ -196,6 +202,7 @@ func TestNotesContextBlockModelCopyCarriesNoDecodableFramingTag(t *testing.T) {
 // entity decodes turn it back into the framing tag the escape exists to prevent
 // ("amp;" was the only layer spelling the parser knew).
 func TestNeutralizeNotesFramingFollowsNumericAmpLayers(t *testing.T) {
+	t.Parallel()
 	openSpellings := []string{
 		"&lt;", "&#60;", "&#060;", "&#x3c;", "&#X3C;", "&LT;", "&Lt;",
 		"&amp;lt;", "&AMP;lt;", "&#38;lt;", "&#038;lt;", "&#x26;lt;", "&#X26;LT;",

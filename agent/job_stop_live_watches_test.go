@@ -302,6 +302,7 @@ func onlyWatchIDIn(t *testing.T, jm *jobManager) string {
 // TestFormatJobStopLiveWatchesCap pins the render cap: at most 5 rows, then a
 // "+N more" line pointing at the JSON state.
 func TestFormatJobStopLiveWatchesCap(t *testing.T) {
+	t.Parallel()
 	stop := jobStopResult{Type: "delegate", LiveWatches: make([]watchListEntry, 7)}
 	for i := range stop.LiveWatches {
 		stop.LiveWatches[i] = watchListEntry{ID: fmt.Sprintf("watch_%d", i), Source: "parent"}

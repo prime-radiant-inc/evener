@@ -73,7 +73,7 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 	}
 	var groups []*group
 	var grouper apptranscript.TurnGrouper
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	for i, entry := range entries {
 		entryIndex := i + 1
 		id, isNew := grouper.Place(&entry, entryIndex)
@@ -82,7 +82,7 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 		}
 		g := groups[len(groups)-1]
 		g.entries = append(g.entries, entry)
-		items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, toolNames, nil, apptranscript.ToolResultOutputImages)
+		items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, reg, nil, apptranscript.ToolResultOutputImages)
 		for j, item := range items {
 			if apptranscript.MergesByCallID(item) {
 				if at, ok := g.calls[item.CallID]; ok {
@@ -155,9 +155,9 @@ func TestReferenceEqualsTodaysFileProjectionApartFromPositions(t *testing.T) {
 	for _, fx := range fixtures() {
 		t.Run(fx.name, func(t *testing.T) {
 			path := writeFixture(t, fx)
-			toolNames := map[string]string{}
+			reg := apptranscript.NewToolCallRegistry()
 			today, err := apptranscript.ItemTurnsFromFile(path, testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-				return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+				return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 			})
 			if err != nil {
 				t.Fatal(err)

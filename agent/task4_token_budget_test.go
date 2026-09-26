@@ -18,6 +18,7 @@ import (
 )
 
 func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("ok") },
@@ -76,6 +77,7 @@ func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
 }
 
 func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
+	t.Parallel()
 	profile := testOpenAICompatProfile("budget-window-override", "test", 0)
 	resolved := profile.Resolved()
 	resolved.Caps.ContextWindow = new(10_000)
@@ -93,6 +95,7 @@ func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
 }
 
 func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("unsafe") },
@@ -130,6 +133,7 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 }
 
 func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "budget-cont-observe", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("continuation") },
@@ -174,6 +178,7 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 }
 
 func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
+	t.Parallel()
 	primary := new(131_072)
 	req := llm.Request{
 		Provider:           "budget-gw",
@@ -195,6 +200,7 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 // it carries would undercount exactly the rows whose adapter replays unsigned
 // thinking while their names say nothing.
 func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T) {
+	t.Parallel()
 	res := registry.Resolved{
 		Instance: "thinking-gw", ModelID: "gateway-zz",
 		Protocol: registry.ProtocolOpenAIChat,
@@ -222,6 +228,7 @@ func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T)
 }
 
 func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primaryAdapter := &fakeErrAdapter{name: "budget-gw", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -276,6 +283,7 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 }
 
 func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeErrAdapter{name: "usage-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -326,6 +334,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 }
 
 func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primaryAdapter := &fakeErrAdapter{name: "delta-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -365,6 +374,7 @@ func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T
 }
 
 func TestSessionContextBudgetCompactRetry(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateResponse(true, "recovered") },
@@ -392,6 +402,7 @@ func TestSessionContextBudgetCompactRetry(t *testing.T) {
 }
 
 func TestSessionContextBudgetCompactRetryTerminalNoProgress(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateResponse(true, "unexpected") },
@@ -418,6 +429,7 @@ func TestSessionContextBudgetCompactRetryTerminalNoProgress(t *testing.T) {
 }
 
 func TestForceCompactForModelRecoveryAdjustsTurnHistoryBaseline(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		baseline int
@@ -447,6 +459,7 @@ func TestForceCompactForModelRecoveryAdjustsTurnHistoryBaseline(t *testing.T) {
 }
 
 func TestSessionContextBudgetProviderContextRetry(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "budget-gw", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -476,6 +489,7 @@ func TestSessionContextBudgetProviderContextRetry(t *testing.T) {
 }
 
 func TestSessionContextBudgetProviderContextTerminal(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "budget-gw", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -507,6 +521,7 @@ func TestSessionContextBudgetProviderContextTerminal(t *testing.T) {
 }
 
 func TestSessionProviderContextRecoveryPrecedesConfiguredFallback(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -542,6 +557,7 @@ func TestSessionProviderContextRecoveryPrecedesConfiguredFallback(t *testing.T) 
 }
 
 func TestSessionProviderContextRecoverySecondErrorSkipsConfiguredFallback(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-primary-terminal", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -579,6 +595,7 @@ func TestSessionProviderContextRecoverySecondErrorSkipsConfiguredFallback(t *tes
 }
 
 func TestSessionFallbackBudgetObservationBeforeClientAdmission(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-observe-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -631,6 +648,7 @@ func TestSessionFallbackBudgetObservationBeforeClientAdmission(t *testing.T) {
 }
 
 func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-media-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -679,6 +697,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 // claim a media family (here Google's 1032-token tile rule) the fallback never
 // speaks and the generic fallback (258) does not.
 func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
+	t.Parallel()
 	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG(), MediaType: "image/png"}},
 	}}}
@@ -702,6 +721,7 @@ func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *
 }
 
 func TestSessionAnchorRejectionRebudgetsFullHistoryRequest(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "budget-anchor", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -738,6 +758,7 @@ func TestSessionAnchorRejectionRebudgetsFullHistoryRequest(t *testing.T) {
 }
 
 func TestSessionUnsafeFallbackSkippedBeforeLaterFallbackSucceeds(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-chain-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -785,6 +806,7 @@ func TestSessionUnsafeFallbackSkippedBeforeLaterFallbackSucceeds(t *testing.T) {
 }
 
 func TestSessionStreamTokenBudgetAdmissionMatchesComplete(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &streamingAdapter{name: "budget-stream", streamErr: llm.ErrStreamUnsupported, completeResult: finalResponse("unexpected")}
 	client.Register(adapter)
@@ -808,6 +830,7 @@ func TestSessionStreamTokenBudgetAdmissionMatchesComplete(t *testing.T) {
 }
 
 func TestSessionFallbackContextRecoveryPrecedesLaterFallback(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-round2-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -867,6 +890,7 @@ func TestSessionFallbackContextRecoveryPrecedesLaterFallback(t *testing.T) {
 }
 
 func TestSessionFallbackNonContextErrorContinuesConfiguredChain(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	primary := &fakeErrAdapter{name: "budget-round2-chain-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -929,6 +953,7 @@ func task4LargePNG() []byte {
 // built the request with, so a model switch landing between planning and dispatch
 // cannot pair one model's request with another model's billing rules.
 func TestSessionContinuationShadowEstimateUsesTheHandedProfile(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "thinking-gw"})
 	requestProfile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)

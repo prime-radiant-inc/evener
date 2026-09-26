@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/internal/orphanpipe"
+	"primeradiant.com/evener/execsupport/orphanpipe"
 )
 
 var (

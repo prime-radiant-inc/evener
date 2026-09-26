@@ -36,6 +36,7 @@ func netEnv(t *testing.T, netOn bool) *execenv.LocalExecutionEnvironment {
 }
 
 func TestNetOffDisablesToolEgress(t *testing.T) {
+	t.Parallel()
 	off := netEnv(t, false)
 	for _, tool := range []string{"web_fetch", "web_search"} {
 		err := egressDeniedByNet(off, tool)
@@ -63,6 +64,7 @@ func TestNetOffDisablesToolEgress(t *testing.T) {
 }
 
 func TestNetOnAllowsToolEgress(t *testing.T) {
+	t.Parallel()
 	on := netEnv(t, true)
 	if err := egressDeniedByNet(on, "web_fetch"); err != nil {
 		t.Errorf("net=on must allow tool egress, got %v", err)
@@ -70,6 +72,7 @@ func TestNetOnAllowsToolEgress(t *testing.T) {
 }
 
 func TestUnsandboxedAllowsToolEgress(t *testing.T) {
+	t.Parallel()
 	// A plain (non-sandboxed) env must never gate egress — byte-identical behavior.
 	plain := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	if err := egressDeniedByNet(plain, "web_fetch"); err != nil {
@@ -82,6 +85,7 @@ func TestUnsandboxedAllowsToolEgress(t *testing.T) {
 // request must NOT carry WebSearch=true even when the profile supports it, else
 // egress leaks through a path the user cannot inspect.
 func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
+	t.Parallel()
 	profile := provider.NewOpenAIProfile("gpt-5") // SupportsWebSearch() == true
 	if !profile.SupportsWebSearch() {
 		t.Fatal("fixture profile must support web search")
@@ -110,6 +114,7 @@ func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
 // net=off egress denial — otherwise a SetModel makes evener's Gemini web search
 // reachable in a session whose network egress the user turned off.
 func TestReapplyProviderTools_GoogleWebSearchEgressDeniedUnderNetOff(t *testing.T) {
+	t.Parallel()
 	s := &Session{env: netEnv(t, false), reg: tool.NewRegistry()}
 	s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5.4"), newGeminiProfile("gemini-3-pro"))
 

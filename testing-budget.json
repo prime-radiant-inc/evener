@@ -119,6 +119,11 @@
   "primeradiant.com/evener/envvars": 0.0,
   "primeradiant.com/evener/invariant": 0.0,
   "primeradiant.com/evener/identifier": 0.45,
-  "web": 90.77
+  "web": 90.77,
+  "primeradiant.com/evener/execsupport/orphanpipe": 2.0,
+  "primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest": 0.0,
+  "primeradiant.com/evener/execsupport/procgroup": 0.0,
+  "primeradiant.com/evener/execsupport/shellquote": 0.02,
+  "primeradiant.com/evener/execsupport/valueexpr": 3.05
  }
 }

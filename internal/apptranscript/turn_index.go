@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 13
+	turnIndexVersion        = 17
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -175,6 +175,17 @@ type indexedTurn struct {
 	TurnID      string   `json:"turn_id,omitempty"`
 	GroupItems  uint32   `json:"group_items,omitempty"`
 	GroupCalls  []string `json:"group_calls,omitempty"`
+	// CommRawArgs and LastAssistantText snapshot the ToolCallRegistry
+	// state entering this group: the unpaired communicate raw bytes and
+	// last assistant text carried from all preceding groups. Bounded
+	// reads seed the registry from these fields instead of replaying the
+	// prefix, keeping append+read allocations O(1).
+	CommRawArgs       map[string]string `json:"comm_raw_args,omitempty"`
+	LastAssistantText string            `json:"last_assistant_text,omitempty"`
+	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
+	// set LastAssistantText, persisted so bounded reads can scope the echo
+	// check by turn without replaying the prefix.
+	LastAssistantTurnID string `json:"last_assistant_turn_id,omitempty"`
 }
 
 // groupRole classifies a record within its logical turn group.
@@ -230,12 +241,12 @@ func (c *TurnCache) TurnCountFromFile(path string, maxLineBytes int, project Bou
 }
 
 func fullProjector(project BoundedEntryProjector) EntryProjector {
-	toolNames := map[string]string{}
+	reg := NewToolCallRegistry()
 	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		if project == nil {
 			return nil
 		}
-		return project(turn, turnID, turnIndex, toolNames)
+		return project(turn, turnID, turnIndex, reg)
 	}
 }
 
@@ -843,6 +854,15 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 	// at every group start.
 	var openCalls map[string]bool
 	var openTurnID string
+	// openReg is the open logical group's shared ToolCallRegistry. Its Names
+	// map is re-seeded from each record's ToolSeed (the frozen name state at
+	// that record), but CommRawArgs and LastAssistantText persist across
+	// records within the group — the same contract the full read's single
+	// registry provides. Without this, a communicate call's deferred raw
+	// bytes (seeded on the assistant turn) never reach the paired result
+	// turn, and the rejected/healed communicate item is absent from the
+	// index's per-record ItemCount and from every bounded read.
+	var openReg *ToolCallRegistry
 	var readBytes int64
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
@@ -907,6 +927,8 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				record.TurnID = owner
 				if openTurnID == "" {
 					openTurnID, openCalls = openGroupState(*index)
+					commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
+					openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
 				}
 			}
 			prevKind := schema.TurnKind("")
@@ -920,15 +942,46 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			if record.StartsGroup {
 				openTurnID = record.TurnID
 				openCalls = map[string]bool{}
+				// Preserve CommRawArgs and LastAssistantText across group
+				// boundaries: the full read threads one registry for the whole
+				// transcript, so a communicate call seeded in one group must
+				// reach its paired result turn in a later group (e.g. across
+				// a standalone HOOK_COMPLETED turn that closes the assistant's
+				// group). Names reset from ToolSeed below; openCalls reset for
+				// the per-group merge.
+				var commRawArgs map[string]string
+				var lastAssistantText string
+				var lastAssistantTurnID string
+				if openReg != nil {
+					commRawArgs = openReg.CommRawArgs
+					lastAssistantText = openReg.LastAssistantText
+					lastAssistantTurnID = openReg.LastAssistantTurnID
+				} else {
+					commRawArgs = map[string]string{}
+				}
+				openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
+				// Persist the registry state entering this group so
+				// bounded reads seed the registry from the index record
+				// instead of replaying the prefix. Clone the map: openReg
+				// shares it and the projection below mutates it in place.
+				if len(commRawArgs) > 0 {
+					record.CommRawArgs = maps.Clone(commRawArgs)
+				}
+				record.LastAssistantText = lastAssistantText
+				record.LastAssistantTurnID = lastAssistantTurnID
 			} else if openCalls == nil || openTurnID == "" {
 				// Continues a group whose opener lives in the previously
-				// indexed prefix: reconstruct its id and accumulated calls.
+				// indexed prefix: reconstruct its id, accumulated calls,
+				// and deferred communicate bytes (CommRawArgs) by
+				// re-projecting the group's records from the transcript.
 				openTurnID, openCalls = openGroupState(*index)
+				commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
+				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
 			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
-				recordNames := cloneToolNames(record.ToolSeed)
-				projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
+				openReg.Names = cloneToolNames(record.ToolSeed)
+				projectedItems = project(entry.Turn, openTurnID, entryIndex, openReg)
 				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
 					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
 				}
@@ -1172,6 +1225,22 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 	if prelude != nil {
 		entryOrdinal = 1
 	}
+	// Thread one ToolCallRegistry across the whole bounded read, matching
+	// the full read's single-registry threading. CommRawArgs seeded by an
+	// assistant communicate call in one group must reach its paired result
+	// turn in a later group — a standalone HOOK_COMPLETED turn between the
+	// two closes the assistant's group and splits the pairing across group
+	// boundaries. The registry is seeded from the first in-window group's
+	// StartsGroup record (which carries the CommRawArgs/LastAssistantText
+	// from all preceding groups) instead of replaying the prefix.
+	reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
+	regSeeded := false
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, projected, fmt.Errorf("open transcript: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	tail := hi >= index.logicalTurnCount()
 	n := index.recordCount()
 	for i := 0; i < n; {
 		// Walk the record list group by group without materializing all
@@ -1188,6 +1257,29 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		entryOrdinalAt := entryOrdinal
 		entryOrdinal++
 		if groupItems == 0 {
+			// A zero-item group (e.g. a text-less assistant turn whose only
+			// content is a deferred communicate call) still seeds CommRawArgs
+			// via projection. The full read projects every record before
+			// dropping empty groups, so the tail flush sees the seeded bytes;
+			// the bounded read must do the same or a trailing unpaired
+			// communicate vanishes on paged reads. When the registry is not
+			// yet seeded (no item-bearing group preceded this one — e.g. a
+			// prelude-only transcript whose sole content is this zero-item
+			// group), seed from this group's StartsGroup snapshot so
+			// projection seeds CommRawArgs; a before-window zero-item group's
+			// CommRawArgs are otherwise carried by the next group's
+			// StartsGroup snapshot. Zero-item groups are rare, so the extra
+			// seed is bounded by their count, and re-seeding at the first
+			// item-bearing group's StartsGroup record remains correct.
+			if !regSeeded {
+				seedRegistryFromRecord(reg, index.recordAt(i))
+			}
+			zg := indexedGroup{id: slot, start: i, end: spanEnd, turnID: index.recordAt(i).TurnID, openerIndex: index.recordAt(i).Index, items: 0, calls: nil, open: false}
+			_, zeroProjected, err := projectIndexedGroup(ctx, file, index, &zg, entryOrdinalAt, project, reg)
+			if err != nil {
+				return nil, projected, err
+			}
+			projected += zeroProjected
 			i = spanEnd
 			continue
 		}
@@ -1200,13 +1292,26 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 			break
 		}
 		if thisSlot < lo {
+			// Before the projected window: skip. The registry is seeded
+			// from the first in-window group's StartsGroup record, which
+			// carries the CommRawArgs/LastAssistantText from all preceding
+			// groups — no prefix replay needed.
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, projected, err
 		}
+		// Seed the registry from the first in-window group's StartsGroup
+		// record. The persisted CommRawArgs/LastAssistantText carry the
+		// unpaired communicate bytes and last assistant text from all
+		// preceding groups, matching the full read's single-registry
+		// threading without replaying the prefix.
+		if !regSeeded {
+			seedRegistryFromRecord(reg, index.recordAt(groupStart))
+			regSeeded = true
+		}
 		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil, open: false}
-		turn, projectedGroup, err := projectIndexedGroup(ctx, path, index, &group, entryOrdinalAt, project)
+		turn, projectedGroup, err := projectIndexedGroup(ctx, file, index, &group, entryOrdinalAt, project, reg)
 		if err != nil {
 			return nil, projected, err
 		}
@@ -1215,6 +1320,13 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 			continue
 		}
 		turns = append(turns, *turn)
+	}
+	// Flush unpaired communicates at the tail of the read, matching the
+	// full read's FlushUnpairedCommunicates. Only flush when the read
+	// extends to the last group — a middle-window read's unpaired
+	// communicates may be paired by a result turn outside the window.
+	if tail && len(turns) > 0 {
+		FlushUnpairedCommunicates(&turns, reg)
 	}
 	return turns, projected, nil
 }
@@ -1225,12 +1337,10 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 // the group's entry ordinal, and stamps failure/usage/timestamp across the
 // group's entries. It returns nil (not an error) when the group projects to
 // no items — the indexed metadata said otherwise, so the caller invalidates.
-func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, group *indexedGroup, entryOrdinal uint64, project BoundedEntryProjector) (*appwire.Turn, int, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("open transcript: %w", err)
-	}
-	defer file.Close() //nolint:errcheck // read-only file; close errors are not actionable
+// The registry is shared across the whole bounded read (threaded by the
+// caller) so CommRawArgs seeded in an earlier group reach this group's result
+// turn; the caller flushes unpaired communicates at the tail.
+func projectIndexedGroup(ctx context.Context, file *os.File, index turnIndexDisk, group *indexedGroup, entryOrdinal uint64, project BoundedEntryProjector, reg *ToolCallRegistry) (*appwire.Turn, int, error) {
 	var items []appwire.ThreadItem
 	var entries []schema.Turn
 	projected := 0
@@ -1252,7 +1362,8 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 		if project == nil {
 			continue
 		}
-		projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+		reg.Names = cloneToolNames(record.ToolSeed)
+		projectedItems := project(entry.Turn, group.turnID, record.Index, reg)
 		items = append(items, projectedItems...)
 	}
 	if err := ctx.Err(); err != nil {
@@ -1800,6 +1911,84 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 		turnID = persistedTurnID(recordAtKindTurn(index, n-1), index.recordAt(n-1).Index)
 	}
 	return turnID, calls
+}
+
+// seedRegistryFromRecord authoritatively resets the registry from a
+// StartsGroup record's persisted CommRawArgs/LastAssistantText. The args map
+// is replaced wholesale (not merged) so entries consumed by a preceding group's
+// delivered result — whose consume happened in a before-window group the
+// bounded read skipped — do not leak into the in-window state and render a
+// duplicate flushed agentMessage at the tail. The empty-record case resets the
+// map to a fresh non-nil map so a later group never sees a stale entry; cloning
+// is skipped when the record carries no args to keep the common case allocation
+// -free. Bounded reads seed from the index record instead of replaying the
+// prefix.
+func seedRegistryFromRecord(reg *ToolCallRegistry, record indexedTurn) {
+	if len(record.CommRawArgs) == 0 {
+		reg.CommRawArgs = map[string]string{}
+	} else {
+		reg.CommRawArgs = maps.Clone(record.CommRawArgs)
+	}
+	reg.LastAssistantText = record.LastAssistantText
+	reg.LastAssistantTurnID = record.LastAssistantTurnID
+}
+
+// replayCommRawArgs re-projects the open group's records from the indexed
+// prefix to reconstruct the deferred communicate raw bytes (CommRawArgs) the
+// assistant turn seeded, AND the LastAssistantText the last assistant turn in
+// the group set. The incremental scan initializes openReg with empty
+// CommRawArgs when a group continues from the previously indexed prefix, so
+// a rejected/healed communicate's result turn appended later would miss the
+// deferred bytes and its ItemCount would diverge from the full read. Likewise,
+// without LastAssistantText the healed-communicate echo-suppression branch
+// (EchoesAssistantText) would not fire on the continuation path, producing an
+// echoed agentMessage the full read suppresses — again diverging ItemCount.
+// This helper reads the group's records from the transcript file and re-projects
+// them with a fresh registry, then returns the CommRawArgs map AND
+// LastAssistantText — the same state the full read's single registry would
+// carry. It is called only on the continuation path (not on StartsGroup, where
+// openReg is fresh by definition), and only when project != nil (the scan is
+// counting items).
+// groupTurnID is the logical group's turn ID (openTurnID), used for projection
+// so LastAssistantTurnID is set to the same value the main scan uses — a
+// continuation record's own record.TurnID differs from the group's openTurnID,
+// and using it would mis-scope the echo check.
+func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryProjector, groupTurnID string) (map[string]string, string, string) {
+	if project == nil {
+		return map[string]string{}, "", ""
+	}
+	n := index.recordCount()
+	if n == 0 {
+		return map[string]string{}, "", ""
+	}
+	// Walk back to the group's start record.
+	startIdx := n - 1
+	for i := n - 1; i >= 0; i-- {
+		if i == 0 || index.recordAt(i).StartsGroup {
+			startIdx = i
+			break
+		}
+	}
+	// Seed from the StartsGroup record's persisted registry state so
+	// CommRawArgs/LastAssistantText carried from preceding groups are
+	// included, then replay the group's records to reflect in-group changes.
+	startRecord := index.recordAt(startIdx)
+	reg := &ToolCallRegistry{Names: map[string]string{}}
+	seedRegistryFromRecord(reg, startRecord)
+	for i := startIdx; i < n; i++ {
+		record := index.recordAt(i)
+		raw := make([]byte, record.Length)
+		if _, err := file.ReadAt(raw, record.Offset); err != nil {
+			return reg.CommRawArgs, reg.LastAssistantText, reg.LastAssistantTurnID
+		}
+		entry, err := transcript.DecodeEntry(raw)
+		if err != nil {
+			return reg.CommRawArgs, reg.LastAssistantText, reg.LastAssistantTurnID
+		}
+		reg.Names = cloneToolNames(record.ToolSeed)
+		project(entry.Turn, groupTurnID, record.Index, reg)
+	}
+	return reg.CommRawArgs, reg.LastAssistantText, reg.LastAssistantTurnID
 }
 
 // recordAtKindTurn reconstructs a record's turn kind for the fallback id

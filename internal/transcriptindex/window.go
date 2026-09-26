@@ -345,7 +345,14 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		}
 		callID = string(call)
 	}
-	items, parts, err := r.project(record.Opener, callID, turnID)
+	var items []appwire.ThreadItem
+	var parts []int
+	var err error
+	if record.Context.Len > 0 {
+		items, parts, err = r.projectWithContext(record, turnID)
+	} else {
+		items, parts, err = r.project(record.Opener, callID, turnID)
+	}
 	if err != nil {
 		return appwire.ThreadItem{}, err
 	}
@@ -406,8 +413,46 @@ func (r *reader) project(c contributor, callID, turnID string) ([]appwire.Thread
 		}
 		seed[callID] = string(name)
 	}
-	items, parts := apptranscript.ProjectTurnParts(turnID, int(c.Ordinal)+1, *entry, seed, nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectTurnParts(turnID, int(c.Ordinal)+1, *entry, &apptranscript.ToolCallRegistry{Names: seed, CommRawArgs: map[string]string{}}, nil, apptranscript.ToolResultOutputImages)
 	r.projections[key] = projection{items: items, parts: parts}
+	return items, parts, nil
+}
+
+// projectWithContext projects record.Opener for a deferred communicate result
+// item: unlike project, Opener alone never carries enough ToolCallRegistry
+// state (the assistant entry that issued the call renders no item of its
+// own, so Names/CommRawArgs/LastAssistantText/LastAssistantTurnID are not
+// recoverable from Opener). It replays record.Context's entries first — in
+// file order, exactly as the whole-file projection's single threaded
+// registry would have processed them — discarding their own items, then
+// projects Opener with the registry those replays built. Not cached: these
+// items are a small, rare subset of a read.
+func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire.ThreadItem, []int, error) {
+	buf, err := r.x.strings.get(record.Context)
+	if err != nil {
+		return nil, nil, err
+	}
+	context, err := decodeContextEntries(buf)
+	if err != nil {
+		return nil, nil, err
+	}
+	reg := apptranscript.NewToolCallRegistry()
+	for _, ce := range context {
+		entry, err := r.entry(ce.Offset, ce.Length)
+		if err != nil {
+			return nil, nil, err
+		}
+		turnIDBytes, err := r.x.strings.get(ce.TurnID)
+		if err != nil {
+			return nil, nil, err
+		}
+		apptranscript.ProjectTurnParts(string(turnIDBytes), int(ce.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
+	}
+	entry, err := r.entry(record.Opener.Offset, record.Opener.Length)
+	if err != nil {
+		return nil, nil, err
+	}
+	items, parts := apptranscript.ProjectTurnParts(turnID, int(record.Opener.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
 	return items, parts, nil
 }
 

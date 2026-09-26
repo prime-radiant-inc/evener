@@ -513,7 +513,7 @@ func TestDelegateIsolation_FenceWarningNamesTheSpawnOrTheRollback(t *testing.T) 
 		r := newWorktreeRepo(t)
 		root := r.s
 		warnings := collectWarningsUntilClosed(root)
-		shortenCloseCascadeBudget(t, 200*time.Millisecond)
+		budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 		createHeld := make(chan struct{})
 		closeBegun := make(chan struct{})
@@ -535,7 +535,7 @@ func TestDelegateIsolation_FenceWarningNamesTheSpawnOrTheRollback(t *testing.T) 
 						root.Close()
 					}()
 					close(createHeld)
-					time.Sleep(2 * LaneClosePassBudget)
+					time.Sleep(2 * budget)
 				}
 				return inner(args...)
 			}
@@ -574,7 +574,7 @@ func TestDelegateIsolation_FenceWarningNamesTheSpawnOrTheRollback(t *testing.T) 
 		r := newWorktreeRepo(t)
 		root := r.s
 		warnings := collectWarningsUntilClosed(root)
-		shortenCloseCascadeBudget(t, 200*time.Millisecond)
+		budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 		rollbackStarted := make(chan struct{})
 		closeBegun := make(chan struct{})
@@ -606,7 +606,7 @@ func TestDelegateIsolation_FenceWarningNamesTheSpawnOrTheRollback(t *testing.T) 
 				if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && held.CompareAndSwap(false, true) {
 					lanePath = args[2]
 					close(rollbackStarted)
-					time.Sleep(2 * LaneClosePassBudget)
+					time.Sleep(2 * budget)
 				}
 				return inner(args...)
 			}

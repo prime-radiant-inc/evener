@@ -173,6 +173,7 @@ func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *te
 // bare resume of a persisted child has an empty spawn carrier, so that rule
 // has to read the persisted subagent flag as well.
 func TestInitInside_BareResumeOfAPersistedChildTakesNoLock(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {

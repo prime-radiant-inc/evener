@@ -33,6 +33,7 @@ func seedRunningTurn(t *testing.T, s *Session) string {
 }
 
 func TestSteerLandsIntoWhateverTurnIsRunning(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	seedRunningTurn(t, s)
@@ -51,6 +52,7 @@ func TestSteerLandsIntoWhateverTurnIsRunning(t *testing.T) {
 }
 
 func TestQueueLandsWhateverTurnIsRunning(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	seedRunningTurn(t, s)
@@ -69,6 +71,7 @@ func TestQueueLandsWhateverTurnIsRunning(t *testing.T) {
 }
 
 func TestInterruptStopsWhateverTurnIsRunning(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 

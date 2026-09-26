@@ -599,7 +599,7 @@ func parityTable(groups ...[]knownDivergence) []knownDivergence {
 // parityBeforeRestart lists today's divergences between the live view and the
 // transcript projection of one session, each with the phase that removes it.
 var parityBeforeRestart = parityTable(
-	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "agentMessage", "callId", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "commandExecution", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "steering", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage", "id", "position", "transcriptEntryIndex", "transcriptKey"),
@@ -628,7 +628,7 @@ var parityBeforeRestart = parityTable(
 // the restarted server seeds its snapshot from the file, so only the new
 // turn's live identity and the restart's own notices diverge.
 var parityAfterRestart = parityTable(
-	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "agentMessage", "callId", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),

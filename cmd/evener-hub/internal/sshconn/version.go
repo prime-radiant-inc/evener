@@ -14,8 +14,8 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/hubapi"
-	"primeradiant.com/evener/internal/shellquote"
 )
 
 // defaultHubAddr is the host hub's default loopback listen address
@@ -100,17 +100,23 @@ func (m *Manager) checkHostAddr(host hostreg.Host) error {
 	return nil
 }
 
-// validateHubAddr accepts the addresses a hub can actually listen on: a
-// loopback host, localhost, or a wildcard bind (which loopbackAddr normalizes to
-// loopback for probing). Anything else — including a missing port — is refused
-// rather than probed.
-func validateHubAddr(name, addr string) error {
+// ValidateHubAddrShape reports why addr cannot be a hub listen address: it is
+// not host:port, its port is unusable, or its host is not a loopback literal,
+// localhost, or a wildcard bind (which loopbackAddr normalizes to loopback for
+// probing). Everything else — including a missing port — is refused rather than
+// probed.
+//
+// It deliberately carries no sentinel: each caller wraps it in its own
+// taxonomy — this package's checkHostAddr wraps ErrHostAddr, and the hub's
+// config validation wraps its ErrHostAddr — so the one accepted address shape
+// lives here and load-time validation cannot drift from the probe.
+func ValidateHubAddrShape(addr string) error {
 	hostPart, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("%w: host %q address %q is not host:port: %w", ErrHostAddr, name, addr, err)
+		return fmt.Errorf("address %q is not host:port: %w", addr, err)
 	}
 	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("%w: host %q address %q has no usable port", ErrHostAddr, name, addr)
+		return fmt.Errorf("address %q has no usable port", addr)
 	}
 	switch hostPart {
 	case "", "localhost", "0.0.0.0", "::":
@@ -118,7 +124,16 @@ func validateHubAddr(name, addr string) error {
 	}
 	ip := net.ParseIP(hostPart)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("%w: host %q address %q is not a loopback or wildcard bind", ErrHostAddr, name, addr)
+		return fmt.Errorf("address %q is not a loopback or wildcard bind", addr)
+	}
+	return nil
+}
+
+// validateHubAddr is ValidateHubAddrShape in this package's taxonomy: the
+// refusal wraps ErrHostAddr and names the host the address belongs to.
+func validateHubAddr(name, addr string) error {
+	if err := ValidateHubAddrShape(addr); err != nil {
+		return fmt.Errorf("%w: host %q %w", ErrHostAddr, name, err)
 	}
 	return nil
 }
@@ -197,10 +212,13 @@ type supervisorSet struct {
 	dormant supervisor
 }
 
-// restartRemote is the remote command that restarts (or starts) the supervised
-// hub. ok is false when no safe supervised command can be built, in which case
-// the caller falls through to the ad hoc path rather than passing host-derived
-// data into the remote shell.
+// restartRemote is the remote command that restarts the supervised hub. ok is
+// false when no safe supervised command can be built — launchd with no numeric
+// uid, or a label outside the bare-safe set — in which case the restart refuses
+// rather than falling through to the unmanaged ad hoc path (restartHub, spec 04
+// criterion 19): the label is host-derived data that must not be interpolated
+// into the remote shell, and the ad hoc path is the unguarded kill criterion 20
+// removes.
 //
 // The darwin domain argument is `gui/<uid>/<label>` with the numeric uid
 // resolved in preflight and passed as one bare-safe word: a `$(id -u)`
@@ -541,13 +559,15 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 }
 
 // restartHub restarts the host's hub: after a deploy, to replace a stale process,
-// or to settle a restart or start an earlier attempt recorded. It prefers a
-// detected supervisor (launchd/systemd) and otherwise restarts the bare process
-// by recovering its pid, argv, and log. It never starts a second hub while the
-// old one holds hub.lock: the bare path waits for the port to clear before
-// relaunching. replaced is the identity of the hub process this restart expects
-// to replace, so a non-unique version cannot make the old process look like a
-// successful replacement.
+// or to settle a restart or start an earlier attempt recorded. It restarts a
+// detected supervisor (launchd/systemd) by unit or label; a hub with no
+// supervisor, or one whose launchd restart command cannot be built safely, is
+// refused with ErrRestart and emits no signal (spec 04, criteria 19-20) — the
+// component's only host interface is `ssh <dest> <command>`, so no atomic
+// process handle (pidfd or a host-side pin helper) is reachable to pin an
+// identified PID across a signal. replaced is the identity of the hub process
+// this restart expects to replace, so a non-unique version cannot make the old
+// process look like a successful replacement.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, replaced hubIdentity) error {
 	// Judge the restart against the build the host will actually serve, which is
 	// this controller's own only when a deploy converged the host on it
@@ -576,25 +596,29 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		}
 	}
 	if sup.kind != supervisorNone {
-		if remote, ok := sup.restartRemote(facts.UID); ok {
-			return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
+		remote, ok := sup.restartRemote(facts.UID)
+		if !ok {
+			// A detected supervisor whose restart command cannot be built safely —
+			// launchd with no numeric uid from preflight, or a label outside the
+			// bare-safe set — must refuse rather than fall through to an unmanaged
+			// ad hoc launch: the label is host-derived data that must never be
+			// interpolated into the remote shell, and the ad hoc path is the
+			// unguarded check-then-act kill spec 04 criterion 20 forbids.
+			return fmt.Errorf("%w: host %q %s supervisor %q has no safely-buildable restart command; refusing to fall through to an unmanaged launch",
+				ErrRestart, host.Name, sup.kind, sup.label)
 		}
-		// A supervisor whose command cannot be built safely — launchd with no
-		// numeric uid from preflight, or a label outside the bare-safe set — falls
-		// through to the ad hoc path rather than interpolating host-derived data
-		// into the remote shell.
+		return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
 	}
 
-	if err := m.restartBare(ctx, host, replaced); err != nil {
-		return err
-	}
-	if err := m.waitHealthy(ctx, host, expectVersion, expectPin, replaced); err != nil {
-		return err
-	}
-	// A healthy replacement is serving, so any relaunch this Manager recorded for
-	// this host is settled.
-	m.clearPendingRestart(host.Name)
-	return nil
+	// No supervisor owns the hub, so a restart could only signal the identified
+	// process directly. No atomic process handle (a pidfd, or a host-side helper
+	// holding an equivalent identity pin) is reachable through this component's
+	// `ssh <dest> <command>` interface, so the supervisorless restart refuses with
+	// ErrRestart and emits no signal instead of the check-then-act `restartBare`
+	// kill (spec 04, criterion 20). A stopped host's cold bootstrap is unaffected:
+	// it is start-only (bootstrapHub) and never reaches this branch.
+	return fmt.Errorf("%w: host %q hub has no supervisor that owns it (no live systemd unit or launchd label on the configured endpoint); a supervisorless restart cannot pin the process, so refusing to signal it",
+		ErrRestart, host.Name)
 }
 
 // restartSupervised runs a detected supervisor's restart command and verifies
@@ -632,9 +656,9 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 }
 
 // recoverRestart retries the restart command a previous attempt recorded before
-// it ran: a bare relaunch or a supervisor restart. It is the recovery half of the
-// ladder: a restart that killed the old hub but left no listener must be
-// completed by the next Ensure, which is what ErrRestart promises. There is no
+// it ran: a supervisor restart, or a recorded bootstrap start. It is the recovery
+// half of the ladder: a restart that killed the old hub but left no listener must
+// be completed by the next Ensure, which is what ErrRestart promises. There is no
 // hub to kill here, so it runs the recorded command directly and waits for the
 // expected build to answer.
 func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts Preflight, expected string, pending pendingRestartState) error {
@@ -666,6 +690,13 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts P
 // restartBare implements the doc's four-step ad hoc-hub restart: find the pid
 // by listening port, recover the exact argv and log destination, stop it, and
 // relaunch detached with the recovered argv.
+//
+// It is deliberately unreachable from production since spec 04 criterion 20
+// removed the supervisorless signal: restartHub refuses before calling it, and
+// its only remaining callers are its unit tests. It is retained, unguarded
+// `kill -- <pid>` and all, and pinned by those tests, pending the tracked
+// host-side atomic-signal helper that would let a supervisorless restart pin the
+// identified process; do not wire a restart branch back to it before that lands.
 func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced hubIdentity) error {
 	port := hubPort(m.hostAddr(host))
 	pid, err := m.findHubPID(ctx, host, port)
@@ -791,6 +822,20 @@ const noListenerMarker = "__sshconn_no_listener__"
 // to restart a listener it cannot identify rather than guessing at a PID.
 const listenerPresentMarker = "__sshconn_listener_present__"
 
+// NoListenerMarker is the port probe's proved-empty answer — a probe tool ran
+// and found no listener on the port — exposed for callers outside this package
+// that must tell a proved-empty port from an unprobeable host. The hub's gated
+// live deploy check builds its host cleanup from ListenerProbeRemote and reads
+// this marker; anything else (a pid, listenerPresentMarker, or an empty answer)
+// is NOT absence.
+const NoListenerMarker = noListenerMarker
+
+// ListenerPresentMarker is the port probe's "a fallback tool proved a listener
+// exists but could not name its process" answer, exposed for the same callers as
+// NoListenerMarker: a held-but-unnameable port is not absence, so a caller that
+// only looks for NoListenerMarker must not read this as one.
+const ListenerPresentMarker = listenerPresentMarker
+
 // listenerProbeRemote builds the remote command that reports the listeners on
 // port.
 //
@@ -848,6 +893,15 @@ echo 'sshconn: no listener probe is available on this host (lsof, ss, and /proc/
 exit 1
 `
 }
+
+// ListenerProbeRemote exposes the port probe to callers outside this package.
+// The hub's gated live deploy check builds its host cleanup from it, so the
+// check and the production restart path identify a listener on a host the same
+// way — including the ss and /proc/net/tcp fallbacks a host without lsof needs.
+// Callers must treat a nonzero exit as "cannot say": only a nil error together
+// with NoListenerMarker proves the port is free (see the probe's output
+// contract above).
+func ListenerProbeRemote(port string) string { return listenerProbeRemote(port) }
 
 // listenerProbe is one port probe's answer: the PIDs a probe tool could name,
 // and whether a listener was proved to exist that no tool could name.
@@ -1343,7 +1397,7 @@ func parseHubHealthBuild(out []byte, addr string) (hubIdentity, string, bool) {
 	if loopbackAddr(resp.HubAddr) != loopbackAddr(addr) {
 		return hubIdentity{}, "", false
 	}
-	return hubIdentity{version: resp.Version, startedAt: resp.StartedAt}, resp.BackendGitSha, true
+	return hubIdentity{version: resp.Version, gitSHA: resp.BackendGitSha, startedAt: resp.StartedAt}, resp.BackendGitSha, true
 }
 
 // recoverHubArgv recovers the argv of pid. It prefers the host's null-delimited
@@ -1444,8 +1498,8 @@ func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Hos
 }
 
 // installableEvenerBasename reports whether a basename names the binary a host
-// hub can be run as. Only `evener` does: install.sh ships `evener-dev` too
-// (install.sh:5), but that is the development/test tooling binary
+// hub can be run as. Only `evener` does: release archives carry `evener-dev`
+// too, but that is the development/test tooling binary
 // (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a run
 // target naming it would be probed, relaunched, and attached as a hub that can
 // never answer. A deploy cannot preserve a run target the host cannot serve.

@@ -63,10 +63,19 @@ func paritySubject(item appwire.ThreadItem) string {
 // its kind and content, not its identity, which is what is under test.
 func paritySignature(item appwire.ThreadItem) string {
 	text := strings.TrimSpace(item.Text)
+	callID := item.CallID
 	if item.Type == "commandExecution" {
 		text = ""
 	}
-	return strings.Join([]string{paritySubject(item), item.CallID, item.ToolName, text}, "\x00")
+	if item.Type == "agentMessage" {
+		// Live sets CallID on a delivered communicate message (the call that
+		// produced it); the file projector does not — an identity-ish gap
+		// like id/position/turnId, not a difference in which message this
+		// is. Excluding it here keeps text the alignment key, so a healed
+		// communicate result still pairs with its live delivery.
+		callID = ""
+	}
+	return strings.Join([]string{paritySubject(item), callID, item.ToolName, text}, "\x00")
 }
 
 // diffParity aligns the live items with the file items and reports every kind

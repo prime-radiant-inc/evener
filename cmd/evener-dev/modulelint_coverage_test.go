@@ -35,8 +35,8 @@ func TestParseLintConfigDefaultValues(t *testing.T) {
 	if diag != "" {
 		t.Fatalf("unexpected diagnostic: %q", diag)
 	}
-	if len(cfg.Modules) != 8 {
-		t.Fatalf("default modules = %v, want 8 entries", cfg.Modules)
+	if len(cfg.Modules) != 9 {
+		t.Fatalf("default modules = %v, want 9 entries", cfg.Modules)
 	}
 	if cfg.Parallel != defaultLintParallel {
 		t.Fatalf("parallel = %d, want %d", cfg.Parallel, defaultLintParallel)

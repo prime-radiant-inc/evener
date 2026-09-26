@@ -23,7 +23,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 3
+	formatVersion = 4
 	projectionID  = "apptranscript-items-v1/entry-ordinal-positions-v2"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -323,7 +323,7 @@ func (x *Index) tailSum(end int64) (string, error) {
 
 // restoreBuilder recovers the open turn's state from meta and records.
 func (x *Index) restoreBuilder() error {
-	b := builder{x: x, grouper: apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}, calls: map[string]uint64{}, names: map[string]toolName{}}
+	b := builder{x: x, grouper: apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}, calls: map[string]uint64{}, names: map[string]toolName{}, commCalls: map[string]commState{}}
 	if x.meta.Entries > 0 {
 		buf, err := x.turns.read(x.meta.TurnSlot, 1)
 		if err != nil {
@@ -412,7 +412,7 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.meta = meta{Format: formatVersion, Projection: projectionID, Incarnation: incarnation, FileIdentity: apptranscript.FileIdentity(info)}
 	x.prelude = nil
 	x.stale, x.builderStale = false, false
-	x.builder = builder{x: x, global: map[string]string{}}
+	x.builder = builder{x: x, global: map[string]string{}, commCalls: map[string]commState{}, lastAssistantKnown: true}
 	x.rebuilds++
 	if err := x.scan(length); err != nil {
 		return err

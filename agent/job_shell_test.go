@@ -201,6 +201,7 @@ func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
 }
 
 func TestRunShellPipelineExitStatus(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("pipeline status contract is for the POSIX shell path")
 	}
@@ -238,6 +239,7 @@ func TestRunShellPipelineExitStatus(t *testing.T) {
 }
 
 func TestRunShellSignalKilledReportsSignalOutcome(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("signal outcome contract is for the POSIX shell path")
 	}
@@ -257,6 +259,7 @@ func TestRunShellSignalKilledReportsSignalOutcome(t *testing.T) {
 }
 
 func TestRunShellBackgroundSignalKilledPersistsSignalOutcome(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("signal outcome contract is for the POSIX shell path")
 	}

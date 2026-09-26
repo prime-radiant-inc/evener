@@ -57,6 +57,7 @@ type schemaValidator interface {
 // failing case before the cleanup promotes it.
 // evener:fuzz rapid
 func TestToolArgsSchemaFuzz(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
 	}
@@ -148,6 +149,7 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 // bucket, and dedup on the second sighting. This proves the four hooks wire up
 // without depending on the live fuzzer finding a real bug.
 func TestToolArgsAdapter_PromotesDeterministicFailure(t *testing.T) {
+	t.Parallel()
 	tools := coreToolSchemaDefs(t)
 	schemas := make(map[string]schemaValidator, len(tools))
 	for _, td := range tools {

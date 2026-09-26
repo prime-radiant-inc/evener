@@ -105,6 +105,7 @@ func toolCallEndData(t *testing.T, collected []events.SessionEvent, callID strin
 // the session stream has no way to know the image exists until the session is
 // read back off disk (kata 2fxm).
 func TestToolCallEndCarriesTheToolResultImage(t *testing.T) {
+	t.Parallel()
 	webp := validWebPFixture(t)
 	sess, stop := imageToolSession(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: webp, MediaType: "image/webp"}, nil
@@ -134,6 +135,7 @@ func TestToolCallEndCarriesTheToolResultImage(t *testing.T) {
 // TestToolCallEndCarriesNoImageForAByteLessResult keeps the descriptor honest:
 // every tool call would otherwise announce an image nothing can serve.
 func TestToolCallEndCarriesNoImageForAByteLessResult(t *testing.T) {
+	t.Parallel()
 	sess, stop := imageToolSession(t, "shell", func() (any, error) {
 		return tool.TextResult{Output: "no image here", FullOutput: "no image here"}, nil
 	})
@@ -152,6 +154,7 @@ func TestToolCallEndCarriesNoImageForAByteLessResult(t *testing.T) {
 // from the transcript it wrote. A reader watching the session and a reader
 // opening it later must be told the same thing about the same bytes.
 func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
+	t.Parallel()
 	png := validPNGFixture(t)
 	sess, stop := imageToolSessionWithState(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/png"}, nil
@@ -172,7 +175,7 @@ func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
 	}
 
 	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
 	})
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)

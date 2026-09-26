@@ -51,6 +51,27 @@ func hasNamelessResult(turn schema.Turn) bool {
 	return false
 }
 
+// needsCommunicateHistory reports whether the entry is part of a deferred
+// communicate flow: the call itself, or its (possibly nameless, already
+// covered by hasNamelessResult) result. Like a nameless result, a restart
+// between the call and its result can lose the CommRawArgs/LastAssistantText
+// state the index needs, and force a rebuild.
+func needsCommunicateHistory(turn schema.Turn) bool {
+	for _, part := range turn.Message.Content {
+		switch part.Kind {
+		case llm.ContentToolCall:
+			if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+				return true
+			}
+		case llm.ContentToolResult:
+			if part.ToolResult != nil && part.ToolResult.Name == "communicate" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // liveBuild is the sidecar's live build directory.
 func liveBuild(t testing.TB, dir string) string {
 	t.Helper()
@@ -68,7 +89,7 @@ func namedResults() fixture {
 	for _, set := range fixtures() {
 		named := true
 		for _, line := range set.lines {
-			named = named && !hasNamelessResult(line.turn)
+			named = named && !hasNamelessResult(line.turn) && !needsCommunicateHistory(line.turn)
 		}
 		if named && set.name != "everything" {
 			fx.header = set.header
@@ -108,13 +129,13 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 				t.Fatal(err)
 			}
 			x = openIndex(t, path, dir)
-			if x.rebuilds != 0 && !fx.lines[i].blank && !hasNamelessResult(fx.lines[i].turn) {
+			if x.rebuilds != 0 && !fx.lines[i].blank && !hasNamelessResult(fx.lines[i].turn) && !needsCommunicateHistory(fx.lines[i].turn) {
 				t.Fatalf("line %d: reopening rebuilt the index", i)
 			}
 		} else {
 			before := x.rebuilds
 			catchUp(t, x)
-			if x.rebuilds != before && !hasNamelessResult(fx.lines[i].turn) {
+			if x.rebuilds != before && !hasNamelessResult(fx.lines[i].turn) && !needsCommunicateHistory(fx.lines[i].turn) {
 				t.Fatalf("line %d: extending rebuilt the index", i)
 			}
 		}

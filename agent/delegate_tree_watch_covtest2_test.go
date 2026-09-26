@@ -217,6 +217,7 @@ func TestStableWatchBootstrapSnapshot_NilAggregate(t *testing.T) {
 // TestRepairStableWatchDeliveriesForBootstrap_NilController covers the nil-controller
 // guard (lines 320-321).
 func TestRepairStableWatchDeliveriesForBootstrap_NilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	err := repairStableWatchDeliveriesForBootstrap(c)
 	if err == nil || !contains(err.Error(), "controller is nil") {

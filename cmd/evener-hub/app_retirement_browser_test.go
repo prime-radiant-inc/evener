@@ -528,7 +528,7 @@ func TestRetirementBrowser(t *testing.T) {
 	degradeURL := hub.URL + "/fixture/degrade"
 
 	// Artifact directory: written by the Node guard; survives a passing run
-	// because it is outside the scratch test-web-browser.sh deletes.
+	// because it is outside the scratch the browser gate deletes.
 	// A caller may name a durable directory (RETIREMENT_BROWSER_ARTIFACT_DIR) so
 	// the evidence outlives the test's own temp root.
 	artifactDir := os.Getenv("RETIREMENT_BROWSER_ARTIFACT_DIR")

@@ -129,6 +129,7 @@ var entryKindTurnOpening = map[EntryKind]turnOpening{
 }
 
 func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
+	t.Parallel()
 	for kind := range entryKindCount {
 		if _, ok := entryKindTurnOpening[kind]; !ok {
 			t.Fatalf("EntryKind %d declares no turn opening: add it to entryKindTurnOpening. "+
@@ -147,6 +148,7 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 // audit with any string, which is the one way to pass that test while saying
 // nothing.
 func TestEveryTurnOpeningLabelIsOneOfTheVocabulary(t *testing.T) {
+	t.Parallel()
 	for kind, opening := range entryKindTurnOpening {
 		if !validTurnOpenings[opening] {
 			t.Fatalf("EntryKind %d declares turn opening %q, which is not one of the %d labels: "+
@@ -382,6 +384,7 @@ func classifyTurnOpening(t *testing.T, kind EntryKind) turnOpening {
 // precondition accepts looks identical to a correctly labelled one until a
 // client presses Steer, Send or Stop on it.
 func TestEveryTurnOpeningLabelMatchesTheKindsBehaviour(t *testing.T) {
+	t.Parallel()
 	for kind := range entryKindCount {
 		claimed, ok := entryKindTurnOpening[kind]
 		if !ok {
@@ -405,6 +408,7 @@ func TestEveryTurnOpeningLabelMatchesTheKindsBehaviour(t *testing.T) {
 // the label rather than fix the kind -- which puts the table straight back to
 // claims with no oracle, one label at a time.
 func TestOnlyTheUnobservableLabelIsExemptFromTheProbe(t *testing.T) {
+	t.Parallel()
 	for label := range validTurnOpenings {
 		reason, exempt := probeExemptTurnOpenings[label]
 		if exempt && label != noProductionProducer {
@@ -425,6 +429,7 @@ func TestOnlyTheUnobservableLabelIsExemptFromTheProbe(t *testing.T) {
 // live kind's row to noProductionProducer silences its probe in one edit and
 // says so nowhere.
 func TestTheProbeExemptionNamesTheSameKindsAsTheTable(t *testing.T) {
+	t.Parallel()
 	for kind, opening := range entryKindTurnOpening {
 		_, labelClaimsNoProducer := probeExemptTurnOpenings[opening]
 		if labelClaimsNoProducer && !kindsNothingDispatches[kind] {

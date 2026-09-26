@@ -15,14 +15,14 @@ func TestProjectTurnPartsReportsTheContentPartOfEachItem(t *testing.T) {
 		{Kind: llm.ContentText, Text: ""}, // empty: no item, still part 0
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "think"}},
 		{Kind: llm.ContentText, Text: "hello"},
-		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: communicate}}, // echo: hidden
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: communicate}}, // deferred to its result turn: hidden
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "read_file", Arguments: json.RawMessage(`{}`)}},
 	}}}
-	items, parts := ProjectTurnParts("turn_1", 1, assistant, map[string]string{}, nil, nil)
+	items, parts := ProjectTurnParts("turn_1", 1, assistant, NewToolCallRegistry(), nil, nil)
 	if !reflect.DeepEqual(parts, []int{1, 2, 4}) {
 		t.Fatalf("parts = %v, want [1 2 4]", parts)
 	}
-	if want := ProjectTurn("turn_1", 1, assistant, map[string]string{}, nil, nil); !reflect.DeepEqual(items, want) {
+	if want := ProjectTurn("turn_1", 1, assistant, NewToolCallRegistry(), nil, nil); !reflect.DeepEqual(items, want) {
 		t.Fatalf("ProjectTurnParts items differ from ProjectTurn:\n got %+v\nwant %+v", items, want)
 	}
 
@@ -30,7 +30,12 @@ func TestProjectTurnPartsReportsTheContentPartOfEachItem(t *testing.T) {
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "communicate"}},
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c2", Name: "read_file", Content: "ok"}},
 	}}}
-	if _, parts := ProjectTurnParts("turn_2", 2, results, map[string]string{}, nil, nil); !reflect.DeepEqual(parts, []int{1}) {
+	// c1's result carries no seeded CommRawArgs (a fresh registry, not the
+	// paired assistant turn's), so the deferred communicate healed branch
+	// finds nothing to render — same "hidden" outcome as the assistant turn,
+	// for the same reason ProjectTurnParts must track (part 0 of this entry
+	// projects no item).
+	if _, parts := ProjectTurnParts("turn_2", 2, results, NewToolCallRegistry(), nil, nil); !reflect.DeepEqual(parts, []int{1}) {
 		t.Fatalf("tool result parts = %v, want [1]", parts)
 	}
 
