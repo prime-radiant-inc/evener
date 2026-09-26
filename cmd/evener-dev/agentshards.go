@@ -859,7 +859,7 @@ func surveyFailureHasMismatchedOwner(lines []string, marker, emitted int) bool {
 	}
 	for index := marker - 1; index >= emitted; index-- {
 		if owner := surveyPhaseOwner(lines[index]); owner != "" {
-			return owner != name
+			return owner != name && !strings.HasPrefix(owner, name+"/")
 		}
 	}
 	return false

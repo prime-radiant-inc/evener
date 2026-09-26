@@ -427,6 +427,30 @@ func TestReplaySurveyFailuresExpandsPastMismatchedNameBoundary(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsNestedMultilineContinuation covers a parent
+// with many earlier subtest diagnostics followed by a failing last subtest's
+// non-diagnostic multiline output. The nested owner is still part of the
+// failing parent, so expansion must not replace that continuation with the
+// earlier diagnostics.
+func TestReplaySurveyFailuresKeepsNestedMultilineContinuation(t *testing.T) {
+	const continuation = "        - last subtest diff continuation line 2"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/earlier\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    earlier_test.go:%d: earlier diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/last\n")
+	log.WriteString("        - last subtest diff line 1\n")
+	log.WriteString(continuation + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, continuation) {
+		t.Fatalf("nested multiline continuation was replaced by earlier diagnostics: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
 // failing test's unindented direct output (fmt.Println, log.Print, a child
 // process) sits with its verdict, and the excerpt must carry it. The framework
