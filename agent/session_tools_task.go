@@ -337,6 +337,14 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			if err != nil {
 				return nil, err
 			}
+			if err := store.LoadError(); err != nil {
+				// A first load can fail transiently before the task file is
+				// readable again. Retry the existing read path here; a continued
+				// failure leaves the store fenced and preserves its bytes.
+				if reloadErr := store.Load(); reloadErr != nil {
+					return nil, store.LoadError()
+				}
+			}
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil
 				// slices; a mutation with nothing to mutate is the view.)
@@ -426,6 +434,8 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 				}
 
+				var postCommitErr error
+				var postCommitAdvice string
 				// If the agent explicitly started a task, fire its current-task
 				// steering so the SYSTEM-REMINDER for the new task shows up on
 				// the next turn.
@@ -433,7 +443,8 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// Inside the task_list handler: the tool is registered by
 					// construction, so the steering may name it.
 					if err := deps.steer(formatCurrentTaskSteering(afterByID[manuallyStartedID], true), events.SteeringKindCurrentTask); err != nil {
-						return nil, err
+						postCommitErr = fmt.Errorf("post-commit current-task steering failed: %w", err)
+						postCommitAdvice = "The task update was committed; retry after fixing steering."
 					}
 				}
 
@@ -461,11 +472,16 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
-							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
+							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
+							if err != nil {
+								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
+								postCommitAdvice = "The terminal update was committed; start the next task explicitly after fixing persistence."
+							} else {
 								finalTasks = auto.After
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
-									return nil, err
+									postCommitErr = fmt.Errorf("post-commit auto-advance steering failed: %w", err)
+									postCommitAdvice = "The terminal update and auto-advance were committed; retry steering after fixing steering."
 								}
 							}
 						} else {
@@ -478,9 +494,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 									blockingDelegateIDs = deps.blockingDelegateIDs()
 								}
 								if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
-									return nil, err
-								}
-								if len(blockingDelegateIDs) == 0 {
+									postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
+									postCommitAdvice = "The terminal update was committed; retry completion steering after fixing the reported error."
+								} else if len(blockingDelegateIDs) == 0 {
 									if summary.AllDone() {
 										msg.WriteString("All tasks complete. ")
 									} else {
@@ -503,6 +519,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
+				if postCommitErr != nil {
+					msg.WriteString(postCommitErr.Error())
+					msg.WriteString(" ")
+					msg.WriteString(postCommitAdvice)
+					msg.WriteString(" ")
+				}
 				fmt.Fprintf(&msg, "Progress: %s.", summary.ProgressText())
 				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, started, settled)}, nil
 			})

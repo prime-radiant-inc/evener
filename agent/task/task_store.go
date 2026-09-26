@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +15,11 @@ import (
 )
 
 var nextPublicationEpoch atomic.Uint64
+
+// ErrTaskStoreUnavailable identifies a store whose last Load failed. A failed
+// load is not an empty authoritative list: callers must repair the file
+// externally and successfully Load it before mutating the store again.
+var ErrTaskStoreUnavailable = errors.New("task store unavailable after load failure")
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
 // starts from such an agent, its templates seed the initial task list.
@@ -209,6 +213,7 @@ type TaskStore struct {
 	path                  string
 	now                   func() time.Time
 	fs                    afero.Fs
+	loadErr               error
 }
 
 // beforeMutationPublicationWaitHook, when non-nil, runs when MutateAndPublish
@@ -282,15 +287,20 @@ func (s *TaskStore) Load() error {
 
 	data, err := afero.ReadFile(s.fs, s.path)
 	if os.IsNotExist(err) {
+		s.tasks = nil
+		s.nextID = 1
+		s.loadErr = nil
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		s.loadErr = fmt.Errorf("read tasks: %w", err)
+		return s.loadErr
 	}
 
 	var tasks []Task
 	if err := json.Unmarshal(data, &tasks); err != nil {
-		return fmt.Errorf("unmarshal tasks: %w", err)
+		s.loadErr = fmt.Errorf("unmarshal tasks: %w", err)
+		return s.loadErr
 	}
 	// Persisted task files predate task-list effort validation and may contain
 	// an unsupported override. Normalize each task before publishing the loaded
@@ -299,13 +309,14 @@ func (s *TaskStore) Load() error {
 	// fields untouched. Load still assigns only after unmarshalling and
 	// normalization, so malformed input cannot partially replace the store.
 	for i := range tasks {
-		effort := strings.ToLower(strings.TrimSpace(tasks[i].ReasoningEffort))
+		effort := llm.NormalizeReasoningEffort(tasks[i].ReasoningEffort)
 		if err := llm.ValidateReasoningEffort(effort); err != nil {
 			effort = ""
 		}
 		tasks[i].ReasoningEffort = effort
 	}
 	s.tasks = tasks
+	s.loadErr = nil
 
 	// Set nextID to max existing ID + 1.
 	maxID := 0
@@ -316,6 +327,24 @@ func (s *TaskStore) Load() error {
 	}
 	s.nextID = maxID + 1
 	return nil
+}
+
+// LoadError reports the unavailable fence left by a failed Load, if any.
+func (s *TaskStore) LoadError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadErrorLocked()
+}
+
+func (s *TaskStore) loadErrorLocked() error {
+	if s.loadErr == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrTaskStoreUnavailable, s.loadErr)
+}
+
+func (s *TaskStore) ensureAvailableLocked() error {
+	return s.loadErrorLocked()
 }
 
 // save writes the task list to disk atomically.
@@ -353,6 +382,15 @@ func (s *TaskStore) View() []Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Task{}, s.tasks...)
+}
+
+// ViewWithError returns one coherent copy of the tasks and their availability
+// status. The same store lock covers both values so a concurrent Load cannot
+// make the snapshot and error describe different states.
+func (s *TaskStore) ViewWithError() ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Task{}, s.tasks...), s.loadErrorLocked()
 }
 
 // validateDependencies checks that all IDs in deps exist (in s.tasks or pending)
@@ -434,18 +472,35 @@ func hasCycle(adj map[int][]int) bool {
 	return false
 }
 
+// stagedLocked returns a mutation-local copy of s. Callers must hold s.mu.
+func (s *TaskStore) stagedLocked() *TaskStore {
+	return &TaskStore{
+		tasks:  cloneTasks(s.tasks),
+		nextID: s.nextID,
+		now:    s.now,
+		fs:     s.fs,
+		path:   s.path,
+	}
+}
+
 // Append adds new tasks with auto-assigned IDs and status=open. Returns the created tasks.
 func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	added, err := s.appendLocked(items)
+	if err := s.ensureAvailableLocked(); err != nil {
+		return nil, err
+	}
+	staged := s.stagedLocked()
+	added, err := staged.appendLocked(items)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.save(); err != nil {
+	if err := s.saveTasks(staged.tasks); err != nil {
 		return added, fmt.Errorf("save: %w", err)
 	}
-	return added, nil
+	s.tasks = staged.tasks
+	s.nextID = staged.nextID
+	return cloneTasks(added), nil
 }
 
 // appendLocked adds tasks to s.tasks but does not save. Callers must hold s.mu.
@@ -597,9 +652,13 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.ensureAvailableLocked(); err != nil {
+		return err
+	}
 	if len(s.tasks) > 0 {
 		return nil // already populated
 	}
+	staged := s.stagedLocked()
 
 	effective := ExpandParentTasks(templates, parentTasks)
 
@@ -609,9 +668,9 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 		if taskType == "" {
 			taskType = TaskTypeImplement
 		}
-		ts := s.stamp()
+		ts := staged.stamp()
 		t := Task{
-			ID:              s.nextID,
+			ID:              staged.nextID,
 			Type:            taskType,
 			Description:     tt.Title,
 			Prompt:          tt.Prompt,
@@ -621,17 +680,22 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 			CreatedAt:       ts,
 			UpdatedAt:       ts,
 		}
-		s.nextID++
-		s.tasks = append(s.tasks, t)
+		staged.nextID++
+		staged.tasks = append(staged.tasks, t)
 	}
 
 	// Auto-start the first task.
-	if len(s.tasks) > 0 {
-		s.tasks[0].Status = TaskInProgress
-		s.tasks[0].UpdatedAt = s.stamp()
+	if len(staged.tasks) > 0 {
+		staged.tasks[0].Status = TaskInProgress
+		staged.tasks[0].UpdatedAt = staged.stamp()
 	}
 
-	return s.save()
+	if err := s.saveTasks(staged.tasks); err != nil {
+		return err
+	}
+	s.tasks = staged.tasks
+	s.nextID = staged.nextID
+	return nil
 }
 
 // Update changes the status of existing tasks.
@@ -648,17 +712,22 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.ensureAvailableLocked(); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
 	before := cloneTasks(s.tasks)
-	settled, err := s.updateLocked(updates)
+	staged := s.stagedLocked()
+	settled, err := staged.updateLocked(updates)
 	if err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
-	if err := s.save(); err != nil {
+	if err := s.saveTasks(staged.tasks); err != nil {
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
+	s.tasks = staged.tasks
 	return TaskUpdateSnapshot{
 		Before:  before,
-		After:   cloneTasks(s.tasks),
+		After:   cloneTasks(staged.tasks),
 		Settled: settled,
 	}, nil
 }
@@ -811,17 +880,14 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.ensureAvailableLocked(); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
 	if err := s.validateUpdateIDsLocked(updates); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
 	before := cloneTasks(s.tasks)
-	staged := TaskStore{
-		tasks:  cloneTasks(s.tasks),
-		nextID: s.nextID,
-		now:    s.now,
-		fs:     s.fs,
-		path:   s.path,
-	}
+	staged := s.stagedLocked()
 	if _, err := staged.appendLocked(adds); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
