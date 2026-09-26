@@ -1018,7 +1018,7 @@ func openAIStateDirFromEnv(env map[string]string) string {
 }
 
 func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {
-	needsLogin := !record.Expiry.IsZero() && !record.Expiry.After(now)
+	needsLogin := record.NeedsLogin(now)
 	return authopenai.AuthStatus{
 		SignedIn:     !needsLogin,
 		Source:       record.Source,

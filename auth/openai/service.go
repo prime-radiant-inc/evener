@@ -61,9 +61,9 @@ type AuthStatus struct {
 	// NeedsRefresh is true when the access token has expired or is within the
 	// refresh-skew window and should be refreshed before use.
 	NeedsRefresh bool
-	// NeedsLogin is true when the access token has a non-zero expiry that is at
-	// or before the current time (fully expired, not merely within the refresh
-	// window).
+	// NeedsLogin is true when the access token has expired and no refresh
+	// token is on file to recover it, so the user must sign in again (see
+	// AuthRecord.NeedsLogin).
 	NeedsLogin bool
 }
 
@@ -504,6 +504,18 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	}, nil
 }
 
+// NeedsLogin reports whether the user has to sign in again to recover r: its
+// access token has expired (a non-zero expiry at or before now) and it has no
+// refresh token. An expired access token backed by a refresh token is routine,
+// since ResolveRuntimeCredentials refreshes it on the next use (issue #2468).
+// A refresh token the issuer has permanently rejected still counts as usable
+// here, because nothing records that rejection on the stored record
+// (issue #2479).
+func (r AuthRecord) NeedsLogin(now time.Time) bool {
+	expired := !r.Expiry.IsZero() && !r.Expiry.After(now)
+	return expired && strings.TrimSpace(r.RefreshToken) == ""
+}
+
 func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
 	now := s.now()
 	return AuthStatus{
@@ -514,7 +526,7 @@ func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
 		WorkspaceID:  record.WorkspaceID,
 		Expiry:       record.Expiry,
 		NeedsRefresh: needsRefresh(now, record.Expiry),
-		NeedsLogin:   !record.Expiry.IsZero() && !record.Expiry.After(now),
+		NeedsLogin:   record.NeedsLogin(now),
 	}
 }
 

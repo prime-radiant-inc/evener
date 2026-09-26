@@ -110,6 +110,25 @@
     "response": {
       "provider": "openai-codex",
       "supported": true,
+      "signedIn": true,
+      "activeSource": "oauth",
+      "authModes": [
+        "oauth"
+      ],
+      "hasStoredOAuth": true,
+      "email": "bot@example.com",
+      "storedEmail": "bot@example.com",
+      "needsRefresh": true,
+      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
+    }
+  },
+  {
+    "case": "status/oauth-login-required",
+    "note": "a Codex record whose access token has expired and whose refresh token cannot recover it",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "openai-codex",
+      "supported": true,
       "signedIn": false,
       "activeSource": "oauth",
       "authModes": [
