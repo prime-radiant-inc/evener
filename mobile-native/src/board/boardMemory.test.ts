@@ -169,14 +169,30 @@ describe("folded sections", () => {
 	});
 });
 
-it("forgetting a hub removes both of its keys and nothing else", () => {
-	const storage = memoryStorage(
-		new Map([
-			["evener.native.seen.hub-a", "{}"],
-			["evener.native.board-sections.hub-a", "{}"],
-			["evener.native.seen.hub-b", "{}"],
-		]),
-	);
-	forgetBoard(storage, "hub-a");
-	expect([...storage.values.keys()]).toEqual(["evener.native.seen.hub-b"]);
+describe("forgetBoard", () => {
+	it("removes both of a hub's keys and nothing else, without throwing", () => {
+		const storage = memoryStorage(
+			new Map([
+				["evener.native.seen.hub-a", "{}"],
+				["evener.native.board-sections.hub-a", "{}"],
+				["evener.native.seen.hub-b", "{}"],
+			]),
+		);
+		expect(() => forgetBoard(storage, "hub-a")).not.toThrow();
+		expect([...storage.values.keys()]).toEqual(["evener.native.seen.hub-b"]);
+	});
+
+	it("still removes the folded key when the seen key's removal fails, then throws", () => {
+		const removed: string[] = [];
+		const storage: BoardStorage = {
+			getItemSync: () => null,
+			setItemSync: () => {},
+			removeItemSync: (key) => {
+				if (key === "evener.native.seen.hub-a") throw new Error("disk");
+				removed.push(key);
+			},
+		};
+		expect(() => forgetBoard(storage, "hub-a")).toThrow();
+		expect(removed).toEqual(["evener.native.board-sections.hub-a"]);
+	});
 });
