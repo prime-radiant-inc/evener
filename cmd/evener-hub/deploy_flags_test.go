@@ -510,14 +510,26 @@ func otherTarget(goos, goarch string) (string, string) {
 // The hub's other startup lines (the auth URL among them) are not part of the
 // deploy leg and are unchanged by this slice.
 func TestRunMainLogsTheDeployPathItWasGiven(t *testing.T) {
-	exe := evenerArtifact(t)
+	// The hub logs the canonical path it stores — validateDeployFlags runs each
+	// flag through filepath.EvalSymlinks — so the expected strings are canonical
+	// too. On macOS t.TempDir lives under a symlinked /var, where a raw spelling
+	// would otherwise differ from what is logged for a reason unrelated to the
+	// behaviour under test; the sibling canonical-path test builds its want the
+	// same way.
+	exe, err := filepath.EvalSymlinks(evenerArtifact(t))
+	if err != nil {
+		t.Fatalf("canonicalize the built artifact: %v", err)
+	}
 	// The checkout only has to pass verifyBuildSource here. This test binary
 	// carries no build stamp, so the revision check is skipped; pinning GitSHA to
 	// "" keeps that true if the package is ever built with ldflags.
 	origSHA := buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.GitSHA = origSHA })
 	buildinfo.GitSHA = ""
-	checkout := t.TempDir()
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize the checkout: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
