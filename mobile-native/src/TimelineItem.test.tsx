@@ -20,8 +20,10 @@ import {
 import { TimelineItem } from "./TimelineItem";
 import { nativeModuleMock, render } from "./renderNative.testkit";
 
+const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	useColorScheme: () => mode.scheme,
 }));
 // The question case renders only Copy rows; these two leaves drag in the
 // native module graph (expo-clipboard, expo-secure-store, the connection
@@ -74,4 +76,25 @@ it("renders an ask's option rows without a duplicate-key report when the bounded
 		spy.mockRestore();
 	}
 	expect(errors.filter((line) => /same key/.test(line))).toEqual([]);
+});
+
+function userBubbleStyle() {
+	const row: MobileTimelineItem = { kind: "user", id: "u-1", text: "Ship it" };
+	const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
+	const [bubble] = tree.root.findAll(
+		(node) => String(node.type) === "View" && Array.isArray(node.props.style),
+	);
+	return bubble.props.style;
+}
+
+it("fills your message bubble with the accent tint in both themes", () => {
+	mode.scheme = "light";
+	expect(userBubbleStyle()).toEqual(
+		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#DDEBFC" })]),
+	);
+
+	mode.scheme = "dark";
+	expect(userBubbleStyle()).toEqual(
+		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#2A343D" })]),
+	);
 });
