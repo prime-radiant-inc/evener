@@ -297,9 +297,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if data.Restored {
 			p.SeedPersistedTurns(data.TranscriptEntries)
 		}
-		// A restored session carries its re-derived state on the event (spec
-		// §5.4's "two touchpoints"); a fresh session's State is empty and
-		// defaults to idle, same as an unrecognized value.
+		// A restored session carries its re-derived effective state (agent
+		// WireState) on the event (spec §5.4's "two touchpoints"); a fresh
+		// session's State is empty and defaults to idle, same as an
+		// unrecognized value.
 		status := appwire.ThreadStatusIdle
 		switch data.State {
 		case appwire.ThreadStatusAwaiting:
@@ -310,6 +311,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			// A restored session whose transcript ends in a failed turn
 			// (agent RestingWireState).
 			status = appwire.ThreadStatusSystemError
+		case appwire.ThreadStatusActive:
+			// A restored session with claimable queued work: its next turn
+			// starts without the user (agent WireState).
+			status = appwire.ThreadStatusActive
 		}
 		var tasks *appwire.TaskAggregate
 		var goal *appwire.GoalState
@@ -1355,6 +1360,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			// Open and resting on a failed turn (agent RestingWireState): the
 			// session takes the next message, so this is no close.
 			state = appwire.ThreadStatusSystemError
+		case appwire.ThreadStatusActive:
+			// Open with work pending (agent WireState): a message queued
+			// during a failed turn starts the next one, so this is no close.
+			state = appwire.ThreadStatusActive
 		}
 		turnStatus := appwire.TurnStatusCompleted
 		if state == appwire.ThreadStatusClosed || data.Interrupted {
