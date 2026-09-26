@@ -1,6 +1,6 @@
 import { type HostRow, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -267,7 +267,7 @@ test("an external detach converges via the mounted poll: online -> offline", asy
     // mid-attach, so only the pane's mounted poll re-reads the rows
     // (round-4 M3): without it the row stays "online" with no Connect button.
     detached = true;
-    await vi.advanceTimersByTimeAsync(HOST_POLL_MS);
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
 
     await waitFor(() => expect(screen.getByText("offline")).toBeTruthy());
     expect(screen.queryByText("online")).toBeNull();
@@ -301,13 +301,16 @@ test("load failure shows retry", async () => {
   });
   render(<HostsSection sectionId="hosts" />);
   expect(await screen.findByText("Couldn't load hosts")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  vi.useFakeTimers();
-  try {
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  } finally {
-    vi.useRealTimers();
-  }
+  const reads = () => fake.calls.filter((call) => call.method === "evener/host/list").length;
+  const before = reads();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  // Retry re-reads the registry, and the test ends once that read has failed
+  // again rather than letting its update land in the next test.
+  await waitFor(() => {
+    expect(reads()).toBe(before + 1);
+    expect(hostsStore.getState().load.phase).toBe("error");
+  });
+  expect(screen.getByText("Couldn't load hosts")).toBeTruthy();
 });
 
 test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {
@@ -331,7 +334,7 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
     // reconnect, another client's Connect — so no local action triggers a
     // refresh. The mid-attach poll re-reads the row.
     settled = true;
-    await vi.advanceTimersByTimeAsync(HOST_POLL_MS);
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
 
     const settledRow = screen.getByText("beta").closest("li")!;
     await waitFor(() => {
