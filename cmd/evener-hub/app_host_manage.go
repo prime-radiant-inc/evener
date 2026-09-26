@@ -328,8 +328,9 @@ func writeHubTOMLHostsMarked(path string, entries []hostreg.Host, migrated bool)
 // writer tell a hand-added entry from an entry the mutation deliberately
 // removed: only file entries whose names are absent from known are carried
 // through as extras. A nil known disables preservation entirely (an exact
-// write), which is what compensations use: a rollback must restore the prior
-// content, never resurrect what it is rolling back.
+// write), which the exact-write entry points below use; a store snapshot is
+// never nil, even when the store is empty — an empty snapshot must still
+// preserve hand-added file entries, and nil would silently drop them.
 func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, migrated bool) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
@@ -431,10 +432,13 @@ func readHubTOMLDocument(path string) (map[string]any, []byte, error) {
 // name, in file order. known is the store's pre-mutation snapshot, which is
 // what distinguishes a host the operator hand-added to hub.toml while the hub
 // was running (absent from known, preserved) from a host this very mutation is
-// removing (present in known, not preserved). A hand-added entry is not live —
-// the boot set is what the running hub serves — but it survives the rewrite and
-// becomes live on the next boot, which is strictly better than deletion and the
-// direction the spec's adopt-on-reconcile work takes. raw that does not decode
+// removing (present in known, not preserved). A nil known is the exact-write
+// sentinel (no snapshot: preserve nothing); an empty known is a real empty
+// snapshot, and preservation still applies. A hand-added entry is not live yet
+// — the running hub serves its boot set until the spec's read-path
+// adopt/reconcile lands — but it survives the rewrite and is adopted by the
+// next boot, which is strictly better than deletion and the direction the
+// spec's adopt-on-reconcile work takes. raw that does not decode
 // through the loader refuses the write: the hub never rewrites a host set it
 // cannot read.
 func fileOnlyHostEntries(path string, raw []byte, known, entries []hostreg.Host) ([]HostConfig, error) {
@@ -557,12 +561,16 @@ func (s *hostStore) remove(name string) bool {
 	return false
 }
 
-// snapshot returns entries in add order; the slice is a copy. Callers hold
-// hostManagerConfig.mu.
+// snapshot returns entries in add order; the slice is a copy, and it is never
+// nil — not even for an empty store. nil is the writer's exact-write sentinel
+// ("drop nothing back"), so an empty store that handed back nil would disable
+// file-entry preservation, and the first Add on a host-less hub would silently
+// drop an operator's hand-added entry. Callers hold hostManagerConfig.mu.
 func (s *hostStore) snapshot() []hostreg.Host {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]hostreg.Host(nil), s.entries...)
+	out := make([]hostreg.Host, 0, len(s.entries))
+	return append(out, s.entries...)
 }
 
 // without returns a copy of the entries minus name, in add order — the
@@ -1568,8 +1576,12 @@ func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host) e
 }
 
 // unionHosts returns a and b's distinct entries by name, in a-then-b order.
+// The result is never nil, even when both inputs are empty: the writers use
+// nil known as their exact-write sentinel, so a compensation's known set must
+// stay a real snapshot.
 func unionHosts(a, b []hostreg.Host) []hostreg.Host {
-	out := append([]hostreg.Host(nil), a...)
+	out := make([]hostreg.Host, 0, len(a)+len(b))
+	out = append(out, a...)
 	seen := make(map[string]struct{}, len(a))
 	for _, e := range a {
 		seen[e.Name] = struct{}{}

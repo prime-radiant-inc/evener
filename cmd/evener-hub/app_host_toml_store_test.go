@@ -508,6 +508,41 @@ func TestHubTOMLRewritePreservesAHandAddedEntry(t *testing.T) {
 	}
 }
 
+// TestHubTOMLRewritePreservesAHandAddedEntryWithAnEmptyStore pins the
+// empty-store edge of the preservation rule: a hub whose hub.toml declared zero
+// hosts at boot hands the writer an empty pre-save snapshot. nil is the
+// writer's exact-write sentinel ("drop nothing back"), so an empty store must
+// still hand back a real, non-nil snapshot — otherwise the first UI mutation on
+// such a hub silently drops the operator's hand-added entry.
+func TestHubTOMLRewritePreservesAHandAddedEntryWithAnEmptyStore(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	// A host-less hub.toml: the banner only — no hosts key at all, so the
+	// operator's appended [[hosts]] table is a legal edit (a file the hub
+	// wrote with zero hosts carries `hosts = []`, which cannot be reopened as
+	// an array of tables; that case refuses loudly instead of dropping).
+	if err := os.WriteFile(configPath, []byte(hostTOMLBanner), 0o600); err != nil {
+		t.Fatalf("seed host-less hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// The operator hand-adds a host while the hub runs.
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	raw = append(raw, []byte("\n[[hosts]]\nname = \"hand\"\nssh = \"hand.example\"\n")...)
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatalf("hand-edit hub.toml: %v", err)
+	}
+	// The first UI mutation's rewrite must carry it through.
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}}); err != nil {
+		t.Fatalf("Add(new) = %v", err)
+	}
+	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"new", "hand"}) {
+		t.Fatalf("hub.toml after the rewrite = %v, want the hand-added entry carried through", got)
+	}
+}
+
 // TestHubTOMLMigrationSetAsideSyncFailureIsLoudAndRetryable pins the
 // migration's crash-safety story: when the set-aside rename's directory sync
 // fails, the merged hub.toml is already durable, the sidecar still exists, and

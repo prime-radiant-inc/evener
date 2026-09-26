@@ -1459,6 +1459,13 @@ func TestHostManageListStatusSerializeWithCommit(t *testing.T) {
 	if len(failures) > 0 {
 		t.Fatalf("%d torn reads observed: %v", len(failures), failures[:min(len(failures), 5)])
 	}
+	list, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("final List: %v", err)
+	}
+	if len(list.Hosts) != adds {
+		t.Fatalf("final list = %d rows, want %d", len(list.Hosts), adds)
+	}
 }
 
 // TestHostManageTransientProbeFailureKeepsLastKnownFacts pins the round-5 M1
