@@ -504,3 +504,153 @@ func TestReplayedStopParksWhileASteeringHoldStands(t *testing.T) {
 		t.Fatalf("notifies after the replayed stop = %d, want %d (the park asks for no wake)", got, beforeReplay)
 	}
 }
+
+// A stale watch tick — one whose token died or whose timer was cleared after
+// it queued — counts toward the outer gate's raw peek but delivers nothing:
+// filterDeliverableJobNotifications drops it. Alone on a parked rail it must
+// not phantom-open the gate and run a model turn the user stopped; the
+// in-turn stand-down catches what the raw-depth carve-out let through.
+func TestStaleWatchTickDoesNotPhantomOpenTheParkedGate(t *testing.T) {
+	s, _, _, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_stale_tick", "delegate:dlg_stale_tick/delivery/1")
+
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-stale-tick",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// A watch tick whose timer does not exist: queued raw, dropped by the
+	// deliverability filter.
+	s.enqueueJobNotification(jobNotification{
+		Kind:    jobNotificationKindWatch,
+		Status:  jobNotificationEventWatch,
+		WatchID: "ghost-timer",
+	})
+
+	_, streamCallsBefore := adapter.Counts()
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("stale-tick wake while parked: %v", err)
+	}
+	_, streamCallsAfter := adapter.Counts()
+	if streamCallsAfter != streamCallsBefore {
+		t.Fatalf("a stale watch tick phantom-opened the parked gate and ran %d model call(s) the user stopped", streamCallsAfter-streamCallsBefore)
+	}
+	wake, _, pending := attentionRailState(s)
+	if wake {
+		t.Fatal("the stale-tick wake re-armed the attention rail while parked")
+	}
+	if pending != 1 {
+		t.Fatalf("pending attention ids after the stale tick = %d, want 1", pending)
+	}
+}
+
+// A wake that carries a REAL job notification still runs while parked — job
+// delivery is not the user's to stop — and the parked attention it carries in
+// history rides that successful turn: a notification turn resolves its begin
+// snapshot, so the attention is delivered, not stranded. The rail itself
+// stays parked; only re-engagement unparks.
+func TestParkedRailRunsAJobCarryingWakeAndDeliversItsAttention(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "ok")})
+	clk := agenttest.NewFakeClock()
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:       dir,
+		clock:          clk,
+		LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0},
+	}))
+	var notifies atomic.Int64
+	s.SetNotifyFunc(func() { notifies.Add(1) })
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_job", "delegate:dlg_job/delivery/1")
+
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-job",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// A watch frame with no timer identity is deliverable by construction:
+	// the deliverability filter only demands timer liveness for named ticks.
+	beforeEnqueue := notifies.Load()
+	s.enqueueJobNotificationAndNotify(jobNotification{
+		Kind:   jobNotificationKindWatch,
+		Status: jobNotificationEventWatch,
+		JobID:  "live-watch",
+	})
+	if got := notifies.Load(); got != beforeEnqueue+1 {
+		t.Fatalf("the job notification's enqueue asked for %d wake(s), want exactly one", got-beforeEnqueue)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("job-carrying wake while parked: %v", err)
+	}
+
+	// The turn ran and succeeded, which the consumption proves: a successful
+	// notification turn resolves its begin snapshot.
+	fold, err := readDelegateAttentionFold(transcriptPath(dir, s.ID()), s.ID())
+	if err != nil {
+		t.Fatalf("read fold: %v", err)
+	}
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("the job turn left its begin-snapshot attention unresolved: %v", pending)
+	}
+	wake, retryActive, pending := attentionRailState(s)
+	if wake || retryActive || pending != 0 {
+		t.Fatalf("after the job turn: wake=%t retry=%t pending=%d, want the attention delivered", wake, retryActive, pending)
+	}
+
+	// The rail stays parked: a fresh arm is still cached silently.
+	armOneRootAttention(t, s, "dlg_job", "delegate:dlg_job/delivery/2")
+	wake, _, pending = attentionRailState(s)
+	if wake || pending != 1 {
+		t.Fatalf("after the fresh arm on the still-parked rail: wake=%t pending=%d, want cached and silent", wake, pending)
+	}
+}
+
+// A Stop's parked attention is not live work for a drain: it is deferred to
+// re-engagement and must not hold the drain open or keep its rung spinning.
+func TestParkedRootAttentionIsNotDrainLive(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	queueOneMutation(t, s, "queue-behind-stop", "please still run me")
+	armOneRootAttention(t, s, "dlg_drain_live", "delegate:dlg_drain_live/delivery/1")
+
+	live, err := s.subtreeHasLiveComponent()
+	if err != nil {
+		t.Fatalf("subtreeHasLiveComponent: %v", err)
+	}
+	if !live {
+		t.Fatal("this test is not in the state it means to be: pending attention should read live before the Stop")
+	}
+
+	if _, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-before-drain",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	live, err = s.subtreeHasLiveComponent()
+	if err != nil {
+		t.Fatalf("subtreeHasLiveComponent after the stop: %v", err)
+	}
+	if live {
+		t.Fatal("parked attention keeps the drain's liveness read busy; it is deferred to re-engagement and must not hold a drain open")
+	}
+}
