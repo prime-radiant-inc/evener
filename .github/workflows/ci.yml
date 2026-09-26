@@ -383,6 +383,13 @@ jobs:
           print('TIMING buckets', {k: round(v) for k, v in b.items()})
           PY
 
+      - name: "EXPERIMENT: keep the raw test stream"
+        if: matrix.scope == 'agent'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-race-json
+          path: /tmp/race.json
+
       - name: Test (race detector — ${{ matrix.scope }})
         if: matrix.scope != 'agent'
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
