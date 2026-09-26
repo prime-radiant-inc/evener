@@ -213,7 +213,7 @@ func TestHubModelReReadFoldsPreCutFrameUnderSnapshot(t *testing.T) {
 
 func feedDelta(t *testing.T, notification appwire.Notification) string {
 	t.Helper()
-	var params appwire.AgentMessageDeltaParams
+	var params appwire.OverlayDeltaParams
 	if err := json.Unmarshal(notification.Params, &params); err != nil {
 		t.Fatalf("decode %s: %v", notification.Method, err)
 	}

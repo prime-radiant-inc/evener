@@ -2281,57 +2281,61 @@ func (h *tuiE2EHub) EndDashboardSessions() {
 }
 
 func (h *tuiE2EHub) BroadcastAgentDelta(threadID, delta string) {
-	h.app.Broadcast(threadID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	h.app.Broadcast(threadID, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: threadID,
 		Ref:      "local:" + threadID,
-		TurnID:   "turn_stream",
-		ItemID:   "agent_stream",
-		Delta:    delta,
+		Item: appwire.OverlayItem{
+			Key: "stream:turn_stream/0:agentMessage", Kind: appwire.OverlayStream, TurnID: "turn_stream", RoundID: "turn_stream_r1", StreamID: "turn_stream/0",
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:turn_stream/0:agentMessage", TurnID: "turn_stream", Text: delta},
+		},
 	})
 }
 
 func (h *tuiE2EHub) BroadcastToolStarted(threadID string) {
-	h.app.Broadcast(threadID, appwire.NotifyItemStarted, map[string]any{
+	h.app.Broadcast(threadID, appwire.NotifyOverlayUpserted, map[string]any{
 		"threadId": threadID,
 		"ref":      "local:" + threadID,
-		"turnId":   "turn_tool",
-		"item": appwire.ThreadItem{
-			Type:          "commandExecution",
-			ID:            "tool_stream",
-			CallID:        "call_stream",
-			TurnID:        "turn_tool",
-			ToolName:      "read_file",
-			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
-			Status:        appwire.TurnStatusInProgress,
+		"item": appwire.OverlayItem{
+			Key: "tool:call_stream", Kind: appwire.OverlayTool, TurnID: "turn_tool", RoundID: "turn_tool_r1", CallID: "call_stream",
+			Item: appwire.ThreadItem{
+				Type:          "commandExecution",
+				ID:            "tool:call_stream",
+				CallID:        "call_stream",
+				TurnID:        "turn_tool",
+				ToolName:      "read_file",
+				ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+				Status:        appwire.TurnStatusInProgress,
+			},
 		},
 	})
 }
 
 func (h *tuiE2EHub) BroadcastToolOutputDelta(threadID, delta string) {
-	h.app.Broadcast(threadID, appwire.NotifyToolOutputDelta, map[string]any{
+	h.app.Broadcast(threadID, appwire.NotifyOverlayDelta, map[string]any{
 		"threadId": threadID,
 		"ref":      "local:" + threadID,
-		"turnId":   "turn_tool",
-		"itemId":   "tool_stream",
+		"key":      "tool:call_stream",
+		"field":    appwire.OverlayDeltaOutput,
 		"delta":    delta,
 	})
 }
 
 func (h *tuiE2EHub) BroadcastToolCompleted(threadID string) {
-	h.app.Broadcast(threadID, appwire.NotifyItemCompleted, map[string]any{
+	h.app.Broadcast(threadID, appwire.NotifyHistoryUpdated, map[string]any{
 		"threadId": threadID,
 		"ref":      "local:" + threadID,
-		"turnId":   "turn_tool",
-		"item": appwire.ThreadItem{
+		"items": []appwire.ThreadItem{{
 			Type:          "commandExecution",
-			ID:            "tool_stream",
+			ID:            "item_tool_stream",
 			CallID:        "call_stream",
 			TurnID:        "turn_tool",
+			RoundID:       "turn_tool_r1",
 			ToolName:      "read_file",
 			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
 			Output:        "tmux tool output\n",
 			Status:        "completed",
-		},
+			Version:       1,
+		}},
 	})
 }
 
