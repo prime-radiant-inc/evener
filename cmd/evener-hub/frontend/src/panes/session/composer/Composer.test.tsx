@@ -32,6 +32,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
@@ -297,23 +298,6 @@ async function mountComposerWithHandle(
   );
   await settleActivityDiscovery(ref);
   return { fake, ...view };
-}
-
-// A live composer's inline SessionChrome starts activity discovery on mount,
-// and its settle re-renders the chrome. Waiting for it here keeps that
-// re-render inside act() instead of landing after a test that asserts
-// straight off the mount.
-async function settleActivityDiscovery(ref: string): Promise<void> {
-  await act(async () => {
-    if (!activitySummaryStore.getState().entries.get(ref)?.loading) return;
-    await new Promise<void>((resolve) => {
-      const unsubscribe = activitySummaryStore.subscribe((state) => {
-        if (state.entries.get(ref)?.loading) return;
-        unsubscribe();
-        resolve();
-      });
-    });
-  });
 }
 
 async function mountComposer(
@@ -4021,7 +4005,11 @@ test.each([
     });
     try {
       await user.click(actionButton());
-      await committed;
+      // The commit's store publications re-render the queue strip; they land
+      // inside this act() rather than after it.
+      await act(async () => {
+        await committed;
+      });
       if (remount) {
         cleanup();
         render(<Composer ref="ref_a" focused={false} />);
