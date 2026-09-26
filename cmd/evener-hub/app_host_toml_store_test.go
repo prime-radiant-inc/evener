@@ -288,6 +288,92 @@ func TestHubTOMLMigrationMergesSidecarOnce(t *testing.T) {
 	}
 }
 
+// TestHubTOMLMigrationRefusingOneEntryMergesNone pins the atomicity of the
+// merge resolution: a sidecar whose later entry fails validation or collides
+// differently must leave the live set untouched — the earlier, valid entry is
+// not half-merged behind a poisoned store.
+func TestHubTOMLMigrationRefusingOneEntryMergesNone(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte("[[hosts]]\nname = \"m4\"\nssh = \"hub.example\"\n"), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	sidecar := legacySidecarPathFor(configPath)
+	sidecarBytes := []byte(`{"hosts":[{"name":"fresh","ssh":"fresh.example"},{"name":"m4","ssh":"different.example"}]}`)
+	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	var logs []string
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "hub.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
+	if len(logs) == 0 {
+		t.Fatal("a refused migration produced no log line at startup")
+	}
+	// The valid first entry did not merge: the live set is exactly the boot set.
+	if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "fresh"}); err == nil {
+		t.Fatal("the valid first entry merged even though a later one failed")
+	}
+	list, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list.Hosts) != 1 || list.Hosts[0].Name != "m4" {
+		t.Fatalf("live set after the refused migration = %+v, want only m4", list.Hosts)
+	}
+	// Both files keep their bytes, and writes are refused.
+	if got, err := os.ReadFile(sidecar); err != nil || !bytes.Equal(got, sidecarBytes) {
+		t.Fatalf("sidecar changed: %q, %v", got, err)
+	}
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
+		t.Fatal("Add over a refused migration succeeded, want the poisoned refusal")
+	}
+}
+
+// TestHubTOMLRollbackPreservesAHandAddedEntry pins the compensation path the
+// reviewer named: a post-rename write failure rolls the live set back WITHOUT
+// dropping an operator's hand-added file entry (the rollback's known set is
+// the union of the mutation's before and after sets, so only the mutation's
+// own change is undone).
+func TestHubTOMLRollbackPreservesAHandAddedEntry(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	raw = append(raw, []byte("\n[[hosts]]\nname = \"hand\"\nssh = \"hand.example\"\n")...)
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatalf("hand-edit hub.toml: %v", err)
+	}
+	// The add's staged write fails behind its own rename, so the call
+	// compensates by rewriting the prior live set.
+	saved := hubTOMLSyncDir
+	var call int
+	hubTOMLSyncDir = func(d string) error {
+		call++
+		if call == 1 {
+			return fmt.Errorf("hub.toml directory sync: %w", syscall.EIO)
+		}
+		return saved(d)
+	}
+	_, err = m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "staged", Address: "staged.example"}})
+	hubTOMLSyncDir = saved
+	if err == nil {
+		t.Fatal("Add over a failing directory sync succeeded, want the refusal")
+	}
+	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "hand"}) {
+		t.Fatalf("hub.toml after the compensated add = %v, want alpha + the hand-added entry (never the staged one)", got)
+	}
+}
+
 // TestHubTOMLMigrationIgnoresAStaleReappearedSidecar pins the marker rule:
 // once the migration is recorded in hub.toml, a hub.hosts.json that shows up
 // again — a rename a power loss undid on a filesystem that ignores directory

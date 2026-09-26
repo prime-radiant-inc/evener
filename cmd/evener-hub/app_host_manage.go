@@ -338,7 +338,7 @@ func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, migrated
 	if err != nil {
 		return err
 	}
-	extra, err := fileOnlyHostEntries(path, raw, known)
+	extra, err := fileOnlyHostEntries(path, raw, known, entries)
 	if err != nil {
 		return err
 	}
@@ -437,7 +437,7 @@ func readHubTOMLDocument(path string) (map[string]any, []byte, error) {
 // direction the spec's adopt-on-reconcile work takes. raw that does not decode
 // through the loader refuses the write: the hub never rewrites a host set it
 // cannot read.
-func fileOnlyHostEntries(path string, raw []byte, known []hostreg.Host) ([]HostConfig, error) {
+func fileOnlyHostEntries(path string, raw []byte, known, entries []hostreg.Host) ([]HostConfig, error) {
 	if len(raw) == 0 || known == nil {
 		return nil, nil
 	}
@@ -445,13 +445,18 @@ func fileOnlyHostEntries(path string, raw []byte, known []hostreg.Host) ([]HostC
 	if err != nil {
 		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
 	}
-	live := make(map[string]struct{}, len(known))
+	// A name the write itself carries is never an extra: appending it would
+	// write the same name twice and the round-trip would refuse the file.
+	carried := make(map[string]struct{}, len(known)+len(entries))
 	for _, e := range known {
-		live[e.Name] = struct{}{}
+		carried[e.Name] = struct{}{}
+	}
+	for _, e := range entries {
+		carried[e.Name] = struct{}{}
 	}
 	var extra []HostConfig
 	for _, h := range cfg.Hosts {
-		if _, ok := live[h.Name]; !ok {
+		if _, ok := carried[h.Name]; !ok {
 			extra = append(extra, h)
 		}
 	}
@@ -919,6 +924,14 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 	// The store's set as the running hub held it: the rewrite's "known" set,
 	// so only genuine hand-added file entries are carried through.
 	pre := m.cfg.store.snapshot()
+	// The merge is resolved over the whole sidecar before anything live
+	// changes: every entry normalizes and validates, duplicates inside the
+	// sidecar and collisions with the live set resolve, and only then does the
+	// apply loop run. A sidecar that fails any of that leaves the live set
+	// exactly as it was — no half-merged hosts sitting behind a poisoned store
+	// — which is what makes "not migrated at all" true rather than aspirational.
+	var toAdd []hostreg.Host
+	seen := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		// Normalize before any use of the entry. The registry's Add would
 		// normalize before storing, but the collision check and the source
@@ -929,12 +942,10 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 		if err := validateHostEntry(e); err != nil {
 			return fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
 		}
-	}
-	// Validation is all-or-nothing: no entry merges until every entry is known
-	// good, so a sidecar that fails validation is never half-applied (and the
-	// caller poisons writes until the operator fixes it).
-	for _, e := range entries {
-		e = hostreg.Normalize(e)
+		if _, dup := seen[e.Name]; dup {
+			return fmt.Errorf("legacy host sidecar entry %q: the sidecar names it twice", e.Name)
+		}
+		seen[e.Name] = struct{}{}
 		if live, ok := m.cfg.hosts.Get(e.Name); ok {
 			// hub.toml wins a collision only when the two entries say the same
 			// thing: a byte-identical duplicate is dropped (nothing is lost),
@@ -946,6 +957,11 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 			}
 			continue
 		}
+		toAdd = append(toAdd, e)
+	}
+	// The apply loop cannot refuse: every name is validated, unique, and free.
+	// Add stays a checked call rather than a silent trust.
+	for _, e := range toAdd {
 		if err := m.cfg.hosts.Add(e); err != nil {
 			return fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
 		}
@@ -1462,7 +1478,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 		// an add this call reported as failed. The rollback still runs under
 		// the mutex: it is part of the commit, and a concurrent Add's own
 		// save must not interleave with restoring the file.
-		err = m.rollbackHubTOML(prev, err)
+		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err)
 		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, err
 	}
@@ -1539,11 +1555,33 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host) error {
 	if err := m.persistHosts(entries, previous); err != nil {
 		if hubTOMLRenameCommitted(err) {
-			return m.rollbackHubTOML(previous, err)
+			// The rollback restores previous while still carrying hand-added
+			// extras: the union of the before and after sets tells the writer
+			// every name this mutation touched is accounted for, so the extras
+			// are exactly the operator's out-of-band entries and neither the
+			// mutation's own change nor a hand-added neighbour is lost.
+			return m.rollbackHubTOML(previous, unionHosts(previous, entries), err)
 		}
 		return err
 	}
 	return nil
+}
+
+// unionHosts returns a and b's distinct entries by name, in a-then-b order.
+func unionHosts(a, b []hostreg.Host) []hostreg.Host {
+	out := append([]hostreg.Host(nil), a...)
+	seen := make(map[string]struct{}, len(a))
+	for _, e := range a {
+		seen[e.Name] = struct{}{}
+	}
+	for _, e := range b {
+		if _, ok := seen[e.Name]; ok {
+			continue
+		}
+		seen[e.Name] = struct{}{}
+		out = append(out, e)
+	}
+	return out
 }
 
 // persistHosts rewrites hub.toml durably, refusing while the store is known
@@ -1585,8 +1623,8 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, migra
 // directory step failed is the other case: the file already holds previous,
 // so the state agrees and only the rollback's crash durability is uncertain
 // — reported as landed beside the cause, never as a failed rollback.
-func (m *hubHostManager) rollbackHubTOML(previous []hostreg.Host, cause error) error {
-	if err := m.persistHosts(previous, nil); err != nil {
+func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause error) error {
+	if err := m.persistHosts(previous, known); err != nil {
 		if hubTOMLRenameCommitted(err) {
 			// The rollback's own rename landed: the file holds previous, the
 			// content the rollback exists to restore, and only its
@@ -1753,7 +1791,7 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		// live snapshot, not a pre-remove copy: concurrent Adds and Removes
 		// may have committed in the window, and their entries must survive.
 		m.cfg.store.add(host)
-		err := m.rollbackHubTOML(m.cfg.store.snapshot(), teardownErr)
+		err := m.rollbackHubTOML(m.cfg.store.snapshot(), m.cfg.store.snapshot(), teardownErr)
 		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, err
 	}
@@ -1953,7 +1991,10 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 			// so nothing renders this name again.
 			m.dropHostDerivedState(name)
 		}
-		err := m.rollbackHubTOML(m.cfg.store.snapshot(), liveErr)
+		// The un-commit drops the name from the live set, so the rollback's
+		// known set must name it too — otherwise the writer would read the
+		// vanished entry as a hand-added one and keep it.
+		err := m.rollbackHubTOML(m.cfg.store.snapshot(), unionHosts(m.cfg.store.snapshot(), []hostreg.Host{entry}), liveErr)
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, err
 	}
@@ -1972,7 +2013,7 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		// phase retires it and in the order dropHostDerivedState documents. The
 		// store row is already gone, so nothing renders this name again.
 		m.dropHostDerivedState(name)
-		err := m.rollbackHubTOML(m.cfg.store.snapshot(), refusal)
+		err := m.rollbackHubTOML(m.cfg.store.snapshot(), unionHosts(m.cfg.store.snapshot(), []hostreg.Host{entry}), refusal)
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, err
 	}
