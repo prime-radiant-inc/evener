@@ -51,11 +51,6 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	}
 }
 
-// RunningTurnID is the running execution's TurnID, empty between executions.
-func (p *AppEventProjector) RunningTurnID() string {
-	return p.runningTurnID
-}
-
 // TaskStoreOwnerSessionID returns internal routing metadata learned from typed
 // task carriers. It is not part of any public AppWire params shape.
 func (p *AppEventProjector) TaskStoreOwnerSessionID() string {

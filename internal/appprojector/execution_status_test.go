@@ -31,9 +31,6 @@ func TestProjectorPublishesExecutionsAsThreadStatus(t *testing.T) {
 	if got := status(projectEvent(p, events.ExecutionStartedData{TurnID: "t_1"})); got.Status.Type != appwire.ThreadStatusActive || got.ActiveTurnID != "t_1" {
 		t.Fatalf("execution start = %+v, want active naming t_1", got)
 	}
-	if p.RunningTurnID() != "t_1" {
-		t.Fatalf("running turn = %q, want t_1", p.RunningTurnID())
-	}
 	retry := projectEvent(p, events.ModelRetryData{Attempt: 2})
 	if len(retry) != 1 || retry[0].Params.(appwire.ThreadModelRetryParams).TurnID != "t_1" {
 		t.Fatalf("model retry = %+v, want one naming t_1", retry)
@@ -44,14 +41,11 @@ func TestProjectorPublishesExecutionsAsThreadStatus(t *testing.T) {
 	if got := status(projectEvent(p, events.ExecutionEndedData{TurnID: "t_1", Status: "completed"})); got.Status.Type != appwire.ThreadStatusIdle || got.ActiveTurnID != "" {
 		t.Fatalf("execution end = %+v, want idle naming no turn", got)
 	}
-	if p.RunningTurnID() != "" {
-		t.Fatalf("running turn = %q after the end, want none", p.RunningTurnID())
-	}
 
 	projectEvent(p, events.ExecutionStartedData{TurnID: "t_2"})
 	end := projectEvent(p, events.SessionEndData{State: appwire.ThreadStatusIdle})
-	if got := status(end); got.Status.Type != appwire.ThreadStatusIdle || got.ActiveTurnID != "" || p.RunningTurnID() != "" {
-		t.Fatalf("session end = %+v running %q, want idle and no running execution", got, p.RunningTurnID())
+	if got := status(end); got.Status.Type != appwire.ThreadStatusIdle || got.ActiveTurnID != "" {
+		t.Fatalf("session end = %+v, want idle and no running execution", got)
 	}
 }
 
