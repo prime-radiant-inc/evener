@@ -490,6 +490,19 @@ func (h *hostSSH) run(script string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
+// runStdout runs one remote script and returns its stdout alone, keeping the
+// remote command's stderr out of the answer. The listener probe's proved-empty
+// marker is a stdout contract: a tool that warns on stderr while printing the
+// marker on stdout (lsof does on some hosts) would otherwise turn a cleared port
+// into an unrecognized answer. A non-nil error is still the command's own
+// failure, so a nonzero probe stays "cannot say".
+func (h *hostSSH) runStdout(script string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hostDeploySSHTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", h.argv(script)...)
+	return cmd.Output()
+}
+
 // output runs one remote script and returns its trimmed stdout, failing the
 // test on any error.
 func (h *hostSSH) output(script string) string {
@@ -607,7 +620,7 @@ func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) {
 		// listener is gone": returning here is what lets the caller remove the
 		// directory a still-running hub serves from. The timeout below reports the
 		// unproven cleanup.
-		if out, err := host.run(probe); err == nil && hostListenerProbeAbsent(out) {
+		if out, err := host.runStdout(probe); err == nil && hostListenerProbeAbsent(out) {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -739,4 +752,33 @@ func TestHostListenerProbeAbsentOnlyOnTheMarker(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStopHostListenerIgnoresProbeStderr pins the roborev finding on PR #2413:
+// the probe's proved-empty answer is a stdout contract, but the poll read the
+// remote command's combined output. A probe tool that warns on stderr while
+// printing the marker on stdout (lsof does on some hosts) then looked like an
+// unrecognized answer, so the poll waited out its deadline and reported a hub
+// that had already stopped — a false e2e failure. The fake ssh makes the probe
+// exit 0 with the marker on stdout and a warning on stderr: a poll that reads
+// stdout alone returns at once, while one that reads combined output runs the
+// full ten-second deadline and fails.
+func TestStopHostListenerIgnoresProbeStderr(t *testing.T) {
+	dir := t.TempDir()
+	sshPath := filepath.Join(dir, "ssh")
+	fake := "#!/bin/sh\n" +
+		"script=\"\"\n" +
+		"for a in \"$@\"; do script=\"$a\"; done\n" +
+		"case \"$script\" in\n" +
+		"  *'evener-hub deploy check cleanup'*) exit 0 ;;\n" +
+		"esac\n" +
+		"echo 'lsof: WARNING: can not stat() file system' >&2\n" +
+		"echo " + sshconn.NoListenerMarker + "\n"
+	if err := os.WriteFile(sshPath, []byte(fake), 0o755); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	host := &hostSSH{t: t, target: "fake-host"}
+	stopHostListener(t, host, "127.0.0.1:19180", "/tmp/hub.toml")
 }
