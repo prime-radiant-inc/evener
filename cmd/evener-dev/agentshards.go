@@ -860,10 +860,16 @@ func surveyFailureName(line string) string {
 	return strings.TrimSpace(name)
 }
 
+// surveyFailedChildNames collects failed descendants from a parent's indented
+// verdict block. The scan stops at the first unindented line, which is the next
+// top-level frame or failure marker rather than another child verdict.
 func surveyFailedChildNames(lines []string, marker int, parent string) map[string]struct{} {
 	var failed map[string]struct{}
 	for index := marker + 1; index < len(lines); index++ {
 		line := lines[index]
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--- FAIL:") {
 			child := surveyFailureName(trimmed)
@@ -911,15 +917,15 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // nearest context. The lines from ordinaryStart up to marker are the
 // already-selected ordinary context. Selection starts with owned ordinary
 // output or, when that window has no lines owned by the failing test or its
-// descendants, descendant diagnostics. Either path reserves one slot when a
-// parent or failed-child diagnostic exists. Newest parent diagnostics are
-// selected next when present; remaining slots are then backfilled from owned
-// diagnostics, then owned output, then unindented ordinary-window lines owned
-// by other tests. Source diagnostics are associated with the most recent go
-// test RUN/CONT/NAME frame; a verdict returns ownership to the failing test. If
-// ordinary context owned by the failing test or its descendants exists,
-// expansion requires a source diagnostic owned by the failing test or one of
-// its failed children.
+// descendants, descendant diagnostics. Either path reserves one slot for each
+// present diagnostic kind: the parent and the failed child each get priority.
+// Newest parent diagnostics are selected first, followed by failed-child
+// diagnostics; remaining slots are then backfilled from owned diagnostics, then
+// owned output, then unindented ordinary-window lines owned by other tests.
+// Source diagnostics are associated with the most recent go test RUN/CONT/NAME
+// frame; a verdict returns ownership to the failing test. If ordinary context
+// owned by the failing test or its descendants exists, expansion requires a
+// source diagnostic owned by the failing test or one of its failed children.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
@@ -1021,23 +1027,23 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			selectedCount++
 		}
 	}
-	ordinaryBudget := maxExpandedLines
-	if hasFailureDiagnostic {
-		ordinaryBudget--
+	reservedDiagnostics := 0
+	if parentDiagnostic {
+		reservedDiagnostics++
 	}
+	if len(failedChildDiagnosticCandidates) > 0 {
+		reservedDiagnostics++
+	}
+	ordinaryBudget := maxExpandedLines - reservedDiagnostics
 	selectNewest(ordinaryOwnedCandidates, min(ordinaryCount, ordinaryBudget))
 	if ordinaryCount == 0 {
-		descendantBudget := maxExpandedLines
-		if hasFailureDiagnostic {
-			descendantBudget--
-		}
+		descendantBudget := maxExpandedLines - reservedDiagnostics
 		selectNewest(descendantDiagnosticCandidates, descendantBudget)
 	}
 	if parentDiagnostic {
 		selectNewest(parentDiagnosticCandidates, maxExpandedLines)
-	} else {
-		selectNewest(failedChildDiagnosticCandidates, maxExpandedLines)
 	}
+	selectNewest(failedChildDiagnosticCandidates, maxExpandedLines)
 	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
 	selectNewest(ownedOutputCandidates, maxExpandedLines)
 	selectNewest(ordinaryContextCandidates, maxExpandedLines)
