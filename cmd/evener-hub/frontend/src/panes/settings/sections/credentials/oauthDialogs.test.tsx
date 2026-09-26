@@ -408,6 +408,10 @@ describe("DeviceCodeDialog", () => {
     // comment on OAuthRedirectDialog's own success test for why.
     expect(onSuccess).toHaveBeenCalled();
     expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
+    // An authorized flow is finished: no later interval polls it again.
+    const polls = fake.calls.filter((call) => call.method === "evener/auth/device/poll").length;
+    await advanceTime(3000);
+    expect(fake.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(polls);
   });
 
   test("an authorized poll whose listing read is lost still completes the sign-in", async () => {
