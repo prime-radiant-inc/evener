@@ -2458,6 +2458,7 @@ describe("the hosts controller", () => {
 		expect([...hosts.getSnapshot().connecting]).toEqual(["paradise-park"]);
 		const attach = h.take("evener/host/attach");
 		expect(attach.params).toEqual({ host: "paradise-park" });
+		expect(attach.opts).toEqual({ timeoutMs: HOST_GATE_TIMEOUT_MS });
 		attach.resolve({ attached: true, host: "paradise-park" });
 		await settle();
 		expect(hosts.getSnapshot().connecting.size).toBe(0);
@@ -2481,7 +2482,7 @@ describe("the hosts controller", () => {
 		expect(hosts.getSnapshot().connectErrors.has("paradise-park")).toBe(false);
 	});
 
-	it("edits a host with the gate's long deadline and removes one, re-reading after each", async () => {
+	it("edits and removes a host with the gate's long deadline, re-reading after each", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client);
 		const entry = { address: "jesse@paradise-park", roots: ["/Users/jesse/git"] };
@@ -2496,6 +2497,7 @@ describe("the hosts controller", () => {
 		const removing = hosts.remove("paradise-park");
 		const removal = h.take("evener/host/remove");
 		expect(removal.params).toEqual({ name: "paradise-park" });
+		expect(removal.opts).toEqual({ timeoutMs: HOST_GATE_TIMEOUT_MS });
 		removal.resolve({ host: row("paradise-park", { removed: true }) });
 		await settle();
 		h.take("evener/host/list").resolve({ hosts: [] });
@@ -2660,8 +2662,11 @@ import { friendlyErrorMessage, type HostEntry, type HostRow } from "@evener/appw
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 
 export const HOST_POLL_MS = 2_000;
-/** A host edit waits on that host's gate; the web allows it 35 minutes
- * (HOST_GATE_TIMEOUT_MS, cmd/evener-hub/frontend/src/stores/hosts.ts). */
+/** Connect, edit and remove wait on that host's gate, which the hub's
+ * supervisor may hold for a whole reconnect cycle, well past the client's
+ * 30-second default. The web allows them 35 minutes (HOST_GATE_TIMEOUT_MS,
+ * cmd/evener-hub/frontend/src/stores/hosts.ts), so a slow attach isn't
+ * reported as a failure while the hub is still working on it. */
 export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
 
 export interface HostsState {
@@ -2759,7 +2764,7 @@ export class HostsController {
 		connectErrors.delete(name);
 		this.publish({ connecting: new Set([...this.state.connecting, name]), connectErrors });
 		try {
-			await this.client.request("evener/host/attach", { host: name });
+			await this.client.request("evener/host/attach", { host: name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
 		} catch (error) {
 			this.publish({ connectErrors: new Map([...this.state.connectErrors, [name, friendlyErrorMessage(error)]]) });
 		} finally {
@@ -2775,7 +2780,7 @@ export class HostsController {
 	}
 
 	async remove(name: string): Promise<void> {
-		await this.client.request("evener/host/remove", { name });
+		await this.client.request("evener/host/remove", { name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
 		await this.read();
 	}
 
@@ -4635,7 +4640,8 @@ PR 9 replaces today's New session screen with the sheet (spec 11). It includes h
 - Test:
   - `mobile-native/src/newSession/startGate.test.ts`;
   - `mobile-native/src/newSession/NewSessionForm.test.tsx` and `HostPicker.test.tsx`;
-  - `mobile-native/src/newSession.test.ts` and `mobile/src/services/newSession.test.ts`, with the harness cases removed.
+  - `mobile-native/src/newSession.test.ts` and `mobile/src/services/newSession.test.ts`, with the harness cases removed;
+  - `mobile-native/src/demo-hub.test.ts` and `mobile-native/src/creationPlugins.test.ts`, which also call the harness API (item 8).
 
 **Interfaces:**
 - Consumes:
@@ -4839,10 +4845,15 @@ export function startBlock(input: StartInput): StartBlock | null {
      - Choosing a host calls `changeHost(name, hostLabel(name))` and pops.
   8. **The store (`src/newSession.ts`).**
      - Delete `harness`, `harnesses` and `setHarness`, and stop loading harnesses in `loadMetadata`. `loadModels`' context and params and `submit`'s `thread/start` params lose the harness.
+     - `submit`'s `harnessSupportsPluginSelection(harness, get().harnesses)` check (about line 321) goes, and `submit` uses `get().launchOverrides` as it is. With no harness chosen the check was always true: the default harness is evener (`harnessUsesEvenerModels`, `appwire-client/typescript/spawnHarnessModels.ts`).
      - `snapshot()` keeps writing `harness: ""`, so the draft's stored shape doesn't change (ruling 13).
      - `discard()` calls `storage().clear(hubId)` and resets the fields `submit`'s success resets.
      - The failure before anything was sent (the plugin preview rejecting, so `startDispatched` is still false; `newSession.ts` around line 423) reads "Couldn't check the selected plugins, so no session was started. Your selection is kept." Today's sentence ends "Reconnect or retry; your selection is kept.", which asks you to reconnect.
      - In `mobile/src/services/newSession.ts`, delete `harnesses()` and `NewSessionParams.harness`, with their tests.
+     - Two more tests call that API, and both must change in this task, or PR 9's `npm run check` and tests fail:
+       - `demo-hub.test.ts` (about line 124): the creation case stops calling `creation.harnesses()`, drops `harness` from its `models` and `start` calls, and loses `expect(harness).toBe("demonstration")`.
+       - `creationPlugins.test.ts` (about line 88): delete the case "omits plugin selection for an unsupported harness". It drives `setHarness("codex")`, and nothing on the phone chooses a harness any more. Say so in the commit.
+     - `grep -rn "setHarness\|harnesses()\|harnessSupportsPluginSelection" mobile-native/src mobile/src` then finds nothing outside `NewSessionScreen.tsx`, which this task deletes.
   9. **No harness, thread, source or runtime** appears on screen, and no "Reconnect".
 - [ ] **Step 6: Write the failing tests for the sheet.**
   - `NewSessionForm.test.tsx` renders the form inside `NewSessionContext` with a real store over a scripted client, a `HostsController` over the same client, and a memory-backed `LaunchMemory`. Mocks: `react-native`, `expo-symbols`, `@react-navigation/native` (`StackActions`), `../nativeDrafts`, `../nativeImagePicker`. Cases:
@@ -4857,7 +4868,7 @@ export function startBlock(input: StartInput): StartBlock | null {
   - `HostPicker.test.tsx`: rows, checks, the disabled offline row with "Connect" calling `evener/host/attach`, and choosing a host calling `changeHost` and popping.
   - `newSession.test.ts` gains a case: after `setLaunchOverrides({ enabledPlugins: ["superpowers"] })`, with `evener/plugin/preview` rejecting, `submit()` returns `{ status: "failed" }`, sends no `thread/start`, keeps `enabledPlugins`, and sets `error` to exactly "Couldn't check the selected plugins, so no session was started. Your selection is kept."
 - [ ] **Step 7: Run them and watch them fail**, then implement, then run them and watch them pass. Run:
-  - `cd mobile-native && npx vitest run src/newSession src/newSession.test.ts && npm run check && make test-native-bundle`
+  - `cd mobile-native && npx vitest run src/newSession src/newSession.test.ts src/demo-hub.test.ts src/creationPlugins.test.ts && npm run check && make test-native-bundle`
   - `npm run test:shared -- newSession`
 - [ ] **Step 8: Commit** (`feat(native): the New session sheet`).
 
