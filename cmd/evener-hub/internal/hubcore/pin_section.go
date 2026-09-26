@@ -296,7 +296,7 @@ func (s *PinSectionStore) Assign(sectionID, source, sessionID string, now time.T
 		}
 		return section, changed, nil
 	}
-	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", sessionID)
+	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", SessionPinKey(source, sessionID))
 }
 
 // CreateOrReuseAndAssign creates a section when needed, reuses an existing
@@ -596,7 +596,7 @@ func (s *PinSectionStore) DeleteSession(source, sessionID string) (bool, error) 
 		}
 		return rows > 0, nil
 	}
-	return false, fmt.Errorf("delete session pin %s: retry limit reached", sessionID)
+	return false, fmt.Errorf("delete session pin %s: retry limit reached", SessionPinKey(source, sessionID))
 }
 
 // Assignments returns every durable session-to-section mapping, keyed by the
