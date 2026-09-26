@@ -3,7 +3,6 @@ package hub
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
@@ -300,12 +300,12 @@ func validateHostEntry(entry hostreg.Host) error {
 //
 // addr is interpolated into an SSH-side curl probe and the restart identity
 // check, so a non-loopback value could let those paths reach an arbitrary
-// reachable host. Only a loopback host literal, "localhost", the wildcard
-// spellings the manager normalizes to loopback (0.0.0.0, ::, and the empty host
-// of ":port"), and a usable port may pass. The accepted set mirrors
-// sshconn.validateHubAddr, which is the use-time backstop for an entry that
-// reaches the manager without loading from hub.toml (a registry add), so
-// load-time and probe-time agree on what an address may be.
+// reachable host. The address half delegates to sshconn.ValidateHubAddrShape —
+// the SSH probe's own accepted-address rule — and wraps its refusal in this
+// package's ErrHostAddr, so load-time validation and the use-time probe cannot
+// drift on what an address may be: a loopback host literal, "localhost", the
+// wildcard spellings the manager normalizes to loopback (0.0.0.0, ::, and the
+// empty host of ":port"), and a usable port.
 func validateHostAddr(entry hostreg.Host) error {
 	if (entry.ConfigPath == "") != (entry.Addr == "") {
 		return fmt.Errorf("%w: host %q sets exactly one of config_path and addr; set both or neither", ErrHostAddrPair, entry.Name)
@@ -313,21 +313,10 @@ func validateHostAddr(entry hostreg.Host) error {
 	if entry.Addr == "" {
 		return nil
 	}
-	hostPart, port, err := net.SplitHostPort(entry.Addr)
-	if err != nil {
-		return fmt.Errorf("%w: host %q addr %q is not host:port", ErrHostAddr, entry.Name, entry.Addr)
+	if err := sshconn.ValidateHubAddrShape(entry.Addr); err != nil {
+		return fmt.Errorf("%w: host %q %w", ErrHostAddr, entry.Name, err)
 	}
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("%w: host %q addr %q has no usable port", ErrHostAddr, entry.Name, entry.Addr)
-	}
-	if ip := net.ParseIP(hostPart); ip != nil && ip.IsLoopback() {
-		return nil
-	}
-	switch hostPart {
-	case "", "localhost", "0.0.0.0", "::":
-		return nil
-	}
-	return fmt.Errorf("%w: host %q addr %q is not a loopback or wildcard bind", ErrHostAddr, entry.Name, entry.Addr)
+	return nil
 }
 
 // validateMobileBaseURL accepts only an HTTP(S) origin. The pairing endpoint
