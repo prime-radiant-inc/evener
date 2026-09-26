@@ -35,9 +35,10 @@ func descriptionMentions(desc string, n int) bool {
 }
 
 // TestDefListDirLimitProseMatchesEnforcedDefault pins list_dir's advertised
-// default limit to the constant the handler enforces (roborev round 2 caught
-// the prose saying 500 where the code says 1000): a model sizing an explicit
-// limit against the advertised default must not work from a wrong cap.
+// default limit to the constant the handler enforces: a model sizing an
+// explicit limit against the advertised default must not work from a wrong
+// cap, and the char-budget effect that makes ~500 the typical page must not
+// masquerade as the enforced ceiling.
 func TestDefListDirLimitProseMatchesEnforcedDefault(t *testing.T) {
 	def := toolpkg.DefListDir()
 	props, ok := def.Parameters["properties"].(map[string]any)
