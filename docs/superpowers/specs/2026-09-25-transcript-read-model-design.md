@@ -108,9 +108,14 @@ later file projection"). Restarting a daemon already changes what clients see.
    higher version wins.
    - Applying a fact twice changes nothing.
    - A file read that is ahead of the live stream changes nothing.
-   - A merge never removes a history item. Only a replacement does. Four things
-     trigger one: a higher boot generation, a new incarnation on a latest-window
-     read, a newer resync epoch, and an authoritative daemonless read.
+   - A merge never removes a history item. Only a replacement does. A higher
+     boot generation, a new incarnation on a latest-window read, a newer
+     resync epoch, and an authoritative daemonless read all trigger one; so
+     does a boot-generation token whose form or owner differs from the one
+     the client holds (see Descendants, under Crash/boot generation), even
+     when its counter is numerically lower. This list is a summary; the
+     authoritative rule for each trigger is under Crash/boot generation and
+     Reads.
 4. **Memory holds only the overlay and bounded per-thread state.** Memory per
    thread no longer depends on the size of its history.
 
@@ -265,7 +270,13 @@ it is the steer mutation's own ID and is never a turn ID
   `SetProcessing(true)` (`server/server.go:864-927`;
   `cmd/evener/serve.go:1709, 1729`).
 
-**Turn kind.** The first entry of each turn persists a `TurnKind`:
+**Turn kind.** The first entry of each turn persists a `TurnKind` field (JSON
+`turn_kind`), typed `schema.TurnSpanKind` — a distinct type from the existing
+entry-kind field `schema.TurnKind`/`Kind` (`USER_INPUT`, `ASSISTANT`,
+`TOOL_RESULTS`, and so on). The two are orthogonal: this one names the role of
+the turn the entry opens, not the entry's own kind, and no consumer that
+switches on the existing `Kind` field changes behavior because of it. Its
+values:
 - **`execution`**: a real run of the model.
 - **`gap`**: standalone entries recorded between executions, such as hooks,
   model switch, environment and persisted notices. The session mints one gap turn
