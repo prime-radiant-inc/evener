@@ -394,8 +394,11 @@ build to push:
 - `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
   reads the artifact's own `GOOS`/`GOARCH` and refuses a mismatch before
   anything is pushed; the refusal is permanent, since a retry re-reads the same
-  file. The artifact must be executable. This path needs no Go toolchain and no
-  source tree on the controller.
+  file. The artifact must be executable, and it must be evener: the hub reads
+  the executable's main package from its buildinfo and refuses any other Go
+  program before anything is pushed, so a stray binary cannot replace the
+  host's `evener`. This path needs no Go toolchain and no source tree on the
+  controller.
 - `-build-source <path>` — an evener checkout's module root. The hub
   cross-compiles the host's target on the controller, so this path needs Go and
   the source there; it refuses a dirty tree, an ignored-but-compiled `.go` file,

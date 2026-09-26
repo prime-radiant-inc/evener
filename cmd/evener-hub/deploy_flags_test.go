@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -46,6 +47,89 @@ func TestParseHubOptionsRejectsNonGoDeployBinary(t *testing.T) {
 	}
 }
 
+// TestValidateDeployBinaryRejectsNonEvenerGoBinary is the artifact-identity pin:
+// a -deploy-binary that is a real Go executable for the host's platform but not
+// evener must be refused where the flag is read, naming the flag. Without the
+// check the artifact validates (stat-able, executable, readable buildinfo), so it
+// is pushed and replaces the host's evener — caught only after the fact by the
+// post-push version comparison, with the host already holding a file that cannot
+// serve a hub.
+//
+// Both cases are real Go binaries the test does not fake: a program from an
+// unrelated module (the operator's stray artifact) and this package's own test
+// binary (a sibling command in the evener module, so even an evener-tree binary
+// that is not the runtime is refused).
+func TestValidateDeployBinaryRejectsNonEvenerGoBinary(t *testing.T) {
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "foreign module", path: nonEvenerGoBinary(t)},
+		{name: "this package's test binary", path: testBinary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateDeployBinary(tc.path)
+			if err == nil {
+				t.Fatalf("validateDeployBinary accepted a non-evener Go binary %q", tc.path)
+			}
+			if !strings.Contains(err.Error(), deployBinaryFlag) {
+				t.Fatalf("refusal does not name the flag: %v", err)
+			}
+			if !strings.Contains(err.Error(), "not evener") {
+				t.Fatalf("refusal does not say the artifact is not evener: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact is the other half, proven
+// rather than assumed: the repository's own ./cmd/evener build validates, so the
+// identity check cannot refuse the artifact an operator actually ships. It pins
+// buildinfo.Path — the import path of a Go executable's main package — as the
+// field the check reads: that is the field which names
+// primeradiant.com/evener/cmd/evener exactly, where Main.Path (the module) is
+// shared with this package's test binary and every other command in the module.
+func TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact(t *testing.T) {
+	artifact := evenerArtifact(t)
+	got, err := validateDeployBinary(artifact)
+	if err != nil {
+		t.Fatalf("validateDeployBinary refused the repository's own ./cmd/evener build: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(artifact)
+	if err != nil {
+		t.Fatalf("canonicalize %q: %v", artifact, err)
+	}
+	if got != want {
+		t.Fatalf("validateDeployBinary returned %q, want the canonical %q", got, want)
+	}
+}
+
+// TestDeployBinarySeamRefusesNonEvenerArtifact pins the artifact's second read:
+// the seam re-checks identity before staging, so even an artifact swapped after
+// startup is refused before the push, out is never written, and the refusal
+// carries the terminal sentinel (retrying re-reads the same file).
+func TestDeployBinarySeamRefusesNonEvenerArtifact(t *testing.T) {
+	path := nonEvenerGoBinary(t)
+	out := filepath.Join(t.TempDir(), "evener")
+	err := deployBinaryBuild(path)(t.Context(), runtime.GOOS, runtime.GOARCH, out)
+	if err == nil {
+		t.Fatal("deployBinaryBuild accepted a non-evener artifact")
+	}
+	if !errors.Is(err, sshconn.ErrDeployArtifactUnusable) {
+		t.Fatalf("refusal %v does not carry the terminal ErrDeployArtifactUnusable sentinel", err)
+	}
+	if !strings.Contains(err.Error(), deployBinaryFlag) {
+		t.Fatalf("refusal does not name the flag: %v", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("out was written for a non-evener artifact (stat err = %v)", statErr)
+	}
+}
+
 // TestParseHubOptionsRejectsNonEvenerBuildSource pins that -build-source reuses
 // sshconn's checkout validation (via the exported entry point) and fails
 // startup naming the flag rather than surfacing as a first-attach build error.
@@ -69,10 +153,7 @@ func TestParseHubOptionsRejectsNonEvenerBuildSource(t *testing.T) {
 // verified from the file itself and the bytes are copied to out unchanged and
 // executable.
 func TestDeployBinarySeamCopiesMatchingArtifact(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	exe := evenerArtifact(t)
 	out := filepath.Join(t.TempDir(), "evener")
 	if err := deployBinaryBuild(exe)(t.Context(), runtime.GOOS, runtime.GOARCH, out); err != nil {
 		t.Fatalf("deployBinaryBuild(matching target): %v", err)
@@ -104,13 +185,10 @@ func TestDeployBinarySeamCopiesMatchingArtifact(t *testing.T) {
 // operator mistake — retrying re-reads the same file — so it must not be
 // classified as the retryable ErrDeploy the deploy path otherwise uses.
 func TestDeployBinarySeamRefusesWrongTarget(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	exe := evenerArtifact(t)
 	goos, goarch := otherTarget(runtime.GOOS, runtime.GOARCH)
 	out := filepath.Join(t.TempDir(), "evener")
-	err = deployBinaryBuild(exe)(t.Context(), goos, goarch, out)
+	err := deployBinaryBuild(exe)(t.Context(), goos, goarch, out)
 	if err == nil {
 		t.Fatalf("deployBinaryBuild accepted a %s/%s artifact for %s/%s", runtime.GOOS, runtime.GOARCH, goos, goarch)
 	}
@@ -183,14 +261,12 @@ func TestDeployBinarySeamStagesAnExecutable(t *testing.T) {
 	}
 }
 
-// copyExecutableArtifact copies this test binary — a real Go executable with
-// readable buildinfo — to a temp path with the given mode.
+// copyExecutableArtifact copies a genuine evener artifact — a real Go executable
+// with readable buildinfo — to a temp path with the given mode, so a mode-only
+// refusal is not confounded by the artifact's identity.
 func copyExecutableArtifact(t *testing.T, mode os.FileMode) string {
 	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	exe := evenerArtifact(t)
 	data, err := os.ReadFile(exe)
 	if err != nil {
 		t.Fatalf("read %q: %v", exe, err)
@@ -204,6 +280,45 @@ func copyExecutableArtifact(t *testing.T, mode os.FileMode) string {
 		t.Fatalf("chmod %q: %v", path, err)
 	}
 	return path
+}
+
+// evenerArtifact returns a genuine evener runtime binary built from this
+// checkout. validateDeployBinary requires the artifact's main package to be
+// evener's, so a test that needs an accepted artifact cannot use this package's
+// test binary: its main package is cmd/evener-hub.test. The build is
+// liveStackBinaries' shared once-per-test-binary ./cmd/evener build, so using it
+// adds no second compile.
+func evenerArtifact(t *testing.T) string {
+	t.Helper()
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("abs repo root: %v", err)
+	}
+	return filepath.Join(liveStackBinaries(t, repoRoot), "evener")
+}
+
+// nonEvenerGoBinary builds a real, runnable Go executable that is not evener:
+// a tiny program in a module of its own, the "any Go program built for the
+// host's platform" an operator could point -deploy-binary at. The go directive
+// is deliberately older than this repository's so the fixture builds with the
+// toolchain already running the tests; a directive newer than the local one
+// makes GOTOOLCHAIN=auto try to download a toolchain instead.
+func nonEvenerGoBinary(t *testing.T) string {
+	t.Helper()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module example.com/not-evener\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("write fixture go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write fixture main.go: %v", err)
+	}
+	out := filepath.Join(t.TempDir(), "not-evener")
+	build := exec.Command("go", "build", "-o", out, ".")
+	build.Dir = src
+	if combined, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build a non-evener Go binary: %v\n%s", err, combined)
+	}
+	return out
 }
 
 // TestParseHubOptionsNormalizesDeployFlags pins that a whitespace-only flag is
@@ -235,10 +350,7 @@ func TestParseHubOptionsNormalizesDeployFlags(t *testing.T) {
 // absolute path, so the artifact a later deploy reads is the one validation
 // approved rather than whatever the same relative spelling resolves to then.
 func TestDeployBinaryFlagIsStoredAndLoggedCanonically(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	exe := evenerArtifact(t)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("os.Getwd: %v", err)
@@ -282,10 +394,7 @@ func TestDeployBinaryFlagIsStoredAndLoggedCanonically(t *testing.T) {
 // BuildSource, so the manager's own `BuildBinary first` dispatch uses the
 // operator's artifact.
 func TestDeployWiringPrefersDeployBinary(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	exe := evenerArtifact(t)
 	dw := hubOptions{deployBinary: exe, buildSource: "/some/evener/checkout"}.deployWiring()
 	if dw.buildBinary == nil {
 		t.Fatal("deployWiring did not configure BuildBinary with both flags set")
@@ -294,7 +403,7 @@ func TestDeployWiringPrefersDeployBinary(t *testing.T) {
 		t.Fatalf("deployWiring kept BuildSource %q alongside BuildBinary", dw.buildSource)
 	}
 	// The constructed BuildBinary is the artifact seam, not a cross-compile:
-	// invoking it with the test binary's own target copies the artifact.
+	// invoking it with the artifact's own target copies the artifact.
 	out := filepath.Join(t.TempDir(), "evener")
 	if err := dw.buildBinary(t.Context(), runtime.GOOS, runtime.GOARCH, out); err != nil {
 		t.Fatalf("constructed BuildBinary: %v", err)
@@ -393,10 +502,7 @@ func otherTarget(goos, goarch string) (string, string) {
 // The hub's other startup lines (the auth URL among them) are not part of the
 // deploy leg and are unchanged by this slice.
 func TestRunMainLogsTheDeployPathItWasGiven(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	exe := evenerArtifact(t)
 	// The checkout only has to pass verifyBuildSource here. This test binary
 	// carries no build stamp, so the revision check is skipped; pinning GitSHA to
 	// "" keeps that true if the package is ever built with ldflags.
