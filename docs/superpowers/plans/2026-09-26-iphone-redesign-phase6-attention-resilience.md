@@ -22,7 +22,7 @@
 - **Timing** (spec 13.3, 14, 16.6): a banner stays 8 seconds and never goes away while a finger is on it; alerts within 5 seconds combine; a banner drops with a 300ms spring, and with Reduce Motion it fades in instead.
 - **Haptics** (spec 13.3): a warning for a failure, a light impact for anything else, none for finished results, and nothing when Hub > In-app alerts turns haptics off.
 - **Calm** (spec principle 2):
-  - A control appears only when it can act: Check only while connected, and the Board's hub-writing actions only while connected.
+  - A control appears only when it can act: Check only while connected, and the Board's hub-writing actions only while connected (phase 2 part 3's ruling 21 builds that).
   - No screen carries a Reconnect button or asks you to refresh, and no text a person can read says "Reconnect", "Refresh" or "Pull down to retry" (Task 2's audit enforces it).
   - Nothing moves unless its data moved: a banner moves only when it drops in or is swiped away.
 - **Color:** only from `useColors().palette`. A banner's edge is `attentionEdge`, and a finished result's is `accentEdge`. Only the state word takes a hue.
@@ -58,13 +58,13 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 15. **"Couldn't confirm this was sent" offers Check only while connected, and Discard always,** since Check needs the hub and Discard doesn't. This covers a lost send, the unconfirmed draft and a record the phone couldn't place.
 16. **A message a Stop held before it left the phone comes back as held,** with "Send now" and "Cancel", like the queue a Stop parks (spec 8.5). Send now moves it to the end of its session's line, behind the Stop that held it, so that Stop can never stop it. The roadmap's phase 6 row, as phase 3 words it, calls these Retry and Discard; the ghost uses spec 8.5's words for a held message.
 17. **The flush.** On each ready connection, and whenever a record lands for a session nobody has open, the app settles and sends every target of the active hub that no session screen holds, as the web's `handleReady` does, then lets each go once nothing on it can be sent. On a ready connection it also settles a target a session screen holds when something on it waits, because a screen under the Reader or a subagent doesn't read while covered; the screen keeps its target.
-18. **The Board's actions that write to the hub wait for the connection** (Question 3). Mark as read and unread are this phone's own and stay.
+18. **The Board's actions that write to the hub wait for the connection** (Question 3). Phase 2 part 3 builds this (its rulings 16 and 21), and this plan adds nothing to it. Mark as read and unread are this phone's own and stay.
 
 ## Questions for Jesse
 
 1. **Should a banner tell you about changes that happened while the phone was disconnected?** My recommendation, and what ruling 2 builds: yes after a drop the connection recovers from while you're using the app (a flap on the train), and no after you return from the background, where the Board, Back's count and Next already show what needs you.
 2. **Banners while a sheet is up:** hold them until the sheet closes (my recommendation, and what ruling 7 builds), or show them over the sheet as the prototype does? Over a sheet, the banner would cover the sheet's own Cancel and Done, and a React Native modal presents above the app's overlay, so showing it there needs a full-window overlay.
-3. **Board actions taken offline.** Spec 7.5 says they "go to the outbox". The phone's outbox carries only the four turn kinds (`nativeMutationRuntime.ts:69-77`), and organization changes run through a one-slot journal that fails at once offline (`navigationActions.ts`), so an offline archive dims and silently comes back. A durable queue for Archive, Pin, Rename and Shut down is its own piece of work, about the size of this phase's outbox PRs, and a Stop queued offline would stop whatever turn runs when it lands. My recommendation, and what Task 16 builds: those actions don't show while offline, and a later PR adds the queue if you want it. Build the queue now instead?
+3. **Board actions taken offline.** Spec 7.5 says they "go to the outbox". The phone's outbox carries only the four turn kinds (`nativeMutationRuntime.ts:69-77`), and organization changes run through a one-slot journal that fails at once offline (`navigationActions.ts`), so an offline archive dims and silently comes back. A durable queue for Archive, Pin, Rename and Shut down is its own piece of work, about the size of this phase's outbox PRs, and a Stop queued offline would stop whatever turn runs when it lands. My recommendation, and what phase 2 part 3 builds (its ruling 21): those actions don't show while offline, and a later PR adds the queue if you want it. Build the queue now instead? This is also phase 2 part 3's Question 2: one answer covers both, and until it comes both plans build the recommendation.
 
 ## Built on earlier phases
 
@@ -74,7 +74,8 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 |---|---|---|
 | `boardState`, `liveBands`, `whyLine`, `WhyLine`, `LiveBands`, `BoardState` (`src/board/attention.ts`), `StateMark`, `seenMarkers` | phase 2 PR 1 | Tasks 3, 4, 7, 8 |
 | `createBoardController` (`src/board/boardData.ts`), `connectionStatus` (`src/board/connectionStatus.ts`), `BoardScreen`, `BoardToolbar` | phase 2 PR 2 | Tasks 1, 7, 8 |
-| `Notice` and `notices` (`src/board/notices.ts`), `Notices.tsx`; `rowActions.ts`, `SwipeRow.tsx`, `RowMenu.tsx`, `SelectBar.tsx` | phase 2 part 2 (its Tasks 12-14) | Tasks 4, 8, 16 |
+| `Notice` and `notices` (`src/board/notices.ts`), `Notices.tsx` | phase 2 part 2 (its Task 14) | Tasks 4, 8 |
+| The Board's offline rule (`rowMenuActions`, its ruling 21), `useBoardOrganization` (its ruling 16) and `BoardStops` (its ruling 17, Task 12.2) | phase 2 part 3 | ruling 18, Task 15 |
 | The demo fleet (`src/dev/demoFleet.ts`, `scripts/demo-hub.mts`) | phase 2 PR B | Task 17 |
 | `useConnectionStatusText()` and the Session's connection bar (its Task 15); `compactDuration` (`src/session/format.ts`) and `sendAction` (its Task 3); `Composer` (its Task 5); `ghosts.ts`, whose parked queue reads the package's `isQueueParked`, and its wiring (its Tasks 7-8); `fleetOrder.ts` (`othersNeedingYou`, `nextSession`), `BackButton` and the Next capsule (its Tasks 32-33); `Toast` | phase 3 | Tasks 1, 2, 10, 11, 13, 14 |
 | Phase 3 left here: Send while offline (ruling 4), every haptic (ruling 5), Next's recent order (ruling 11), the Board's outbox and a Stop-held message's retry (ruling 3) | phase 3 | Tasks 6, 11, 13, 14, 16 |
@@ -100,7 +101,7 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 | C: banners on every screen (part 2) | 7-8 | Opus | PR B lands | alerts |
 | D: holds, the In-app alerts page and Next (part 2) | 9-11 | Opus (9-10), Sonnet (11) | PR C lands | alerts |
 | E: your own undelivered messages | 12-13 | Sonnet (12), Opus (13) | the phase starts | outbox |
-| F: Send while offline | 14-16 | Opus (14, 16), Sonnet (15) | PRs A and E land | connection |
+| F: Send while offline | 14-15 | Opus (14), Sonnet (15) | PRs A and E land | connection |
 | G: the demo and the screenshots (part 2) | 17-18 | Opus (17), then by hand | PRs D and F land | alerts |
 
 - Three lanes start together: alerts (PR B), connection (PR A) and outbox (PR E). The outbox lane joins the connection lane at PR F, and that lane joins the alerts lane at PR G.
@@ -1147,7 +1148,7 @@ git commit -m "feat(native): Send while offline keeps the message and sends it w
 
 ### Task 15: What you left behind sends itself
 
-A message sent offline in a session you then left waits in the outbox with no screen to send it: only an open session screen registers its target (`createNativeMutationHost`, `nativeMutationHost.ts:57-108`). So does anything admitted for a session no screen has open, such as phase 2's Board Stop (`stopSession`, which submits through the runtime). The web sends every target with waiting records on each ready connection (`handleReady`, `cmd/evener-hub/frontend/src/stores/threads.ts:2702-2767`). This task does the same, and also looks again whenever a record lands for a target nobody holds. It reuses phase 4's `settleTarget` (phase 4 Task 2), which releases a registered target with a read that leaves the connection's subscription alone. That also covers a session screen under the Reader or a subagent: it keeps its target but doesn't read while covered (phase 4 Task 2), so on a ready connection the flush settles its target for it when something on it waits to be sent.
+A message sent offline in a session you then left waits in the outbox with no screen to send it: only an open session screen registers its target (`createNativeMutationHost`, `nativeMutationHost.ts:57-108`). So does anything admitted for a session no screen holds, such as a review sent from a Reader opened from the Board (phase 4's `submitSessionMessage` settles only a registered target), or a Board Stop whose connection dropped before `BoardStops` let its target go (phase 2 part 3's Task 12.2). The web sends every target with waiting records on each ready connection (`handleReady`, `cmd/evener-hub/frontend/src/stores/threads.ts:2702-2767`). This task does the same, and also looks again whenever a record lands for a target nobody holds. It reuses phase 4's `settleTarget` (phase 4 Task 2), which releases a registered target with a read that leaves the connection's subscription alone. That also covers a session screen under the Reader or a subagent: it keeps its target but doesn't read while covered (phase 4 Task 2), so on a ready connection the flush settles its target for it when something on it waits to be sent.
 
 A target nobody holds is settled whatever its records hold, as `handleReady` reads every stored target. The read is how the phone confirms a send whose answer was lost: a record the hub's read reflects is settled (`reconcileIdentities`), and one the hub proves it never received goes back to the outbox to send (`restoreProvenAbsent`, `mutationOutboxStorage.ts:492`). Spec 14 shows "Couldn't confirm this was sent" only when "delivery can't be confirmed after reconnecting".
 
@@ -1444,10 +1445,11 @@ In `nativeMutationRuntime.ts`, before `beginAuthoritativeRead`:
 // a message the phone kept while offline, in a session you have since left,
 // goes out when the connection returns, as the web's handleReady does
 // (cmd/evener-hub/frontend/src/stores/threads.ts); so does anything admitted
-// for a session no screen has open, such as a Stop from the Board. The flush
-// takes only targets nobody has registered, settles each with a read that
-// leaves the connection's subscription alone (NativeMutationRuntime.
-// settleTarget), and lets each go once nothing on it is waiting to be sent.
+// for a session no screen holds, such as a review sent from a Reader opened
+// from the Board. The flush takes only targets nobody has registered,
+// settles each with a read that leaves the connection's subscription alone
+// (NativeMutationRuntime.settleTarget), and lets each go once nothing on it
+// is waiting to be sent.
 // A session screen owns its own target; the flush only settles one that has
 // something waiting, for a screen under the Reader or a subagent, which
 // doesn't read while it's covered.
@@ -1648,31 +1650,8 @@ git add mobile-native/src/outbox/outboxFlush.ts mobile-native/src/outbox/outboxF
 git commit -m "feat(native): messages you left behind send themselves when the connection returns"
 ```
 
-### Task 16: The Board's actions wait for the connection
+### The Board's side: phase 2 part 3 builds it
 
-Spec 7.5 sends a Board action taken offline "to the outbox", and phase 3 left the Board's outbox to this phase (its ruling 3). Today an organization change taken offline fails at once and leaves its journal uncertain (`NavigationActions.run`, `navigationActions.ts:210-301`), so an archived row dims and then comes back with nothing said, and a Stop taken offline would reach the hub minutes later and stop whatever turn is running then. A durable queue for Board actions is its own piece of work (Question 3). Until then, a control appears only when it can act (principle 2).
-
-**Files:**
-- Modify: phase 2's `src/board/rowActions.ts`, `SwipeRow.tsx`, `RowMenu.tsx` and `SelectBar.tsx` (phase 2 Tasks 12 and 13), and the function there that lists a row's menu actions per state
-- Modify: phase 2's `src/board/BoardScreen.tsx`, which holds the `NavigationActions` its row actions use (`archiveSession`, `pinSession`): the reconcile on the ready transition
-- Test: phase 2's `rowActions.test.ts`, `RowMenu.test.tsx` and `BoardScreen.test.tsx`
-
-**Interfaces:**
-- Consumes: `useConnection().state`.
-- Produces: the menu-actions function takes `connected: boolean`.
-
-**Requirements:**
-1. While the connection isn't ready, the actions that write to the hub don't show: the leading swipe reveals nothing (a full swipe does nothing), the trailing swipe shows only More, and the long-press menu and select mode keep Mark as read and Mark as unread, which are this phone's own (`seenMarkers`), and drop Pin to category…, Stop, Shut down, Archive and Rename.
-2. They come back the moment the connection is ready again, with no refresh.
-3. An organization change whose answer the connection lost before it arrived settles itself when the connection returns: the Board calls its `NavigationActions`' `reconcile()` when the connection turns ready while it is focused, as `usePinNavigation` does (`usePinNavigation.ts:109-111`). The row stays dimmed until then, and nothing asks you to refresh.
-
-- [ ] **Step 1: Write the failing tests.**
-  - The menu function returns only the read marks offline and every action online, per state.
-  - Rendered offline, a row's trailing swipe shows only More, and its leading swipe has no Archive.
-  - In `BoardScreen.test.tsx`: archive a row while connected, then drop the connection before the hub answers, so the journal holds an uncertain archive. When the mocked connection goes from `"reconnecting"` to `"ready"` while the Board is focused, the Board's `NavigationActions.reconcile()` runs once (its read-back of the journal's checkpoint, `navigationActions.ts:164-209`), and the row's dimming follows the hub's answer. The same transition while the Board is blurred reads nothing.
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/board`
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run them and watch them pass**, then `npm run check`.
-- [ ] **Step 5: Commit** (`feat(native): Board actions that need the hub wait for the connection`).
+The Board's half of spec 14's outbox needs no task here, so Task 16 is gone and the numbers skip it. Phase 2 part 3 shows the Board's hub-writing actions only while connected (its ruling 21, through `rowMenuActions`' `connected` context, its Task 12.3), reconciles its one organization journal on focus and whenever the connection turns ready (its ruling 16, `useBoardOrganization`, its Task 10.5), and sends a Board Stop through the durable runtime, holding its target until the interrupt leaves (its ruling 17, `BoardStops`, its Task 12.2). Phase 6 writes no second copy of any of it.
 
 Open PR F: "feat(native): Send while offline (phase 6, PR F)".
