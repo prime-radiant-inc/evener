@@ -218,7 +218,7 @@ func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
 // than the cleanup that is actually running on the environment it is about to
 // reap — pointing whoever reads the warning at the wrong thing.
 func TestWorktreeCreate_FenceWarningNamesTheRollbackOnceItHasStarted(t *testing.T) {
-	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	path, _ := createLaneExpectations(t, r, "lane")
@@ -239,7 +239,7 @@ func TestWorktreeCreate_FenceWarningNamesTheRollbackOnceItHasStarted(t *testing.
 			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == path &&
 				holding.CompareAndSwap(false, true) {
 				close(rollbackStarted)
-				time.Sleep(2 * LaneClosePassBudget)
+				time.Sleep(2 * budget)
 			}
 			return inner(args...)
 		}
