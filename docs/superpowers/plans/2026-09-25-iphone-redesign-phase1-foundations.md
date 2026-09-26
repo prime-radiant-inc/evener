@@ -85,8 +85,8 @@ describe("tints: the hue at 15% over surface, edges at 40% over edge", () => {
 	it("light tints", () => {
 		expect(palettes.light).toMatchObject({
 			attentionBg: "#FBEDD4", attentionEdge: "#E7C384", aliveBg: "#DAECDE",
-			dangerBg: "#F8E0DE", dangerEdge: "#DFA09E", accentBg: "#D6E9F9", accentEdge: "#85B9E5",
-			bubble: "#D6E9F9",
+			dangerBg: "#F8E0DE", dangerEdge: "#DFA09E", accentBg: "#D7E9F9", accentEdge: "#85B9E5",
+			bubble: "#D7E9F9",
 		});
 	});
 	it("dark tints", () => {
@@ -637,7 +637,7 @@ it("uses the dimmer prose ink in dark mode", () => {
 });
 ```
 
-Add to `mobile-native/src/TimelineItem.test.tsx` a case that renders a `user` row (build it the way the file's existing user-row cases do) and asserts that the message text node's style has `fontFamily: "SourceSerif4-Regular"`, `fontSize: 17`, `lineHeight: 25`, and that the bubble view's `backgroundColor` is `#D6E9F9` in light mode. The text itself and its accessibility label ("You: …") must not change.
+Add to `mobile-native/src/TimelineItem.test.tsx` a case that renders a `user` row (build it the way the file's existing user-row cases do) and asserts that the message text node's style has `fontFamily: "SourceSerif4-Regular"`, `fontSize: 17`, `lineHeight: 25`, and that the bubble view's `backgroundColor` is `#D7E9F9` in light mode. The text itself and its accessibility label ("You: …") must not change.
 
 - [ ] **Step 2: Run them to verify they fail**
 
