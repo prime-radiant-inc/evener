@@ -860,6 +860,29 @@ func surveyFailureName(line string) string {
 	return strings.TrimSpace(name)
 }
 
+func surveyFailedChildNames(lines []string, marker int, parent string) map[string]struct{} {
+	var failed map[string]struct{}
+	for index := marker + 1; index < len(lines); index++ {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--- FAIL:") {
+			child := surveyFailureName(trimmed)
+			if strings.HasPrefix(child, parent+"/") {
+				if failed == nil {
+					failed = make(map[string]struct{})
+				}
+				failed[child] = struct{}{}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		break
+	}
+	return failed
+}
+
 // surveyFailureHasMismatchedOwner reports whether the nearest ownership frame
 // before a failure differs from the failing test itself. Descendant frames
 // intentionally count as mismatches: their ordinary tail can hide the
@@ -892,11 +915,11 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // parent or failed-child diagnostic exists. Newest parent diagnostics are
 // selected next when present; remaining slots are then backfilled from owned
 // diagnostics, then owned output, then unindented ordinary-window lines owned
-// by other tests. Source diagnostics
-// are associated with the most recent go test RUN/CONT/NAME frame; a verdict
-// returns ownership to the failing test. If ordinary context owned by the
-// failing test or its descendants exists, expansion requires a source
-// diagnostic owned by the failing test or one of its failed children.
+// by other tests. Source diagnostics are associated with the most recent go
+// test RUN/CONT/NAME frame; a verdict returns ownership to the failing test. If
+// ordinary context owned by the failing test or its descendants exists,
+// expansion requires a source diagnostic owned by the failing test or one of
+// its failed children.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
@@ -931,22 +954,12 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	ordinaryOwnedCandidates := make([]int, 0, maxExpandedLines)
 	parentDiagnosticCandidates := make([]int, 0, maxExpandedLines)
 	descendantDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	failedChildDiagnosticCandidates := make([]int, 0, maxExpandedLines)
 	ownedDiagnosticCandidates := make([]int, 0, maxExpandedLines)
 	ownedOutputCandidates := make([]int, 0, maxExpandedLines)
 	ordinaryContextCandidates := make([]int, 0, maxExpandedLines)
 	ordinaryCount := 0
-	failedChildDiagnostic := false
-	for index := marker + 1; index < len(lines) && index <= marker+surveyContextAfter; index++ {
-		trimmed := strings.TrimSpace(lines[index])
-		if !strings.HasPrefix(trimmed, "--- FAIL:") {
-			continue
-		}
-		childName := surveyFailureName(trimmed)
-		if strings.HasPrefix(childName, name+"/") {
-			failedChildDiagnostic = true
-			break
-		}
-	}
+	failedChildNames := surveyFailedChildNames(lines, marker, name)
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
 			owner = frameOwner
@@ -977,6 +990,12 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			if diagnostic {
 				if owner != name {
 					appendNewest(&descendantDiagnosticCandidates, lineIndex)
+					for failedChild := range failedChildNames {
+						if owner == failedChild || strings.HasPrefix(owner, failedChild+"/") {
+							appendNewest(&failedChildDiagnosticCandidates, lineIndex)
+							break
+						}
+					}
 				}
 				appendNewest(&ownedDiagnosticCandidates, lineIndex)
 			} else {
@@ -987,7 +1006,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			appendNewest(&ordinaryContextCandidates, lineIndex)
 		}
 	}
-	hasFailureDiagnostic := parentDiagnostic || failedChildDiagnostic
+	hasFailureDiagnostic := parentDiagnostic || len(failedChildDiagnosticCandidates) > 0
 	if ordinaryCount > 0 && !hasFailureDiagnostic {
 		return nil, false
 	}
@@ -1016,6 +1035,8 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	}
 	if parentDiagnostic {
 		selectNewest(parentDiagnosticCandidates, maxExpandedLines)
+	} else {
+		selectNewest(failedChildDiagnosticCandidates, maxExpandedLines)
 	}
 	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
 	selectNewest(ownedOutputCandidates, maxExpandedLines)

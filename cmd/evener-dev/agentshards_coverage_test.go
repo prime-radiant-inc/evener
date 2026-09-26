@@ -493,7 +493,9 @@ func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
 	log.WriteString("=== RUN   TestParent/child1\n")
 	log.WriteString(childDiagnostic + "\n")
 	log.WriteString("=== RUN   TestParent/child2\n")
-	log.WriteString("    child_test.go:9: passing child log\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    child_test.go:%d: passing child log\n", i+9)
+	}
 	log.WriteString("--- FAIL: TestParent (0.00s)\n")
 	log.WriteString("    --- FAIL: TestParent/child1 (0.00s)\n")
 	log.WriteString("    --- PASS: TestParent/child2 (0.00s)\n")
@@ -501,6 +503,26 @@ func TestReplaySurveyFailuresKeepsEarlierFailedChildDiagnostic(t *testing.T) {
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
 	if !strings.Contains(got, childDiagnostic) {
 		t.Fatalf("earlier failed child diagnostic was omitted behind later child output: %q", got)
+	}
+}
+
+func TestReplaySurveyFailuresFindsFailedChildBeyondAfterWindow(t *testing.T) {
+	const childDiagnostic = "    child_test.go:5: child failure"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestParent/child1\n")
+	log.WriteString(childDiagnostic + "\n")
+	log.WriteString("=== RUN   TestParent/child2\n")
+	log.WriteString("    child_test.go:9: passing child log\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	for i := 2; i <= surveyContextAfter+1; i++ {
+		fmt.Fprintf(&log, "    --- PASS: TestParent/child%d (0.00s)\n", i)
+	}
+	log.WriteString("    --- FAIL: TestParent/child1 (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, childDiagnostic) {
+		t.Fatalf("failed child diagnostic beyond after-context was omitted: %q", got)
 	}
 }
 
