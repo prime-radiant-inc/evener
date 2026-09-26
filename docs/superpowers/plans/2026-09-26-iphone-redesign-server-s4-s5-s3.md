@@ -11,7 +11,7 @@
 
 **Tech Stack:** Go 1.27 workspace (root module and `agent/`), AppWire over WebSocket (`ProtocolVersion` `"evener-appwire-v5"`), SQLite through `modernc.org/sqlite` in the hub's shared `index.db`, TypeScript 6 in `appwire-client/typescript` tested by vitest from `cmd/evener-hub/frontend`, the React web frontend.
 
-**Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`: 7.1 (Live bands, Finished and its blue dot), 7.2 (row anatomy: why line, last line), 7.3 (Mark as read and unread), 9 (subagent states), 13.1 (Quiet, May be stuck, Finished, Idle), 13.2, 16.4 (the pulse meter), 17 and 18 (S3, S4, S5). The server plan `docs/superpowers/plans/2026-09-26-iphone-redesign-server-additions.md` holds the design-level sections this plan replaces, the PR map (these are PRs 14 to 19) and the lane's landing rules. Written against main at `f667e4e97`, after the tolerant navigation codec (#2473), the approval flag (PR 3, #2508) and task progress (PR 12, #2502) merged.
+**Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`: 7.1 (Live bands, Finished and its blue dot), 7.2 (row anatomy: why line, last line), 7.3 (Mark as read and unread), 9 (subagent states), 13.1 (Quiet, May be stuck, Finished, Idle), 13.2, 16.4 (the pulse meter), 17 and 18 (S3, S4, S5). The server plan `docs/superpowers/plans/2026-09-26-iphone-redesign-server-additions.md` holds the design-level sections this plan replaces, the PR map (these are PRs 14 to 19) and the lane's landing rules. Written against main at `328685d4f`, after the tolerant navigation codec (#2473), the approval flag (PR 3, #2508), task progress (PR 12, #2502) and failed turns settling to errored (PR 2, #2514) merged.
 
 ## Global Constraints
 
@@ -49,7 +49,7 @@ Decisions the spec leaves open, with the reason for each.
 
 **S4, seen-through marker**
 
-10. **Finished is measured from a daemon-stamped turn-end time.** `SessionMeta.UpdatedAt` moves on every meta write, renames and each model round included (`agent/session_model_call.go:1493`, `agent/session_namer.go:637`), so it cannot say when a turn ended. The daemon stamps `lastTurnEndedAt` at the one boundary every turn end passes (`transitionProcessingAtBoundaryLocked`, `agent/session_state.go:273-280`), keeps it in `SessionMeta` so a restored session still knows it, and carries it on the thread envelope under `facetMeta`, which `TURN_ENDED` already re-samples (`facetAll`, `thread_envelope.go:198-200`). No new `EnvelopeSampling` method is needed: the envelope already reads `Meta()`.
+10. **Finished is measured from a daemon-stamped turn-end time.** `SessionMeta.UpdatedAt` moves on every meta write, renames and each model round included (`agent/session_model_call.go:1493`, `agent/session_namer.go:637`), so it cannot say when a turn ended. The daemon stamps `lastTurnEndedAt` at the one boundary every turn end passes (`transitionProcessingAtBoundaryLocked`, `agent/session_state.go:321-328`), keeps it in `SessionMeta` so a restored session still knows it, and carries it on the thread envelope under `facetMeta`, which `TURN_ENDED` already re-samples (`facetAll`, `thread_envelope.go:198-200`). No new `EnvelopeSampling` method is needed: the envelope already reads `Meta()`.
 11. **No new meta write at the boundary.** The stamp persists with the next meta save: processInput's exit save, retirement and `Close` (`agent/session_lifecycle.go:1916-1932`, `agent/session_retirement_prepare.go:245`, and the `Close` autosave that `TestWorkMillis_InterruptThenCloseFlushesToDisk` pins). A daemon crash in between loses only that stamp, the same exposure `WorkMillis` has.
 12. **The hub computes `unseen` and sends it beside `turn_ended_at`;** clients never see the marker, the epoch or the unread flag. One rule in one place, and the phone's attention model keeps only its state precedence (Question and Failed outrank Finished). The design section sent `seen_through` on the summary and left the comparison to clients; that would put the epoch and the unread flag in every client too.
 13. **The store's epoch is the time it first opened.** A turn that ended before the epoch counts as seen, so the first Board after the upgrade does not flood Finished with every live session (phase 2 Review Focus 4 avoided the same flood with a device epoch).
@@ -95,7 +95,7 @@ Decisions the spec leaves open, with the reason for each.
 
 - **The three daemon PRs (14, 16, 18) can run as parallel lanes.** Each appends one field to the end of `EvenerThread` (`appwire/types.go:822`) and regenerates `types.gen.ts` and `docs/appwire-protocol.md`; PRs 14 and 18 both touch `handleAppThreadList` and `appwire/clone.go`. The second and third to merge rebase, keep both sides of those adjacent-line conflicts, and re-run `make generate`.
 - **The three hub PRs (15, 17, 19) can be built in parallel but merge one at a time,** in the order PR 15, PR 17, PR 19. They touch the same hub files (`prober.go`, `roster.go`, `tree.go`, `app_rpc.go`, `appwire/protocol.go`, the handler-set test; 17 and 19 also the summary, the codec and the fixture), so each rebases on the one before it and re-runs `make generate`.
-- The server plan's PRs 3 and 12 are on main and this plan is written against them. PRs 5 and 6 edit the same hub files (`roster.go`, `tree.go`, `local_daemon.go`, `web_api_tree.go`, the summary and the codec); the coordinator sequences them with these, and whichever merges second rebases.
+- The server plan's PRs 2, 3 and 12 are on main and this plan is written against them. PRs 5 and 6 edit the same hub files (`roster.go`, `tree.go`, `local_daemon.go`, `web_api_tree.go`, the summary and the codec); the coordinator sequences them with these, and whichever merges second rebases.
 - S5 does not depend on S3 (ruling 6), so the roadmap's value order (S5, S4, S3) holds.
 
 ## Phone lane handoff
@@ -1157,7 +1157,7 @@ git commit -m "feat(hub): evener/activity/read serves live roots' pulse meters a
 - Create: `appwire-client/typescript/sessionActivity.test.ts`
 - Modify: `appwire-client/typescript/index.ts` (after the `./sendQueueAvailability` exports, `:359-360`)
 - Modify: `appwire-client/typescript/tsconfig.build.json` (add `"sessionActivity.ts"` after `"railSessionState.ts"`, `:61`)
-- Modify: `appwire-client/typescript/scripts/qualify-package.mjs` (two smoke calls after the `humanizeState` ones, `:194-196`)
+- Modify: `appwire-client/typescript/scripts/qualify-package.mjs` (two smoke calls after the `humanizeState` ones, `:196-198`)
 - Modify: `appwire-client/typescript/README.md` (the module list)
 
 **Interfaces:**
@@ -1667,7 +1667,7 @@ Title "feat(hub): evener/activity/read, the pulse meter and quiet time (S5b, pha
 **Files:**
 - Modify: `agent/schema/snapshot.go` (`SessionMeta`: `LastTurnEndedAt` after `WorkMillis`, `:243`)
 - Modify: `agent/session.go` (`Session`: `lastTurnEndedAt` after `turnStartedAt`, `:411`)
-- Modify: `agent/session_state.go` (`transitionProcessingAtBoundaryLocked`, `:273-280`; the `metaWithNotes` literal, `:167-205`)
+- Modify: `agent/session_state.go` (`transitionProcessingAtBoundaryLocked`, `:321-328`; the `metaWithNotes` literal, `:215-253`)
 - Modify: `agent/session_init.go` (the restore literal, `:1123`)
 - Create: `agent/session_turn_ended_test.go`
 - Create: `agent/schema/snapshot_turn_ended_test.go`
@@ -4000,7 +4000,7 @@ git commit -m "feat(agent): a root session tallies its whole delegate tree by st
 - Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:383-387`; `attachSubagentTally` after `attachLiveWatches`, `:2712-2731`; one call in `handleAppThreadList`, `:1293-1325`)
 - Create: `server/appwire_subagent_tally_test.go`
 - Modify: `cmd/evener/serve.go` (`serveServer`: `SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:146`; one line in `bridgeSession` after the live-watches seam, `:1308-1310`)
-- Modify: `cmd/evener/serve_state_test.go` (`clearIdentityServer` `:775-790` records the installed tally)
+- Modify: `cmd/evener/serve_state_test.go` (`clearIdentityServer` `:767-778` records the installed tally)
 - Create: `cmd/evener/serve_subagent_tally_test.go`
 - Regenerate: `appwire-client/typescript/types.gen.ts`, `docs/appwire-protocol.md`
 
@@ -4826,7 +4826,7 @@ Title "feat(hub): subagent tallies on rows (S3b, phase 7 PR 19)". The body says 
 ## Self-review
 
 - **Spec coverage.** Spec 18's S5 row (activity buckets per live session over the last 7 to 10 minutes, and the last activity time): PRs 14 and 15, seven one-minute bars and a quiet time the hub withholds while subagents run (ruling 6). The S4 row (a per-user seen-through marker, a method to set it, included in summaries): PRs 16 and 17, the `session_seen` store, `evener/session/seen/set`, and `turn_ended_at` and `unseen` on rows. The S3 row (running, failed and done per top-level session, omitted descendants included): PRs 18 and 19. Spec 13.1's Quiet (3 minutes) and May be stuck (10 minutes): `quietState` (Task 15.4). Spec 7.3's Mark as read and Mark as unread: `seenThrough` and `unread` marks (Task 17.4). Spec 9's failed subagent: ruling 21 and Question 1. Jesse's S5 ruling: rulings 3 and 6 and Review Focus 1.
-- **Checked by running it.** Every task's code was applied in order onto main `f667e4e97`, PRs 14 to 19 together, and each task's named tests passed, with `make generate` and `TestGeneratedFileCurrent`, the pinned golangci-lint (default and `.golangci-appwire.yml`, root module and `agent/`), `go vet -tags evenerfuzz` for the host and `GOOS=windows`, vitest, `npm run typecheck` and Biome. Not exercised: the package qualification smoke calls (Task 15.4, `make test-api-package`) and the README line. On macOS three existing tests fail on unmodified main and have nothing to do with this plan: `agent`'s `TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability` and `TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs`, and `cmd/evener`'s `TestRunServeClearRetainsReferencedScratchWhenConstructionFailsAfterRetention` (a `/var` against `/private/var` temp path mismatch). An implementer who meets them should not chase them in these PRs.
+- **Checked by running it.** Every task's code was applied in order onto main `328685d4f`, PRs 14 to 19 together, and each task's named tests passed, with `make generate` and `TestGeneratedFileCurrent`, the pinned golangci-lint (default and `.golangci-appwire.yml`, root module and `agent/`), `go vet -tags evenerfuzz` for the host and `GOOS=windows`, vitest, `npm run typecheck` and Biome. Not exercised: the package qualification smoke calls (Task 15.4, `make test-api-package`) and the README line. On macOS three existing tests fail on unmodified main and have nothing to do with this plan: `agent`'s `TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability` and `TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs`, and `cmd/evener`'s `TestRunServeClearRetainsReferencedScratchWhenConstructionFailsAfterRetention` (a `/var` against `/private/var` temp path mismatch). An implementer who meets them should not chase them in these PRs.
 - **Placeholders.** None: every task carries its code, and the phone lane's changes are a handoff, not tasks.
 - **Names.** `ThreadActivity`, `CloneThreadActivity`, `activityMeter`; `ActivityReadParams`, `ActivityReadResponse`, `SessionActivity` (`quietForMs`), `LiveRowRef`, `maxActivityReadRefs`, `decodeActivityRead`, `quietState`; `SessionMeta.LastTurnEndedAt`, `EvenerThread.LastTurnEndedAt`, `LiveEntry.LastTurnEndedAt`, `TreeNode.TurnEndedAt`, `turn_ended_at`, `unseen`; `SessionSeenStore`, `SessionSeenSnapshot`, `SessionSeenRecord`, `UnixMilliTime`, `UnixMilliseconds`, `SessionSeenSetParams`, `SessionSeenMark`, `SessionSeenSetResponse`, `maxSessionSeenMarks`, `commitNavigationChange`, `seenThroughToMark`, `useMarkSessionSeenOnOpen`; `appwire.SubagentTally`, `delegateRunTerminal`, `Session.SubagentTally`, `SetSubagentTallyFunc`, `NavigationSubagentTally`, `navigationSubagentTally`, `navigationSubagentTallyValid`. Each is used the same way wherever it appears.
 - **Review Focus.** Item 1: Tasks 15.3 and 15.4. Item 2: Task 15.1. Item 3: Tasks 17.2 and 17.3. Item 4: Tasks 17.1 and 17.3. Item 5: Tasks 18.1 and 19.2.
