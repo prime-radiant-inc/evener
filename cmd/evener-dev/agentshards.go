@@ -952,7 +952,6 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		*candidates = append(*candidates, index)
 	}
 	owner := name
-	parentDiagnostic := false
 	ordinaryOwnedCandidates := make([]int, 0, maxExpandedLines)
 	parentDiagnosticCandidates := make([]int, 0, maxExpandedLines)
 	descendantDiagnosticCandidates := make([]int, 0, maxExpandedLines)
@@ -960,7 +959,6 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	ownedDiagnosticCandidates := make([]int, 0, maxExpandedLines)
 	ownedOutputCandidates := make([]int, 0, maxExpandedLines)
 	ordinaryContextCandidates := make([]int, 0, maxExpandedLines)
-	ordinaryCount := 0
 	failedChildNames := surveyFailedChildNames(lines, marker, name)
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
@@ -979,13 +977,11 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 		diagnostic := surveyDiagnosticLine.MatchString(line)
 		if diagnostic && owner == name {
-			parentDiagnostic = true
 			appendNewest(&parentDiagnosticCandidates, lineIndex)
 		}
 		owned := owner == name || strings.HasPrefix(owner, name+"/")
 		ordinary := lineIndex >= ordinaryStart
 		if ordinary && owned {
-			ordinaryCount++
 			appendNewest(&ordinaryOwnedCandidates, lineIndex)
 		}
 		if owned {
@@ -1008,8 +1004,8 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 			appendNewest(&ordinaryContextCandidates, lineIndex)
 		}
 	}
-	hasFailureDiagnostic := parentDiagnostic || len(failedChildDiagnosticCandidates) > 0
-	if ordinaryCount > 0 && !hasFailureDiagnostic {
+	hasFailureDiagnostic := len(parentDiagnosticCandidates) > 0 || len(failedChildDiagnosticCandidates) > 0
+	if len(ordinaryOwnedCandidates) > 0 && !hasFailureDiagnostic {
 		return nil, false
 	}
 	keep := make(map[int]struct{}, maxExpandedLines)
@@ -1024,19 +1020,19 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 		}
 	}
 	reservedDiagnostics := 0
-	if parentDiagnostic {
+	if len(parentDiagnosticCandidates) > 0 {
 		reservedDiagnostics++
 	}
 	if len(failedChildDiagnosticCandidates) > 0 {
 		reservedDiagnostics++
 	}
 	ordinaryBudget := maxExpandedLines - reservedDiagnostics
-	selectNewest(ordinaryOwnedCandidates, min(ordinaryCount, ordinaryBudget))
-	if ordinaryCount == 0 {
+	selectNewest(ordinaryOwnedCandidates, ordinaryBudget)
+	if len(ordinaryOwnedCandidates) == 0 {
 		descendantBudget := maxExpandedLines - reservedDiagnostics
 		selectNewest(descendantDiagnosticCandidates, descendantBudget)
 	}
-	if parentDiagnostic {
+	if len(parentDiagnosticCandidates) > 0 {
 		parentBudget := maxExpandedLines
 		if len(failedChildDiagnosticCandidates) > 0 {
 			parentBudget--
