@@ -296,7 +296,7 @@ describe("AddInstanceDialog", () => {
     await user.type(screen.getByLabelText("Name"), "work");
     await enterText(user, screen.getByLabelText(/base url/i), "https://x");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("Created instance work").length).toBeGreaterThan(0);
   });
 
@@ -809,7 +809,7 @@ describe("AddInstanceDialog", () => {
     expect(replacement.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(0);
     // ...the dialog names the change instead of the store's internals, and
     // reports no create failure...
-    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
     expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
     expect(screen.queryByText(/Create failed/)).toBeNull();
     expect(onSuccess).not.toHaveBeenCalled();
@@ -817,9 +817,9 @@ describe("AddInstanceDialog", () => {
     // create the user filled in...
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("fresh");
     // ...and this connection's own listing read is what sets that retry up.
-    await vi.waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
+    await waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
     await act(async () => finishRestore({ instances: [], availableProviders: [ANTHROPIC] }));
-    await vi.waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
   });
 
   test("Protocol and Surface default to inherit and are sent only when chosen", async () => {
@@ -850,7 +850,7 @@ describe("AddInstanceDialog", () => {
     await user.selectOptions(screen.getByLabelText("Protocol"), "openai-responses");
     await user.selectOptions(screen.getByLabelText("Surface"), "generic");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 });
 
@@ -897,7 +897,7 @@ describe("ApiKeyDialog", () => {
     );
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("API key saved for work").length).toBeGreaterThan(0);
   });
 
@@ -966,7 +966,7 @@ describe("ApiKeyDialog", () => {
     );
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 
   // An undefined capture used to exempt the guard, so a row that gained a
@@ -1021,7 +1021,7 @@ describe("ApiKeyDialog", () => {
     // re-typed value saves against the destination the dialog now displays.
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
         provider: "work",
         value: "sk-secret-again",
@@ -1111,7 +1111,7 @@ describe("ApiKeyDialog", () => {
     );
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 
   // The other direction of the same guard: a capture that was defined when the
@@ -1196,7 +1196,7 @@ describe("ApiKeyDialog", () => {
     // destination the dialog is now showing.
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
         provider: "work",
         value: "sk-secret-again",
@@ -1287,7 +1287,7 @@ describe("ApiKeyDialog", () => {
     // being refused forever against the one that already moved.
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")[1]?.params).toEqual({
         provider: "work",
         value: "sk-secret-again",
@@ -1405,9 +1405,9 @@ describe("ApiKeyDialog", () => {
     expect(replacement.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
     // The recovery waits on this connection's own listing read; answer it with
     // the row the re-anchor adopts.
-    await vi.waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
+    await waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
     await act(async () => finishRestore({ instances: [MOVED], availableProviders: [] }));
-    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
     expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
     expect(screen.queryByText(/Save failed/)).toBeNull();
     // The value was typed for the listing that is gone.
@@ -1432,7 +1432,7 @@ describe("ApiKeyDialog", () => {
     // review instead of being refused against one that is gone.
     await enterText(user, screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(replacement.calls.filter((call) => call.method === "evener/auth/apiKey/set")[0]?.params).toEqual({
         provider: "work",
         value: "sk-secret-again",
@@ -1561,7 +1561,7 @@ describe("CredentialJsonDialog", () => {
     await user.click(screen.getByLabelText(/credential json/i, { selector: "textarea" }));
     await user.paste(json);
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("Credential JSON saved for vertex").length).toBeGreaterThan(0);
   });
 
