@@ -37,6 +37,12 @@ func captureSkipReport(t *testing.T, fn func()) string {
 		raw, err := io.ReadAll(r)
 		done <- drained{raw, err}
 	}()
+	// An fn that fails the test (t.Fatalf) unwinds past the explicit restore
+	// and close below; these still put stderr back and end the reader.
+	defer func() {
+		os.Stderr = original
+		_ = w.Close()
+	}()
 
 	fn()
 
