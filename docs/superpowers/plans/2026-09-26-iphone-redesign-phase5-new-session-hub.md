@@ -852,6 +852,7 @@ Phase 2's `BoardToolbar` keeps the clock that turns `connectionStatus` into "Rec
 **Files:**
 - Modify: `mobile-native/src/board/connectionStatus.ts` (add `useConnectionStatusLine`)
 - Modify: `mobile-native/src/board/BoardToolbar.tsx` (call the hook; delete its own clock)
+- Modify: `mobile-native/src/connectionRecovery.ts` (export `INCOMPATIBLE_VERSIONS`)
 - Create: `mobile-native/src/sheet/SheetStatus.tsx`
 - Test: `mobile-native/src/board/connectionStatusLine.test.tsx` and `mobile-native/src/sheet/SheetStatus.test.tsx`
 
@@ -861,7 +862,7 @@ Phase 2's `BoardToolbar` keeps the clock that turns `connectionStatus` into "Rec
   - `useConnectionStatusLine(): string | null`;
   - `SheetStatus()`;
   - `Connecting({ hubName: string })`;
-  - `INCOMPATIBLE_VERSIONS`, spec 14's sentence. If phase 2 already exported a constant for the sentence (grep `need compatible versions` in `src/board`), import that instead and don't declare a second one.
+  - `INCOMPATIBLE_VERSIONS` in `src/connectionRecovery.ts`: spec 14's sentence. It lives in that module because the module imports no React Native, so Task 27 can use it in `connectionFailure` without pulling the UI into `connection.test.ts`, which runs with no `react-native` mock. If phase 2 already exported a constant for the sentence (grep `need compatible versions` in `src`), use it when its module imports no React Native; otherwise move it into `connectionRecovery.ts`. Never declare a second one.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -934,8 +935,9 @@ it("says Update needed at once for a close no retry can fix", () => {
 ```tsx
 // mobile-native/src/sheet/SheetStatus.test.tsx
 import { expect, it, vi } from "vitest";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { render, renderedText } from "../renderNative.testkit";
-import { Connecting, INCOMPATIBLE_VERSIONS, SheetStatus } from "./SheetStatus";
+import { Connecting, SheetStatus } from "./SheetStatus";
 
 const status = { line: null as string | null, fatal: false };
 vi.mock("../board/connectionStatus", () => ({ useConnectionStatusLine: () => status.line }));
@@ -1017,6 +1019,17 @@ export function useConnectionStatusLine(): string | null {
 
 In `BoardToolbar.tsx`, replace its own clock with `const status = useConnectionStatusLine();` and delete the timers it no longer needs. `BoardToolbar`'s existing tests must pass unchanged.
 
+Add the sentence to `src/connectionRecovery.ts`, after its import. `connectionFailure` keeps its own message until Task 27, because today's tests assert it.
+
+```ts
+// added to mobile-native/src/connectionRecovery.ts
+/** Spec 14's sentence for a hub that speaks another protocol version. It
+ * lives in this module, which imports no React Native, so connection code
+ * and screens share one copy. */
+export const INCOMPATIBLE_VERSIONS =
+	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
+```
+
 ```tsx
 // mobile-native/src/sheet/SheetStatus.tsx
 // A sheet's word on the connection (spec 14): one line, no button. The app
@@ -1024,11 +1037,8 @@ In `BoardToolbar.tsx`, replace its own clock with `const status = useConnectionS
 import { Text } from "react-native";
 import { useConnectionStatusLine } from "../board/connectionStatus";
 import { useConnection } from "../ConnectionProvider";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useColors } from "../ui";
-
-/** Spec 14's sentence for a hub that speaks another protocol version. */
-export const INCOMPATIBLE_VERSIONS =
-	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 
 /** The connection's line at the top of a sheet page; nothing while live. */
 export function SheetStatus() {
@@ -1058,13 +1068,13 @@ export function Connecting({ hubName }: { hubName: string }) {
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
-Run: `cd mobile-native && npx vitest run src/board/connectionStatusLine.test.tsx src/sheet/SheetStatus.test.tsx src/board/BoardToolbar.test.tsx && npm run check`
-Expected: PASS. If phase 2 named the toolbar's test differently, run that file instead.
+Run: `cd mobile-native && npx vitest run src/board/connectionStatusLine.test.tsx src/sheet/SheetStatus.test.tsx src/board/BoardToolbar.test.tsx src/connection.test.ts && npm run check`
+Expected: PASS. If phase 2 named the toolbar's test differently, run that file instead. `connection.test.ts` loads `connectionRecovery.ts` with no `react-native` mock, so it fails if that module ever imports a screen.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/board/connectionStatus.ts mobile-native/src/board/connectionStatusLine.test.tsx mobile-native/src/board/BoardToolbar.tsx mobile-native/src/sheet/SheetStatus.tsx mobile-native/src/sheet/SheetStatus.test.tsx
+git add mobile-native/src/board/connectionStatus.ts mobile-native/src/board/connectionStatusLine.test.tsx mobile-native/src/board/BoardToolbar.tsx mobile-native/src/connectionRecovery.ts mobile-native/src/sheet/SheetStatus.tsx mobile-native/src/sheet/SheetStatus.test.tsx
 git commit -m "feat(native): one connection line for the Board and the sheets"
 ```
 
@@ -5405,7 +5415,7 @@ it("no screen asks you to reconnect (spec principle 2)", () => {
   - **Pin assignment:** drop `<Action onPress={retry}>Reconnect</Action>` and the "Reconnect to change pin assignments." reason. Render `SheetStatus` above the editor, and keep its controls disabled while `!connected`, as today.
   - **`HUB_NO_LONGER_SELECTED`:** it becomes "This hub is no longer selected."
   - **`connectionRecovery.ts`:**
-    - the protocol message becomes spec 14's sentence: import `INCOMPATIBLE_VERSIONS` from Task 2 rather than repeating it;
+    - the protocol message becomes `INCOMPATIBLE_VERSIONS`, which Task 2 declared in this same module;
     - the transport message becomes "Couldn't reach the hub. Check its address, its token and your network.".
   - **`ConnectionStatus`, `ConnectionWall` and `ModalConnectionStatus`:** delete them once unimported.
   - **`useConnection().retry`:** keep it only if something still calls it (`grep -rn "\.retry\b\|retry()" mobile-native/src`). If nothing does, remove it from `ConnectionProvider` too, since the app retries on its own.
