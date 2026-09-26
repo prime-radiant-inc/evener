@@ -12,9 +12,10 @@ import (
 // parity: a remote host's session reaches the controller's navigation with its
 // question and its approval, as a local one does. The asking row carries
 // ask_pending and sorts into NeedsYou's question band. The row blocked on an
-// approval carries approval_pending, joins NeedsYou and keeps its real state,
-// active: promotion changes membership, not state. A working remote row does
-// none of this, and the attention summary counts the two that need the user.
+// approval carries approval_pending and what its card asks for (approval_tool
+// and approval_target), joins NeedsYou and keeps its real state, active:
+// promotion changes membership, not state. A working remote row does none of
+// this, and the attention summary counts the two that need the user.
 func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
 	cache.Store([]appwire.Thread{
@@ -60,14 +61,7 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 			t.Fatalf("row %s carries ask_pending; want the key absent: %#v", ref, row)
 		}
 	}
-	approving := navigationProjectedSummary(t, projection, "devbox:approving")
-	if raw := navigationSummaryJSONFields(t, approving)["approval_pending"]; string(raw) != "true" {
-		t.Fatalf("approval row JSON approval_pending = %q, want true (row = %#v)", raw, approving)
-	}
-	for _, ref := range []string{"devbox:asking", "devbox:working"} {
-		row := navigationProjectedSummary(t, projection, ref)
-		if _, carried := navigationSummaryJSONFields(t, row)["approval_pending"]; carried {
-			t.Fatalf("row %s carries approval_pending; want the key absent: %#v", ref, row)
-		}
+	for _, ref := range []string{"devbox:approving", "devbox:asking", "devbox:working"} {
+		assertNavigationApprovalJSON(t, navigationProjectedSummary(t, projection, ref), ref == "devbox:approving")
 	}
 }

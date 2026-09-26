@@ -72,8 +72,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  // Unmount first: a still-mounted hook re-renders on both resets below.
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  hostsStore.getState().resetForTests();
 });
 
 describe("fetch", () => {
@@ -2686,7 +2688,6 @@ describe("notification-triggered refetch", () => {
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).not.toBe(
       hostsStore.getState().revision,
     );
-    hostsStore.getState().resetForTests();
   });
 });
 
@@ -2747,7 +2748,6 @@ test("a re-registered host's rows are withheld and re-read", async () => {
 
   await act(async () => replaced.resolve(replacedList as unknown as HostForwardedResult));
   await waitFor(() => expect(result.current.instances).toEqual(replacedList.instances));
-  hostsStore.getState().resetForTests();
 });
 
 // (b) The host is removed and re-added while a consumer is mounted.
@@ -2780,7 +2780,6 @@ test("a host removed and re-added while mounted is read again", async () => {
   });
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
   expect(remoteReads(fake)).toBe(3);
-  hostsStore.getState().resetForTests();
 });
 
 // (c) The connection's client is replaced while a registry read is in flight.
@@ -2806,7 +2805,6 @@ test("a registry read in flight across a client swap cannot publish the old hub'
   await fromB;
   const settled = hostsStore.getState().load;
   expect(settled.phase === "ready" && settled.hosts.map((row) => row.name)).toEqual(["newhub"]);
-  hostsStore.getState().resetForTests();
 });
 
 // The rule's cost ceiling: an unchanged snapshot advances no revision, so the
@@ -2833,7 +2831,6 @@ test("an unchanged registry snapshot never re-reads a host", async () => {
 
   expect(remoteReads(fake)).toBe(1);
   expect(result.current.instances).toEqual([REMOTE_INSTANCE]);
-  hostsStore.getState().resetForTests();
 });
 
 // The read waits for a registry read that is already on its way, rather than
@@ -2858,7 +2855,6 @@ test("a remote host waits for a registry read that is in flight", async () => {
   await reading;
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
   expect(remoteReads(fake)).toBe(1);
-  hostsStore.getState().resetForTests();
 });
 
 // M1 (round 8): revision 0 means "nothing has been published", not "a published
@@ -2880,7 +2876,6 @@ test("a read taken while the registry was idle is not current once the registry 
   expect(result.current.read).toBe(false);
   expect(result.current.error).toBe("registry unavailable");
   expect(result.current.instances).toEqual([]);
-  hostsStore.getState().resetForTests();
 });
 
 // M2 (round 8): the registry failed and then came back with the SAME snapshot, so
@@ -2915,7 +2910,6 @@ test("the registry recovering with an unchanged snapshot re-reads the host", asy
   // The host is re-read without any revision change, and the listing returns.
   await waitFor(() => expect(remoteReads(fake)).toBe(2));
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
-  hostsStore.getState().resetForTests();
 });
 
 // A reconnect on the SAME client is not a client replacement, so the registry
@@ -2942,7 +2936,6 @@ test("a same-client reconnect re-reads a remote host", async () => {
 
   await waitFor(() => expect(remoteReads(fake)).toBe(2));
   await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
-  hostsStore.getState().resetForTests();
 });
 
 // connectionGeneration is what the push action scopes its own state to
@@ -2991,7 +2984,6 @@ test("a read taken while the registry was unread does not survive its first empt
   expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).not.toBe(
     hostsStore.getState().revision,
   );
-  hostsStore.getState().resetForTests();
 });
 
 // An answer that lands after the registry moved on was issued under the old
@@ -3031,5 +3023,4 @@ test("an answer issued under an older registry snapshot is never shown", async (
     answers[1]?.(REMOTE_LIST as unknown as HostForwardedResult);
   });
   expect(result.current.instances).toEqual([REMOTE_INSTANCE]);
-  hostsStore.getState().resetForTests();
 });

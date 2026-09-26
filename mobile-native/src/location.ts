@@ -1,5 +1,6 @@
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
 import { localSessionId } from "./sessionDeletionResult";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 export interface SavedLocation {
 	hubId: string;
@@ -17,11 +18,6 @@ export interface SavedLocation {
 			tier: "current" | "recent" | "archived";
 		};
 	};
-}
-interface Storage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
 }
 const key = "evener.last-location";
 function object(value: unknown): value is Record<string, unknown> {
@@ -84,7 +80,7 @@ function projects(
 	);
 }
 export class LocationRepository {
-	constructor(private readonly storage: Storage) {}
+	constructor(private readonly storage: SyncStringStorage) {}
 	read(savedHubIds: readonly string[]): SavedLocation | null {
 		const raw = this.storage.getItemSync(key);
 		if (!raw) return null;

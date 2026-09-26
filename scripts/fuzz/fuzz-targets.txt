@@ -28,6 +28,7 @@ native:.:./appwire:FuzzTranscriptItemLimitNormalization
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
 native:.:./internal/appitempaging:FuzzCursorCodec
+native:.:./internal/transcriptindex:FuzzReadMeta
 native:execsupport:./valueexpr:FuzzValueexprScan
 native:execsupport:./valueexpr:FuzzValueexprTokenExpiry
 native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig

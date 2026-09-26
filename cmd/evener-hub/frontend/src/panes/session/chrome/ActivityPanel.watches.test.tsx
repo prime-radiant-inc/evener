@@ -238,8 +238,10 @@ describe("ActivityPanelBody watches", () => {
         watches={[watch({ id: "watch_ended", note: "Deploy watch" })]}
       />,
     );
-    const request = activityPanelStore.getState().beginFetch(ref);
-    activityPanelStore.getState().publishFetch(ref, request, { kind: "ended" });
+    act(() => {
+      const request = activityPanelStore.getState().beginFetch(ref);
+      activityPanelStore.getState().publishFetch(ref, request, { kind: "ended" });
+    });
 
     expect(await screen.findByText("This session has ended")).toBeTruthy();
     expect(screen.getByRole("treeitem", { name: "Watch: Deploy watch" })).toBeTruthy();
