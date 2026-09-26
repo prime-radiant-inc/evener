@@ -1012,7 +1012,7 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 // writeToolCardLine emits the "- [status] `name` — intent: <X> — input: <summary>"
 // header line for a tool card.
 func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCallData) {
-	args := json.RawMessage(tc.SentArguments())
+	args := json.RawMessage(tc.SentArgumentsBytes())
 	// For a healed communicate (status "ok") with malformed raw bytes,
 	// use the repaired Arguments instead of the raw bytes — live and
 	// AppWire reload suppress raw bytes for successful communicates.
@@ -1087,7 +1087,7 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 // tool call's JSON arguments as plain assistant text. Falls back to the raw
 // arguments string if the message field is absent.
 func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed bool) {
-	args := json.RawMessage(tc.SentArguments())
+	args := json.RawMessage(tc.SentArgumentsBytes())
 	if len(args) > 0 {
 		var m map[string]any
 		if err := json.Unmarshal(args, &m); err == nil {
