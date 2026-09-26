@@ -191,7 +191,8 @@ func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested str
 	}
 	for id := range ids {
 		if sessionRefMatchesID(requested, id) {
-			return pinSessionFromTreeNodeID(id), nil
+			key := hubcore.SessionPinIdentity(id)
+			return pinSession{source: key.Source, sessionID: key.ID}, nil
 		}
 	}
 	// Nothing matched. A host-qualified ref that names a source the tree
@@ -207,14 +208,6 @@ func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested str
 		return pinSession{}, appwire.InvalidParams("unknown source: " + ref.HostID)
 	}
 	return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
-}
-
-// pinSessionFromTreeNodeID maps a tree node's identity (the bare ID of a
-// controller session, or a remote row's host-qualified ref string) to the
-// source-qualified pin identity.
-func pinSessionFromTreeNodeID(id string) pinSession {
-	ref := hubRefFromTreeNodeID(id)
-	return pinSession{source: hubcore.NormalizeDecisionSource(ref.HostID), sessionID: ref.SessionID}
 }
 
 func sessionRefMatchesID(requested, actual string) bool {

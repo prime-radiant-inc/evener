@@ -106,34 +106,15 @@ func (s *WebServer) pinSections() ([]hubcore.PinSection, error) {
 	return s.cfg.PinSections.Sections()
 }
 
-// pinDecisionIdentity spells a source-qualified pin key the way the authority
-// index and the decision stores name that session: the controller's bare ID
-// for its own rows (every local decision predates the ref spelling), the
-// host-qualified ref for a remote one.
-func pinDecisionIdentity(key hubcore.ArchiveKey) string {
-	if key.Source == "" {
-		return key.ID
-	}
-	return hubapi.Ref{HostID: key.Source, SessionID: key.ID}.String()
-}
-
-// pinDecisionKey is the decision identity a stored pin resolves under.
+// pinDecisionKey is the decision identity a stored pin resolves under: the
+// authority index and the decision stores name a controller row by its bare ID
+// (every local decision predates the ref spelling) and a remote row by its
+// host-qualified ref.
 func pinDecisionKey(key hubcore.ArchiveKey) hubcore.ArchiveKey {
-	return hubcore.ArchiveKey{Kind: "session", ID: pinDecisionIdentity(key)}
-}
-
-// pinKeyForDecisionIdentity maps a decision identity back to the pin's
-// source-qualified key, so a canonicalized identity lands on the owning
-// source's pin instead of a bare ID.
-func pinKeyForDecisionIdentity(id string) (hubcore.ArchiveKey, bool) {
-	if id == "" {
-		return hubcore.ArchiveKey{}, false
+	if key.Source == "" {
+		return hubcore.ArchiveKey{Kind: "session", ID: key.ID}
 	}
-	ref, err := hubapi.ParseRef(id)
-	if err != nil {
-		return hubcore.ArchiveKey{Kind: "session", ID: id}, true
-	}
-	return hubcore.SessionPinKey(ref.HostID, ref.SessionID), true
+	return hubcore.ArchiveKey{Kind: "session", ID: hubapi.Ref{HostID: key.Source, SessionID: key.ID}.String()}
 }
 
 func classifySessionPins(assignments map[hubcore.ArchiveKey]hubcore.SessionPin, authority hubcore.FavoriteAuthority) hubcore.FavoriteRevalidation {
@@ -150,9 +131,9 @@ func canonicalPinAssignments(assignments map[hubcore.ArchiveKey]hubcore.SessionP
 		out[key] = assignment
 		classification := classified.Classifications[pinDecisionKey(key)]
 		if classification.State == hubcore.FavoriteDecisionValid && classification.CanonicalKey.ID != "" {
-			if canonical, ok := pinKeyForDecisionIdentity(classification.CanonicalKey.ID); ok {
-				out[canonical] = assignment
-			}
+			// A canonical identity lands on the owning source's pin, never a
+			// bare-ID key that a second source could also claim.
+			out[hubcore.SessionPinIdentity(classification.CanonicalKey.ID)] = assignment
 		}
 	}
 	return out

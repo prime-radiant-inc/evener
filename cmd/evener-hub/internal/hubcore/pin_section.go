@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/afero"
 	"golang.org/x/text/cases"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+
+	"primeradiant.com/evener/hubapi"
 )
 
 const PinSectionNameMaxRunes = 80
@@ -53,6 +55,19 @@ type SessionPin struct {
 // "local" spelling is the controller's own session.
 func SessionPinKey(source, sessionID string) ArchiveKey {
 	return ArchiveKey{Kind: "session", ID: sessionID, Source: NormalizeDecisionSource(source)}
+}
+
+// SessionPinIdentity maps a session identity — a bare session ID, a
+// "local:<id>" ref, or a "<host>:<id>" ref — to the source-qualified pin key
+// it addresses. The wire spelling "local" and an absent source name the
+// controller's own session; any other host keeps its name, so one source's
+// identity can never address another source's row that shares its bare ID.
+func SessionPinIdentity(identity string) ArchiveKey {
+	ref, err := hubapi.ParseRef(identity)
+	if err != nil {
+		return SessionPinKey("", identity)
+	}
+	return SessionPinKey(ref.HostID, ref.SessionID)
 }
 
 // PinSectionStore persists named pin sections and their session assignments in

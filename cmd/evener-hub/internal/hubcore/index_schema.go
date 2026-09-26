@@ -3,10 +3,9 @@ package hubcore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
-
-	"primeradiant.com/evener/hubapi"
 )
 
 // indexSchemaVersion versions the shared index.db schema. index.db is written
@@ -47,7 +46,8 @@ func ensureIndexSchema(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	current, err := readIndexSchemaVersion(db)
+	ctx := context.Background()
+	current, err := readIndexSchemaVersionContext(ctx, db)
 	if err != nil || current >= indexSchemaVersion {
 		return err
 	}
@@ -57,7 +57,6 @@ func ensureIndexSchema(db *sql.DB) error {
 	indexMigrationMu.Lock()
 	defer indexMigrationMu.Unlock()
 
-	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
@@ -93,12 +92,6 @@ func ensureIndexSchema(db *sql.DB) error {
 	return nil
 }
 
-// readIndexSchemaVersion reads the shared schema version from the database
-// header.
-func readIndexSchemaVersion(db *sql.DB) (int, error) {
-	return readIndexSchemaVersionContext(context.Background(), db)
-}
-
 func readIndexSchemaVersionContext(ctx context.Context, q rowQuerier) (int, error) {
 	var version int
 	if err := q.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
@@ -118,39 +111,42 @@ func rebuildLegacyIndexTables(ctx context.Context, conn *sql.Conn) error {
 		{name: "favorite", createTable: createFavoriteTable, valueColumn: "favorited"},
 		{name: "archive", createTable: createArchiveTable, valueColumn: "archived"},
 	} {
-		exists, err := tableExistsContext(ctx, conn, table.name)
+		legacy, err := legacyIndexTable(ctx, conn, table.name)
 		if err != nil {
 			return err
 		}
-		if !exists {
-			continue
-		}
-		has, err := tableHasColumnContext(ctx, conn, table.name, decisionSourceColumn)
-		if err != nil {
-			return err
-		}
-		if has {
+		if !legacy {
 			continue
 		}
 		if err := rebuildDecisionTable(ctx, conn, table.name, table.createTable, table.valueColumn); err != nil {
 			return err
 		}
 	}
-	exists, err := tableExistsContext(ctx, conn, "session_pin")
+	legacy, err := legacyIndexTable(ctx, conn, "session_pin")
 	if err != nil {
 		return err
 	}
-	if !exists {
-		return nil
-	}
-	has, err := tableHasColumnContext(ctx, conn, "session_pin", decisionSourceColumn)
-	if err != nil {
-		return err
-	}
-	if has {
+	if !legacy {
 		return nil
 	}
 	return rebuildSessionPinTable(ctx, conn)
+}
+
+// legacyIndexTable reports whether the named table exists and still predates
+// the source dimension (a table this binary creates fresh never does).
+func legacyIndexTable(ctx context.Context, q rowQuerier, table string) (bool, error) {
+	var name string
+	if err := q.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	has, err := tableHasColumnContext(ctx, q, table, decisionSourceColumn)
+	if err != nil {
+		return false, err
+	}
+	return !has, nil
 }
 
 // rebuildDecisionTable replaces a legacy (kind, id)-keyed decision table with
@@ -214,11 +210,16 @@ func rebuildSessionPinTable(ctx context.Context, conn *sql.Conn) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, pin := range pins {
-		source, sessionID := splitLegacyPinSessionID(pin.sessionID)
-		if _, err := conn.ExecContext(ctx, `
+	insert, err := conn.PrepareContext(ctx, `
 INSERT OR REPLACE INTO session_pin(source, session_id, section_id, assigned_at)
-VALUES (?, ?, ?, ?)`, source, sessionID, pin.sectionID, pin.assignedAt); err != nil {
+VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = insert.Close() }()
+	for _, pin := range pins {
+		key := SessionPinIdentity(pin.sessionID)
+		if _, err := insert.ExecContext(ctx, key.Source, key.ID, pin.sectionID, pin.assignedAt); err != nil {
 			return err
 		}
 	}
@@ -226,35 +227,4 @@ VALUES (?, ?, ?, ?)`, source, sessionID, pin.sectionID, pin.assignedAt); err != 
 		return err
 	}
 	return nil
-}
-
-// splitLegacyPinSessionID maps a pre-source pin's stored session identity to
-// the source-qualified key. A host-qualified ref keeps its host; every other
-// spelling is the controller's own session.
-func splitLegacyPinSessionID(stored string) (source, sessionID string) {
-	ref, err := hubapi.ParseRef(stored)
-	if err != nil {
-		return "", stored
-	}
-	source = NormalizeDecisionSource(ref.HostID)
-	return source, ref.SessionID
-}
-
-// tableExistsContext reports whether the named table exists in the database.
-func tableExistsContext(ctx context.Context, q rowQuerier, table string) (bool, error) {
-	var name string
-	rows, err := q.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		if err := rows.Scan(&name); err != nil {
-			return false, err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return name != "", nil
 }
