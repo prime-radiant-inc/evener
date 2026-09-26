@@ -860,10 +860,11 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // context (including nested failure markers). Source diagnostics are associated
 // with the most recent go test RUN/CONT frame; a completed child or sibling
 // returns ownership to the parent. Parent-owned diagnostics are preferred over
-// nested or sibling diagnostics, then the latest remaining diagnostics fill
-// the budget. This keeps a parent's assertion from being crowded out by
-// source-located parallel output. The result is still no larger than one
-// block's existing before bound plus its marker.
+// nested or sibling diagnostics. Since a parent can flush buffered output
+// after a sibling's CONT frame, its first diagnostic after the parent's CONT
+// is also retained as a parent fallback; the latest remaining diagnostics then
+// fill the budget. The result is still no larger than one block's existing
+// before bound plus its marker.
 func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 	name := surveyFailureName(lines[marker])
 	if name == "" {
@@ -887,9 +888,17 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		parentLevel bool
 	}
 	owner := name
+	parentFallback := false
 	candidates := make([]candidate, 0, marker-run)
 	for index, line := range lines[run+1 : marker] {
 		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			trimmed := strings.TrimSpace(line)
+			if frameOwner == name && strings.HasPrefix(trimmed, "=== CONT ") {
+				parentFallback = true
+			}
+			if strings.HasPrefix(frameOwner, name+"/") {
+				parentFallback = false
+			}
 			owner = frameOwner
 		}
 		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
@@ -898,12 +907,16 @@ func expandSurveyFailure(lines []string, marker, emitted int) ([]string, bool) {
 		if surveyFrameworkLine(line) || strings.TrimSpace(line) == "" {
 			continue
 		}
+		diagnostic := surveyDiagnosticLine.MatchString(line)
 		candidates = append(candidates, candidate{
 			index:       index,
 			line:        line,
-			diagnostic:  surveyDiagnosticLine.MatchString(line),
-			parentLevel: owner == name,
+			diagnostic:  diagnostic,
+			parentLevel: owner == name || (diagnostic && parentFallback),
 		})
+		if diagnostic && parentFallback {
+			parentFallback = false
+		}
 	}
 	if len(candidates) == 0 {
 		return nil, false

@@ -346,9 +346,10 @@ func TestReplaySurveyFailuresKeepsParentAssertionAheadOfNestedDiagnostics(t *tes
 }
 
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
-// top-level parallel shape from go test -v: a sibling resumes after the
-// parent's assertion, emits source-located diagnostics, passes, and the
-// parent then fails. The sibling's newer lines must not claim the parent slot.
+// top-level parallel shape from go test -v: a sibling resumes before the
+// parent's buffered assertion, emits source-located diagnostics, passes, and
+// the parent then fails. The sibling's newer lines must not claim the parent
+// slot.
 func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T) {
 	const assertion = "    parent_test.go:99: parent assertion before sibling output"
 	var log strings.Builder
@@ -357,8 +358,8 @@ func TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics(t *testing.T
 	log.WriteString("=== RUN   TestSibling\n")
 	log.WriteString("=== PAUSE TestSibling\n")
 	log.WriteString("=== CONT  TestParent\n")
-	log.WriteString(assertion + "\n")
 	log.WriteString("=== CONT  TestSibling\n")
+	log.WriteString(assertion + "\n")
 	for i := range surveyContextBefore {
 		fmt.Fprintf(&log, "    sibling_test.go:%d: sibling diagnostic\n", i+1)
 	}
