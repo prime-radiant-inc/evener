@@ -397,6 +397,25 @@ describe("demo fleet paging", () => {
 		}
 		expect(seen.size).toBe(271);
 	});
+
+	// cmd/evener-hub/app_navigation.go's navigationReadPage rejects an
+	// out-of-range page request outright rather than clamping it into range;
+	// the demo fleet's own page() must match, not silently coerce.
+	it("rejects a limit over the section maximum of 50, like the hub's own validation", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 51 }))).toThrow(/limit/i);
+	});
+
+	it("rejects a limit over the catalog maximum of 100, like the hub's own validation", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "catalog", catalog: "projects", offset: 0, limit: 101 }))).toThrow(/limit/i);
+	});
+
+	it("rejects a limit of zero, like the hub's own validation", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 0 }))).toThrow(/limit/i);
+	});
+
+	it("rejects a negative offset, like the hub's own validation", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 }))).toThrow(/offset/i);
+	});
 });
 
 describe("demo fleet truncation", () => {
