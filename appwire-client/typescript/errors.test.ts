@@ -23,6 +23,7 @@ import {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+import { goConstantValue } from "./testing/goConstants";
 
 function decodeUpper(value: unknown): string | undefined {
   return typeof value === "string" ? value.toUpperCase() : undefined;
@@ -45,15 +46,10 @@ test("wireRejectionPayload returns undefined for a non-WireError, or when decode
 });
 
 // goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
-// file the hub stamps every evenerErrorInfo from. Reading the source (the way
-// mobile/src/services/conversation.test.ts binds its decoder literals to
-// appwire/types.go) is what makes the binding real: renaming the constant or
-// changing its value in Go fails here, rather than leaving every client matching
-// a discriminator the hub no longer sends.
+// file the hub stamps every evenerErrorInfo from (goConstants.ts's own header
+// says why reading the source is what makes the binding real).
 function goErrorInfo(name: string): string {
-  const match = appwireErrorsGo.match(new RegExp(`${name}\\s+ErrorInfo\\s*=\\s*"([^"]+)"`));
-  if (!match) throw new Error(`appwire/errors.go has no ${name} ErrorInfo constant`);
-  return match[1]!;
+  return goConstantValue(appwireErrorsGo, name, "appwire/errors.go");
 }
 
 test("hostFieldError reads the blamed input off the hub's own discriminant", () => {

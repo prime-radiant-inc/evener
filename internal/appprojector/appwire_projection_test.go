@@ -63,6 +63,7 @@ func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
 		Source:  "evener",
 		Title:   "Context budget",
 		Hint:    "The model's output allocation was reduced to fit its context window. No action needed.",
+		Code:    events.WarningCodeContextBudget,
 	}})
 	if len(out) != 1 || out[0].Method != appwire.NotifyWarning {
 		t.Fatalf("notifications=%+v", out)
@@ -73,6 +74,9 @@ func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
 	}
 	if params["title"] != "Context budget" {
 		t.Fatalf("title=%v, want the emitter-supplied neutral title", params["title"])
+	}
+	if params["code"] != events.WarningCodeContextBudget {
+		t.Fatalf("code=%v, want the emitter-supplied informational code forwarded verbatim", params["code"])
 	}
 	if strings.Contains(fmt.Sprint(params["hint"]), "session log") {
 		t.Fatalf("hint=%v, want the emitter-supplied hint, not the generic session-log guidance", params["hint"])

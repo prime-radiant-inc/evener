@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
 import { projectThread } from "./transcriptProjector";
+import { WarningCodeContextBudget } from "./warnings";
 
 const BASE_THREAD = {
   ref: "ref:test",
@@ -250,6 +251,144 @@ describe("transcript projector", () => {
     for (const level of ["tools", "activity", "full"] as const) {
       expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "item", id: "blank-tool" })]);
     }
+  });
+
+  describe("informational warnings", () => {
+    const informational = () =>
+      item("budget", "warning", {
+        text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+        warning: { title: "Context budget", code: WarningCodeContextBudget },
+      });
+
+    test("hidden below the high verbosity levels, critical at activity and full", () => {
+      const model = threadWith(informational());
+      for (const level of ["chat", "intent", "tools"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+      }
+      for (const level of ["activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
+      }
+    });
+
+    test("a hidden informational warning leaves no visible item or anchor behind", () => {
+      const model = threadWith(informational());
+      const projection = projectThread(model, preset("tools"));
+      expect(projection.turns[0]?.visibleItems).toEqual([]);
+      expect(projection.anchors).toEqual([]);
+    });
+
+    test("a custom vector gates informational warnings on expandByDefault", () => {
+      const model = threadWith(informational());
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true })),
+      ).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
+    });
+
+    test("an uncoded warning stays critical at every level", () => {
+      const model = threadWith(item("actionable", "warning", { text: "provider degraded" }));
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "actionable" }),
+        ]);
+      }
+    });
+
+    test("the terminal fallback does not resurrect a hidden informational warning where an end cap will render", () => {
+      // A terminal turn renders no empty (terminalFallbackEntry promotes its
+      // last item), but that fallback must consult the same visibility rule
+      // decisionFor applied — EXCEPT where no failure end cap will render:
+      // an interrupted turn carries no error object (TurnBlock renders
+      // TurnFailureEndCap only from asTurnError(sourceTurn.error)), so
+      // suppressing its fallback would show an empty block where the
+      // pre-change notice showed something. Suppression holds only for a
+      // failed turn that carries the error the end cap renders.
+      const failedBudgetTurn = {
+        ...BASE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "failed",
+            error: { message: "the model call failed" },
+            items: [
+              item("budget", "warning", {
+                text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+                warning: { title: "Context budget", code: WarningCodeContextBudget },
+              }),
+            ],
+          },
+        ],
+      } as unknown as ThreadModel;
+      expect(entriesFor(failedBudgetTurn, preset("tools"))).toEqual([]);
+      expect(entriesFor(failedBudgetTurn, preset("activity"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "budget" }),
+      ]);
+
+      // An errorless terminal turn (the interrupted shape: no error object)
+      // keeps the never-empty guarantee even when its only item is the
+      // hidden notice — there is no end cap to represent it.
+      const interruptedBudgetTurn = {
+        ...BASE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "interrupted",
+            items: [
+              item("budget", "warning", {
+                text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+                warning: { title: "Context budget", code: WarningCodeContextBudget },
+              }),
+            ],
+          },
+        ],
+      } as unknown as ThreadModel;
+      expect(entriesFor(interruptedBudgetTurn, preset("tools"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "budget" }),
+      ]);
+
+      // The suppression trades on the end cap, and the renderer gates the
+      // end cap on the error being a real TurnError (a { message: string }
+      // object - asTurnError). A malformed error (a scalar, an object with
+      // no string message) renders no end cap, so its fallback must also
+      // keep the never-empty guarantee.
+      for (const malformedError of ["boom", {}, { message: 7 }]) {
+        const malformedTurn = {
+          ...BASE_THREAD,
+          turns: [
+            {
+              id: "turn-1",
+              status: "failed",
+              error: malformedError,
+              items: [
+                item("budget", "warning", {
+                  text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+                  warning: { title: "Context budget", code: WarningCodeContextBudget },
+                }),
+              ],
+            },
+          ],
+        } as unknown as ThreadModel;
+        expect(entriesFor(malformedTurn, preset("tools"))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "budget" }),
+        ]);
+      }
+
+      // An uncoded actionable warning keeps the fallback: a failed turn
+      // whose only item is a real warning must never render empty.
+      const failedActionableTurn = {
+        ...BASE_THREAD,
+        turns: [
+          { id: "turn-1", status: "failed", items: [item("actionable", "warning", { text: "provider degraded" })] },
+        ],
+      } as unknown as ThreadModel;
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(failedActionableTurn, preset(level))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "actionable" }),
+        ]);
+      }
+    });
   });
 
   test("filters routine system events by typed event kind and keeps unknown events fail-open", () => {

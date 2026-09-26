@@ -2784,6 +2784,7 @@ type WarningParams struct {
 	Ref      string           `json:"ref"`
 	Message  string           `json:"message,omitempty"`
 	Source   string           `json:"source,omitempty"`
+	Code     string           `json:"code,omitempty"`
 	Title    string           `json:"title,omitempty"`
 	Hint     string           `json:"hint,omitempty"`
 	Warning  any              `json:"warning,omitempty"`
