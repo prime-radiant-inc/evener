@@ -57,6 +57,19 @@ func SessionPinKey(source, sessionID string) ArchiveKey {
 	return ArchiveKey{Kind: "session", ID: sessionID, Source: NormalizeDecisionSource(source)}
 }
 
+// pinKeyLabel renders a pin's (source, sessionID) identity for diagnostics:
+// the controller's bare session ID, or the host-qualified ref a remote pin is
+// addressed by. ArchiveKey is a data key with no rendering contract (a "%s" of
+// it is a struct dump), so the readable spelling lives here, beside the pin
+// API that reports it.
+func pinKeyLabel(source, sessionID string) string {
+	source = NormalizeDecisionSource(source)
+	if source == "" {
+		return sessionID
+	}
+	return hubapi.Ref{HostID: source, SessionID: sessionID}.String()
+}
+
 // SessionPinIdentity maps a session identity — a bare session ID, a
 // "local:<id>" ref, or a "<host>:<id>" ref — to the source-qualified pin key
 // it addresses. The wire spelling "local" and an absent source name the
@@ -296,7 +309,7 @@ func (s *PinSectionStore) Assign(sectionID, source, sessionID string, now time.T
 		}
 		return section, changed, nil
 	}
-	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", sessionID)
+	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", pinKeyLabel(source, sessionID))
 }
 
 // CreateOrReuseAndAssign creates a section when needed, reuses an existing
@@ -596,7 +609,7 @@ func (s *PinSectionStore) DeleteSession(source, sessionID string) (bool, error) 
 		}
 		return rows > 0, nil
 	}
-	return false, fmt.Errorf("delete session pin %s: retry limit reached", sessionID)
+	return false, fmt.Errorf("delete session pin %s: retry limit reached", pinKeyLabel(source, sessionID))
 }
 
 // Assignments returns every durable session-to-section mapping, keyed by the

@@ -151,7 +151,7 @@ func TestPinSectionStoreDeleteSectionBeginTxNonRetryable(t *testing.T) {
 }
 
 // TestPinSectionStoreDeleteSessionBeginTxNonRetryable covers the BeginTx
-// non-retryable error path in DeleteSession ("", lines 505-511).
+// non-retryable error path in DeleteSession.
 func TestPinSectionStoreDeleteSessionBeginTxNonRetryable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	realOpen := sql.Open
