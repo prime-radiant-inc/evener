@@ -740,6 +740,8 @@ Each has a fallback so the phone works before it lands.
 | S14 | Message-text search: `evener/search` hits inside sessions' messages, with a snippet and the hit's position, and an archived flag on every result | Search's "In sessions" group and its Archived scope (section 7.4) | Sessions and Projects groups only, with the All and Live scopes |
 | S15 | A session's sandbox mode and network setting on the thread read | The Session sheet's Access section (section 8.6) | No Access section |
 | S16 | Transcript records for a queued message's delivery and for an approval's decision | "Queued" on a delivered message, and approval history (section 8.2) | Neither shows; the resolved call's own step shows its outcome |
+| S17 | The model's display name on navigation summaries | "Show model on Board rows" in the Hub's Display (section 12), and the model on a row's last line (section 7.2) | No model on rows; Display leaves the toggle out |
+| S18 | Starting a session in a new worktree branch, named at launch | New session's Branch row: "a new worktree branch (name field)" (section 11) | Branch shows the project's current branch, as information only |
 
 ## 19. Out of scope and future
 
