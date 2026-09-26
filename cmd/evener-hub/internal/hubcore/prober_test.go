@@ -185,14 +185,27 @@ func fuzzScenarioStatusProber_DecodesPendingAsk(t *testing.T) {
 	}
 }
 
+// The probe keeps the blocked cards themselves, in the order the daemon raised
+// them, beside the flag: a row names the oldest card's action and target, and
+// the hub's own list rows hand the cards on to a controller hub.
 func fuzzScenarioStatusProber_DecodesPendingEscalation(t *testing.T) {
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "01A", state: appwire.ThreadStatusActive,
-		source: wireProbeEnvelopeSource{escalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1"}}},
+		source: wireProbeEnvelopeSource{escalations: []appwire.SandboxEscalationRequested{
+			{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+		}},
 	})
 	got := prober.Probe(entry)
 	if !got.OK || got.SessionID != "01A" || got.Status != "active" || !got.PendingEscalation {
 		t.Fatalf("Probe() pendingEscalation path = %+v; want 01A, active, pending escalation, ok", got)
+	}
+	if len(got.PendingEscalations) != 2 {
+		t.Fatalf("Probe() cards = %+v; want both blocked cards", got.PendingEscalations)
+	}
+	first, second := got.PendingEscalations[0], got.PendingEscalations[1]
+	if first.EscalationID != "esc_1" || first.Tool != "write_file" || first.DeniedPath != "/home/me/sites/docs/index.md" || second.EscalationID != "esc_2" {
+		t.Fatalf("Probe() cards = %+v; want esc_1 (write_file, its full path) then esc_2, in raise order", got.PendingEscalations)
 	}
 }
 
