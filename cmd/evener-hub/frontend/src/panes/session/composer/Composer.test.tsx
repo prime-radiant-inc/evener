@@ -716,9 +716,10 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
     fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
   });
 
-  const editor = textarea();
-  await waitFor(() => expect(document.activeElement).toBe(editor));
-  expect(editor.textContent).toBe("/goal Keep the session focused");
+  // The follow-up card mounts once the resync's read lands, so the editor is
+  // re-queried on every poll rather than cached before the mount settles.
+  await waitFor(() => expect(document.activeElement).toBe(textarea()));
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
 });
 
 test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
@@ -4635,6 +4636,29 @@ test("slash completion hides excluded plugin commands but keeps loaded plugin co
   await user.type(textarea(), "hi /rev");
 
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("slash completion keeps built-ins while hiding plugin commands for an explicit empty inventory", async () => {
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", description: "review the diff", source: "plugin", pluginName: "excluded" },
+      { name: "release", description: "cut a release", source: "plugin", pluginName: "excluded" },
+    ],
+  });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash_empty", {
+    evener: {
+      ...testThread("ref_slash_empty").evener,
+      diagnostics: { plugins: [] },
+    },
+  });
+
+  await user.type(textarea(), "hi /re");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/reasoning-effort"),
+    expect.stringContaining("/project"),
+  ]);
 });
 
 test("skill completions keep indivisible chips in the sentence and submit both references", async () => {
