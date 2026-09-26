@@ -3,13 +3,14 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +46,9 @@ type parityProvider struct {
 	mu           sync.Mutex
 	steps        []func(llm.Request) (llm.Response, error)
 	childRelease chan struct{}
+	// requests records each scripted-or-child request's last user text, so a
+	// scenario whose requests reach the wrong answerer can say which did.
+	requests []string
 }
 
 func (p *parityProvider) Name() string { return "openai" }
@@ -80,7 +84,13 @@ func (p *parityProvider) respond(ctx context.Context, req llm.Request) (llm.Resp
 	if len(req.Tools) == 0 {
 		return llm.Response{Message: llm.Assistant("Summary: the parity session so far.")}, nil
 	}
-	if firstUserText(req) == parityChildTask {
+	texts := userTexts(req)
+	p.mu.Lock()
+	if len(texts) > 0 {
+		p.requests = append(p.requests, texts[len(texts)-1])
+	}
+	p.mu.Unlock()
+	if slices.Contains(texts, parityChildTask) {
 		select {
 		case <-p.childRelease:
 		case <-ctx.Done():
@@ -105,13 +115,16 @@ func (p *parityProvider) remaining() int {
 	return len(p.steps)
 }
 
-func firstUserText(req llm.Request) string {
+// userTexts lists a request's user messages. The session's environment
+// context leads them, so a prompt is found among them, not at the front.
+func userTexts(req llm.Request) []string {
+	var texts []string
 	for _, message := range req.Messages {
 		if message.Role == llm.RoleUser {
-			return strings.TrimSpace(message.Text())
+			texts = append(texts, strings.TrimSpace(message.Text()))
 		}
 	}
-	return ""
+	return texts
 }
 
 func parityCall(id, name string, args any) llm.ContentPart {
@@ -464,6 +477,12 @@ func TestTranscriptParity(t *testing.T) {
 		step(parityCommunicate("comm-10", "The delegate reported back.", true)),
 	)
 	processInput("delegate a task")
+	if left := script.remaining(); left != 1 {
+		script.mu.Lock()
+		requests := slices.Clone(script.requests)
+		script.mu.Unlock()
+		t.Fatalf("the delegate input left %d scripted steps, want 1 (the child is held until release); requests' last user text: %q", left, requests)
+	}
 	// The session notifies for more than attention. Only a notify that finds
 	// the delegate's report recorded starts the notification input.
 	for drained := false; !drained; {
