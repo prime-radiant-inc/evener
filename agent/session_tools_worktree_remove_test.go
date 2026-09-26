@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
@@ -1008,7 +1009,7 @@ func TestWorktreeRemove_PreservesLateDirtyWithoutForceDirty(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("read preserved late edit: %v", readErr)
 	}
-	if string(got) != string(lateDirty) {
+	if !bytes.Equal(got, lateDirty) {
 		t.Errorf("late edit = %q, want %q", got, lateDirty)
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
