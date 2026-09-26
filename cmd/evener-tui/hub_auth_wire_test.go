@@ -108,6 +108,11 @@ func TestFormatAuthStatusSummarySpeaksTheRegistryVocabulary(t *testing.T) {
 		// access token is the routine refreshable state, not a login prompt
 		// (issue #2468) - the same label as the not-yet-expired case above.
 		{"status/oauth-expired", "openai-codex auth: OAuth refreshable (bot@example.com)"},
+		// The stored record's refresh token is whitespace-only: it passes
+		// authopenai.AuthRecord.Validate but ResolveRuntimeCredentials cannot
+		// use it, so the expired access token genuinely needs a fresh login
+		// (issue #2483).
+		{"status/oauth-login-required", "openai-codex auth: OAuth expired (bot@example.com)"},
 		{"status/oauth-none", "openai-codex auth: not configured"},
 		{"status/adc", "vertexish auth: application default credentials"},
 		{"status/store-credential-json", "vertexish auth: stored credential JSON"},

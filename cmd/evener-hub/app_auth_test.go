@@ -166,6 +166,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 	tests := []struct {
 		name         string
 		expiry       time.Time
+		refreshToken string
 		wantSignedIn bool
 		wantRefresh  bool
 		wantLogin    bool
@@ -173,6 +174,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 		{
 			name:         "refreshable",
 			expiry:       now.Add(2 * time.Minute),
+			refreshToken: "stored-refresh-token",
 			wantSignedIn: true,
 			wantRefresh:  true,
 		},
@@ -181,15 +183,23 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			// routine and expected, ResolveRuntimeCredentials refreshes it on
 			// the next use, so this reports the same refreshable state as the
 			// not-yet-expired case above rather than needsLogin (issue #2468).
-			// A record with no refresh token cannot reach this RPC path at
-			// all - authopenai.AuthRecord.Validate rejects one as corrupt
-			// before Status ever sees it - so that branch of
-			// openAIStatusFromRecord is pinned directly in
-			// FuzzAuthInstancesFactories instead.
 			name:         "expired with refresh token still on file",
 			expiry:       now.Add(-time.Minute),
+			refreshToken: "stored-refresh-token",
 			wantSignedIn: true,
 			wantRefresh:  true,
+		},
+		{
+			// A whitespace-only refresh token passes
+			// authopenai.AuthRecord.Validate (which refuses only the exact
+			// empty string), so - unlike a record with no refresh token at
+			// all - this one does reach Status: it just has nothing
+			// ResolveRuntimeCredentials can use, so an expired access token
+			// genuinely needs a fresh login (issue #2483).
+			name:         "expired with unusable (blank) refresh token",
+			expiry:       now.Add(-time.Minute),
+			refreshToken: "   ",
+			wantLogin:    true,
 		},
 	}
 
@@ -207,7 +217,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				TokenType:    "Bearer",
 				Scope:        "openid profile email",
 				AccessToken:  "stored-access-token",
-				RefreshToken: "stored-refresh-token",
+				RefreshToken: tc.refreshToken,
 				Expiry:       tc.expiry,
 				Email:        "stored@example.com",
 			}); err != nil {
