@@ -10,7 +10,7 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 import type { SessionControls } from "./sessionControls";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 

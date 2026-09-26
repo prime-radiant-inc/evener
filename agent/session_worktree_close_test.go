@@ -56,10 +56,49 @@ func TestCloseStopJoin_HopelessStopLeavesHalfBudget(t *testing.T) {
 	// tolerance is orders of magnitude above any honest scheduling skew
 	// between the two mints — tight enough that an implementation burning 2s
 	// of the 3s budget (reserved ~1s) fails, loose enough to never flake.
-	want := LaneClosePassBudget / 2
+	budget := laneClosePassBudget()
+	want := budget / 2
 	reserved := cascadeDeadline.Sub(stopDeadline)
 	if got := reserved - want; got < -250*time.Millisecond || got > 250*time.Millisecond {
-		t.Fatalf("hopeless stop join reserves %s of a %s cascade budget for the joins that follow it; want %s (LaneClosePassBudget/2) within 250ms", reserved, LaneClosePassBudget, want)
+		t.Fatalf("hopeless stop join reserves %s of a %s cascade budget for the joins that follow it; want %s (close-cascade budget/2) within 250ms", reserved, budget, want)
+	}
+}
+
+// TestSetLaneClosePassBudgetRestoresOutOfOrder pins the scope contract for the
+// process-wide test override. No t.Parallel: this is deliberately testing the
+// same process-global policy that close readers sample in the background.
+func TestSetLaneClosePassBudgetRestoresOutOfOrder(t *testing.T) {
+	base := laneClosePassBudget()
+	outerRestore := SetLaneClosePassBudget(200 * time.Millisecond)
+	innerRestore := SetLaneClosePassBudget(100 * time.Millisecond)
+	defer func() {
+		innerRestore()
+		outerRestore()
+	}()
+
+	if got := laneClosePassBudget(); got != 100*time.Millisecond {
+		t.Fatalf("nested close budget = %s, want 100ms", got)
+	}
+	outerRestore()
+	if got := laneClosePassBudget(); got != 100*time.Millisecond {
+		t.Fatalf("budget after out-of-order outer restore = %s, want 100ms", got)
+	}
+	innerRestore()
+	if got := laneClosePassBudget(); got != base {
+		t.Fatalf("budget after final restore = %s, want baseline %s", got, base)
+	}
+}
+
+func TestEnsureCloseBudgetCapturesBudget(t *testing.T) {
+	initialRestore := SetLaneClosePassBudget(200 * time.Millisecond)
+	cascade, cancel := ensureCloseBudget(context.Background())
+	defer cancel()
+	initialRestore()
+	changedRestore := SetLaneClosePassBudget(100 * time.Millisecond)
+	defer changedRestore()
+
+	if got := closePassBudget(cascade); got != 200*time.Millisecond {
+		t.Fatalf("close cascade budget after override changes = %s, want 200ms", got)
 	}
 }
 
@@ -731,7 +770,7 @@ func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
 		t.Fatal("own worktree not locked after create")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, _ := r.laneLocked(t, path); locked {
 		t.Error("own managed worktree still locked after close-unlock")
@@ -1017,7 +1056,7 @@ func TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker(t *testing.T) {
 		t.Fatal("stranded lane not locked by the test setup")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, reason := r.laneLocked(t, strandedPath); locked {
 		t.Errorf("stranded own marker survived close: locked with %q", reason)
@@ -1057,7 +1096,7 @@ func TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker(t *tes
 		t.Fatal("session did not become a child session")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, reason := r.laneLocked(t, childLane); locked {
 		t.Errorf("child's own marker survived its teardown: locked with %q", reason)
@@ -1110,7 +1149,7 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	}
 
 	start := time.Now()
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 	elapsed := time.Since(start)
 
 	if unbounded {
@@ -1119,7 +1158,7 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	if commands == 0 {
 		t.Fatal("no git command reached the interceptor; the pass never ran")
 	}
-	if budget := laneCloseReleaseBudget(); longest > budget {
+	if budget := laneCloseReleaseBudget(context.Background()); longest > budget {
 		t.Errorf("git ran with %s left on its deadline, want no more than the release budget %s", longest, budget)
 	}
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1133,7 +1172,7 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	// milliseconds. This bound derives from the release budget rather than a
 	// wall-clock literal and sits orders of magnitude above that, so it trips only
 	// if the pass starts waiting a budget out instead of honouring its deadline.
-	if bound := laneCloseReleaseBudget() / 4; elapsed > bound {
+	if bound := laneCloseReleaseBudget(context.Background()) / 4; elapsed > bound {
 		t.Errorf("pass took %s, want well under %s", elapsed, bound)
 	}
 }
@@ -1254,7 +1293,7 @@ func TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker(t *testing.T) {
 	dlgMarker := worktree.FormatDelegateMarker("dlg_close894", r.s.id)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", dlgMarker, dlgLane)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	_, locked, reason := r.laneLocked(t, dlgLane)
 	if !locked {
@@ -1282,7 +1321,7 @@ func TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker(t *testing.T) {
 	foreignMarker := worktree.FormatSessionMarker(r.s.id + "-other")
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignMarker, foreignPath)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	_, locked, reason := r.laneLocked(t, foreignPath)
 	if !locked {
@@ -1307,7 +1346,7 @@ func TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp(t *testing.T) {
 	r.s.env = &timeoutEnv{wd: path}
 	r.s.mu.Unlock()
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("own worktree wrongly unlocked through a non-local env")
@@ -1331,7 +1370,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) 
 	}
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1353,7 +1392,7 @@ func TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns(t *testing.T) {
 	path := res["path"].(string)
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1386,7 +1425,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns(t *testing.T) {
 		}
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("own worktree reported unlocked despite a failed unlock")

@@ -199,6 +199,7 @@ func issue621Validate(t *testing.T, schemaJSON string, args map[string]any) (map
 // root oneOf, so the explained message names the branch rule and its narrowed
 // enum — never the top-level enum that lists "off" as allowed.
 func TestExplainSchemaError_OneOfAttributionIsArmOrderIndependent(t *testing.T) {
+	t.Parallel()
 	for name, schemaJSON := range map[string]string{
 		"positive-arm-first": issue621SwappedOneOfSchema,
 		"not-arm-first":      issue621NotFirstOneOfSchema,
@@ -235,6 +236,7 @@ func TestExplainSchemaError_OneOfAttributionIsArmOrderIndependent(t *testing.T) 
 // top level — the message stays a generic mismatch without claiming the
 // supplied `a` was required.
 func TestExplainSchemaError_RefWrappedOneOf(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621RefWrappedOneOfSchema, map[string]any{"a": "x"})
 	loc := offendingKeywordLocation(verr)
 	if !strings.HasPrefix(loc, "/$ref/oneOf") {
@@ -257,6 +259,7 @@ func TestExplainSchemaError_RefWrappedOneOf(t *testing.T) {
 // failure is not about any single argument's type or value while showing a
 // requirement the call already satisfied.
 func TestExplainSchemaError_ArmInternalTypeNamesTheProperty(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621ArmInternalTypeSchema, map[string]any{"x": "abc"})
 	loc := offendingKeywordLocation(verr)
 	if !strings.HasPrefix(loc, "/oneOf") {
@@ -281,6 +284,7 @@ func TestExplainSchemaError_ArmInternalTypeNamesTheProperty(t *testing.T) {
 // root `not` must not append a top-level example — the referenced `not` is what
 // was violated, and minimalExample is not checked against it.
 func TestExplainSchemaError_RefWrappedNot(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621RefWrappedNotSchema, map[string]any{"a": "x"})
 	loc := offendingKeywordLocation(verr)
 	if !strings.HasPrefix(loc, "/$ref/not") {
@@ -300,6 +304,7 @@ func TestExplainSchemaError_RefWrappedNot(t *testing.T) {
 // falling through would read the TOP-LEVEL enum and print an allowed-values
 // list containing the rejected value.
 func TestExplainSchemaError_RefWrappedPresentEnum(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621RefWrappedPresentEnumSchema, map[string]any{"x": "off"})
 	loc := offendingKeywordLocation(verr)
 	if !strings.HasPrefix(loc, "/$ref/oneOf") {
@@ -323,6 +328,7 @@ func TestExplainSchemaError_RefWrappedPresentEnum(t *testing.T) {
 // contains the rejected value. The message must name the property without
 // printing an allowed-values list.
 func TestExplainSchemaError_NestedArmEnumStaysGeneric(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621NestedArmEnumSchema, map[string]any{"opts": map[string]any{"status": "b"}})
 	loc := offendingKeywordLocation(verr)
 	if !strings.HasPrefix(loc, "/oneOf") {
@@ -344,6 +350,7 @@ func TestExplainSchemaError_NestedArmEnumStaysGeneric(t *testing.T) {
 // multi-name required list must state the conjunction — not/required rejects
 // only when every listed property is present.
 func TestExplainSchemaError_RootNotMultipleNames(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621RootNotTwoNamesSchema, map[string]any{"a": "x", "b": "y"})
 	loc := offendingKeywordLocation(verr)
 	if loc != "/not" {
@@ -359,6 +366,7 @@ func TestExplainSchemaError_RootNotMultipleNames(t *testing.T) {
 // also constrains a value must not be rendered as an unconditional
 // prohibition with an example that includes the forbidden property.
 func TestExplainSchemaError_MixedRootNot(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621MixedRootNotSchema, map[string]any{"mode": "off"})
 	loc := offendingKeywordLocation(verr)
 	if loc != "/not" {
@@ -377,6 +385,7 @@ func TestExplainSchemaError_MixedRootNot(t *testing.T) {
 // both a `not` and an enum-constrained required property must render both, so
 // the failing enum is still named.
 func TestExplainSchemaError_ArmNotWithEnum(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621ArmNotWithEnumSchema, map[string]any{"x": "b"})
 	loc := offendingKeywordLocation(verr)
 	if !strings.HasPrefix(loc, "/oneOf/0/properties/x/enum") {
@@ -395,6 +404,7 @@ func TestExplainSchemaError_ArmNotWithEnum(t *testing.T) {
 // a `not` and a required property must name the property when it is omitted —
 // the prohibition alone leaves the caller with nothing actionable.
 func TestExplainSchemaError_ArmNotWithOmittedRequired(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621ArmNotWithEnumSchema, map[string]any{})
 	loc := offendingKeywordLocation(verr)
 	if loc != "/oneOf/0/required" {
@@ -410,6 +420,7 @@ func TestExplainSchemaError_ArmNotWithOmittedRequired(t *testing.T) {
 // top-level required shape contains every forbidden property must not emit an
 // example that violates the rule it states.
 func TestExplainSchemaError_RootNotExampleThatViolatesIt(t *testing.T) {
+	t.Parallel()
 	const schemaJSON = `{
 		"type": "object",
 		"properties": {"a": {"type": "string"}},
@@ -434,6 +445,7 @@ func TestExplainSchemaError_RootNotExampleThatViolatesIt(t *testing.T) {
 // inside an arm or behind a $ref must not be read against the top-level
 // property — the nested schema's limit is the stricter one.
 func TestExplainSchemaError_StricterNestedLimit(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		schemaJSON string
 		wantLoc    string
@@ -472,6 +484,7 @@ func TestExplainSchemaError_StricterNestedLimit(t *testing.T) {
 // sibling oneOf must not emit a top-level example that the sibling can
 // invalidate.
 func TestExplainSchemaError_RootNotWithSiblingOneOf(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621NotWithSiblingOneOfSchema, map[string]any{"a": "x"})
 	loc := offendingKeywordLocation(verr)
 	if loc != "/not" {
@@ -501,6 +514,7 @@ const issue621RefRequiredSchema = `{
 // failure whose leaf is not a combinator must not fall through to the top-level
 // schema and report a supplied field as required.
 func TestExplainSchemaError_RefWrappedNonCombinator(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621RefRequiredSchema, map[string]any{"a": "x"})
 	loc := offendingKeywordLocation(verr)
 	if loc != "/$ref/required" {
@@ -532,6 +546,7 @@ const issue621RefTypedPropertySchema = `{
 // TestExplainSchemaError_OneOfExampleOmitsUnmodeledPropertyConstraint; here we
 // only assert the real location so the shape stays covered.
 func TestExplainSchemaError_RefTypedProperty(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621RefTypedPropertySchema, map[string]any{"mode": "off"})
 	if loc := offendingKeywordLocation(verr); !strings.Contains(loc, "$ref") {
 		t.Fatalf("offendingKeywordLocation = %q, want a location through the $ref", loc)
@@ -545,6 +560,7 @@ func TestExplainSchemaError_RefTypedProperty(t *testing.T) {
 // end to end through the real library, a bare /$ref location
 // (a reference to a false schema) must take the generic mismatch.
 func TestExplainSchemaError_BareRefLocation(t *testing.T) {
+	t.Parallel()
 	const schemaJSON = `{
 		"type": "object",
 		"properties": {"a": {"type": "string"}},
@@ -578,6 +594,7 @@ const issue621DynamicRefSchema = `{
 // through $dynamicRef must be treated as a reference — not read against the
 // top-level property, and with no unverified example.
 func TestExplainSchemaError_DynamicRef(t *testing.T) {
+	t.Parallel()
 	params, args, verr := issue621Validate(t, issue621DynamicRefSchema, map[string]any{"task": "abc"})
 	loc := offendingKeywordLocation(verr)
 	msg := repair.ExplainSchemaError("probe_tool", params, args, offendingField(verr), loc)
@@ -631,6 +648,7 @@ func exampleFromMessage(t *testing.T, msg string) (map[string]any, bool) {
 // is emitted it must satisfy the schema. Asserting that property directly —
 // rather than any gate decision — is what keeps a future gate honest.
 func TestExplainSchemaError_EmittedExampleSatisfiesSchema(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		schemaJSON string

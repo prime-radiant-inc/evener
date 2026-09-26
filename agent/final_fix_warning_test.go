@@ -56,6 +56,7 @@ func assertWarningPrecedesCompaction(t *testing.T, captured []events.SessionEven
 }
 
 func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "budget-warning", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("ok") },
@@ -102,6 +103,7 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 }
 
 func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&agenttest.FakeAdapter{
 		Provider: "openai",
@@ -158,6 +160,7 @@ func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
 }
 
 func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeErrAdapter{name: "warning-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -213,6 +216,7 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 }
 
 func TestSessionLocalAdmissionCompactionEmitsOneWarningBeforeCompaction(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	profile := testOpenAICompatProfile("local-warning", "local-model", 0)
 	resolved := profile.Resolved()
@@ -242,6 +246,7 @@ func TestSessionLocalAdmissionCompactionEmitsOneWarningBeforeCompaction(t *testi
 }
 
 func TestSessionLocalAdmissionWithoutContextManagerEmitsNoRecoveryWarning(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	profile := testOpenAICompatProfile("local-no-manager", "local-model", 0)
 	resolved := profile.Resolved()
@@ -271,6 +276,7 @@ func TestSessionLocalAdmissionWithoutContextManagerEmitsNoRecoveryWarning(t *tes
 }
 
 func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "local-post-dispatch", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -302,6 +308,7 @@ func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *test
 }
 
 func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "provider-no-manager", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -336,6 +343,7 @@ func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
 }
 
 func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "provider-warning", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -377,6 +385,7 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 }
 
 func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "output-budget", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -410,6 +419,7 @@ func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 }
 
 func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeErrAdapter{name: "local-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -450,6 +460,7 @@ func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 }
 
 func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeErrAdapter{name: "identity-primary", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -496,6 +507,7 @@ func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T)
 }
 
 func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeErrAdapter{name: "unrelated-warning", steps: []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
@@ -528,6 +540,7 @@ func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 // fallback's is small enough that the same round must warn, so the reported
 // window proves which model the warning was computed against.
 func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	permErr := llm.ErrorFromHTTPStatus("ctxwarn-primary", 403, "primary rejected", nil, nil)

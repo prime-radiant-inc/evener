@@ -3,7 +3,7 @@ import {
   parseSlashToken,
   spliceSlashCommand,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 import { builtinComposerItems, composerCommand } from "./composerCommand";
 
 it.each([

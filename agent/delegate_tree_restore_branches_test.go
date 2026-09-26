@@ -14,6 +14,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionResolutionConstants(t *testing.T) {
+	t.Parallel()
 	if delegateAttentionConsumed != "consumed" {
 		t.Fatalf("delegateAttentionConsumed = %q", delegateAttentionConsumed)
 	}
@@ -27,6 +28,7 @@ func TestDelegateAttentionResolutionConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateRunStartIndex(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		index := delegateRunStartIndex(nil)
 		if len(index) != 0 {
@@ -69,6 +71,7 @@ func TestDelegateRunStartIndex(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateOpenRunOrder(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		order := delegateOpenRunOrder(nil, delegatestore.State{})
 		if len(order) != 0 {
@@ -135,6 +138,7 @@ func TestDelegateOpenRunOrder(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNearestReachableAttentionAncestorLocked(t *testing.T) {
+	t.Parallel()
 	t.Run("empty parentID", func(t *testing.T) {
 		if id := nearestReachableAttentionAncestorLocked(delegatestore.State{}, ""); id != "" {
 			t.Fatalf("expected empty, got %q", id)
@@ -240,6 +244,7 @@ func TestNearestReachableAttentionAncestorLocked(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateReconcileEvidenceMatchesState(t *testing.T) {
+	t.Parallel()
 	t.Run("matching", func(t *testing.T) {
 		state := delegatestore.State{
 			"dlg_1": &delegatestore.Aggregate{},
@@ -327,6 +332,7 @@ func TestDelegateReconcileEvidenceMatchesState(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTakeOwedAttentionAdmissionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	if c.takeOwedAttentionAdmission() {
 		t.Fatalf("expected false for nil controller")
@@ -334,6 +340,7 @@ func TestTakeOwedAttentionAdmissionNil(t *testing.T) {
 }
 
 func TestTakeOwedAttentionAdmissionFalse(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{owedAdmission: false}
 	if c.takeOwedAttentionAdmission() {
 		t.Fatalf("expected false when owedAdmission is false")
@@ -341,6 +348,7 @@ func TestTakeOwedAttentionAdmissionFalse(t *testing.T) {
 }
 
 func TestTakeOwedAttentionAdmissionTrue(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{owedAdmission: true}
 	if !c.takeOwedAttentionAdmission() {
 		t.Fatalf("expected true when owedAdmission is true")
@@ -356,6 +364,7 @@ func TestTakeOwedAttentionAdmissionTrue(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOwedAttentionStartsFromTranscriptsNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	_, err := c.owedAttentionStartsFromTranscripts()
 	if err == nil || err.Error() != "delegate controller is nil" {
@@ -368,6 +377,7 @@ func TestOwedAttentionStartsFromTranscriptsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRepairPermanentlyUnreachableDelegateAttentionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	err := repairPermanentlyUnreachableDelegateAttention(c)
 	if err == nil || err.Error() != "delegate controller is nil" {
@@ -380,6 +390,7 @@ func TestRepairPermanentlyUnreachableDelegateAttentionNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionCleanupPlanStruct(t *testing.T) {
+	t.Parallel()
 	plan := delegateAttentionCleanupPlan{
 		requestSeq:      5,
 		evidenceVersion: 10,
@@ -402,6 +413,7 @@ func TestDelegateAttentionCleanupPlanStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateShellRepairPlanStruct(t *testing.T) {
+	t.Parallel()
 	plan := delegateShellRepairPlan{
 		delegateID:          "dlg_1",
 		storePath:           "/path/to/jobs.jsonl",
@@ -422,6 +434,7 @@ func TestDelegateShellRepairPlanStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShellNotificationIdentityStruct(t *testing.T) {
+	t.Parallel()
 	id := shellNotificationIdentity{jobID: "job_1", terminalGeneration: "gen_2"}
 	if id.jobID != "job_1" || id.terminalGeneration != "gen_2" {
 		t.Fatalf("struct wrong: %+v", id)
@@ -433,6 +446,7 @@ func TestShellNotificationIdentityStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShellRuntimeLossEvidenceStruct(t *testing.T) {
+	t.Parallel()
 	ev := shellRuntimeLossEvidence{
 		runningJobIDs:       []string{"job_1"},
 		pendingNotification: []shellNotificationIdentity{{jobID: "job_2"}},
@@ -450,6 +464,7 @@ func TestShellRuntimeLossEvidenceStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateReconcileRequirementsStruct(t *testing.T) {
+	t.Parallel()
 	req := delegateReconcileRequirements{
 		evidenceVersion:      5,
 		shellStores:          map[string]string{"dlg_1": "/path/jobs.jsonl"},
@@ -468,6 +483,7 @@ func TestDelegateReconcileRequirementsStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateReconcileEvidenceStruct(t *testing.T) {
+	t.Parallel()
 	ev := delegateReconcileEvidence{
 		evidenceVersion: 3,
 		shells:          map[string]shellRuntimeLossEvidence{"dlg_1": {}},
@@ -486,6 +502,7 @@ func TestDelegateReconcileEvidenceStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionTransferPlanStruct(t *testing.T) {
+	t.Parallel()
 	plan := delegateAttentionTransferPlan{
 		sourceDelegateID: "dlg_1",
 		sourceRef:        "local:src",
@@ -502,6 +519,7 @@ func TestDelegateAttentionTransferPlanStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateOwedAttentionStartStruct(t *testing.T) {
+	t.Parallel()
 	start := delegateOwedAttentionStart{
 		delegateID:  "dlg_1",
 		parentID:    "dlg_parent",
@@ -522,6 +540,7 @@ func TestDelegateOwedAttentionStartStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateLeaseStruct(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 5}
 	if lease.delegateID != "dlg_1" || lease.generation != 5 {
 		t.Fatalf("struct wrong: %+v", lease)
@@ -533,6 +552,7 @@ func TestDelegateLeaseStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateMutationPlansStruct(t *testing.T) {
+	t.Parallel()
 	plans := delegateMutationPlans{
 		updates: []delegateUpdatePlan{{rows: []delegateSnapshot{}}},
 	}
@@ -546,6 +566,7 @@ func TestDelegateMutationPlansStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteDelegateAttentionCleanupStabilizeNilRuntime(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	plan := delegateAttentionCleanupPlan{
 		stabilize: true,
@@ -562,6 +583,7 @@ func TestExecuteDelegateAttentionCleanupStabilizeNilRuntime(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveDelegateAttentionDurablyNilRuntimeInvalidRef(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{stateDir: "/nonexistent"}
 	err := c.resolveDelegateAttentionDurably(nil, "invalid-ref", []string{"att_1"}, delegateAttentionDiscarded)
 	if err == nil {

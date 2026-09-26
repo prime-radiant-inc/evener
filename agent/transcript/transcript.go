@@ -687,6 +687,11 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 		// so this handle's position is behind it.
 		w.positionUnknown = true
 	}
+	if w.tailMove != w.tail.move {
+		// Another writer on this file moved its end since this one last wrote,
+		// so this handle's position is behind it.
+		w.positionUnknown = true
+	}
 	if w.positionUnknown {
 		// Write nothing until the end is known again. A seek that fails here
 		// leaves the flag set, so the next attempt re-establishes it rather

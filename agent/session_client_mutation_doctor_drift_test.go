@@ -21,6 +21,7 @@ import (
 // field added tomorrow is populated with no edit to this test, marshaled by the
 // same json.Marshal saveClientMutationSnapshotFS uses, and named by the failure.
 func TestClientMutationSnapshotStaysReadableByTheDoctor(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir() // an override root: base IS the bucket
 	sid := "02wMz5TxvEMoJEDTDGOTil"
 	writeDoctorDriftFile(t, filepath.Join(base, sessionsSubdir, sid+".transcript.jsonl"),

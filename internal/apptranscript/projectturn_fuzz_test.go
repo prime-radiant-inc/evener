@@ -48,7 +48,7 @@ func FuzzProjectTurn(f *testing.F) {
 		if err := json.Unmarshal(raw, &turn); err != nil {
 			return // rejected input
 		}
-		toolNames := map[string]string{}
+		toolNames := NewToolCallRegistry()
 		items := ProjectTurn("turn_1", 1, turn, toolNames, nil, nil)
 		for _, item := range items {
 			if _, err := json.Marshal(item); err != nil {
@@ -105,7 +105,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 			ToolCallID: "call",
 			Content:    "ok",
 		},
-	}}}}, map[string]string{"call": "shell"}, nil, func(*llm.ToolResultData) []appwire.OutputImage {
+	}}}}, &ToolCallRegistry{Names: map[string]string{"call": "shell"}}, nil, func(*llm.ToolResultData) []appwire.OutputImage {
 		return []appwire.OutputImage{{Name: "output.png"}}
 	})
 

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/internal/procgroup"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // commandRuntime is the narrow boundary between local command preparation and

@@ -71,12 +71,11 @@ describe("native shortcut pattern compilation", () => {
 	it("preserves the authored pattern through the real native preview and change validator", () => {
 		const chord = String.raw`([\p{ASCII}&&\p{Letter}])`;
 		const changed = checkedKeybindingChange([], "palette.open", chord);
+		const preview = keybindingPreview(changed);
 		expect(changed).toEqual([{ action: "palette.open", chord }]);
-		expect(keybindingPreview(changed).warnings).toEqual([]);
+		expect(preview.warnings).toEqual([]);
 		expect(
-			keybindingPreview(changed).rows.find(
-				(row) => row.actionId === "palette.open",
-			)?.shortcuts,
+			preview.rows.find((row) => row.actionId === "palette.open")?.shortcuts,
 		).toEqual([chord]);
 	});
 	it("rejects the same invalid Unicode sets as the web parser", () => {

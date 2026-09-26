@@ -78,5 +78,6 @@ require (
 	primeradiant.com/evener/agent v0.0.0
 	primeradiant.com/evener/auth v0.0.0
 	primeradiant.com/evener/envvars v0.0.0
+	primeradiant.com/evener/execsupport v0.0.0
 	primeradiant.com/evener/llm v0.0.0
 )

@@ -757,6 +757,7 @@ func TestDelegatePartialAdoptionFailurePreservesRetainedScratch(t *testing.T) {
 // to reacquire, and only the unreferenced mint dies with the failed
 // construction.
 func TestSettleFailedRestoreKeepsTransferredScratchWithoutAPool(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {

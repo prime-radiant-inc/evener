@@ -17,6 +17,7 @@ import (
 // failed/start_failed. Virtual time (jm.clock FakeClock) fires the block timer
 // deterministically while the real subprocess stays alive.
 func TestW2Conc_RunShellForegroundBlockTimeoutCommitFails(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	clk := agenttest.NewFakeClock()
 	jm.clock = clk

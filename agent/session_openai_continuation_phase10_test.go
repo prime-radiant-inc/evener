@@ -12,6 +12,7 @@ import (
 )
 
 func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
 		Provider: "openai",
@@ -74,6 +75,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 }
 
 func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
 		Provider: "openai",
@@ -130,6 +132,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 }
 
 func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
 		Provider: "openai",

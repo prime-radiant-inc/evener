@@ -68,7 +68,7 @@ func TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput(t *testing.T) {
 	// Child transcript must contain ONLY the prefix entries [U1, A1] — no
 	// trailing USER_INPUT turn that would auto-run on resume.
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -105,7 +105,7 @@ func TestForkSessionAtUserTurn_FirstTurnProducesEmptyChild(t *testing.T) {
 		t.Errorf("originalInput: got %q, want %q", originalInput, "first task")
 	}
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}

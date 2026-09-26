@@ -8,31 +8,28 @@ import {
 	useColorScheme,
 	useWindowDimensions,
 } from "react-native";
+import { paletteFor, typeRoles } from "./design/tokens";
 
+/** The app's colors: the redesign palette (src/design/tokens.ts) under the
+ * keys every existing screen already reads, plus the full palette for new
+ * code. Two keys share a name with a different palette color: `surface` is
+ * `palette.inset` (not `palette.surface`) and `accent` is `palette.accentInk`
+ * (text and outlines, not a fill). `onAccent` is the text color for
+ * `palette.accentFill`, not for `accent`. */
 export function useColors() {
-	return useColorScheme() === "dark"
-		? {
-				background: "#121417",
-				surface: "#23272d",
-				text: "#f1f2f3",
-				secondary: "#a6adb5",
-				border: "#363b42",
-				accent: "#9cb4ff",
-				error: "#ffaaa5",
-				warning: "#f0c674",
-				onAccent: "#18244b",
-			}
-		: {
-				background: "#fafaf8",
-				surface: "#eeefeb",
-				text: "#202326",
-				secondary: "#62676d",
-				border: "#d8dcd9",
-				accent: "#315ad7",
-				error: "#b52b25",
-				warning: "#8a5a00",
-				onAccent: "#ffffff",
-			};
+	const palette = paletteFor(useColorScheme());
+	return {
+		background: palette.page,
+		surface: palette.inset,
+		text: palette.inkHi,
+		secondary: palette.inkMid,
+		border: palette.edge,
+		accent: palette.accentInk,
+		error: palette.dangerInk,
+		warning: palette.attentionInk,
+		onAccent: palette.onFill,
+		palette,
+	};
 }
 
 export function Action({
@@ -63,7 +60,7 @@ export function Action({
 			style={({ pressed }) => [
 				styles.action,
 				tone === "primary" && {
-					backgroundColor: colors.accent,
+					backgroundColor: colors.palette.accentFill,
 					borderRadius: 24,
 					paddingHorizontal: 18,
 				},
@@ -136,12 +133,14 @@ export function Copy({
 	label,
 	numberOfLines,
 	ellipsizeMode,
+	variant = "ui",
 }: {
 	children: ReactNode;
 	muted?: boolean;
 	label?: string;
 	numberOfLines?: number;
 	ellipsizeMode?: TextProps["ellipsizeMode"];
+	variant?: "ui" | "yourMessage";
 }) {
 	const colors = useColors();
 	const { fontScale } = useWindowDimensions();
@@ -153,11 +152,20 @@ export function Copy({
 			accessibilityLabel={label}
 			numberOfLines={numberOfLines}
 			ellipsizeMode={ellipsizeMode}
-			style={{
-				color: muted ? colors.secondary : colors.text,
-				fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,
-				lineHeight: (muted ? 19 : 25) * textScale,
-			}}
+			style={
+				variant === "yourMessage"
+					? {
+							fontFamily: typeRoles.yourMessage.fontFamily,
+							fontSize: typeRoles.yourMessage.fontSize * textScale,
+							lineHeight: typeRoles.yourMessage.lineHeight * textScale,
+							color: colors.palette.prose,
+						}
+					: {
+							color: muted ? colors.secondary : colors.text,
+							fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,
+							lineHeight: (muted ? 19 : 25) * textScale,
+						}
+			}
 		>
 			{children}
 		</Text>

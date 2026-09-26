@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 // instance is a usable named provider (spec §5.1).

@@ -2,20 +2,22 @@
 name: Evener Native Project Browser
 description: Project first session browsing for the native mobile Sessions surface.
 colors:
-  light-background: "#fafaf8"
-  light-surface: "#eeefeb"
-  light-text: "#202326"
-  light-secondary: "#62676d"
-  light-border: "#d8dcd9"
-  light-accent: "#315ad7"
-  light-error: "#b52b25"
-  dark-background: "#121417"
-  dark-surface: "#23272d"
-  dark-text: "#f1f2f3"
-  dark-secondary: "#a6adb5"
-  dark-border: "#363b42"
-  dark-accent: "#9cb4ff"
-  dark-error: "#ffaaa5"
+  light-background: "#FAF9F6"
+  light-surface: "#F4F3EE"
+  light-text: "#252521"
+  light-secondary: "#5F5F57"
+  light-border: "#DDDCD4"
+  light-accent: "#0064C2"
+  light-accent-fill: "#0070E0"
+  light-error: "#C51D23"
+  dark-background: "#191918"
+  dark-surface: "#20201E"
+  dark-text: "#F2F1EB"
+  dark-secondary: "#B0AFA6"
+  dark-border: "#34342F"
+  dark-accent: "#459EFF"
+  dark-accent-fill: "#0070E0"
+  dark-error: "#F17478"
 typography:
   project-header:
     fontFamily: "SF system, system-ui, sans-serif"
@@ -26,9 +28,9 @@ typography:
     fontSize: "17px"
     lineHeight: "23px"
   body:
-    fontFamily: "SF system, system-ui, sans-serif"
+    fontFamily: "Source Serif 4, Georgia, serif"
     fontSize: "17px"
-    lineHeight: "25px"
+    lineHeight: "26px"
   metadata:
     fontFamily: "SF system, system-ui, sans-serif"
     fontSize: "13px"
@@ -74,18 +76,18 @@ The main Sessions surface is one expandable scrolling hierarchy. A dedicated Pro
 
 ## Colors
 
-The implementation switches between restrained light and dark semantic palettes through the native color scheme.
+The implementation switches between light and dark palettes through the native color scheme. The values live in `src/design/tokens.ts`, which follows the redesign spec (`docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, section 16.1); change them there first.
 
 ### Primary
-- **Cobalt accent** (`#315ad7` light, `#9cb4ff` dark): Search, primary actions, and selected controls.
+- **Accent** (`#0064C2` light, `#459EFF` dark): Search, links and selected controls. Primary buttons fill with accent-fill (`#0070E0` in both themes) and carry white text.
 
 ### Neutral
-- **Paper background** (`#fafaf8` light, `#121417` dark): Main reading and browsing canvas.
-- **Soft surface** (`#eeefeb` light, `#23272d` dark): Inputs and raised native-looking controls.
-- **Primary text** (`#202326` light, `#f1f2f3` dark): Project and session content.
-- **Secondary text** (`#62676d` light, `#a6adb5` dark): Counts, metadata, and quiet state explanations.
-- **Quiet border** (`#d8dcd9` light, `#363b42` dark): Sparse row and input boundaries.
-- **Semantic error** (`#b52b25` light, `#ffaaa5` dark): Read and action failures.
+- **Paper background** (`#FAF9F6` light, `#191918` dark): Main reading and browsing canvas.
+- **Soft surface** (`#F4F3EE` light, `#20201E` dark): Inputs and raised native-looking controls.
+- **Primary text** (`#252521` light, `#F2F1EB` dark): Project and session content.
+- **Secondary text** (`#5F5F57` light, `#B0AFA6` dark): Counts, metadata, and quiet state explanations.
+- **Quiet border** (`#DDDCD4` light, `#34342F` dark): Sparse row and input boundaries.
+- **Semantic error** (`#C51D23` light, `#F17478` dark): Read and action failures.
 
 ### Named Rules
 **The Quiet Idle Rule.** Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.
@@ -95,14 +97,14 @@ The implementation switches between restrained light and dark semantic palettes 
 Dimensions below describe React Native logical units (points on iOS). The `px` values in the serialized tokens support documentation previews; they are not physical screen pixels or CSS used by the app.
 
 **Display Font:** SF system (with the platform system fallback)
-**Body Font:** SF system (with the platform system fallback)
+**Body Font:** Source Serif 4 for conversation prose (agent prose 17/26, your messages 17/25); headings inside a reply are SF Pro semibold at 20/17/15, and code is Menlo. See `typeRoles` in `src/design/tokens.ts`, which follows the redesign spec (`docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, section 16.2).
 
 **Character:** A compact native hierarchy gives project names clear priority while leaving session prose comfortable to read and metadata subordinate.
 
 ### Hierarchy
 - **Project header** (600, 19px): Project name, up to two lines.
 - **Session title** (400, 17px, 23px line-height): Session row title, up to two lines.
-- **Body** (400, 17px, 25px line-height): Conversation and readable content.
+- **Body** (Source Serif 4, 17px, 26px line-height for agent prose / 25px for your messages): Conversation and readable content.
 - **Metadata** (400, 13px, 19px line-height): Counts, paths, and subordinate state.
 
 ### Named Rules

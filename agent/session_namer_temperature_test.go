@@ -279,6 +279,7 @@ func TestNameSession_NoRetryWithoutTemperatureInMessage(t *testing.T) {
 // error.param codes) triggers it for temperature, other parameters and
 // non-rejection messages do not, and non-invalid-request kinds never do.
 func TestIsTemperatureUnsupported(t *testing.T) {
+	t.Parallel()
 	// Message shapes the classifier's parameterMessagePatterns match; these
 	// flow through ErrorFromHTTPStatus → parameterNameFromMessage.
 	msgCases := []struct {

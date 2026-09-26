@@ -68,7 +68,7 @@ func FuzzTranscriptReplay(f *testing.F) {
 		if err := os.WriteFile(inPath, raw, 0o644); err != nil {
 			t.Fatalf("write input transcript: %v", err)
 		}
-		data, err := readTranscriptFull(inPath)
+		data, err := readTranscriptFull(inPath, "")
 		if err != nil {
 			return // no header / unreadable: no-panic floor proven, stop
 		}
@@ -82,16 +82,16 @@ func FuzzTranscriptReplay(f *testing.F) {
 		// the session-match success, the session-mismatch rejection, and the
 		// per-line size-limit branch, none of which may panic.
 		sid := data.Header.SessionID
-		_, _ = readStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)
-		_, _ = validateStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, sid+"_mismatch", transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, sid, 4)
+		_, _ = readStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
+		_, _ = validateStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid, 4)
 	})
 }
 
 func assertSemanticTranscriptJSONL(t *testing.T, path string, entryCount int) {
 	t.Helper()
-	content, _, _, _, err := rawLinesForRange(path, 0, entryCount-1)
+	content, _, _, _, err := rawLinesForRange(path, "", 0, entryCount-1)
 	if err != nil {
 		t.Fatalf("read semantic transcript JSONL: %v", err)
 	}
@@ -126,7 +126,7 @@ func assertTranscriptWriteReadRoundTrip(t *testing.T, dir string, data transcrip
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
-	_, got, _, err := readTranscript(out)
+	_, got, _, err := readTranscript(out, "")
 	if err != nil {
 		t.Fatalf("re-read transcript: %v", err)
 	}

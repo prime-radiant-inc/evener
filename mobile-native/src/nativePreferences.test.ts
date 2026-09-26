@@ -1,15 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	AnyNotification,
-	KeybindingDraftCheckpoint,
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
+	TranscriptDisplayStore,
+	TranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
-import {
-	createTranscriptDisplayStore,
-	toWireConfig,
-	WireError,
-} from "@evener/appwire-client";
+import { toWireConfig, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -402,6 +399,7 @@ it("preserves the hub diagnostic when draft recovery clears its own error", asyn
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	nativeKeybindingDrafts,
+	type NativePreferenceDraftBackend,
 	nativeTranscriptDrafts,
 } from "./nativePreferenceDrafts";
 
@@ -858,6 +856,11 @@ describe("transcriptMobile projection (A10)", () => {
 			revision: 5,
 			config: toWireConfig(proposedConfig),
 		}));
+		// The shared fake's own replaceIf is narrowed to the keybinding
+		// checkpoint, but this port stores the transcript checkpoint: view the
+		// fake through the shape-agnostic base backend it also implements, so
+		// the delegation is typed for the record this port actually writes.
+		const storeBackend: NativePreferenceDraftBackend = backend;
 		const model = new NativePreferences(
 			client,
 			{ keybindingsSettings: false, transcriptDisplaySettings: true },
@@ -866,10 +869,10 @@ describe("transcriptMobile projection (A10)", () => {
 				replaceIf: (key, expected, next) => {
 					writes += 1;
 					if (writes === 1) throw new Error("quota exceeded");
-					return backend.replaceIf(
+					return storeBackend.replaceIf(
 						key,
 						expected,
-						next as KeybindingDraftCheckpoint,
+						next as TranscriptDraftCheckpoint,
 					);
 				},
 			}),
@@ -881,19 +884,27 @@ describe("transcriptMobile projection (A10)", () => {
 	});
 
 	it("generation-aware staleness: a draft composed under generation N does not read current when a replacement hub reuses revision N", async () => {
+		const backend = fakeDraftBackend();
 		const client = fakeClient();
 		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
-		// The exact store nativePreferences constructs for the projection.
-		const store = createTranscriptDisplayStore({ client });
-		store.setSupport("supported");
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", backend),
+		);
+		await model.refresh();
+		await model.editTranscript(proposedConfig);
+		expect(model.getSnapshot().transcriptMobile.conflict).toBe(false);
+		// A native model owns exactly one ready generation (see the constructor
+		// contract), so a replacement hub drives the store instance this model
+		// projects to a new generation rather than a fresh store. Its revision
+		// numbering may restart, so mobile revision 4 is not the 4 the draft was
+		// composed against: the projected conflict field must surface that.
+		const store = (
+			model as unknown as { transcripts: TranscriptDisplayStore }
+		).transcripts;
 		store.beginReadyGeneration();
-		await store.getState().refreshHubDefaults();
-		store.getState().editDraft("mobile", proposedConfig);
-		// A replacement hub (a reconnect to a restarted hub) begins a new ready
-		// generation; its revision numbering may restart, so mobile revision 4
-		// is not the 4 the draft was composed against.
-		store.beginReadyGeneration();
-		await store.getState().refreshHubDefaults();
-		expect(store.getState().draftConflict).toBe(true);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile.conflict).toBe(true);
 	});
 });

@@ -21,6 +21,7 @@ import (
 // subagent actually receives quotes the bit of its own output that failed
 // parsing, not just a bare parse error.
 func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	env := &agenttest.DenyEnv{WorkDir: lifecycleWorkDir}
 	stateDir := t.TempDir()
@@ -150,7 +151,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, truncatedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath)
+	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -173,6 +174,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 // child so it executes, and the child's next model-facing request must not
 // carry the invalid-JSON coaching at all.
 func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	env := &agenttest.DenyEnv{WorkDir: lifecycleWorkDir}
 	stateDir := t.TempDir()
@@ -302,7 +304,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	childLines := readTranscriptLines(t, childTranscriptPath)
 	requireTranscriptRawArguments(t, childLines, unquotedArgs)
-	_, childEntries, _, err := readTranscript(childTranscriptPath)
+	_, childEntries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

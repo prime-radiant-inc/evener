@@ -3,7 +3,7 @@
 // This platform has no process groups; the dev tooling only runs on the
 // repo's unix development machines, so these stand-ins just keep the build
 // green. Both stop paths collapse to a best-effort kill of the direct child,
-// through the shared primitives in internal/procgroup.
+// through the shared primitives in execsupport/procgroup.
 package procgroup
 
 import (
@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"time"
 
-	baseprocgroup "primeradiant.com/evener/internal/procgroup"
+	baseprocgroup "primeradiant.com/evener/execsupport/procgroup"
 )
 
 func Start(cmd *exec.Cmd) error { return cmd.Start() }

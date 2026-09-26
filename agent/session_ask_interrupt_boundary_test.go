@@ -192,7 +192,7 @@ func TestFoldTail_CanceledAskPairRidingTailDoesNotResurrectAfterRestore(t *testi
 	// pairs (the ask call rides with the assistant turn), but ask_user's
 	// posted ack must NOT ride -- a canceled pair whose write recorded
 	// nothing cannot re-enter the durable transcript through the rewrite.
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -452,6 +452,7 @@ func TestDeriveRestoredAskPending_FailedAskPairNeverCollects(t *testing.T) {
 // the live state transition. The hook runs after both state and askPending have
 // been published; attentionMu must still exclude a competing transcript writer.
 func TestRestoredFailureBoundaryPublishesBeforeDoorRelease(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	defer sess.Close()
 
@@ -483,6 +484,7 @@ func TestRestoredFailureBoundaryPublishesBeforeDoorRelease(t *testing.T) {
 // raw fork index is then larger than the resumed history and must not hide the
 // child's journal provenance for a legacy human-note steer.
 func TestRestoredFailureBoundaryMapsCompactedForkDivergence(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	defer sess.Close()
 	if err := sess.ensureClientMutationStore(); err != nil {
@@ -555,6 +557,7 @@ func TestRestoredFailureBoundaryMapsCompactedForkDivergence(t *testing.T) {
 // or the synthetic lands child-side and the boundary no longer splits
 // inherited from child-owned turns where journal provenance expects it.
 func TestRestoredFailureBoundaryShiftsDivergencePastRepairs(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	defer sess.Close()
 	if err := sess.ensureClientMutationStore(); err != nil {
@@ -651,6 +654,7 @@ func TestRestoredFailureBoundaryShiftsDivergencePastRepairs(t *testing.T) {
 // the shift the steer falls child-side and this test fails with
 // pending = 2.
 func TestRestoredFailureBoundaryDivergenceShiftDecidesSteerProvenance(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	defer sess.Close()
 	if err := sess.ensureClientMutationStore(); err != nil {
@@ -753,6 +757,7 @@ func TestRestoredFailureBoundaryDivergenceShiftDecidesSteerProvenance(t *testing
 // cannot parse leaves the pending-ask holds inert. Restore warns about
 // that (session_init.go), so the interrupt-rejection path must warn too.
 func TestRestoredFailureBoundaryWarnsOnUnparseablePendingAsk(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	defer sess.Close()
 

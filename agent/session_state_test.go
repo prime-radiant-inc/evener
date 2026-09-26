@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionAwaitingStringIsWireAwaiting(t *testing.T) {
+	t.Parallel()
 	// The string is load-bearing: SessionProcessing is "active", and every
 	// status switch on the wire journey defaults unknown strings to idle.
 	if got := string(SessionAwaiting); got != "awaiting" {
@@ -26,6 +27,7 @@ func TestSessionAwaitingStringIsWireAwaiting(t *testing.T) {
 // time Meta() is called. UpdatedAt, by contrast, is expected to keep tracking
 // the clock.
 func TestMeta_CreatedAtStableAcrossCalls(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
@@ -49,6 +51,7 @@ func TestMeta_CreatedAtStableAcrossCalls(t *testing.T) {
 // after restore (before any autosave has a chance to run), reflects the
 // persisted values rather than a freshly constructed session's zeroes.
 func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
@@ -91,6 +94,7 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 // call, mirroring TestWorkMillis_CloseMidTurnCounts' established idiom in
 // session_workmillis_test.go.
 func TestActiveTurnStartedAtMillis_MidTurnVsIdle(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
@@ -112,6 +116,7 @@ func TestActiveTurnStartedAtMillis_MidTurnVsIdle(t *testing.T) {
 // WorkMillisSnapshot reads the same accumulated total Meta().WorkMillis
 // reports, without requiring a full Meta() call.
 func TestWorkMillisSnapshot_MatchesAccumulatedWork(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 
 	sess.mu.Lock()
@@ -127,6 +132,7 @@ func TestWorkMillisSnapshot_MatchesAccumulatedWork(t *testing.T) {
 // accessor: CumulativeUsageSnapshot mirrors the context manager's running
 // total directly (the same source Meta().CumulativeUsage derives from).
 func TestCumulativeUsageSnapshot_MatchesContextManagerTotal(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	want := llm.Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
 	sess.contextMgr.SetCumulativeUsage(want)

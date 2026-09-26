@@ -39,6 +39,10 @@ builds:
       # It is empty for untagged/snapshot builds, which take the snapshot ref.
       - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ envOrDefault "BUILD_CHANNEL" "" }} -X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}
 
+  # evener-dev is dev tooling and no install path installs it (install.sh,
+  # make install and `evener upgrade` all take evener alone). It stays in the
+  # archive only so versions that required it can still upgrade into these
+  # releases; drop it once those versions are gone (#2313).
   - id: evener-dev
     main: ./cmd/evener-dev/bin/
     binary: evener-dev

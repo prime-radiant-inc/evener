@@ -230,10 +230,10 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// gets its frame too: the agent's failure exit
 			// (agent/session_lifecycle.go endInputAtTurnFailure) emits
 			// EventSessionEnd with Reason "turn_failed", announced as
-			// thread/status/changed(idle) with the capabilities inline. Settling
-			// idle here ahead of it made that frame read as no transition, so the
-			// capability refresh above never fired and Send stayed withheld; the
-			// frame owns the status and the processing flag.
+			// thread/status/changed(systemError) with the capabilities inline.
+			// Settling idle here ahead of it made that frame read as no
+			// transition, so the capability refresh above never fired and Send
+			// stayed withheld; the frame owns the status and the processing flag.
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(params.Turn.Error, "Session error"))
 			}

@@ -10,7 +10,7 @@ import {
 import {
 	boundQuestion,
 	MAX_ITEM_BYTES,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 

@@ -65,7 +65,7 @@ func transcriptTools(deps *toolDeps) []tool.RegisteredTool {
 // readMarkdownEnvelope is the wire shape returned for a markdown read. Field
 // order follows spec §"Default Response Shape".
 type readMarkdownEnvelope struct {
-	TranscriptRef string                      `json:"transcript_ref"`
+	TranscriptRef string                      `json:"transcript_ref,omitempty"`
 	Format        string                      `json:"format"`
 	ContentType   string                      `json:"content_type"`
 	Content       string                      `json:"content"`
@@ -131,7 +131,7 @@ type apiLogTranscriptReadHandle struct {
 }
 
 type apiLogTranscriptResultIdentity struct {
-	TranscriptRef string `json:"transcript_ref"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
 	Source        string `json:"source"`
 	Attempt       struct {
 		AttemptID string `json:"attempt_id"`
@@ -195,9 +195,17 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 		return `{"source":"api_log","private_evidence_omitted":true,"re_read":{"tool":"read_session_transcript","source":"api_log"}}`, true
 	}
 
+	// When the result's TranscriptRef is empty (legacy-bucket bare-ID read
+	// where refFor returns ""), fall back to the original call's
+	// transcript_ref so the re_read handle resolves to the same session the
+	// model just read, not the current session.
+	reReadRef := resultIdentity.TranscriptRef
+	if reReadRef == "" {
+		reReadRef = stringArg(args, "transcript_ref")
+	}
 	reRead := apiLogTranscriptReadHandle{
 		Tool:          "read_session_transcript",
-		TranscriptRef: resultIdentity.TranscriptRef,
+		TranscriptRef: reReadRef,
 		Source:        apiLogSource,
 		AttemptID:     resultIdentity.Attempt.AttemptID,
 	}
@@ -213,7 +221,7 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	if resultIsAPILog && resultIdentity.Continuation != nil {
 		continuation := apiLogTranscriptReadHandle{
 			Tool:          "read_session_transcript",
-			TranscriptRef: resultIdentity.TranscriptRef,
+			TranscriptRef: reReadRef,
 			Source:        apiLogSource,
 			AttemptID:     resultIdentity.Continuation.AttemptID,
 			Body:          resultIdentity.Continuation.Body,
@@ -223,7 +231,30 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	}
 	encoded, err := json.Marshal(placeholder)
 	if err != nil || len(encoded) > apiLogTranscriptPlaceholderMaxBytes {
-		return `{"source":"api_log","private_evidence_omitted":true,"re_read":{"tool":"read_session_transcript","source":"api_log"}}`, true
+		// The placeholder exceeds 1 KiB (likely a large body or continuation).
+		// Trim optional body/continuation fields and re-encode with a minimal
+		// re_read handle that preserves the transcript_ref so the handle
+		// resolves to the same session, not the current session. The
+		// transcript_ref is essential; body/continuation are optional replay
+		// hints that the model can re-derive by re-reading.
+		minimal := apiLogTranscriptPlaceholder{
+			Source:                 apiLogSource,
+			PrivateEvidenceOmitted: true,
+			ReRead: apiLogTranscriptReadHandle{
+				Tool:          "read_session_transcript",
+				TranscriptRef: reReadRef,
+				Source:        apiLogSource,
+				AttemptID:     resultIdentity.Attempt.AttemptID,
+			},
+		}
+		encoded, err = json.Marshal(minimal)
+		if err != nil || len(encoded) > apiLogTranscriptPlaceholderMaxBytes {
+			// Still too large (attempt_id alone exceeds 1 KiB — pathological).
+			// Drop the attempt_id but keep the transcript_ref.
+			minimal.ReRead.AttemptID = ""
+			encoded, _ = json.Marshal(minimal)
+		}
+		return string(encoded), true
 	}
 	return string(encoded), true
 }
@@ -763,24 +794,36 @@ func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, a
 		if err != nil {
 			return nil, err
 		}
-		if parsed.AttemptID != "" {
-			return readAPILogAttempt(ctx, apiLogPathForTranscript(path), ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+		// Reject a symlinked api-log sidecar before opening — it is a
+		// different file from the validated transcript and can itself be a
+		// symlink pointing outside the state root. Root the guard at the
+		// bucket dir (parent of sessions/) so a symlinked sessions/ dir is
+		// caught, not just the sidecar file itself. symlinkErrorDeep returns
+		// nil for missing sidecars (legitimate), rejecting only real symlinks.
+		sidecar := apiLogPathForTranscript(path)
+		bucketDir := filepath.Dir(filepath.Dir(path))
+		if err := symlinkErrorDeep(sidecar, bucketDir); err != nil {
+			return nil, fmt.Errorf("api-log sidecar: %w", err)
 		}
-		return readAPILogSummary(ctx, apiLogPathForTranscript(path), ref, parsed.Range)
+		if parsed.AttemptID != "" {
+			return readAPILogAttempt(ctx, sidecar, bucketDir, ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+		}
+		return readAPILogSummary(ctx, sidecar, bucketDir, ref, parsed.Range)
 	}
 
 	path, ref, err := resolveTranscript(parsed.TranscriptRef, deps.stateDir, deps.sessionID)
 	if err != nil {
 		return nil, err
 	}
+	bucketDir := filepath.Dir(filepath.Dir(path))
 	meta := resolvedSessionMeta(deps, path, ref)
 	switch parsed.Format {
 	case "markdown":
-		return readMarkdownPage(path, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
+		return readMarkdownPage(path, bucketDir, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
 	case "outline":
-		return readOutline(path, ref, parsed.Range)
+		return readOutline(path, bucketDir, ref, parsed.Range)
 	case "jsonl":
-		return readRaw(path, ref, parsed.Range)
+		return readRaw(path, bucketDir, ref, parsed.Range)
 	default:
 		panic("validated transcript format")
 	}
@@ -1116,13 +1159,13 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 // When turns_rendered < turns_total, a self-announcing window line is spliced
 // after the document header so a default read never silently masquerades as the
 // whole session.
-func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
+func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
 	var data transcriptData
 	var err error
 	if expandTurn == nil {
-		data, err = readTranscriptFull(path)
+		data, err = readTranscriptFull(path, root)
 	} else {
-		data, err = readTranscriptFullWithEntryLines(path)
+		data, err = readTranscriptFullWithEntryLines(path, root)
 	}
 	if err != nil {
 		return nil, err
@@ -1434,8 +1477,8 @@ const formatOutline = "outline"
 // rangeArg is non-empty and malformed, it falls back to the full session (no
 // range applied) so the model is never silently wrong. Valid ranges produce the
 // filtered outline with absolute turn numbers.
-func readOutline(path, ref, rangeArg string) (any, error) {
-	data, err := readTranscriptFull(path)
+func readOutline(path, root, ref, rangeArg string) (any, error) {
+	data, err := readTranscriptFull(path, root)
 	if err != nil {
 		return nil, err
 	}
@@ -1471,7 +1514,7 @@ var readRawLinesForRange = rawLinesForRange
 
 // readRawEnvelope is the wire shape for bounded semantic transcript-v2 NDJSON.
 type readRawEnvelope struct {
-	TranscriptRef string      `json:"transcript_ref"`
+	TranscriptRef string      `json:"transcript_ref,omitempty"`
 	Format        string      `json:"format"`
 	ContentType   string      `json:"content_type"`
 	Content       string      `json:"content"`
@@ -1490,8 +1533,8 @@ type readRawMeta struct {
 // bounded by the 200k hard cap (head-only, valid NDJSON). A
 // malformed range falls back to the default and records range_warning; expand_turn
 // does not apply to raw output.
-func readRaw(path, ref, rangeArg string) (any, error) {
-	_, entries, _, err := readTranscript(path)
+func readRaw(path, root, ref, rangeArg string) (any, error) {
+	_, entries, _, err := readTranscript(path, root)
 	if err != nil {
 		return nil, err
 	}
@@ -1505,7 +1548,7 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 	}
 
 	start, end := parseRange(effectiveRange, len(entries))
-	content, lines, skipped, truncated, err := readRawLinesForRange(path, start, end)
+	content, lines, skipped, truncated, err := readRawLinesForRange(path, root, start, end)
 	if err != nil {
 		return nil, err
 	}

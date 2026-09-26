@@ -95,10 +95,11 @@ deviation and what the pipeline slice inherits.
   limit in the tree today lives in the navigation projection. The record's §4
   and §14 do assign the cap to the registry's `Add`/`Update` (over-cap failing
   `ErrTooManyHosts`), §16 requires its test, and the design document's
-  follow-up ledger carries it as its [03] item. This slice records the drop
-  instead of pretending to satisfy it, and states the consequence plainly: a
-  live set pushed past 63 sources fails navigation for the whole hub, not just
-  the extra host.
+  follow-up ledger carried it as its [03] item — now **withdrawn by decision**
+  (Jesse, 2026-09-26: design §2 "Host-count cap: withdrawn"; component 03
+  §Scope). This slice records the drop instead of pretending to satisfy it, and
+  states the consequence plainly: a live set pushed past 63 sources fails
+  navigation for the whole hub, not just the extra host.
 - Replaces the entry in place and assigns a fresh generation from the
   registry-wide counter. That generation is the identity fence: `SameRegistration`
   and the manager's channel fence read it, so a parked `Ensure` that captured the
@@ -395,9 +396,10 @@ reversal.
    none, and this slice adds none; the only 64-source limit in the tree today
    is the navigation projection's. The record assigns the cap to the registry's
    `Add`/`Update` (§4, §14, with §16's test) and the design document's
-   follow-up ledger tracks it as its [03] item. This slice records the drop and
-   its consequence — a live set pushed past 63 sources fails navigation for the
-   whole hub — rather than claiming a check it does not run.
+   follow-up ledger tracked it as its [03] item, now withdrawn by decision
+   (Jesse, 2026-09-26). This slice records the drop and its consequence — a live
+   set pushed past 63 sources fails navigation for the whole hub — rather than
+   claiming a check it does not run.
 6. **The handler, catalog row and regenerated client land here.** §2's table
    places them in the pipeline PR, but slice 1 already registered
    `add`/`remove`/`list`/`status`, and a mutation whose method is not routed is

@@ -81,6 +81,7 @@ func noRerun(t *testing.T) func(context.Context) tool.ExecResult {
 }
 
 func TestEscalation_GateMatrix(t *testing.T) {
+	t.Parallel()
 	res, _ := deniedResult("/etc/hosts")
 
 	// Each case configures the session fully: only "with a live subscriber, root,
@@ -116,6 +117,7 @@ func TestEscalation_GateMatrix(t *testing.T) {
 }
 
 func TestEscalation_SensitiveDenialNeverEscalates(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	d := &sandbox.DeniedError{Mode: sandbox.ModeReadOnly, Tool: "read_file", Path: "/home/u/.ssh/id_rsa", Reason: "credential path masked", Sensitive: true, ReasonKind: sandbox.DenialMasked}
 	res := tool.ExecResult{ToolName: "read_file", CallID: "c", IsError: true, Err: d, FullOutput: d.Error()}
@@ -126,6 +128,7 @@ func TestEscalation_SensitiveDenialNeverEscalates(t *testing.T) {
 }
 
 func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
+	t.Parallel()
 	// Only the single-file tools escalate; multi-file (apply_patch) and the browse
 	// tools (which walk a directory subtree) stay final, so one grant can never
 	// widen more than one leaf. Their underlying denials carry Tool=="write_file"
@@ -145,6 +148,7 @@ func TestEscalation_OnlySingleFileToolsEscalate(t *testing.T) {
 }
 
 func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
+	t.Parallel()
 	// Uncurable reasons re-deny deterministically on re-run, so they must NOT raise
 	// a futile approval card — they stay final like today. Includes the unspecified
 	// zero value (fail-closed).
@@ -186,6 +190,7 @@ func TestEscalation_OnlyCurableContainmentDenialsEscalate(t *testing.T) {
 }
 
 func TestEscalation_HasAndListPending(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	if s.HasPendingEscalations() {
 		t.Fatal("no escalation should be pending initially")
@@ -213,6 +218,7 @@ func TestEscalation_HasAndListPending(t *testing.T) {
 }
 
 func TestEscalation_SnapshotIsInStableRaiseOrder(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	// Raise three escalations in a known order; the snapshot must come back in that
 	// raise order every time (not Go's random map order), so a fresh-entry client
@@ -250,6 +256,7 @@ func TestEscalation_SnapshotIsInStableRaiseOrder(t *testing.T) {
 }
 
 func TestEscalation_NonSandboxErrorUntouched(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res := tool.ExecResult{ToolName: "shell", CallID: "c", IsError: true, FullOutput: "boom", Err: context.DeadlineExceeded}
 	got := s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
@@ -259,6 +266,7 @@ func TestEscalation_NonSandboxErrorUntouched(t *testing.T) {
 }
 
 func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, denied := deniedResult("/etc/hosts")
 
@@ -291,6 +299,7 @@ func TestEscalation_ApproveThreadsInvocationGrant(t *testing.T) {
 }
 
 func TestEscalation_DenyReturnsTypedError(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, denied := deniedResult("/etc/hosts")
 
@@ -308,6 +317,7 @@ func TestEscalation_DenyReturnsTypedError(t *testing.T) {
 }
 
 func TestEscalation_ContextCancelDenies(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, _ := deniedResult("/etc/hosts")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -327,6 +337,7 @@ func TestEscalation_ContextCancelDenies(t *testing.T) {
 }
 
 func TestEscalation_CloseCancels(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, _ := deniedResult("/etc/hosts")
 
@@ -346,6 +357,7 @@ func TestEscalation_CloseCancels(t *testing.T) {
 }
 
 func TestEscalation_UnknownResolveIsError(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	if err := s.ResolveSandboxEscalation("no_such_id", true); err == nil {
 		t.Fatal("resolving an unknown id must return an error, not panic or block")
@@ -353,6 +365,7 @@ func TestEscalation_UnknownResolveIsError(t *testing.T) {
 }
 
 func TestEscalation_DoubleResolveSecondIsError(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, _ := deniedResult("/etc/hosts")
 	done := make(chan tool.ExecResult, 1)
@@ -370,6 +383,7 @@ func TestEscalation_DoubleResolveSecondIsError(t *testing.T) {
 }
 
 func TestEscalation_ConcurrentDenialsDistinctWaiters(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	resA, _ := deniedResult("/etc/hosts")
 	resB, _ := deniedResult("/etc/passwd")
@@ -412,6 +426,7 @@ func TestEscalation_ConcurrentDenialsDistinctWaiters(t *testing.T) {
 }
 
 func TestEscalation_EmitsRedactedRequestedEvent(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	var mu sync.Mutex
 	var evs []events.SessionEvent
@@ -457,6 +472,7 @@ func TestEscalation_EmitsRedactedRequestedEvent(t *testing.T) {
 }
 
 func TestEscalation_NeverAppendsHistory(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	before := len(s.history)
 	res, _ := deniedResult("/etc/hosts")
@@ -523,6 +539,7 @@ func awaitExactlyOneResolvedEvent(t *testing.T, mu *sync.Mutex, evs *[]events.Se
 // convergence-point exit emits EventSandboxEscalationResolved exactly once
 // when ResolveSandboxEscalation delivers the human's decision.
 func TestEscalation_EmitsResolvedEventOnExplicitResolve(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	var mu sync.Mutex
 	var evs []events.SessionEvent
@@ -547,6 +564,7 @@ func TestEscalation_EmitsResolvedEventOnExplicitResolve(t *testing.T) {
 // cancelled (the select's ctx.Done() arm), independent of any explicit
 // resolve.
 func TestEscalation_EmitsResolvedEventOnTurnInterrupt(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	var mu sync.Mutex
 	var evs []events.SessionEvent
@@ -579,6 +597,7 @@ func TestEscalation_EmitsResolvedEventOnTurnInterrupt(t *testing.T) {
 // the escalation returns, the waiter is pruned, and the resolved event
 // appears AT MOST once — never twice, regardless of which select arm won.
 func TestEscalation_CloseEmitsAtMostOneResolvedEvent(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	var mu sync.Mutex
 	var evs []events.SessionEvent

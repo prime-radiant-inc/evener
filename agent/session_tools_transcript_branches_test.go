@@ -24,6 +24,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestTranscriptToolsNilDeps(t *testing.T) {
+	t.Parallel()
 	tools := transcriptTools(nil)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool (read_transcript only), got %d", len(tools))
@@ -39,6 +40,7 @@ func TestTranscriptToolsNilDeps(t *testing.T) {
 }
 
 func TestTranscriptToolsWithStateDir(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{stateDir: "/tmp/some-state"}
 	tools := transcriptTools(deps)
 	if len(tools) != 2 {
@@ -51,6 +53,7 @@ func TestTranscriptToolsWithStateDir(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseRetainedReadArgs(t *testing.T) {
+	t.Parallel()
 	t.Run("default no special args", func(t *testing.T) {
 		args := map[string]any{"transcript_ref": "local:abc"}
 		parsed, op, err := parseRetainedReadArgs(args)
@@ -137,6 +140,7 @@ func TestParseRetainedReadArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedReadIncompatibleFields(t *testing.T) {
+	t.Parallel()
 	t.Run("artifact range rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "artifact", map[string]any{"range": "1-5"}, retainedReadDefault, "range applies only to session")
 	})
@@ -195,6 +199,7 @@ func assertRetainedReadModeError(t *testing.T, refKind string, args map[string]a
 // ---------------------------------------------------------------------------
 
 func TestCompileOutputMatch(t *testing.T) {
+	t.Parallel()
 	t.Run("valid regex", func(t *testing.T) {
 		re, err := compileOutputMatch("ERR.*")
 		if err != nil || re == nil {
@@ -214,6 +219,7 @@ func TestCompileOutputMatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidArtifactTranscriptRef(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		ref  string
 		want bool
@@ -241,6 +247,7 @@ func TestValidArtifactTranscriptRef(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseJobTranscriptID(t *testing.T) {
+	t.Parallel()
 	t.Run("valid", func(t *testing.T) {
 		id, err := parseJobTranscriptID("job:abc123")
 		if err != nil || id != "abc123" {
@@ -272,6 +279,7 @@ func TestParseJobTranscriptID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRenderJobTranscriptDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("nil rec renders shell", func(t *testing.T) {
 		out := renderJobTranscript(nil, "hello", 100, 0)
 		if !strings.Contains(out, "Shell Job") {
@@ -295,6 +303,7 @@ func TestRenderJobTranscriptDispatch(t *testing.T) {
 }
 
 func TestRenderDelegateJobTranscriptAllFields(t *testing.T) {
+	t.Parallel()
 	valid := true
 	rec := &jobstore.JobRecord{
 		JobID:                  "dlg_abc",
@@ -315,6 +324,7 @@ func TestRenderDelegateJobTranscriptAllFields(t *testing.T) {
 }
 
 func TestRenderDelegateJobTranscriptMinimal(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "dlg_min", Type: "delegate"}
 	out := renderDelegateJobTranscript(rec, "", 0, 0)
 	if !strings.Contains(out, "Delegate Job dlg_min") {
@@ -329,6 +339,7 @@ func TestRenderDelegateJobTranscriptMinimal(t *testing.T) {
 }
 
 func TestRenderDelegateJobTranscriptStructuredResultInvalid(t *testing.T) {
+	t.Parallel()
 	invalid := false
 	rec := &jobstore.JobRecord{
 		JobID:                 "dlg_inv",
@@ -343,6 +354,7 @@ func TestRenderDelegateJobTranscriptStructuredResultInvalid(t *testing.T) {
 }
 
 func TestRenderDelegateJobTranscriptStructuredResultNilValid(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{
 		JobID:            "dlg_nil",
 		Type:             "delegate",
@@ -355,6 +367,7 @@ func TestRenderDelegateJobTranscriptStructuredResultNilValid(t *testing.T) {
 }
 
 func TestRenderDelegateJobTranscriptOutputNoTrailingNewline(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "dlg_nl", Type: "delegate"}
 	out := renderDelegateJobTranscript(rec, "no newline", 10, 0)
 	if !strings.HasSuffix(out, "```\n") {
@@ -366,6 +379,7 @@ func TestRenderDelegateJobTranscriptOutputNoTrailingNewline(t *testing.T) {
 }
 
 func TestRenderDelegateJobTranscriptOutputWithTrailingNewline(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "dlg_nl2", Type: "delegate"}
 	out := renderDelegateJobTranscript(rec, "has newline\n", 10, 0)
 	// Should not double the newline
@@ -375,6 +389,7 @@ func TestRenderDelegateJobTranscriptOutputWithTrailingNewline(t *testing.T) {
 }
 
 func TestRenderShellJobTranscriptAllFields(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{
 		JobID:   "j_123",
 		Status:  "completed",
@@ -390,6 +405,7 @@ func TestRenderShellJobTranscriptAllFields(t *testing.T) {
 }
 
 func TestRenderShellJobTranscriptNilRec(t *testing.T) {
+	t.Parallel()
 	out := renderShellJobTranscript(nil, "data", 10, 0)
 	if !strings.Contains(out, "Shell Job \n") {
 		t.Fatalf("expected empty job ID header")
@@ -400,6 +416,7 @@ func TestRenderShellJobTranscriptNilRec(t *testing.T) {
 }
 
 func TestRenderShellJobTranscriptNoTrailingNewline(t *testing.T) {
+	t.Parallel()
 	out := renderShellJobTranscript(nil, "no newline", 5, 0)
 	if !strings.Contains(out, "no newline\n```\n") {
 		t.Fatalf("expected newline appended before fence:\n%s", out)
@@ -411,6 +428,7 @@ func TestRenderShellJobTranscriptNoTrailingNewline(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedPageResult(t *testing.T) {
+	t.Parallel()
 	page := retainedPage{
 		OffsetBytes:   10,
 		BytesReturned: 5,
@@ -444,6 +462,7 @@ func TestRetainedPageResult(t *testing.T) {
 }
 
 func TestRetainedPageResultNoContinuation(t *testing.T) {
+	t.Parallel()
 	page := retainedPage{
 		OffsetBytes:   0,
 		BytesReturned: 5,
@@ -462,6 +481,7 @@ func TestRetainedPageResultNoContinuation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedSearchResultFor(t *testing.T) {
+	t.Parallel()
 	t.Run("nil before/after get initialized", func(t *testing.T) {
 		result := retainedSearchEnvelope{
 			Matches: []retainedSearchMatch{
@@ -508,6 +528,7 @@ func TestRetainedSearchResultFor(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundedRetainedSearchResult(t *testing.T) {
+	t.Parallel()
 	t.Run("within limit", func(t *testing.T) {
 		result := retainedSearchEnvelope{
 			Matches: []retainedSearchMatch{
@@ -543,6 +564,7 @@ func TestBoundedRetainedSearchResult(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDecodeTranscriptExpansion(t *testing.T) {
+	t.Parallel()
 	t.Run("utf8", func(t *testing.T) {
 		exp := &transcriptTurnExpansion{Encoding: "utf8", Data: "hello world"}
 		raw, err := decodeTranscriptExpansion(exp)
@@ -578,6 +600,7 @@ func TestDecodeTranscriptExpansion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTranscriptEnvelopeWithExpansionBytes(t *testing.T) {
+	t.Parallel()
 	t.Run("utf8 data with continuation", func(t *testing.T) {
 		env := readMarkdownEnvelope{
 			Expansion: &transcriptTurnExpansion{
@@ -629,6 +652,7 @@ func TestTranscriptEnvelopeWithExpansionBytes(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTranscriptExpansionPrefixClasses(t *testing.T) {
+	t.Parallel()
 	t.Run("pure ascii valid only", func(t *testing.T) {
 		valid, invalid := transcriptExpansionPrefixClasses([]byte("hello"))
 		if len(valid) != 5 || len(invalid) != 0 {
@@ -663,6 +687,7 @@ func TestTranscriptExpansionPrefixClasses(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLargestTranscriptExpansionPrefix(t *testing.T) {
+	t.Parallel()
 	t.Run("empty raw returns 0", func(t *testing.T) {
 		n, err := largestTranscriptExpansionPrefix(readMarkdownEnvelope{}, nil, 1000)
 		if err != nil || n != 0 {
@@ -702,6 +727,7 @@ func TestLargestTranscriptExpansionPrefix(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLargestFittingTranscriptPrefix(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{ExpandTurn: 0, OffsetBytes: 0, TotalBytes: 100},
 	}
@@ -717,6 +743,7 @@ func TestLargestFittingTranscriptPrefix(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundReadMarkdownContentWithHint(t *testing.T) {
+	t.Parallel()
 	t.Run("within limit", func(t *testing.T) {
 		env := readMarkdownEnvelope{Content: "short"}
 		out, err := boundReadMarkdownContentWithHint(env, 100000, "hint")
@@ -744,6 +771,7 @@ func TestBoundReadMarkdownContentWithHint(t *testing.T) {
 }
 
 func TestBoundReadMarkdownEnvelopeWithHintUnderLimit(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{Content: "short content"}
 	out, err := boundReadMarkdownEnvelopeWithHint(env, "hint")
 	if err != nil {
@@ -755,6 +783,7 @@ func TestBoundReadMarkdownEnvelopeWithHintUnderLimit(t *testing.T) {
 }
 
 func TestBoundReadMarkdownEnvelopeWithHintNoExpansion(t *testing.T) {
+	t.Parallel()
 	// Over the hard cap, no expansion — falls to content truncation
 	long := strings.Repeat("x", hardCapChars+10000)
 	env := readMarkdownEnvelope{Content: long}
@@ -768,6 +797,7 @@ func TestBoundReadMarkdownEnvelopeWithHintNoExpansion(t *testing.T) {
 }
 
 func TestBoundReadMarkdownEnvelopeWithHintExpansionFits(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		Content:   "content",
 		Expansion: &transcriptTurnExpansion{ExpandTurn: 0, OffsetBytes: 0, TotalBytes: 5, Encoding: "utf8", Data: "hello"},
@@ -782,6 +812,7 @@ func TestBoundReadMarkdownEnvelopeWithHintExpansionFits(t *testing.T) {
 }
 
 func TestBoundReadMarkdownEnvelopeWithHintExpansionNeedsShrinking(t *testing.T) {
+	t.Parallel()
 	// Expansion is small enough to fit after content is trimmed
 	env := readMarkdownEnvelope{
 		Content:   strings.Repeat("x", hardCapChars+5000),
@@ -797,6 +828,7 @@ func TestBoundReadMarkdownEnvelopeWithHintExpansionNeedsShrinking(t *testing.T) 
 }
 
 func TestBoundReadMarkdownEnvelopeWithHintExpansionDecodeError(t *testing.T) {
+	t.Parallel()
 	// Content is large enough to exceed hardCapChars, forcing the expansion
 	// decode path which will fail on invalid base64.
 	env := readMarkdownEnvelope{
@@ -814,6 +846,7 @@ func TestBoundReadMarkdownEnvelopeWithHintExpansionDecodeError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTranscriptExpansionJSONL(t *testing.T) {
+	t.Parallel()
 	t.Run("pin out of range", func(t *testing.T) {
 		data := transcriptData{Entries: []transcript.Entry{{Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hi"))}}}
 		_, err := transcriptExpansionJSONL(data, 5)
@@ -853,6 +886,7 @@ func TestTranscriptExpansionJSONL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPublicTranscriptEntry(t *testing.T) {
+	t.Parallel()
 	t.Run("normal entry included with attention fields stripped", func(t *testing.T) {
 		entry := transcript.Entry{
 			Seq: 3,
@@ -889,6 +923,7 @@ func TestPublicTranscriptEntry(t *testing.T) {
 }
 
 func TestPublicTranscriptEntries(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		{Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hello"))},
 		{Seq: 1, Turn: schema.Turn{Kind: schema.TurnAttentionResolution}},
@@ -904,6 +939,7 @@ func TestPublicTranscriptEntries(t *testing.T) {
 }
 
 func TestPublicTranscriptEntriesEmpty(t *testing.T) {
+	t.Parallel()
 	out := publicTranscriptEntries(nil)
 	if len(out) != 0 {
 		t.Fatalf("expected empty result")
@@ -915,6 +951,7 @@ func TestPublicTranscriptEntriesEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPublicTranscriptDataWithoutEntryLines(t *testing.T) {
+	t.Parallel()
 	data := transcriptData{
 		Entries: []transcript.Entry{
 			{Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("a"))},
@@ -936,6 +973,7 @@ func TestPublicTranscriptDataWithoutEntryLines(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPublicTranscriptLine(t *testing.T) {
+	t.Parallel()
 	t.Run("valid entry", func(t *testing.T) {
 		entry := map[string]any{
 			"kind": "entry",
@@ -999,6 +1037,7 @@ func TestPublicTranscriptLine(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSpliceWindowLine(t *testing.T) {
+	t.Parallel()
 	t.Run("empty render returns content", func(t *testing.T) {
 		out := spliceWindowLine("content", readMeta{TurnsRendered: 0})
 		if out != "content" {
@@ -1034,6 +1073,7 @@ func TestSpliceWindowLine(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSpliceRangeWarning(t *testing.T) {
+	t.Parallel()
 	content := "# Session\n\nbody"
 	out := spliceRangeWarning(content, "bad range")
 	if !strings.Contains(out, "range warning") || !strings.Contains(out, "bad range") {
@@ -1046,6 +1086,7 @@ func TestSpliceRangeWarning(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBucketAndSessionFromPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path    string
 		bucket  string
@@ -1070,6 +1111,7 @@ func TestBucketAndSessionFromPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolvedSessionMetaCurrentSession(t *testing.T) {
+	t.Parallel()
 	expectedMeta := schema.SessionMeta{ID: "current_session"}
 	deps := &toolDeps{
 		sessionID:   "current_session",
@@ -1083,6 +1125,7 @@ func TestResolvedSessionMetaCurrentSession(t *testing.T) {
 }
 
 func TestResolvedSessionMetaNoCurrentMeta(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{sessionID: "other_session"}
 	// Non-current session ref, no meta.json — should degrade to zero meta with ID from path
 	meta := resolvedSessionMeta(deps, "/nonexistent/sessions/xyz.transcript.jsonl", "local:xyz")
@@ -1092,6 +1135,7 @@ func TestResolvedSessionMetaNoCurrentMeta(t *testing.T) {
 }
 
 func TestResolvedSessionMetaNilDeps(t *testing.T) {
+	t.Parallel()
 	// resolvedSessionMeta dereferences deps, so passing nil panics.
 	// Use an empty toolDeps with no currentMeta to test the fallback path.
 	deps := &toolDeps{}
@@ -1106,6 +1150,7 @@ func TestResolvedSessionMetaNilDeps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProjectToolResultsForTranscriptNoProjection(t *testing.T) {
+	t.Parallel()
 	calls := []llm.ToolCallData{{Name: "read_file", Arguments: json.RawMessage(`{}`)}}
 	results := []tool.ExecResult{{ToolName: "read_file", Output: `{"content":"hello"}`}}
 	parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: "original"}}}
@@ -1121,6 +1166,7 @@ func TestProjectToolResultsForTranscriptNoProjection(t *testing.T) {
 }
 
 func TestProjectToolResultsForTranscriptWithProjection(t *testing.T) {
+	t.Parallel()
 	// Call with source=api_log triggers projection
 	resultJSON := `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"}}`
 	calls := []llm.ToolCallData{{
@@ -1139,6 +1185,7 @@ func TestProjectToolResultsForTranscriptWithProjection(t *testing.T) {
 }
 
 func TestProjectToolResultsForTranscriptInvalidUnknownCallPreservesDiagnostic(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args func() []byte
@@ -1180,6 +1227,7 @@ func TestProjectToolResultsForTranscriptInvalidUnknownCallPreservesDiagnostic(t 
 }
 
 func TestProjectToolResultsForTranscriptResultIdentitySurvivesCallDecodeError(t *testing.T) {
+	t.Parallel()
 	const resultJSON = `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"}}`
 	calls := []llm.ToolCallData{{Name: "read_session_transcript", Arguments: json.RawMessage(`{"source":"api_log","overflow":1e1000}`)}}
 	results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: resultJSON, PrevalOnly: true}}
@@ -1193,6 +1241,7 @@ func TestProjectToolResultsForTranscriptResultIdentitySurvivesCallDecodeError(t 
 }
 
 func TestProjectToolResultsForTranscriptNilToolResult(t *testing.T) {
+	t.Parallel()
 	calls := []llm.ToolCallData{{Name: "read_session_transcript", Arguments: json.RawMessage(`{"source":"api_log"}`)}}
 	results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: `{"source":"api_log"}`}}
 	parts := []llm.ContentPart{{ToolResult: nil}}
@@ -1203,6 +1252,7 @@ func TestProjectToolResultsForTranscriptNilToolResult(t *testing.T) {
 }
 
 func TestProjectToolResultsForTranscriptIndexOutOfRange(t *testing.T) {
+	t.Parallel()
 	// More parts than calls/results — extra parts should be preserved
 	parts := []llm.ContentPart{
 		{ToolResult: &llm.ToolResultData{Content: "first"}},
@@ -1219,6 +1269,7 @@ func TestProjectToolResultsForTranscriptIndexOutOfRange(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApiLogResultTranscriptPlaceholderNotAPILog(t *testing.T) {
+	t.Parallel()
 	call := llm.ToolCallData{Name: "read_file", Arguments: json.RawMessage(`{}`)}
 	result := tool.ExecResult{ToolName: "read_file", Output: `{"content":"hello"}`}
 	_, ok := apiLogResultTranscriptPlaceholder(call, result)
@@ -1228,6 +1279,7 @@ func TestApiLogResultTranscriptPlaceholderNotAPILog(t *testing.T) {
 }
 
 func TestApiLogResultTranscriptPlaceholderCallIsAPILog(t *testing.T) {
+	t.Parallel()
 	call := llm.ToolCallData{
 		Name:      "read_session_transcript",
 		Arguments: json.RawMessage(`{"source":"api_log"}`),
@@ -1246,6 +1298,7 @@ func TestApiLogResultTranscriptPlaceholderCallIsAPILog(t *testing.T) {
 }
 
 func TestApiLogResultTranscriptPlaceholderCallWithAttemptID(t *testing.T) {
+	t.Parallel()
 	call := llm.ToolCallData{
 		Name:      "other_tool",
 		Arguments: json.RawMessage(`{"attempt_id":"att_123"}`),
@@ -1258,6 +1311,7 @@ func TestApiLogResultTranscriptPlaceholderCallWithAttemptID(t *testing.T) {
 }
 
 func TestApiLogResultTranscriptPlaceholderResultIsAPILog(t *testing.T) {
+	t.Parallel()
 	resultJSON := `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"}}`
 	call := llm.ToolCallData{Name: "other", Arguments: json.RawMessage(`{}`)}
 	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
@@ -1271,6 +1325,7 @@ func TestApiLogResultTranscriptPlaceholderResultIsAPILog(t *testing.T) {
 }
 
 func TestApiLogResultTranscriptPlaceholderResultWithBody(t *testing.T) {
+	t.Parallel()
 	resultJSON := `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"},"body":{"body":"data","offset_bytes":10}}`
 	call := llm.ToolCallData{Name: "x", Arguments: json.RawMessage(`{}`)}
 	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
@@ -1284,6 +1339,7 @@ func TestApiLogResultTranscriptPlaceholderResultWithBody(t *testing.T) {
 }
 
 func TestApiLogResultTranscriptPlaceholderResultWithContinuation(t *testing.T) {
+	t.Parallel()
 	resultJSON := `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"},"continuation":{"attempt_id":"att_2","body":"cont"}}`
 	call := llm.ToolCallData{Name: "x", Arguments: json.RawMessage(`{}`)}
 	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
@@ -1301,6 +1357,7 @@ func TestApiLogResultTranscriptPlaceholderResultWithContinuation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgs(t *testing.T) {
+	t.Parallel()
 	t.Run("default markdown", func(t *testing.T) {
 		args := map[string]any{"transcript_ref": "local:abc"}
 		parsed, err := parseReadSessionTranscriptArgs(args)
@@ -1486,6 +1543,7 @@ func TestParseReadSessionTranscriptArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptRejectedParams(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	t.Run("source rejected", func(t *testing.T) {
 		_, err := execReadTranscript(deps, map[string]any{"source": "api_log"})
@@ -1518,6 +1576,7 @@ func TestExecReadTranscriptRejectedParams(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestArtifactSearchSourceReadWindow(t *testing.T) {
+	t.Parallel()
 	t.Run("valid window", func(t *testing.T) {
 		data := []byte("hello world data")
 		src := artifactSearchSource{reader: bytes.NewReader(data), total: int64(len(data))}
@@ -1584,6 +1643,7 @@ func TestArtifactSearchSourceReadWindow(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenArtifactTranscriptInvalidRef(t *testing.T) {
+	t.Parallel()
 	_, _, err := openArtifactTranscript(&toolDeps{}, "not-a-valid-ref")
 	if err == nil || !strings.Contains(err.Error(), "must be a valid artifact:<id>") {
 		t.Fatalf("expected invalid ref error, got %v", err)
@@ -1591,6 +1651,7 @@ func TestOpenArtifactTranscriptInvalidRef(t *testing.T) {
 }
 
 func TestOpenArtifactTranscriptNilDeps(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	_, _, err := openArtifactTranscript(nil, ref)
 	if err == nil || !strings.Contains(err.Error(), "artifact_expired") {
@@ -1599,6 +1660,7 @@ func TestOpenArtifactTranscriptNilDeps(t *testing.T) {
 }
 
 func TestOpenArtifactTranscriptNilOpenArtifact(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	deps := &toolDeps{}
 	_, _, err := openArtifactTranscript(deps, ref)
@@ -1612,6 +1674,7 @@ func TestOpenArtifactTranscriptNilOpenArtifact(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPageJobTranscriptNilDeps(t *testing.T) {
+	t.Parallel()
 	_, err := pageJobTranscript(nil, retainedReadArgs{Ref: "job:abc"})
 	if err == nil || !strings.Contains(err.Error(), "job transcript reader is unavailable") {
 		t.Fatalf("expected error, got %v", err)
@@ -1619,6 +1682,7 @@ func TestPageJobTranscriptNilDeps(t *testing.T) {
 }
 
 func TestSearchJobTranscriptNilDeps(t *testing.T) {
+	t.Parallel()
 	_, err := searchJobTranscript(nil, retainedReadArgs{Ref: "job:abc", OutputMatch: "x"})
 	if err == nil || !strings.Contains(err.Error(), "job manager is not available") {
 		t.Fatalf("expected error, got %v", err)
@@ -1626,6 +1690,7 @@ func TestSearchJobTranscriptNilDeps(t *testing.T) {
 }
 
 func TestReadJobTranscriptNilDeps(t *testing.T) {
+	t.Parallel()
 	_, err := readJobTranscript(nil, "job:abc", "", "markdown")
 	if err == nil || !strings.Contains(err.Error(), "job manager is not available") {
 		t.Fatalf("expected error, got %v", err)
@@ -1633,6 +1698,7 @@ func TestReadJobTranscriptNilDeps(t *testing.T) {
 }
 
 func TestReadJobTranscriptNonMarkdownFormat(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := readJobTranscript(deps, "job:abc", "", "jsonl")
 	if err == nil || !strings.Contains(err.Error(), "job transcript format") {
@@ -1641,6 +1707,7 @@ func TestReadJobTranscriptNonMarkdownFormat(t *testing.T) {
 }
 
 func TestReadJobTranscriptEmptyJobID(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := readJobTranscript(deps, "job:", "", "")
 	if err == nil || !strings.Contains(err.Error(), "must be job:<job_id>") {
@@ -1653,6 +1720,7 @@ func TestReadJobTranscriptEmptyJobID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptSearchOnSessionRef(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "local:abc", "output_match": "x"})
 	if err == nil || !strings.Contains(err.Error(), "output_match applies only to job: and artifact: refs") {
@@ -1665,6 +1733,7 @@ func TestExecReadTranscriptSearchOnSessionRef(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundReadMarkdownEnvelope(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{Content: "short"}
 	out, err := boundReadMarkdownEnvelope(env)
 	if err != nil {
@@ -1698,6 +1767,7 @@ func TestReadTranscriptToolRegistration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFindSessionTranscriptsTool(t *testing.T) {
+	t.Parallel()
 	tl := findSessionTranscriptsTool(&toolDeps{stateDir: "/tmp"})
 	if tl.Definition.Name != "find_session_transcripts" {
 		t.Fatalf("name = %q", tl.Definition.Name)
@@ -1709,6 +1779,7 @@ func TestFindSessionTranscriptsTool(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadOutlineEnvelopeStructure(t *testing.T) {
+	t.Parallel()
 	// Verify the envelope struct has the expected fields
 	env := readOutlineEnvelope{
 		TranscriptRef: "local:abc",
@@ -1736,6 +1807,7 @@ func TestReadOutlineEnvelopeStructure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadRawEnvelopeStructure(t *testing.T) {
+	t.Parallel()
 	env := readRawEnvelope{
 		TranscriptRef: "local:abc",
 		Format:        formatJSONL,
@@ -1886,6 +1958,7 @@ func TestSearchArtifactTranscriptValid(t *testing.T) {
 }
 
 func TestSearchArtifactTranscriptInvalidRegex(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return nil, errors.New("not found")
@@ -1958,6 +2031,7 @@ func TestExecReadTranscriptArtifactPage(t *testing.T) {
 }
 
 func TestExecReadTranscriptArtifactRangeRejected(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": ref, "range": "1-5"})
@@ -1971,6 +2045,7 @@ func TestExecReadTranscriptArtifactRangeRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptJobFormatNonMarkdown(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:abc", "format": "jsonl"})
 	if err == nil || !strings.Contains(err.Error(), "job: refs support only format=markdown") {
@@ -1979,6 +2054,7 @@ func TestExecReadTranscriptJobFormatNonMarkdown(t *testing.T) {
 }
 
 func TestExecReadTranscriptJobRangeRejected(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{"transcript_ref": "job:abc", "range": "1-5"})
 	if err == nil || !strings.Contains(err.Error(), "range applies only to session") {
@@ -1991,6 +2067,7 @@ func TestExecReadTranscriptJobRangeRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadMarkdownMetaJSON(t *testing.T) {
+	t.Parallel()
 	meta := readMarkdownMeta{
 		TurnsTotal:          10,
 		Range:               "1-5",
@@ -2017,6 +2094,7 @@ func TestReadMarkdownMetaJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogTranscriptPlaceholderJSON(t *testing.T) {
+	t.Parallel()
 	p := apiLogTranscriptPlaceholder{
 		Source:                 apiLogSource,
 		PrivateEvidenceOmitted: true,
@@ -2041,6 +2119,7 @@ func TestAPILogTranscriptPlaceholderJSON(t *testing.T) {
 }
 
 func TestAPILogTranscriptReadHandleJSON(t *testing.T) {
+	t.Parallel()
 	h := apiLogTranscriptReadHandle{
 		Tool:        "read_session_transcript",
 		Source:      apiLogSource,
@@ -2062,6 +2141,7 @@ func TestAPILogTranscriptReadHandleJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadSessionTranscriptArgs(t *testing.T) {
+	t.Parallel()
 	args := readSessionTranscriptArgs{
 		TranscriptRef: "local:abc",
 		Source:        "transcript",
@@ -2082,6 +2162,7 @@ func TestReadSessionTranscriptArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedReadOperationValues(t *testing.T) {
+	t.Parallel()
 	if retainedReadDefault != 0 {
 		t.Fatalf("retainedReadDefault = %d, want 0", retainedReadDefault)
 	}
@@ -2098,6 +2179,7 @@ func TestRetainedReadOperationValues(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadMarkdownEnvelopeJSON(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		TranscriptRef: "local:abc",
 		Format:        formatMarkdown,
@@ -2124,6 +2206,7 @@ func TestReadMarkdownEnvelopeJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTranscriptTurnExpansionJSON(t *testing.T) {
+	t.Parallel()
 	exp := transcriptTurnExpansion{
 		ExpandTurn:     3,
 		OffsetBytes:    100,
@@ -2143,6 +2226,7 @@ func TestTranscriptTurnExpansionJSON(t *testing.T) {
 }
 
 func TestTranscriptTurnContinuationJSON(t *testing.T) {
+	t.Parallel()
 	c := transcriptTurnContinuation{ExpandTurn: 3, OffsetBytes: 150}
 	data, err := json.Marshal(c)
 	if err != nil {
@@ -2158,6 +2242,7 @@ func TestTranscriptTurnContinuationJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedReadArgs(t *testing.T) {
+	t.Parallel()
 	args := retainedReadArgs{
 		Ref:          "job:abc",
 		OffsetSet:    true,
@@ -2175,6 +2260,7 @@ func TestRetainedReadArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedPageBodyJSON(t *testing.T) {
+	t.Parallel()
 	body := retainedPageBody{
 		OffsetBytes:   10,
 		BytesReturned: 50,
@@ -2192,6 +2278,7 @@ func TestRetainedPageBodyJSON(t *testing.T) {
 }
 
 func TestRetainedPageEnvelopeJSON(t *testing.T) {
+	t.Parallel()
 	env := retainedPageEnvelope{
 		TranscriptRef:     "job:abc",
 		Representation:    "raw_bytes",
@@ -2218,6 +2305,7 @@ func TestRetainedPageEnvelopeJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedSearchResultJSON(t *testing.T) {
+	t.Parallel()
 	result := retainedSearchResult{
 		TranscriptRef:      "job:abc",
 		OutputMatch:        "ERR",
@@ -2247,6 +2335,7 @@ func TestRetainedSearchResultJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogTranscriptResultIdentity(t *testing.T) {
+	t.Parallel()
 	raw := `{"transcript_ref":"local:abc","source":"api_log","attempt":{"attempt_id":"att_1"},"body":{"body":"data","offset_bytes":5},"continuation":{"attempt_id":"att_2"}}`
 	var id apiLogTranscriptResultIdentity
 	if err := json.Unmarshal([]byte(raw), &id); err != nil {
@@ -2271,12 +2360,14 @@ func TestAPILogTranscriptResultIdentity(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRangeAcceptedGrammar(t *testing.T) {
+	t.Parallel()
 	if rangeAcceptedGrammar != "N-M | last:N | start:N" {
 		t.Fatalf("rangeAcceptedGrammar = %q", rangeAcceptedGrammar)
 	}
 }
 
 func TestTranscriptSourceConstants(t *testing.T) {
+	t.Parallel()
 	if transcriptSource != "transcript" {
 		t.Fatalf("transcriptSource = %q", transcriptSource)
 	}
@@ -2292,6 +2383,7 @@ func TestTranscriptSourceConstants(t *testing.T) {
 }
 
 func TestReadTranscriptPublicRejectedParams(t *testing.T) {
+	t.Parallel()
 	expected := []string{"source", "attempt_id", "body", "max_bytes"}
 	if len(readTranscriptPublicRejectedParams) != len(expected) {
 		t.Fatalf("expected %d params, got %d", len(expected), len(readTranscriptPublicRejectedParams))
@@ -2308,6 +2400,7 @@ func TestReadTranscriptPublicRejectedParams(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptArtifactFormatRejected(t *testing.T) {
+	t.Parallel()
 	ref := "artifact:" + strings.Repeat("a", 32)
 	_, err := execReadTranscript(&toolDeps{}, map[string]any{"transcript_ref": ref, "format": "markdown"})
 	if err == nil || !strings.Contains(err.Error(), "format is not supported for artifact") {
@@ -2320,6 +2413,7 @@ func TestExecReadTranscriptArtifactFormatRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadJobTranscriptFormatDefault(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	// Empty format defaults to markdown, but will fail on snapshot read since
 	// stateDir is empty — the error should be about the job not being found,
@@ -2340,6 +2434,7 @@ func TestReadJobTranscriptFormatDefault(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestArtifactUnavailableReadError(t *testing.T) {
+	t.Parallel()
 	if artifactUnavailableReadError != "artifact_unavailable: retained artifact could not be read" {
 		t.Fatalf("artifactUnavailableReadError = %q", artifactUnavailableReadError)
 	}
@@ -2350,24 +2445,28 @@ func TestArtifactUnavailableReadError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogTranscriptPlaceholderMaxBytes(t *testing.T) {
+	t.Parallel()
 	if apiLogTranscriptPlaceholderMaxBytes != 1024 {
 		t.Fatalf("apiLogTranscriptPlaceholderMaxBytes = %d, want 1024", apiLogTranscriptPlaceholderMaxBytes)
 	}
 }
 
 func TestMaxExpansionBytes(t *testing.T) {
+	t.Parallel()
 	if maxExpansionBytes != 64<<10 {
 		t.Fatalf("maxExpansionBytes = %d, want %d", maxExpansionBytes, 64<<10)
 	}
 }
 
 func TestRetainedOutputMatchMaxChars(t *testing.T) {
+	t.Parallel()
 	if retainedOutputMatchMaxChars != 64<<10 {
 		t.Fatalf("retainedOutputMatchMaxChars = %d, want %d", retainedOutputMatchMaxChars, 64<<10)
 	}
 }
 
 func TestTranscriptToolMaxChars(t *testing.T) {
+	t.Parallel()
 	if transcriptToolMaxChars != 600_000 {
 		t.Fatalf("transcriptToolMaxChars = %d, want 600000", transcriptToolMaxChars)
 	}
@@ -2378,6 +2477,7 @@ func TestTranscriptToolMaxChars(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFormatConstants(t *testing.T) {
+	t.Parallel()
 	if formatMarkdown != "markdown" {
 		t.Fatalf("formatMarkdown = %q", formatMarkdown)
 	}
@@ -2394,6 +2494,7 @@ func TestFormatConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTranscriptExpansionReadHint(t *testing.T) {
+	t.Parallel()
 	if transcriptExpansionReadHint == "" {
 		t.Fatalf("transcriptExpansionReadHint should not be empty")
 	}
@@ -2404,6 +2505,7 @@ func TestTranscriptExpansionReadHint(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptSourceThenAttemptID(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	// Source is checked first
 	_, err := execReadTranscript(deps, map[string]any{"source": "api_log", "attempt_id": "x"})
@@ -2413,6 +2515,7 @@ func TestExecReadTranscriptSourceThenAttemptID(t *testing.T) {
 }
 
 func TestExecReadTranscriptBodyOnlyRejected(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{"body": "request"})
 	if err == nil || !strings.Contains(err.Error(), "body is not supported") {
@@ -2425,6 +2528,7 @@ func TestExecReadTranscriptBodyOnlyRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadRawLinesForRangeVar(t *testing.T) {
+	t.Parallel()
 	if readRawLinesForRange == nil {
 		t.Fatalf("readRawLinesForRange should not be nil")
 	}
@@ -2435,6 +2539,7 @@ func TestReadRawLinesForRangeVar(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogBodyContinuationType(t *testing.T) {
+	t.Parallel()
 	// Just verify the type exists and can be used
 	var c *apiLogBodyContinuation
 	if c != nil {
@@ -2447,6 +2552,7 @@ func TestAPILogBodyContinuationType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedSearchOptions(t *testing.T) {
+	t.Parallel()
 	// Verify type usage
 	opts := retainedSearchOptions{
 		Regexp:       nil,
@@ -2463,6 +2569,7 @@ func TestRetainedSearchOptions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestArtifactReadSeekCloserInterface(t *testing.T) {
+	t.Parallel()
 	// bytes.Reader implements ReaderAt, Seeker, and is a Closer via NopCloser
 	// Verify interface compliance
 	var _ artifactReadSeekCloser = struct {
@@ -2481,6 +2588,7 @@ func TestArtifactReadSeekCloserInterface(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptJobPageFormatRejected(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": "job:abc",
@@ -2493,6 +2601,7 @@ func TestExecReadTranscriptJobPageFormatRejected(t *testing.T) {
 }
 
 func TestExecReadTranscriptJobSearchFormatRejected(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": "job:abc",
@@ -2509,6 +2618,7 @@ func TestExecReadTranscriptJobSearchFormatRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRenderDelegateJobTranscriptNoReason(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "dlg_x", Type: "delegate", Status: "running"}
 	out := renderDelegateJobTranscript(rec, "output", 100, 0)
 	if strings.Contains(out, "reason:") {
@@ -2520,6 +2630,7 @@ func TestRenderDelegateJobTranscriptNoReason(t *testing.T) {
 }
 
 func TestRenderShellJobTranscriptNoStatus(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "j_x", Command: "ls"}
 	out := renderShellJobTranscript(rec, "output", 10, 0)
 	if strings.Contains(out, "status:") {
@@ -2531,6 +2642,7 @@ func TestRenderShellJobTranscriptNoStatus(t *testing.T) {
 }
 
 func TestRenderShellJobTranscriptNoCommand(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{JobID: "j_x", Status: "completed"}
 	out := renderShellJobTranscript(rec, "output", 10, 0)
 	if strings.Contains(out, "command:") {
@@ -2546,6 +2658,7 @@ func TestRenderShellJobTranscriptNoCommand(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPageJobTranscriptEmptyJobID(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := pageJobTranscript(deps, retainedReadArgs{Ref: "job:"})
 	if err == nil || !strings.Contains(err.Error(), "must be job:<job_id>") {
@@ -2554,6 +2667,7 @@ func TestPageJobTranscriptEmptyJobID(t *testing.T) {
 }
 
 func TestSearchJobTranscriptEmptyJobID(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := searchJobTranscript(deps, retainedReadArgs{Ref: "job:", OutputMatch: "x"})
 	if err == nil || !strings.Contains(err.Error(), "must be job:<job_id>") {
@@ -2562,6 +2676,7 @@ func TestSearchJobTranscriptEmptyJobID(t *testing.T) {
 }
 
 func TestSearchJobTranscriptInvalidRegex(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := searchJobTranscript(deps, retainedReadArgs{Ref: "job:abc", OutputMatch: "["})
 	if err == nil || !strings.Contains(err.Error(), "not valid RE2") {
@@ -2574,6 +2689,7 @@ func TestSearchJobTranscriptInvalidRegex(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDefaultExpansionBytes(t *testing.T) {
+	t.Parallel()
 	if defaultExpansionBytes != 16<<10 {
 		t.Fatalf("defaultExpansionBytes = %d, want %d", defaultExpansionBytes, 16<<10)
 	}
@@ -2584,6 +2700,7 @@ func TestDefaultExpansionBytes(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadSessionTranscriptDelegatesToContext(t *testing.T) {
+	t.Parallel()
 	// Both functions should produce the same error for invalid args
 	deps := &toolDeps{}
 	_, err1 := execReadSessionTranscript(deps, map[string]any{"format": "xml"})
@@ -2601,6 +2718,7 @@ func TestExecReadSessionTranscriptDelegatesToContext(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseRetainedReadArgsContextLinesZero(t *testing.T) {
+	t.Parallel()
 	parsed, _, err := parseRetainedReadArgs(map[string]any{"output_match": "x", "context_lines": float64(0)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2615,6 +2733,7 @@ func TestParseRetainedReadArgsContextLinesZero(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseRetainedReadArgsContextLinesTen(t *testing.T) {
+	t.Parallel()
 	parsed, _, err := parseRetainedReadArgs(map[string]any{"output_match": "x", "context_lines": float64(10)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2629,6 +2748,7 @@ func TestParseRetainedReadArgsContextLinesTen(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseRetainedReadArgsOffsetZero(t *testing.T) {
+	t.Parallel()
 	parsed, op, err := parseRetainedReadArgs(map[string]any{"offset_bytes": float64(0)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2646,6 +2766,7 @@ func TestParseRetainedReadArgsOffsetZero(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsExpandTurnValid(t *testing.T) {
+	t.Parallel()
 	expand := 2
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{"expand_turn": float64(2)})
 	if err != nil {
@@ -2662,6 +2783,7 @@ func TestParseReadSessionTranscriptArgsExpandTurnValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsSourceAPILog(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{"source": "api_log"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2672,6 +2794,7 @@ func TestParseReadSessionTranscriptArgsSourceAPILog(t *testing.T) {
 }
 
 func TestParseReadSessionTranscriptArgsSourceAPILogWithAttemptID(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{"source": "api_log", "attempt_id": "att_1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2682,6 +2805,7 @@ func TestParseReadSessionTranscriptArgsSourceAPILogWithAttemptID(t *testing.T) {
 }
 
 func TestParseReadSessionTranscriptArgsSourceAPILogWithAttemptIDAndBody(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{"source": "api_log", "attempt_id": "att_1", "body": "response"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2696,6 +2820,7 @@ func TestParseReadSessionTranscriptArgsSourceAPILogWithAttemptIDAndBody(t *testi
 // ---------------------------------------------------------------------------
 
 func TestRetainedPageWithContinuation(t *testing.T) {
+	t.Parallel()
 	page := retainedPage{
 		OffsetBytes:   0,
 		BytesReturned: 5,
@@ -2714,6 +2839,7 @@ func TestRetainedPageWithContinuation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedSearchEnvelope(t *testing.T) {
+	t.Parallel()
 	env := retainedSearchEnvelope{
 		OffsetBytes:          10,
 		RetainedStartBytes:   0,
@@ -2771,6 +2897,7 @@ func TestPageArtifactTranscriptOffsetExactEOF(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogTranscriptReadHandleWithBody(t *testing.T) {
+	t.Parallel()
 	h := apiLogTranscriptReadHandle{
 		Tool:        "read_session_transcript",
 		Source:      apiLogSource,
@@ -2791,6 +2918,7 @@ func TestAPILogTranscriptReadHandleWithBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptJobDefaultOp(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	// Default operation on a job: ref goes to readJobTranscript which
 	// will fail on snapshot read but should not fail on argument validation
@@ -2805,6 +2933,7 @@ func TestExecReadTranscriptJobDefaultOp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseRetainedReadArgsOutputMatchAtLimit(t *testing.T) {
+	t.Parallel()
 	exact := strings.Repeat("x", retainedOutputMatchMaxChars)
 	parsed, op, err := parseRetainedReadArgs(map[string]any{"output_match": exact})
 	if err != nil {
@@ -2823,6 +2952,7 @@ func TestParseRetainedReadArgsOutputMatchAtLimit(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLargestTranscriptExpansionPrefixEmptyExpansion(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{ExpandTurn: 0, OffsetBytes: 0, TotalBytes: 10},
 	}
@@ -2840,6 +2970,7 @@ func TestLargestTranscriptExpansionPrefixEmptyExpansion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundReadMarkdownEnvelopeWithHintContentOnly(t *testing.T) {
+	t.Parallel()
 	// Content exceeds hard cap, no expansion — should truncate content only
 	long := strings.Repeat("a", hardCapChars+5000)
 	env := readMarkdownEnvelope{
@@ -2863,6 +2994,7 @@ func TestBoundReadMarkdownEnvelopeWithHintContentOnly(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundReadMarkdownContentWithHintTooSmallLimit(t *testing.T) {
+	t.Parallel()
 	// Very small limit that can't fit even metadata
 	env := readMarkdownEnvelope{Content: "x"}
 	_, err := boundReadMarkdownContentWithHint(env, 10, "hint")
@@ -2876,6 +3008,7 @@ func TestBoundReadMarkdownContentWithHintTooSmallLimit(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFindSessionTranscriptsToolRegistration(t *testing.T) {
+	t.Parallel()
 	tl := findSessionTranscriptsTool(&toolDeps{stateDir: "/tmp/some-state"})
 	if !tl.ReadOnly {
 		t.Fatalf("expected find_session_transcripts to be read-only")
@@ -2887,6 +3020,7 @@ func TestFindSessionTranscriptsToolRegistration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSpliceWindowLineEmptyContent(t *testing.T) {
+	t.Parallel()
 	out := spliceWindowLine("", readMeta{
 		TurnsRendered: 3,
 		FirstRendered: 0,
@@ -2903,6 +3037,7 @@ func TestSpliceWindowLineEmptyContent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPageArtifactTranscriptInvalidRef(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := pageArtifactTranscript(deps, retainedReadArgs{Ref: "not-valid"})
 	if err == nil || !strings.Contains(err.Error(), "must be a valid artifact") {
@@ -2915,6 +3050,7 @@ func TestPageArtifactTranscriptInvalidRef(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSearchArtifactTranscriptInvalidRef(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{}
 	_, err := searchArtifactTranscript(deps, retainedReadArgs{Ref: "not-valid", OutputMatch: "x"})
 	if err == nil || !strings.Contains(err.Error(), "must be a valid artifact") {
@@ -2927,6 +3063,7 @@ func TestSearchArtifactTranscriptInvalidRef(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenArtifactTranscriptErrInvalidRef(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return nil, artifactstore.ErrInvalidRef
 	}}
@@ -2938,6 +3075,7 @@ func TestOpenArtifactTranscriptErrInvalidRef(t *testing.T) {
 }
 
 func TestOpenArtifactTranscriptErrExpired(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return nil, artifactstore.ErrExpired
 	}}
@@ -2949,6 +3087,7 @@ func TestOpenArtifactTranscriptErrExpired(t *testing.T) {
 }
 
 func TestOpenArtifactTranscriptGenericError(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return nil, errors.New("disk failure")
 	}}
@@ -2964,6 +3103,7 @@ func TestOpenArtifactTranscriptGenericError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPageArtifactTranscriptReadError(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return &errorArtifactReader{}, nil
 	}}
@@ -2996,6 +3136,7 @@ func (e *errorArtifactReader) Close() error { return nil }
 // ---------------------------------------------------------------------------
 
 func TestArtifactSearchSourceReadWindowReadError(t *testing.T) {
+	t.Parallel()
 	src := artifactSearchSource{
 		reader: &errorArtifactReader{},
 		total:  100,
@@ -3011,6 +3152,7 @@ func TestArtifactSearchSourceReadWindowReadError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenArtifactTranscriptSeekError(t *testing.T) {
+	t.Parallel()
 	deps := &toolDeps{openArtifact: func(ref string) (artifactReadSeekCloser, error) {
 		return &seekErrorArtifactReader{}, nil
 	}}
@@ -3036,6 +3178,7 @@ func (s *seekErrorArtifactReader) Close() error { return nil }
 // ---------------------------------------------------------------------------
 
 func TestArtifactSearchSourceReadWindowShortRead(t *testing.T) {
+	t.Parallel()
 	// ReaderAt that returns fewer bytes than requested (but not EOF)
 	src := artifactSearchSource{
 		reader: &shortReadArtifactReader{data: []byte("hello")},
@@ -3071,6 +3214,7 @@ func (s *shortReadArtifactReader) Close() error { return nil }
 // ---------------------------------------------------------------------------
 
 func TestFmtSprintfInRenderDelegateJobTranscript(t *testing.T) {
+	t.Parallel()
 	rec := &jobstore.JobRecord{
 		JobID: "dlg_task",
 		Type:  "delegate",
@@ -3087,6 +3231,7 @@ func TestFmtSprintfInRenderDelegateJobTranscript(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsWhitespaceTrimming(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"transcript_ref": "  local:abc  ",
 		"source":         "  api_log  ",
@@ -3115,6 +3260,7 @@ func TestParseReadSessionTranscriptArgsWhitespaceTrimming(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsWhitespaceTrimmingTranscript(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"transcript_ref": "  local:abc  ",
 		"format":         "  markdown  ",
@@ -3139,6 +3285,7 @@ func TestParseReadSessionTranscriptArgsWhitespaceTrimmingTranscript(t *testing.T
 // ---------------------------------------------------------------------------
 
 func TestReadTranscriptToolExec(t *testing.T) {
+	t.Parallel()
 	tl := readTranscriptTool(nil)
 	// Call the Exec function with invalid args to verify it works
 	_, err := tl.Exec(nil, nil, map[string]any{"source": "api_log"})
@@ -3152,6 +3299,7 @@ func TestReadTranscriptToolExec(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFindSessionTranscriptsToolExec(t *testing.T) {
+	t.Parallel()
 	tl := findSessionTranscriptsTool(&toolDeps{stateDir: t.TempDir()})
 	if tl.Exec == nil {
 		t.Fatalf("expected Exec to be set")
@@ -3163,6 +3311,7 @@ func TestFindSessionTranscriptsToolExec(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsExpandTurnWithMarkdown(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"format":      "markdown",
 		"expand_turn": float64(3),
@@ -3180,6 +3329,7 @@ func TestParseReadSessionTranscriptArgsExpandTurnWithMarkdown(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundReadMarkdownEnvelopeWithHintExpansionContentTrimOK(t *testing.T) {
+	t.Parallel()
 	// Expansion is present, content + expansion exceeds cap,
 	// but content trim alone brings it under cap
 	env := readMarkdownEnvelope{
@@ -3207,6 +3357,7 @@ func TestBoundReadMarkdownEnvelopeWithHintExpansionContentTrimOK(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLargestFittingTranscriptPrefixNoFit(t *testing.T) {
+	t.Parallel()
 	// Very small limit, nothing fits
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{ExpandTurn: 0, OffsetBytes: 0, TotalBytes: 100},
@@ -3226,6 +3377,7 @@ func TestLargestFittingTranscriptPrefixNoFit(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSpliceRangeWarningEmptyContent(t *testing.T) {
+	t.Parallel()
 	out := spliceRangeWarning("", "warning text")
 	if !strings.Contains(out, "range warning") {
 		t.Fatalf("expected warning even with empty content: %q", out)
@@ -3237,6 +3389,7 @@ func TestSpliceRangeWarningEmptyContent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoundReadMarkdownEnvelopeWithHintBase64Expansion(t *testing.T) {
+	t.Parallel()
 	// Create expansion with base64 encoding containing non-utf8 data
 	raw := []byte{0xff, 0xfe, 0x00, 0x01, 0x02}
 	encoded := base64.StdEncoding.EncodeToString(raw)
@@ -3265,6 +3418,7 @@ func TestBoundReadMarkdownEnvelopeWithHintBase64Expansion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTranscriptEnvelopeWithExpansionBytesExactBoundary(t *testing.T) {
+	t.Parallel()
 	data := []byte("hello")
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{
@@ -3284,6 +3438,7 @@ func TestTranscriptEnvelopeWithExpansionBytesExactBoundary(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsOffsetWithBody(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"source":       "api_log",
 		"attempt_id":   "att_1",
@@ -3303,6 +3458,7 @@ func TestParseReadSessionTranscriptArgsOffsetWithBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsMaxBytesWithBody(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"source":     "api_log",
 		"attempt_id": "att_1",
@@ -3322,3 +3478,61 @@ func TestParseReadSessionTranscriptArgsMaxBytesWithBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf
+
+// --- roborev fix round 3: RED test for finding 5 ---
+
+// TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef
+// asserts that when the result's transcript_ref is empty (legacy-bucket bare-ID
+// read, where refFor returns ""), the re_read handle falls back to the original
+// call's transcript_ref. Without this, the handle has source=api_log and no
+// transcript_ref, which resolves to the CURRENT session — a different session
+// from the one the model just read.
+func TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef(t *testing.T) {
+	t.Parallel()
+	call := llm.ToolCallData{
+		Name:      "read_session_transcript",
+		Arguments: json.RawMessage(`{"transcript_ref":"02wMz5Txv5aIxgf9yVdd0N","source":"api_log"}`),
+	}
+	// Result from a legacy-bucket read: ref is empty because refFor returns ""
+	// for grammar-incompatible bucket names.
+	resultJSON := `{"source":"api_log","transcript_ref":"","attempt":{"attempt_id":"att_1"}}`
+	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
+
+	placeholder, ok := apiLogResultTranscriptPlaceholder(call, result)
+	if !ok {
+		t.Fatalf("expected ok=true for api_log result with empty transcript_ref")
+	}
+	// The placeholder must carry the original call's transcript_ref so the
+	// re_read handle resolves to the SAME session the model just read.
+	if !strings.Contains(placeholder, "02wMz5Txv5aIxgf9yVdd0N") {
+		t.Fatalf("re_read handle lost the transcript_ref for legacy-bucket api_log read; placeholder does not carry the bare session ID, so it resolves to the CURRENT session:\n%s", placeholder)
+	}
+}
+
+// TestApiLogResultTranscriptPlaceholder_SizeOverflowPreservesFallbackRef
+// asserts that when the placeholder exceeds 1 KiB, the response still
+// carries the fallback transcript_ref so the re_read handle resolves to the
+// same session, not the current session. Today the size-overflow branch
+// returns a generic re_read handle with no transcript_ref.
+func TestApiLogResultTranscriptPlaceholder_SizeOverflowPreservesFallbackRef(t *testing.T) {
+	t.Parallel()
+	sid := "02wMz5Txv5aIxgf9yVdd0N"
+	call := llm.ToolCallData{
+		Name:      "read_session_transcript",
+		Arguments: json.RawMessage(`{"transcript_ref":"` + sid + `","source":"api_log"}`),
+	}
+	// Result with a large body that exceeds 1 KiB when encoded.
+	largeBody := strings.Repeat("x", 1200)
+	resultJSON := `{"source":"api_log","transcript_ref":"","attempt":{"attempt_id":"att_1"},"body":{"body":"` + largeBody + `","offset_bytes":0}}`
+	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
+
+	placeholder, ok := apiLogResultTranscriptPlaceholder(call, result)
+	if !ok {
+		t.Fatal("expected ok=true for api_log result")
+	}
+	// The placeholder must still carry the transcript_ref so the re_read
+	// handle resolves to the same session, not the current session.
+	if !strings.Contains(placeholder, sid) {
+		t.Fatalf("size-overflow placeholder lost the transcript_ref; re_read targets current session:\n%s", placeholder)
+	}
+}

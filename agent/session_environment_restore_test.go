@@ -10,6 +10,7 @@ import (
 )
 
 func TestRestoreFailureEnvironmentIsSeededWithoutLiveReplay(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()

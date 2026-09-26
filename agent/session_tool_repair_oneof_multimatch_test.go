@@ -46,6 +46,7 @@ func validateJSON(t *testing.T, schemaJSON, argsJSON string) (map[string]any, ma
 // would match zero branches. This test pins that discriminator against the
 // validator, not just against a hardcoded location.
 func TestOffendingKeywordLocation_MultipleMatchOneOfRendersOverMatch(t *testing.T) {
+	t.Parallel()
 	const schemaJSON = `{"type":"object","properties":{"a":{"type":"string"}},` +
 		`"oneOf":[{"required":["a"]},{"required":["a"]}]}`
 	params, args, verr := validateJSON(t, schemaJSON, `{"a":"x"}`)
@@ -69,6 +70,7 @@ func TestOffendingKeywordLocation_MultipleMatchOneOfRendersOverMatch(t *testing.
 // the outer branch enumeration rather than falsely claiming multiple outer
 // branches matched (roborev finding 1), pinned against the real validator.
 func TestOffendingKeywordLocation_NestedOneOfNoMatchNotOverMatch(t *testing.T) {
+	t.Parallel()
 	const schemaJSON = `{"type":"object","oneOf":[` +
 		`{"oneOf":[{"required":["a"]},{"required":["a"]}]},` +
 		`{"required":["b"]}]}`

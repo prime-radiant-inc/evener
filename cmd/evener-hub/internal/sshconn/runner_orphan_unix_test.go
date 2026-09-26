@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/evener/internal/orphanpipe/orphanpipetest"
+	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
 )
 
 type runResult struct {

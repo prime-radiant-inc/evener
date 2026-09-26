@@ -23,7 +23,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 3
+	formatVersion = 4
 	projectionID  = "apptranscript-items-v1/entry-ordinal-positions-v2"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -74,6 +74,16 @@ type meta struct {
 	Open       bool   `json:"open"`
 	OpenTurnID string `json:"open_turn_id"`
 	TurnSlot   uint64 `json:"turn_slot"`
+	// PendingCommunicate reports whether the builder's commCalls held any
+	// deferred communicate call at the end of the last build/extend: the
+	// transcript's tail is a communicate call with no result yet.
+	// restoreBuilder does not reconstruct commCalls (see builder's doc
+	// comment), so extend forces a full rebuild instead of an incremental
+	// restore when this is set, keeping pendingFlush's read of
+	// builder.commCalls accurate across a reopen — matching the errRebuild
+	// policy used elsewhere for state an incremental extend cannot
+	// reconstruct.
+	PendingCommunicate bool `json:"pending_communicate,omitempty"`
 }
 
 // Index is an open transcript index. It is safe for concurrent use, and other
@@ -232,6 +242,22 @@ func (x *Index) adopt(m meta) error {
 	if m.Items > items || m.Turns > turns || m.Updates > updates {
 		return fmt.Errorf("%w: meta counts records the tables lack", errCorrupt)
 	}
+	transcriptInfo, err := x.transcript.Stat()
+	if err != nil {
+		return err
+	}
+	// Bound every persisted offset/length against the real transcript before
+	// readHeader allocates from them: a self-consistent but fabricated or
+	// stale-build meta.json (Length itself unchecked) would otherwise pass
+	// the header_offset+header_length<=Length inequality and still panic
+	// make([]byte, ...) with an enormous or negative HeaderLength.
+	if m.Length < 0 || m.Length > transcriptInfo.Size() {
+		return fmt.Errorf("%w: length exceeds the transcript", errCorrupt)
+	}
+	if m.HeaderLength < 0 || m.HeaderOffset < 0 || m.HeaderLength > maxLineBytes ||
+		m.HeaderOffset > m.Length || m.HeaderLength > m.Length-m.HeaderOffset {
+		return fmt.Errorf("%w: header_offset/header_length outside the covered transcript", errCorrupt)
+	}
 	info, err := x.strings.file.Stat()
 	if err != nil {
 		return err
@@ -272,6 +298,13 @@ func (x *Index) extend(length int64) error {
 	if x.build == "" || x.stale || !x.grownByAppends(info) {
 		return x.rebuild(length, "")
 	}
+	if x.meta.PendingCommunicate {
+		// A pending communicate call at the covered tail is exactly what
+		// errRebuild guards elsewhere (restoreBuilder cannot reconstruct
+		// commCalls); catching it here, before attempting to extend, keeps
+		// the incarnation the way a caught errRebuild would.
+		return x.rebuild(length, x.meta.Incarnation)
+	}
 	if length <= x.meta.Length {
 		return nil
 	}
@@ -297,6 +330,7 @@ func (x *Index) extend(length int64) error {
 		}
 		return x.rebuild(length, incarnation)
 	}
+	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	return x.writeMeta()
 }
 
@@ -323,7 +357,7 @@ func (x *Index) tailSum(end int64) (string, error) {
 
 // restoreBuilder recovers the open turn's state from meta and records.
 func (x *Index) restoreBuilder() error {
-	b := builder{x: x, grouper: apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}, calls: map[string]uint64{}, names: map[string]toolName{}}
+	b := builder{x: x, grouper: apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}, calls: map[string]uint64{}, names: map[string]toolName{}, commCalls: map[string]commState{}}
 	if x.meta.Entries > 0 {
 		buf, err := x.turns.read(x.meta.TurnSlot, 1)
 		if err != nil {
@@ -412,7 +446,7 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.meta = meta{Format: formatVersion, Projection: projectionID, Incarnation: incarnation, FileIdentity: apptranscript.FileIdentity(info)}
 	x.prelude = nil
 	x.stale, x.builderStale = false, false
-	x.builder = builder{x: x, global: map[string]string{}}
+	x.builder = builder{x: x, global: map[string]string{}, commCalls: map[string]commState{}, lastAssistantKnown: true}
 	x.rebuilds++
 	if err := x.scan(length); err != nil {
 		return err
@@ -420,6 +454,7 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
+	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if err := x.writeMeta(); err != nil {
 		return err
 	}

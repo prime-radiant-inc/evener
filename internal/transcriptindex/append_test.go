@@ -2,6 +2,7 @@ package transcriptindex
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,30 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// rewriteMetaField overwrites one field of the live build's meta.json with a
+// raw JSON value (a number, string literal, etc.), leaving every other field
+// as the builder wrote it.
+func rewriteMetaField(t *testing.T, dir, field, rawValue string) {
+	t.Helper()
+	path := filepath.Join(liveBuild(t, dir), metaFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields[field] = json.RawMessage(rawValue)
+	rewritten, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, rewritten, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func appendBytes(t testing.TB, path string, data []byte) {
 	t.Helper()
@@ -51,6 +76,60 @@ func hasNamelessResult(turn schema.Turn) bool {
 	return false
 }
 
+// needsCommunicateHistory reports whether the entry is part of a deferred
+// communicate flow: the call itself, or its (possibly nameless, already
+// covered by hasNamelessResult) result. Like a nameless result, a restart
+// between the call and its result can lose the CommRawArgs/LastAssistantText
+// state the index needs, and force a rebuild.
+func needsCommunicateHistory(turn schema.Turn) bool {
+	for _, part := range turn.Message.Content {
+		switch part.Kind {
+		case llm.ContentToolCall:
+			if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+				return true
+			}
+		case llm.ContentToolResult:
+			if part.ToolResult != nil && part.ToolResult.Name == "communicate" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// communicatePendingTracker follows which communicate calls are open across
+// successive turns: meta.PendingCommunicate forces a rebuild for EVERY line
+// applied while one is still open (see its doc comment), not only the call
+// and result lines themselves — an intervening standalone turn (e.g.
+// TurnHookCompleted) between them rebuilds too. Conservative about closing
+// (any tool result named "communicate" or nameless might be one), which only
+// widens the test's rebuild exemption, never narrows real coverage.
+type communicatePendingTracker struct {
+	open map[string]bool
+}
+
+// pendingBefore reports whether a call was already open before turn, then
+// applies turn's own effects for the next line.
+func (c *communicatePendingTracker) pendingBefore(turn schema.Turn) bool {
+	if c.open == nil {
+		c.open = map[string]bool{}
+	}
+	pending := len(c.open) > 0
+	for _, part := range turn.Message.Content {
+		switch part.Kind {
+		case llm.ContentToolCall:
+			if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+				c.open[part.ToolCall.ID] = true
+			}
+		case llm.ContentToolResult:
+			if part.ToolResult != nil && (part.ToolResult.Name == "communicate" || part.ToolResult.Name == "") {
+				delete(c.open, part.ToolResult.ToolCallID)
+			}
+		}
+	}
+	return pending
+}
+
 // liveBuild is the sidecar's live build directory.
 func liveBuild(t testing.TB, dir string) string {
 	t.Helper()
@@ -68,7 +147,7 @@ func namedResults() fixture {
 	for _, set := range fixtures() {
 		named := true
 		for _, line := range set.lines {
-			named = named && !hasNamelessResult(line.turn)
+			named = named && !hasNamelessResult(line.turn) && !needsCommunicateHistory(line.turn)
 		}
 		if named && set.name != "everything" {
 			fx.header = set.header
@@ -100,21 +179,24 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 	path, lines := writeHeaderOnly(t, fx)
 	dir := t.TempDir()
 	x := openIndex(t, path, dir)
+	var pending communicatePendingTracker
 	for i, line := range lines {
 		appendBytes(t, path, line)
+		wasPending := pending.pendingBefore(fx.lines[i].turn)
+		exempt := hasNamelessResult(fx.lines[i].turn) || needsCommunicateHistory(fx.lines[i].turn) || wasPending
 		if i%7 == 6 {
 			// A reopen resumes from the sidecar: no rebuild.
 			if err := x.Close(); err != nil {
 				t.Fatal(err)
 			}
 			x = openIndex(t, path, dir)
-			if x.rebuilds != 0 && !fx.lines[i].blank && !hasNamelessResult(fx.lines[i].turn) {
+			if x.rebuilds != 0 && !fx.lines[i].blank && !exempt {
 				t.Fatalf("line %d: reopening rebuilt the index", i)
 			}
 		} else {
 			before := x.rebuilds
 			catchUp(t, x)
-			if x.rebuilds != before && !hasNamelessResult(fx.lines[i].turn) {
+			if x.rebuilds != before && !exempt {
 				t.Fatalf("line %d: extending rebuilt the index", i)
 			}
 		}
@@ -123,7 +205,7 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 }
 
 func TestUnterminatedTailIsPickedUpLater(t *testing.T) {
-	fx := everything()
+	fx := namedResults()
 	header, lines := fx.encode(t)
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	if err := os.WriteFile(path, header, 0o600); err != nil {
@@ -222,7 +304,7 @@ func joinLines(lines [][]byte) []byte {
 func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	// The replayed entries continue the open turn: they add usage to its
 	// summary and complete a call item, both in-place updates.
-	fx := everything()
+	fx := namedResults()
 	fx.lines = append(fx.lines,
 		entryLine(withUsage(at(user("replay"), 50), 1, 1, 0, 2)),
 		entryLine(withUsage(assistant(call("rp1", "read_file", `{}`)), 10, 20, 5, 30)),
@@ -348,6 +430,23 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			if err := os.Remove(filepath.Join(liveBuild(t, dir), stringsFile)); err != nil {
 				t.Fatal(err)
 			}
+		}},
+		{"header length past the transcript", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "header_length", `999999999`)
+		}},
+		{"negative header length", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "header_length", `-1`)
+		}},
+		{"negative header offset", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "header_offset", `-1`)
+		}},
+		{"self-consistent but fabricated huge length", func(t *testing.T, dir string) {
+			// header_offset+header_length<=length holds, so only bounding
+			// length against the real transcript catches this (roborev
+			// finding on PR #2303, round 3).
+			rewriteMetaField(t, dir, "length", `1099511627776`)
+			rewriteMetaField(t, dir, "header_length", `1099511627776`)
+			rewriteMetaField(t, dir, "header_offset", `0`)
 		}},
 	}
 	for _, tc := range cases {

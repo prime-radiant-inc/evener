@@ -234,9 +234,10 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //   - deploy failures (ErrDeploy), the dirty-controller deploy refusal
 //     (ErrControllerDirty), the unservable-run-target deploy refusal
 //     (ErrRunTargetUnservable), the post-deploy identity refusal
-//     (ErrDeployUnstamped), the wrong-platform-artifact refusal
-//     (ErrDeployArtifactUnusable), a version mismatch a deploy would have to fix,
-//     and the missing-executable refusal a host with no deploy path produces
+//     (ErrDeployUnstamped), the unusable-artifact refusal
+//     (ErrDeployArtifactUnusable: the artifact targets another platform or is
+//     not evener), a version mismatch a deploy would have to fix, and the
+//     missing-executable refusal a host with no deploy path produces
 //     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
 //     not install or match its build on the host, so the host cannot be
 //     attached/launched.

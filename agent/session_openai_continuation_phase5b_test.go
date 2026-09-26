@@ -102,7 +102,7 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 		t.Fatalf("close API logger: %v", err)
 	}
 
-	data, err := readTranscriptFull(tpath)
+	data, err := readTranscriptFull(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

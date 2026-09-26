@@ -16,7 +16,7 @@ func TestProjectTurnRendersHookCompleted(t *testing.T) {
 		Kind:    schema.TurnHookCompleted,
 		Message: llm.System("PreToolUse hook my-plugin Bash command exit 0"),
 		Hook:    &schema.HookInfo{Event: "PreToolUse", HookType: "command", Matcher: "Bash", PluginName: "my-plugin"},
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)
@@ -52,7 +52,7 @@ func TestProjectTurnCarriesNonZeroHookExit(t *testing.T) {
 		Kind:    schema.TurnHookCompleted,
 		Message: llm.System("Stop hook exit 3"),
 		Hook:    &schema.HookInfo{Event: "Stop", ExitCode: 3},
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)
@@ -69,7 +69,7 @@ func TestProjectTurnRendersHookCompletedWithoutDetail(t *testing.T) {
 	out := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind:    schema.TurnHookCompleted,
 		Message: llm.System("SessionStart hook"),
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)

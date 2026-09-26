@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -51,33 +53,79 @@ func (s *Session) awaitingOrHasPendingAsk() bool {
 	return s.state == SessionAwaiting || len(s.askPending) > 0
 }
 
-// WireState is the externally-reported session state. It equals State()
-// except for one override: an idle session with undelivered job notifications
-// or claimable queued input reads as "active" because work the session owns
-// can resume it without user input. A queue parked by a Stop is not claimable
-// and reads idle -- nothing will move it until the user acts (kata wms7).
-// Live child activity belongs to the child's wire state, not the settled
-// parent's.
+// WireState is the externally-reported session state: RestingWireState, with
+// one override. A resting session (idle, or resting on a failed turn) with
+// undelivered job notifications or claimable queued input reads as "active",
+// because work the session owns can start its next turn without user input. A
+// queue parked by a Stop is not claimable and reads as resting -- nothing will
+// move it until the user acts (kata wms7). Live child activity belongs to the
+// child's wire state, not the settled parent's.
 //
-// Precedence: the override upgrades idle ONLY. awaiting always projects as
-// awaiting, even with autonomy in flight — a session that asked its user
-// (ask-user-question design) cannot proceed without them, and masking the
-// question as "working" would deadlock: the wakes that could move the
-// session are gated behind the very answer the user was never told to give.
-// TestWireState_AwaitingOutranksAutonomy pins this.
+// Precedence: the override raises a resting state ONLY. A session awaiting
+// its user projects as awaiting even with autonomy in flight: a session that
+// asked its user (ask-user-question design) cannot proceed without them, and
+// masking the question as "working" would deadlock, since the wakes that
+// could move the session are gated behind the very answer the user was never
+// told to give. TestWireState_AwaitingOutranksAutonomy pins this.
 func (s *Session) WireState() string {
-	state := s.State()
-	if state == SessionIdle && s.sessionWorkPending() {
+	state := s.RestingWireState()
+	if appwire.IsRestingThreadStatus(state) && s.sessionWorkPending() {
 		return string(SessionProcessing)
 	}
-	return string(state)
+	return state
+}
+
+// RestingWireState is State() with one substitution: a session resting on a
+// failed turn publishes appwire.ThreadStatusSystemError, which every client
+// shows as Failed. It rests on a failed turn when it is idle, or awaiting with
+// no pending question, and its history ends in a recorded turn failure
+// (historyEndsInTurnFailure). A pending question keeps awaiting: answering it
+// is what moves the session, and the failure stays readable in the
+// transcript. The next turn to start ends the failure, since it records a
+// turn-bearing entry; an interrupt never records a failure at all.
+//
+// It reads state, the pending asks and the history under one lock, and
+// restore rebuilds all three from the transcript, so a restored session
+// derives the answer the live session published. RestoreSession stamps
+// WireState (this state plus the work-pending override) on its SessionStart
+// event, and serve publishes the same WireState before the first turn, so the
+// bridge and the synchronous startup write agree (#251).
+func (s *Session) RestingWireState() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resting := s.state == SessionIdle || s.state == SessionAwaiting
+	if resting && len(s.askPending) == 0 && historyEndsInTurnFailure(s.history) {
+		return appwire.ThreadStatusSystemError
+	}
+	return string(s.state)
+}
+
+// historyEndsInTurnFailure reports whether the last turn-bearing record in
+// history is a recorded turn failure (a TurnFailure, written by
+// emitTurnFailure and emitSteeringCarrierTurnFailure): the session's last turn
+// failed and no turn has started since. A turn-bearing record is one a turn
+// writes as it runs: user input, steering (the interrupt marker included), an
+// assistant response, tool results. Bookkeeping records (TurnSystem,
+// TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
+// TurnEnvironment, TurnNotesContext, TurnAttentionResolution) are skipped, so
+// a model switch or a hook line after the failure leaves the session failed.
+func historyEndsInTurnFailure(history []schema.Turn) bool {
+	for i := range slices.Backward(history) {
+		switch history[i].Kind {
+		case schema.TurnFailure:
+			return true
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults:
+			return false
+		}
+	}
+	return false
 }
 
 // sessionWorkPending reports whether work owned by this session can resume it
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
 }
 
 func (s *Session) hasPendingStableDelegateAttention() bool {
@@ -325,7 +373,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path)
+		_, entries, _, err := readTranscript(path, s.stateDir)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
 			retained = retainedFrom(entries)

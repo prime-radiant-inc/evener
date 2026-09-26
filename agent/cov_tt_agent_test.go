@@ -11,6 +11,7 @@ import (
 // TestStartOnlyContextDelegatesDeadlineAndValue covers the Deadline and Value
 // methods, which forward to the parent context.
 func TestStartOnlyContextDelegatesDeadlineAndValue(t *testing.T) {
+	t.Parallel()
 	type ctxKey struct{}
 	deadline := time.Now().Add(time.Hour)
 	parent, cancel := context.WithDeadline(context.WithValue(context.Background(), ctxKey{}, "v"), deadline)
@@ -31,6 +32,7 @@ func TestStartOnlyContextDelegatesDeadlineAndValue(t *testing.T) {
 // TestCtxHostForwardsToSession covers the ctxHost adapter methods, which bridge
 // a *Session to the contextmgr.Host seam.
 func TestCtxHostForwardsToSession(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	h := &ctxHost{s: sess}
 
@@ -60,6 +62,7 @@ func TestCtxHostForwardsToSession(t *testing.T) {
 // TestIsResultToolDefinition covers the communicate-default, wire-name match,
 // and no-match arms.
 func TestIsResultToolDefinition(t *testing.T) {
+	t.Parallel()
 	if !isResultToolDefinition("communicate", "anything", "") {
 		t.Fatal("canonical communicate should be a result tool")
 	}

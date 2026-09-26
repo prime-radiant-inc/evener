@@ -1094,7 +1094,8 @@ func (m *hubHostManager) rowOrigin(name string) string {
 // hostEntryField maps a hostreg validation refusal to the input it blames, in
 // the wire spelling the dialog's own inputs use (HostEntry's fields), so a
 // message lands on the control the operator can fix. A refusal that blames the
-// entry as a whole — a cycle — returns "" and the caller raises it form-level.
+// entry as a whole — a cycle, or a half-specified config_path/addr pair, which
+// blames two inputs at once — returns "" and the caller raises it form-level.
 func hostEntryField(err error) string {
 	switch {
 	case errors.Is(err, hostreg.ErrMissingSSH):
@@ -1105,6 +1106,8 @@ func hostEntryField(err error) string {
 		return "user"
 	case errors.Is(err, hostreg.ErrEmptyRoot):
 		return "roots"
+	case errors.Is(err, ErrHostAddr):
+		return "addr"
 	case errors.Is(err, hostreg.ErrInvalidName), errors.Is(err, hostreg.ErrReservedName):
 		// Add only: the edit dialog has no name input, so this field is what the
 		// add form places.
@@ -1171,11 +1174,12 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// entry is normalized and validated as one record, exactly as hub.toml
 	// loading does.
 	entry := hostreg.Normalize(hostEntryToHost(params.Entry.Name, params.Entry))
-	// Validate without inserting: hostreg's own entry validation runs the
-	// exact add-time checks (name grammar, reserved name, ssh destination,
-	// user/ssh agreement, non-empty roots) over this one entry without touching
-	// live state, so nothing is exposed before the durable save below.
-	if err := hostreg.ValidateEntry(entry); err != nil {
+	// Validate without inserting: validateHostEntry runs the exact checks
+	// hub.toml loading runs (name grammar, reserved name, ssh destination,
+	// user/ssh agreement, non-empty roots, the config_path/addr pair, and the
+	// addr host rules) over this one entry without touching live state, so
+	// nothing is exposed before the durable save below.
+	if err := validateHostEntry(entry); err != nil {
 		return appwire.HostRow{}, hostValidationRefusal(entry.Name, err)
 	}
 	// The commit below is the read-modify-write cycle the mutation mutex
@@ -1547,7 +1551,7 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 //
 //   - Commit, under the mutation mutex: refuse an in-flight mutation on the
 //     name, require a live sidecar entry, validate the entry BEFORE anything is
-//     written — hostreg.ValidateEntry is the same call the add flow runs, so a
+//     written — validateHostEntry is the same call the add flow runs, so a
 //     refusal commits nothing and an entry the registry would reject never
 //     reaches the file — persist durable-first with one atomic write that
 //     replaces the entry in place, replace the store row in the same critical
@@ -1613,7 +1617,7 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// a substitute for it. It runs last of the commit-phase refusals so an invalid
 	// entry still gets the target's own refusal above, and still before the
 	// durable save so nothing is written when it refuses.
-	if err := hostreg.ValidateEntry(entry); err != nil {
+	if err := validateHostEntry(entry); err != nil {
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, hostValidationRefusal(name, err)
 	}

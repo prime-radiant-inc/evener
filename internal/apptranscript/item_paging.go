@@ -124,7 +124,7 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 		return appitempaging.TranscriptItemWindow{}, identity, appwire.TranscriptItemCursorStale()
 	}
 
-	ranges, total, err := indexedItemRanges(index)
+	ranges, zeroItemGroups, total, err := indexedItemRanges(index)
 	if err != nil {
 		return appitempaging.TranscriptItemWindow{}, identity, err
 	}
@@ -149,7 +149,8 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 	}
 
 	selectedRanges := intersectItemRanges(ranges, start, end)
-	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project)
+	tail := end == total && !previous
+	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, zeroItemGroups, project, tail)
 	if err != nil {
 		if !isContextError(err) {
 			c.invalidate(path)
@@ -174,14 +175,15 @@ func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, option
 	return window, identity, nil
 }
 
-func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) {
+func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, []indexedGroup, uint64, error) {
 	ranges := make([]indexedItemRange, 0, index.VisibleRecords+1)
+	var zeroItemGroups []indexedGroup
 	var total uint64
 	hasPrelude := false
 	if prelude := PreludeTurn(index.Header); prelude != nil {
 		count := uint64(len(prelude.Items))
 		if count > uint64(math.MaxUint32) {
-			return nil, 0, errors.New("prelude item count exceeds uint32")
+			return nil, nil, 0, errors.New("prelude item count exceeds uint32")
 		}
 		ranges = append(ranges, indexedItemRange{start: 0, count: count, prelude: true})
 		total = count
@@ -200,19 +202,21 @@ func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) 
 		groupEntry := entry
 		entry++
 		if group.items == 0 {
+			zeroItemGroups = append(zeroItemGroups, *group)
 			continue
 		}
 		if ^uint64(0)-total < group.items {
-			return nil, 0, errors.New("projected item count overflows uint64")
+			return nil, nil, 0, errors.New("projected item count overflows uint64")
 		}
 		ranges = append(ranges, indexedItemRange{group: group, record: index.recordAt(group.start), entry: groupEntry, start: total, count: group.items})
 		total += group.items
 	}
-	return ranges, total, nil
+	return ranges, zeroItemGroups, total, nil
 }
 
 func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosition) (uint64, error) {
-	for _, itemRange := range ranges {
+	last := len(ranges) - 1
+	for i, itemRange := range ranges {
 		if itemRange.prelude {
 			if before.Entry != 0 {
 				continue
@@ -226,6 +230,14 @@ func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosi
 			continue
 		}
 		if uint64(before.Item) >= itemRange.count {
+			// The tail group may have flushed communicates that extend
+			// beyond the sidecar's item count. A cursor naming one of
+			// those flushed positions (Item == count) is valid: clamp
+			// to the indexed boundary so the previous window returns
+			// the older indexed items rather than erroring stale.
+			if i == last {
+				return itemRange.start + itemRange.count, nil
+			}
 			return 0, appwire.TranscriptItemCursorStale()
 		}
 		return itemRange.start + uint64(before.Item), nil
@@ -247,12 +259,71 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 	return selected
 }
 
-func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
+func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, zeroItemGroups []indexedGroup, project BoundedEntryProjector, tail bool) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0
 	var file *os.File
 	var err error
+	// Thread one ToolCallRegistry across all selected ranges, matching the
+	// full read's single-registry threading. CommRawArgs seeded by an
+	// assistant communicate call in one group must reach its paired result
+	// turn in a later group (e.g. across a standalone HOOK_COMPLETED turn).
+	reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
+	// Seed the registry from the first selected group's StartsGroup record.
+	// The persisted CommRawArgs/LastAssistantText carry the unpaired
+	// communicate bytes and last assistant text from all preceding groups,
+	// matching the full read's single-registry threading without replaying
+	// the prefix.
+	firstGroupStart := -1
 	for _, itemRange := range ranges {
+		if itemRange.prelude {
+			continue
+		}
+		if itemRange.group != nil && firstGroupStart < 0 {
+			firstGroupStart = itemRange.group.start
+		}
+	}
+	if firstGroupStart >= 0 {
+		seedRegistryFromRecord(reg, index.recordAt(firstGroupStart))
+	}
+	// zeroItemGroups are in record order (indexedItemRanges walks
+	// indexedGroups forward). Skip those before the first selected
+	// item-bearing group: their CommRawArgs are carried by the snapshot
+	// seed. The remaining zero-item groups are interleaved between selected
+	// ranges (via projectZeroItemGroupsBefore) and at the tail.
+	zgi := 0
+	if firstGroupStart >= 0 {
+		for zgi < len(zeroItemGroups) && zeroItemGroups[zgi].start < firstGroupStart {
+			zgi++
+		}
+	}
+	// projectZeroItemGroupsBefore projects all not-yet-projected zero-item
+	// groups with start < upToStart, in record order. Their deferred
+	// communicate calls seed reg before a later selected group's result
+	// turns consume them — parity with the full read's single-registry
+	// threading. The snapshot seed from the first selected group carries
+	// groups before it; this interleave carries the rest.
+	projectZeroItemGroupsBefore := func(upToStart int) error {
+		for zgi < len(zeroItemGroups) && zeroItemGroups[zgi].start < upToStart {
+			if file == nil {
+				var openErr error
+				file, openErr = os.Open(path)
+				if openErr != nil {
+					return fmt.Errorf("open transcript: %w", openErr)
+				}
+			}
+			zg := &zeroItemGroups[zgi]
+			_, n, perr := projectIndexedGroup(ctx, file, index, zg, 0, project, reg)
+			if perr != nil {
+				_ = file.Close()
+				return perr
+			}
+			projectedRecords += n
+			zgi++
+		}
+		return nil
+	}
+	for ri, itemRange := range ranges {
 		if err := ctx.Err(); err != nil {
 			if file != nil {
 				_ = file.Close()
@@ -267,6 +338,49 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			items, err := positionPreludeItems(turn.Items)
 			if err != nil {
 				return nil, projectedRecords, err
+			}
+			// When the prelude is the last range (no item-bearing group
+			// is in the window), project trailing zero-item groups and
+			// flush their unpaired communicates, appending the flushed
+			// items to the prelude turn — parity with the full read's
+			// FlushUnpairedCommunicates which appends to the last turn.
+			// The prelude is the last range only when the window has no
+			// item-bearing group (tail=true, all groups are zero-item),
+			// so this does not affect middle or previous windows.
+			if tail && ri == len(ranges)-1 {
+				for ; zgi < len(zeroItemGroups); zgi++ {
+					if file == nil {
+						file, err = os.Open(path)
+						if err != nil {
+							return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
+						}
+					}
+					zg := &zeroItemGroups[zgi]
+					_, n, perr := projectIndexedGroup(ctx, file, index, zg, 0, project, reg)
+					if perr != nil {
+						_ = file.Close()
+						return nil, projectedRecords, perr
+					}
+					projectedRecords += n
+				}
+				flushed := flushUnpairedCommunicateItems(reg, turn.ID)
+				if len(flushed) > 0 {
+					base := uint32(len(items))
+					for i := range flushed {
+						pos := appwire.ThreadItemPosition{Entry: 0, Item: base + uint32(i)}
+						flushed[i].Position = &pos
+						flushed[i].TranscriptKey = appitempaging.TranscriptItemKey(turn.ID, pos)
+						flushed[i].TurnID = turn.ID
+					}
+					items = append(items, flushed...)
+					turn.Items = items
+					if uint64(len(items)) > itemRange.count {
+						itemRange.count = uint64(len(items))
+						if itemRange.hi < itemRange.count {
+							itemRange.hi = itemRange.count
+						}
+					}
+				}
 			}
 			for itemIndex, item := range items {
 				position := *item.Position
@@ -299,6 +413,15 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			_ = file.Close()
 			return nil, projectedRecords, err
 		}
+		// Project mid-window zero-item groups between the previous selected
+		// item-bearing group and this one, in record order. Their deferred
+		// communicate calls seed reg before this group's result turns
+		// consume them — parity with the full read's single-registry
+		// threading. The snapshot seed from the first selected group carries
+		// groups before it; this interleave carries the rest.
+		if perr := projectZeroItemGroupsBefore(group.start); perr != nil {
+			return nil, projectedRecords, perr
+		}
 		// Read and project every record of the group's span, then merge by
 		// call id — the same shape the full grouped read produces.
 		var items []appwire.ThreadItem
@@ -322,7 +445,8 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			entries = append(entries, entry.Turn)
 			projectedRecords++
 			if project != nil {
-				projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+				reg.Names = cloneToolNames(record.ToolSeed)
+				projectedItems := project(entry.Turn, group.turnID, record.Index, reg)
 				items = append(items, projectedItems...)
 			}
 			if err := ctx.Err(); err != nil {
@@ -330,12 +454,41 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 		}
+		// Flush unpaired communicates only at the tail of the read,
+		// matching the full read's FlushUnpairedCommunicates. A
+		// middle-window read's unpaired communicates may be paired by a
+		// result turn outside the window; flushing them would render a
+		// spurious agentMessage.
+		if tail && ri == len(ranges)-1 {
+			// Project trailing zero-item groups so their unpaired
+			// communicates seed reg before the tail flush. The
+			// item-window path drops zero-item groups from its ranges
+			// (they carry no items), so their communicates must be
+			// projected separately. Only trailing groups feed the
+			// flush: a middle group's communicate may be paired by a
+			// later in-window result.
+			for ; zgi < len(zeroItemGroups); zgi++ {
+				zg := &zeroItemGroups[zgi]
+				_, n, err := projectIndexedGroup(ctx, file, index, zg, 0, project, reg)
+				if err != nil {
+					_ = file.Close()
+					return nil, projectedRecords, err
+				}
+				projectedRecords += n
+			}
+			items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
+		}
 		merged := mergeGroupedItems(items)
 		if err := ctx.Err(); err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
 		}
-		if uint64(len(merged)) != itemRange.count {
+		// The sidecar count (group.items) excludes flushed communicates:
+		// they are a projection-time rendering decision, not an index-time
+		// count. Flush can only ADD items, so merged >= count is expected.
+		// A deficit means items were lost — a real projection/index
+		// disagreement.
+		if uint64(len(merged)) < itemRange.count {
 			_ = file.Close()
 			return nil, projectedRecords, fmt.Errorf("indexed item count for logical group %d changed", group.id)
 		}
@@ -346,6 +499,16 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		if err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
+		}
+		// Flushed communicates extend the group beyond the sidecar's count.
+		// They land at the highest Item positions, so widen the window to
+		// include them — raising hi and count to the effective total does
+		// not shift earlier items' positions or keys.
+		if effectiveCount := uint64(len(positioned)); effectiveCount > itemRange.count {
+			itemRange.count = effectiveCount
+			if itemRange.hi < effectiveCount {
+				itemRange.hi = effectiveCount
+			}
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
 		StampGroupedTurn(&turn, entries)

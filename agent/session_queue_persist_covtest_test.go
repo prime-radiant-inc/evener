@@ -12,6 +12,7 @@ import (
 // TestSaveQueuesFS_EmptyRemovesFile covers the empty-queues-removes-file path
 // (line 56-60): when both steering and input are empty, the file is removed.
 func TestSaveQueuesFS_EmptyRemovesFile(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	stateDir := "/state"
 	id := "sid1"
@@ -31,6 +32,7 @@ func TestSaveQueuesFS_EmptyRemovesFile(t *testing.T) {
 // TestSaveQueuesFS_EmptyStateDir covers the empty-stateDir no-op path
 // (line 52-53).
 func TestSaveQueuesFS_EmptyStateDir(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	if err := saveQueuesFS(fs, "", "sid1", []steeringMessage{{Text: "hi"}}, nil); err != nil {
 		t.Errorf("saveQueuesFS with empty stateDir: %v", err)
@@ -39,6 +41,7 @@ func TestSaveQueuesFS_EmptyStateDir(t *testing.T) {
 
 // TestSaveQueuesFS_HappyPath covers the write-temp-rename happy path.
 func TestSaveQueuesFS_HappyPath(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	stateDir := "/state"
 	id := "sid1"
@@ -68,11 +71,13 @@ func TestSaveQueuesFS_HappyPath(t *testing.T) {
 // path is exercised only on the real OS filesystem. We skip it here and
 // document it as a platform-dependent unreachable branch for MemMapFs.
 func TestSaveQueuesFS_MkdirError(t *testing.T) {
+	t.Parallel()
 	t.Skip("MemMapFs does not fail MkdirAll on file-at-path; mkdir error is unreachable in-memory")
 }
 
 // TestLoadQueuesFS_EmptyStateDir covers the empty-stateDir no-op path (line 92-93).
 func TestLoadQueuesFS_EmptyStateDir(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	steering, input, err := loadQueuesFS(fs, "", "sid1")
 	if err != nil || steering != nil || input != nil {
@@ -82,6 +87,7 @@ func TestLoadQueuesFS_EmptyStateDir(t *testing.T) {
 
 // TestLoadQueuesFS_NotExist covers the IsNotExist path (line 96-97).
 func TestLoadQueuesFS_NotExist(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	steering, input, err := loadQueuesFS(fs, "/state", "sid1")
 	if err != nil || steering != nil || input != nil {
@@ -91,6 +97,7 @@ func TestLoadQueuesFS_NotExist(t *testing.T) {
 
 // TestLoadQueuesFS_UnmarshalError covers the unmarshal-error path (line 103-104).
 func TestLoadQueuesFS_UnmarshalError(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	stateDir := "/state"
 	id := "sid1"
@@ -109,6 +116,7 @@ func TestLoadQueuesFS_UnmarshalError(t *testing.T) {
 
 // TestLoadQueuesFS_RoundTrip covers the happy path: save then load.
 func TestLoadQueuesFS_RoundTrip(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	stateDir := "/state"
 	id := "sid1"

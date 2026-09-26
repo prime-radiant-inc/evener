@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +46,9 @@ type parityProvider struct {
 	mu           sync.Mutex
 	steps        []func(llm.Request) (llm.Response, error)
 	childRelease chan struct{}
+	// requests records each scripted-or-child request's last user text, so a
+	// scenario whose requests reach the wrong answerer can say which did.
+	requests []string
 }
 
 func (p *parityProvider) Name() string { return "openai" }
@@ -79,7 +84,13 @@ func (p *parityProvider) respond(ctx context.Context, req llm.Request) (llm.Resp
 	if len(req.Tools) == 0 {
 		return llm.Response{Message: llm.Assistant("Summary: the parity session so far.")}, nil
 	}
-	if firstUserText(req) == parityChildTask {
+	texts := userTexts(req)
+	p.mu.Lock()
+	if len(texts) > 0 {
+		p.requests = append(p.requests, texts[len(texts)-1])
+	}
+	p.mu.Unlock()
+	if slices.Contains(texts, parityChildTask) {
 		select {
 		case <-p.childRelease:
 		case <-ctx.Done():
@@ -104,13 +115,16 @@ func (p *parityProvider) remaining() int {
 	return len(p.steps)
 }
 
-func firstUserText(req llm.Request) string {
+// userTexts lists a request's user messages. The session's environment
+// context leads them, so a prompt is found among them, not at the front.
+func userTexts(req llm.Request) []string {
+	var texts []string
 	for _, message := range req.Messages {
 		if message.Role == llm.RoleUser {
-			return strings.TrimSpace(message.Text())
+			texts = append(texts, strings.TrimSpace(message.Text()))
 		}
 	}
-	return ""
+	return texts
 }
 
 func parityCall(id, name string, args any) llm.ContentPart {
@@ -189,9 +203,14 @@ func (ps *paritySession) await(t *testing.T, kind events.EventKind, match func(e
 	defer timer.Stop()
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	from := ps.next
 	for {
 		if ps.next < 0 {
-			t.Fatalf("timed out awaiting %s", kind)
+			var since []string
+			for _, ev := range ps.seen[from:] {
+				since = append(since, string(ev.Kind))
+			}
+			t.Fatalf("timed out awaiting %s; events since the previous await: %v", kind, since)
 		}
 		for ; ps.next < len(ps.seen); ps.next++ {
 			ev := ps.seen[ps.next]
@@ -341,7 +360,10 @@ func TestTranscriptParity(t *testing.T) {
 	}
 	ps := bridgeParitySession(t, sess, prepared, stateDir)
 	ctx := context.Background()
-	endOfInput := func() { ps.await(t, events.EventSessionEnd, nil) }
+	endOfInput := func() {
+		t.Helper()
+		ps.await(t, events.EventSessionEnd, nil)
+	}
 	processInput := func(text string) {
 		t.Helper()
 		if _, err := sess.ProcessInput(ctx, text, nil); err != nil {
@@ -455,6 +477,12 @@ func TestTranscriptParity(t *testing.T) {
 		step(parityCommunicate("comm-10", "The delegate reported back.", true)),
 	)
 	processInput("delegate a task")
+	if left := script.remaining(); left != 1 {
+		script.mu.Lock()
+		requests := slices.Clone(script.requests)
+		script.mu.Unlock()
+		t.Fatalf("the delegate input left %d scripted steps, want 1 (the child is held until release); requests' last user text: %q", left, requests)
+	}
 	// The session notifies for more than attention. Only a notify that finds
 	// the delegate's report recorded starts the notification input.
 	for drained := false; !drained; {
@@ -474,6 +502,20 @@ func TestTranscriptParity(t *testing.T) {
 	}
 	if _, err := sess.ProcessInputKind(ctx, "", nil, agent.EntryNotification); err != nil {
 		t.Fatal(err)
+	}
+	if script.remaining() != 0 {
+		var tail []string
+		turns := transcriptTurns(t, sess.TranscriptPath())
+		for _, turn := range turns[max(0, len(turns)-6):] {
+			tail = append(tail, fmt.Sprintf("%s(attention=%q)", turn.Kind, turn.AttentionID))
+		}
+		ps.mu.Lock()
+		var kinds []string
+		for _, ev := range ps.seen[ps.next:] {
+			kinds = append(kinds, string(ev.Kind))
+		}
+		ps.mu.Unlock()
+		t.Fatalf("the notification input ran no turn: state %s, transcript tail %v, events since the delegate input ended %v", sess.WireState(), tail, kinds)
 	}
 	endOfInput()
 	if left := script.remaining(); left != 0 {
@@ -599,7 +641,7 @@ func parityTable(groups ...[]knownDivergence) []knownDivergence {
 // parityBeforeRestart lists today's divergences between the live view and the
 // transcript projection of one session, each with the phase that removes it.
 var parityBeforeRestart = parityTable(
-	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "agentMessage", "callId", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "commandExecution", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "steering", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage", "id", "position", "transcriptEntryIndex", "transcriptKey"),
@@ -628,7 +670,7 @@ var parityBeforeRestart = parityTable(
 // the restarted server seeds its snapshot from the file, so only the new
 // turn's live identity and the restart's own notices diverge.
 var parityAfterRestart = parityTable(
-	parityRows(whyIdentity, "item-field", "agentMessage", "id", "position", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "agentMessage", "callId", "id", "position", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),

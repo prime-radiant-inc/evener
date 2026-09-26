@@ -10,6 +10,7 @@ import (
 // (see its doc comment) on a snapshot built for the row, and checks the one
 // action the rule promises.
 func TestReconcileClientSteeringTable(t *testing.T) {
+	t.Parallel()
 	const id, turn = "cm-steer", "turn_m7"
 	build := func(pending, held bool) clientMutationSnapshot {
 		s := newEmptyClientMutationSnapshot("s1")
@@ -81,6 +82,7 @@ func TestReconcileClientSteeringTable(t *testing.T) {
 // active turn keeps it -- restore re-runs that turn by its id -- and any other
 // name is an orphan, a steering carrier's claim included (#1342).
 func TestLoadReleasesASlotOnlyAUserTurnOwns(t *testing.T) {
+	t.Parallel()
 	const turn = "turn_m7"
 	build := func(method string) clientMutationSnapshot {
 		s := newEmptyClientMutationSnapshot("s1")

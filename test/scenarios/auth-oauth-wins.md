@@ -102,10 +102,12 @@ rm -rf "$run"
   here — we deliberately set the env var to a NON-empty bogus value
   to make sure the priority code actually distinguishes "env is set"
   from "env is empty".
-- `expiry` must stay in the future. `openAIStatusFromRecord` maps an
-  expired record to `needs_login=true` and the fallback to env becomes
-  intentional — a stale `expiry` in the fixture looks exactly like the
-  regression this card hunts.
+- `expiry` must stay in the future. Since #2483, `openAIStatusFromRecord`
+  maps an expired record to `needs_login=true` only when its refresh
+  token is also blank or whitespace; an expired record with a usable
+  refresh token, like this fixture's, reports `needs_refresh=true`
+  instead and stays signed in via OAuth. Keep `expiry` fresh anyway, so
+  the fixture proves plain precedence rather than the refresh case.
 - `unset XDG_STATE_HOME` is load-bearing. `DefaultStateDir()` prefers it
   over `$HOME/.local/state`, so an ambient value left over from another
   scenario would send both the fixture write and the lookup somewhere the

@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -85,9 +85,12 @@ func (c *snippetCollector) add(s snippet) bool {
 // sessionRecord is one find_session_transcripts match. Field order follows
 // spec §"Response". Only the fields explicitly listed in the spec are included;
 // session_id, model, profile_id, created_at, has_transcript, and default_read
-// are intentionally absent.
+// are intentionally absent. When TranscriptRef is empty (legacy-named bucket
+// whose name the ref grammar rejects), the session is still addressable by
+// its bare session ID via read_transcript; the text format surfaces the ID
+// so the model knows how to read it without a proj: ref.
 type sessionRecord struct {
-	TranscriptRef string    `json:"transcript_ref"`
+	TranscriptRef string    `json:"transcript_ref,omitempty"`
 	Kind          string    `json:"kind"`
 	Title         string    `json:"title"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -96,6 +99,10 @@ type sessionRecord struct {
 	Project       string    `json:"project,omitempty"`
 	IsCurrent     bool      `json:"is_current,omitempty"`
 	Snippets      []snippet `json:"snippets,omitempty"`
+	// SessionID is not part of the JSON wire format (intentionally absent per
+	// spec) but is carried for the text-format renderer so it can tell the
+	// model how to address a legacy-bucket session that has no transcript_ref.
+	SessionID string `json:"-"`
 }
 
 // findSessionsEnvelope is the find_session_transcripts response. Scanned and
@@ -141,7 +148,15 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 	}
 	var b strings.Builder
 	for i, m := range env.Matches {
-		fmt.Fprintf(&b, "%d. %s — %s\n", i+1, m.TranscriptRef, m.Title)
+		if m.TranscriptRef != "" {
+			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, m.TranscriptRef, m.Title)
+		} else {
+			// No transcript_ref: the session lives in a legacy-named
+			// bucket whose name the ref grammar rejects. It is still
+			// addressable by its bare session ID — surface it so the
+			// model can pass it to read_transcript.
+			fmt.Fprintf(&b, "%d. (no ref, bare id: %s) — %s\n", i+1, m.SessionID, m.Title)
+		}
 		meta := fmt.Sprintf("   %s · ~%d turns · updated %s", m.Kind, m.ApproxTurns, m.UpdatedAt.Format("2006-01-02 15:04"))
 		if m.Project != "" {
 			meta += " · project " + m.Project
@@ -204,41 +219,47 @@ func clampFindLimit(p *int) int {
 
 // buildSessionRecord assembles the wire record for a candidate. ParentRef is
 // encoded relative to the current bucket (the ref the model can pass back).
-// currentID is the live session's ID; a match sets IsCurrent. currentMeta (when
-// non-nil) supplies the live session's in-memory meta: the current session's
-// on-disk meta is stale mid-run (its turn count and updated-at are only flushed
-// at turn boundaries), so those freshness fields are overlaid from memory.
+// currentID is the live session's ID; a match sets IsCurrent. The match
+// requires BOTH the current bucket (c.projectID == "", i.e. the candidate is
+// in the current state dir) AND the ID — a duplicate ID in a sibling bucket must
+// not get IsCurrent or the live overlay. currentMeta (when non-nil) supplies the
+// live session's in-memory meta: the current session's on-disk meta is stale
+// mid-run (its turn count and updated-at are only flushed at turn boundaries),
+// so those freshness fields are overlaid from memory.
 func buildSessionRecord(c findCandidate, snips []snippet, currentID string, currentMeta func() schema.SessionMeta) sessionRecord {
 	turnCount := c.meta.TurnCount
 	updatedAt := c.meta.UpdatedAt
-	if currentMeta != nil && c.meta.ID == currentID {
+	if currentMeta != nil && c.projectID == "" && c.meta.ID == currentID {
 		live := currentMeta()
 		turnCount = live.TurnCount
 		updatedAt = live.UpdatedAt
 	}
 	parentRef := ""
 	if c.meta.ParentSessionID != "" {
-		parentRef = encodeRef(c.projectID, c.meta.ParentSessionID)
+		parentRef = refFor(c.projectID, c.meta.ParentSessionID)
 	}
 	return sessionRecord{
-		TranscriptRef: encodeRef(c.projectID, c.meta.ID),
+		TranscriptRef: refFor(c.projectID, c.meta.ID),
 		Kind:          sessionKind(c.meta),
 		Title:         firstLineClamp(schema.SessionDisplayName(c.meta), 120),
 		UpdatedAt:     updatedAt,
 		ApproxTurns:   turnCount,
 		ParentRef:     parentRef,
 		Project:       projectName(c.meta),
-		IsCurrent:     c.meta.ID == currentID,
+		IsCurrent:     c.projectID == "" && c.meta.ID == currentID,
 		Snippets:      snips,
+		SessionID:     c.meta.ID,
 	}
 }
 
 // sortCandidatesNewestFirst sorts candidates by UpdatedAt descending, ID ascending as
-// a stable tie-break, with the current session always last.
+// a stable tie-break, with the current session always last. The current session
+// is identified by BOTH the current bucket (projectID == "") AND the ID — a
+// duplicate ID in a sibling bucket is not the current session.
 func sortCandidatesNewestFirst(candidates []findCandidate, currentID string) {
 	sort.Slice(candidates, func(i, j int) bool {
-		isCurI := candidates[i].meta.ID == currentID
-		isCurJ := candidates[j].meta.ID == currentID
+		isCurI := candidates[i].projectID == "" && candidates[i].meta.ID == currentID
+		isCurJ := candidates[j].projectID == "" && candidates[j].meta.ID == currentID
 		if isCurI != isCurJ {
 			return isCurJ // current session sorts after non-current
 		}
@@ -271,7 +292,10 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 // current last, no scan metrics. With a query: metadata match first (cheap, no
 // file open); on miss, bounded raw content scan tracking scanned/scanTruncated.
 func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any, error) {
-	buckets, scopeApplied := findBuckets(deps.stateDir, scope)
+	buckets, scopeApplied, err := findBuckets(deps.stateDir, scope)
+	if err != nil {
+		return nil, err
+	}
 	currentID := deps.sessionID
 
 	candidates := collectCandidates(buckets, deps.stateDir)
@@ -334,10 +358,11 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 
 	sortCandidatesNewestFirst(children, currentID)
 
-	// Resolving the parent opens no transcript (parentBucketAndID is stat-free), but
-	// every returned child must still be a read-able ref, so children are gated on
-	// the same transcriptExists (os.Stat, not a body open) as the catalog: a spawned
-	// child whose transcript was never flushed is not auditable and is excluded.
+	// parentBucketAndID may stat candidate buckets to locate the parent for a
+	// bare ID, but it opens no transcript. Every returned child must still be a
+	// read-able ref, so children are gated on the same transcriptExists (os.Stat,
+	// not a body open) as the catalog: a spawned child whose transcript was never
+	// flushed is not auditable and is excluded.
 	records := recordsUpTo(children, func(findCandidate) []snippet { return nil }, currentID, limit, deps.currentMeta)
 
 	return findSessionsEnvelope{
@@ -351,26 +376,49 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 // all_projects enumerates sibling buckets via stateHomeFor → enumerateBuckets;
 // under a flat state dir (stateHomeFor == "") it degrades to the current bucket
 // and reports current_project (spec §"Discovery Cost").
-func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied string) {
+func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied string, err error) {
 	return findBucketsWithEnumerate(currentStateDir, scope, enumerateBuckets)
 }
 
-func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string) {
-	if !validLocalBucketDir(currentStateDir) {
-		return nil, scopeCurrentProject
-	}
+func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string, err error) {
 	if scope != scopeAllProjects {
-		return []string{currentStateDir}, scopeCurrentProject
+		// Validate the layout prefix for the current bucket on every scope,
+		// not just all_projects. The all_projects path gets prefix validation
+		// via enumerateBuckets (which returns errSymlinkedLayoutPrefix); the
+		// current-bucket fast path previously returned the bucket unvalidated,
+		// so find reported "No matching sessions" while read_transcript and
+		// all_projects surfaced the explicit symlink refusal. Propagate the
+		// refusal so all three paths agree (finding 5).
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return nil, "", err
+		}
+		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
 	sh := stateHomeFor(currentStateDir)
 	if sh == "" {
-		return []string{currentStateDir}, scopeCurrentProject
+		// Validate the layout prefix for the current bucket on the flat
+		// all_projects path too. validateLayoutPrefix Lstats the bucket
+		// dir itself (symlinkErrorDeep rooted at the bucket does not), so
+		// a symlinked flat --state-dir is refused here rather than
+		// silently returning the bucket — which find would then report as
+		// "No matching sessions" while read_transcript surfaces the refusal.
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return nil, "", err
+		}
+		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
-	all, err := enumerate(sh)
-	if err != nil || len(all) == 0 {
-		return []string{currentStateDir}, scopeCurrentProject
+	all, enumerateErr := enumerate(sh)
+	if enumerateErr != nil {
+		if errors.Is(enumerateErr, errSymlinkedLayoutPrefix) {
+			return nil, "", enumerateErr
+		}
+		// Other errors (e.g. bad glob pattern): fall back to current project.
+		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
-	return all, scopeAllProjects
+	if len(all) == 0 {
+		return []string{currentStateDir}, scopeCurrentProject, nil
+	}
+	return all, scopeAllProjects, nil
 }
 
 // findCandidate pairs a session meta with the bucket it lives in, so its ref can
@@ -389,9 +437,26 @@ type findCandidate struct {
 // arbitrary glob order.
 func collectCandidates(buckets []string, currentStateDir string) []findCandidate {
 	currentAbs, _ := filepath.Abs(currentStateDir)
+	// Validate the layout prefix for the current bucket: it enters this
+	// function directly (not via enumerateBuckets, which already validates
+	// the prefix for sibling buckets). symlinkErrorDeep below is rooted at
+	// the bucket, so ancestors above it (evener/, evener/projects/) are not
+	// checked. A symlinked evener/ within the state root would let metas
+	// from outside the state root surface in find + children_of results.
+	currentPrefixOK := validateLayoutPrefix(currentStateDir) == nil
 	var out []findCandidate
 	for _, bucket := range buckets {
-		if !validLocalBucketDir(bucket) {
+		bucketAbs, _ := filepath.Abs(bucket)
+		if bucketAbs == currentAbs && !currentPrefixOK {
+			continue
+		}
+		// Skip buckets whose sessions/ dir is a symlink pointing outside
+		// the state root: ListSessionMetas uses afero.ReadDir which follows
+		// symlinked directories, so metas from outside the state root would
+		// surface in find + children_of results while read_transcript
+		// rejects them.
+		sessDir := filepath.Join(bucket, sessionsSubdir)
+		if err := symlinkErrorDeep(sessDir, bucket); err != nil {
 			continue
 		}
 		metas, err := schema.ListSessionMetas(bucket)
@@ -401,9 +466,6 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 		projectID := ""
 		if bucketAbs, _ := filepath.Abs(bucket); bucketAbs != currentAbs {
 			projectID = filepath.Base(bucket)
-		}
-		if projectID != "" && identifier.ValidateProjectID(projectID) != nil {
-			continue
 		}
 		for _, m := range metas {
 			if identifier.ValidateSessionID(m.ID) != nil {
@@ -467,8 +529,20 @@ func metaMatches(m schema.SessionMeta, needle string) bool {
 // transcript only when reached; the second return reports whether the file was
 // actually opened, so the caller counts only real opens toward the scan budget.
 func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
+	// Validate the layout prefix for in-layout buckets: symlinkErrorDeep
+	// below is rooted at bucketDir, so ancestors above it are not checked.
+	// For sibling buckets from enumerateBuckets, the prefix was already
+	// validated; for the current bucket, this is the first check.
+	if err := validateLayoutPrefix(bucketDir); err != nil {
+		return nil, false
+	}
 	path := transcriptPath(bucketDir, sessionID)
-	_, entries, _, err := readTranscript(path)
+	// Reject symlinked transcript files (and symlinked sessions/ dirs) before
+	// reading — a symlink could point outside the state root.
+	if err := symlinkErrorDeep(path, bucketDir); err != nil {
+		return nil, false
+	}
+	_, entries, _, err := readTranscript(path, bucketDir)
 	if err != nil {
 		return nil, false
 	}
@@ -495,9 +569,11 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 }
 
 // transcriptExists is a cheap stat of the transcript JSONL file (no parse).
+// Delegates to existsNonSymlink so symlinked files, symlinked sessions/ dirs,
+// symlinked bucket dirs, and non-regular entries (directories, FIFOs) are all
+// rejected — find must not return refs read_transcript rejects.
 func transcriptExists(bucketDir, sessionID string) bool {
-	_, err := os.Stat(transcriptPath(bucketDir, sessionID))
-	return err == nil
+	return existsNonSymlink(transcriptPath(bucketDir, sessionID), bucketDir)
 }
 
 // sessionKind derives the session classification (not a stored field):

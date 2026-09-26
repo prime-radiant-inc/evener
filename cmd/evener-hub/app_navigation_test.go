@@ -543,8 +543,8 @@ func newNavigationReadTestSource() *testNavigationSource {
 	source := newTestNavigationSource(testNavigationNow())
 	source.inputs.Tree.Live = append([]hubcore.TreeNode(nil), source.inputs.Tree.Projects[0].Current...)
 	source.inputs.PinSections = []hubcore.PinSection{{ID: "pin-a", Name: "Pinned"}}
-	source.inputs.PinAssignments = map[string]hubcore.SessionPin{
-		navigationTestSessionID: {SessionID: navigationTestSessionID, SectionID: "pin-a"},
+	source.inputs.PinAssignments = map[hubcore.ArchiveKey]hubcore.SessionPin{
+		hubcore.SessionPinKey("", navigationTestSessionID): {SessionID: navigationTestSessionID, SectionID: "pin-a"},
 	}
 	return source
 }

@@ -805,10 +805,6 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *task.TaskStore
 	taskStoreOnce sync.Once
-	// taskStoreLoadErr records whether the session's persisted task store could
-	// be loaded. It is published by taskStoreOnce before any snapshot reads use
-	// it, so aggregate producers can distinguish unavailable data from zero tasks.
-	taskStoreLoadErr error
 
 	// goal store (lazy-init)
 	goalStore     *goal.Store
@@ -1185,7 +1181,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }

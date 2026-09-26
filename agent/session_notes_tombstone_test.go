@@ -11,6 +11,7 @@ import (
 // Atomic recorded results replace the former adoption/supersede tombstones,
 // including the explicit-empty result. Exercise both equal resaves and rewrites.
 func TestHumanNoteRecordedResultSurvivesNewerWrites(t *testing.T) {
+	t.Parallel()
 	for _, original := range []string{"A", ""} {
 		for _, rewrite := range []bool{false, true} {
 			t.Run(original+map[bool]string{false: "/noop", true: "/rewrite"}[rewrite], func(t *testing.T) {
@@ -66,6 +67,7 @@ func TestHumanNoteRecordedResultSurvivesNewerWrites(t *testing.T) {
 }
 
 func TestHumanNoteFailedRewritePreservesEarlierRecordedResult(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if _, err := s.SetHumanNote("first", "A"); err != nil {
 		t.Fatal(err)

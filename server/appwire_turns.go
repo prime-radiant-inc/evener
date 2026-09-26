@@ -55,7 +55,7 @@ type appTurnProjection struct {
 }
 
 func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error) {
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	entries := 0
 	projection, err := apptranscript.ItemTurnProjectionFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > entries {
@@ -64,8 +64,9 @@ func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error)
 		// Positioning is apptranscript's now: TurnsFromFile groups entries
 		// into logical turns and assigns each item its Position/TranscriptKey
 		// there. Re-positioning here would clobber the grouped ordinals.
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
+	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
 	return appTurnProjection{turns: projection.Turns, persistedEntries: entries, nextEntry: projection.NextEntry}, err
 }
 
@@ -84,14 +85,15 @@ func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) (
 }
 
 func appTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry) (appTurnProjection, error) {
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	highest := 0
 	projection, err := apptranscript.ItemTurnProjectionFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > highest {
 			highest = entryIndex
 		}
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
+	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
 	return appTurnProjection{turns: projection.Turns, persistedEntries: highest, nextEntry: projection.NextEntry}, err
 }
 
@@ -868,6 +870,15 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 func appThreadItemIdentityMatches(existing, incoming appwire.ThreadItem) bool {
 	if existing.TranscriptKey != "" && incoming.TranscriptKey != "" {
 		return existing.TranscriptKey == incoming.TranscriptKey
+	}
+	// agentMessage items from a flushed (reload) seed and a live re-emission
+	// share the same CallID but have different IDs (flushed:
+	// item_assistant_flushed_<callID>, live: item_assistant_<N>). Match by
+	// CallID so the live re-emission merges into the seeded flushed item
+	// rather than double-rendering on resume.
+	if existing.Type == "agentMessage" && incoming.Type == "agentMessage" &&
+		existing.CallID != "" && existing.CallID == incoming.CallID {
+		return true
 	}
 	return existing.ID == incoming.ID
 }
