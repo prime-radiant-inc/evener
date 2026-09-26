@@ -442,6 +442,16 @@ async function runChecks(page, scheme) {
     const steers = await ev(page, `EV.S.transcripts['s-tasklist'].filter((x) => x.kind === 'steer').map((x) => x.text)`);
     if (JSON.stringify(steers.slice(-2)) !== JSON.stringify(['Also cover the empty state', 'And the error state'])) throw new Error('both steers should land in order; landed ' + JSON.stringify(steers));
   });
+  // Changing an already-pinned session's category must be undoable back to
+  // where it was, not just unpinned.
+  await check(S('flow-undo-category-change-restores-it'), page, async () => {
+    await reset(page);
+    await ev(page, `EV.pin(EV.sess('s-retry'), 'research')`); await sleep(300);
+    await ev(page, `EV.pin(EV.sess('s-retry'), 'release')`); await sleep(300);
+    await ev(page, `EV.S.toast.undo()`); await sleep(300);
+    const cat = await ev(page, `EV.sess('s-retry').category`);
+    if (cat !== 'research') throw new Error('undoing a category change should restore the previous category; got ' + JSON.stringify(cat));
+  });
 }
 
 try {

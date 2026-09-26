@@ -154,10 +154,17 @@
     EV.update();
   };
   EV.pin = function (s, catId) {
+    const prev = s.category;
     s.category = catId;
     const c = EV.S.categories.find((x) => x.id === catId);
     EV.log("pin", { sessionId: s.id, category: c ? c.name : catId });
-    EV.toast("Pinned to " + (c ? c.name : catId), () => { s.category = null; EV.log("unpin", { sessionId: s.id, undo: true }); EV.update(); });
+    EV.toast("Pinned to " + (c ? c.name : catId), () => {
+      s.category = prev;
+      const pc = prev && EV.S.categories.find((x) => x.id === prev);
+      if (pc) EV.log("pin", { sessionId: s.id, category: pc.name, undo: true });
+      else EV.log("unpin", { sessionId: s.id, undo: true });
+      EV.update();
+    });
     EV.update();
   };
   EV.unpin = function (s) {
