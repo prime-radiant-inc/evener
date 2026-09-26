@@ -18,7 +18,6 @@ Subcommands:
   fuzzcov                  Static fuzz gap gate
   fuzzregistry             Audit the fuzz target registry
   internalcheck            Check public packages don't leak internal types
-  serialtestcheck          Fail on tests that run serially for no reason
   tomlcheck                Enforce TOML wire-format naming conventions
   transcript-v2-upgrade  Convert legacy transcript v1 files to v2
 `

@@ -90,19 +90,18 @@ agent package once ran 3,800 tests that way, three quarters of its `-race`
 lane, though only a few hundred touched anything another test could see.
 Start every agent test with `t.Parallel()` unless it reaches process-wide
 state: the environment or working directory, the default logger, a global
-test setter (`Set…ForTesting`), or a package-level variable it writes (a
-seam, an override stack, a hook). Such a test stays serial, and says why in
-its doc comment when the reason is not visible in its own body
-(`Not parallel: shortenCloseCascadeBudget pushes the package-wide budget`).
+test setter (`Set…ForTesting`), or a package-level variable it changes (a
+seam, an override stack, a hook), directly or through a helper. Such a test
+stays serial, and says why in a comment when the reason is not visible in
+its own body (`Not parallel: shortenCloseCascadeBudget pushes the
+package-wide budget`).
 
-`make lint-serial-tests` (part of `make lint`) fails on a serial agent test
-that reaches no such state and gives no reason. It leans serial: an
-unreviewed package write anywhere the test reaches counts as shared state,
-so it never asks for `t.Parallel()` on a test behind a new global seam, and
-it matches calls by name, so it catches self-contained tests rather than
-proving every serial test it passes must be serial. A
-memo cache that synchronizes itself is added to `synchronizedCaches` in
-`cmd/evener-serialtestcheck` only after reading every write to it.
+No lint enforces this: without type and pointer analysis a checker cannot
+prove a test leaves shared state alone, and one that guesses would ask for
+`t.Parallel()` on tests that race. The `-race` lane catches a parallel test
+that races on memory; a parallel test that changes shared behavior (an
+override stack, a global hook) shows up as a flake instead, so a change that
+makes tests parallel is checked for exactly that before it merges.
 
 ## Destructive Operations and the Tooling Test Estate
 
