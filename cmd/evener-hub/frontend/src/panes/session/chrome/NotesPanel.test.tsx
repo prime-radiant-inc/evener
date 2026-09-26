@@ -1629,6 +1629,11 @@ test("idle live session shows the wake warning under the editor", () => {
   expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
 });
 
+test("a live session resting on a failed turn shows the wake warning too", () => {
+  openPanel(testModel({ status: { type: "systemError" }, humanNote: "old note" }));
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+});
+
 test("busy live session shows no idle-wake warning", () => {
   openPanel(testModel({ status: { type: "active" }, humanNote: "old note" }));
   expect(screen.queryByTestId("shared-notes-idle-wake")).toBeNull();

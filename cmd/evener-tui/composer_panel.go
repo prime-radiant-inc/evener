@@ -83,7 +83,7 @@ type sessionControls struct {
 
 func (m hubModel) sessionControls() sessionControls {
 	active := m.detail.State == appwire.ThreadStatusActive
-	parked := m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0
+	parked := appwire.IsRestingThreadStatus(m.detail.State) && m.detail.Queue.Depth > 0
 	caps := m.detail.Capabilities
 	c := sessionControls{
 		stop:  active && caps.Interrupt,

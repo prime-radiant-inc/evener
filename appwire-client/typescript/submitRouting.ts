@@ -123,13 +123,21 @@ export interface SessionControls {
 // absent flag reads as false, the same as the hub withholding it.
 type ControlCapabilities = Partial<Pick<ThreadCapabilities, "steer" | "interrupt" | "queue" | "send">>;
 
+// A session resting between turns: idle, or resting on a failed turn (the
+// daemon reports systemError from a failed turn until the next turn starts;
+// agent/session_state.go RestingWireState). A queue a Stop parked is the
+// user's to release from either.
+export function isSessionResting(statusType: string): boolean {
+  return statusType === "idle" || statusType === "systemError";
+}
+
 export function sessionControls(
   statusType: string,
   capabilities: ControlCapabilities,
   queueDepth: number,
 ): SessionControls {
   const active = isTurnActive(statusType);
-  const parked = statusType === "idle" && queueDepth > 0;
+  const parked = isSessionResting(statusType) && queueDepth > 0;
   const controls: SessionControls = {
     stop: active && capabilities.interrupt === true,
     steer: canSteer(statusType, capabilities),
@@ -166,5 +174,5 @@ export function canDrainQueue(
   queueDepth: number,
 ): boolean {
   if (capabilities.steer !== true) return false;
-  return isTurnActive(statusType) || (statusType === "idle" && queueDepth > 0);
+  return isTurnActive(statusType) || (isSessionResting(statusType) && queueDepth > 0);
 }
