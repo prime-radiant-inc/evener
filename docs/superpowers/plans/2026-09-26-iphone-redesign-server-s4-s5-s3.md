@@ -4399,7 +4399,7 @@ Beside `turnEndedAtFor`:
 	}
 ```
 
-`buildNode`: beside `turnEndedAt := turnEndedAtFor(m.ID)` add `subagents := subagentsFor(m.ID)`, clear it in the `parentDead` branch with `subagents = appwire.SubagentTally{}`, and set `Subagents: subagents,` after `TurnEndedAt: turnEndedAt,`. The live-only leaf: `Subagents: subagentsFor(le.SessionID),`. The NeedsYou node: `Subagents: le.Subagents,`.
+`buildNode`: beside `turnEndedAt := turnEndedAtFor(m.ID)` add `subagentTally := subagentsFor(m.ID)` (not `subagents`: `buildNode` already declares a `subagents` slice of child metas further down), clear it in the `parentDead` branch with `subagentTally = appwire.SubagentTally{}`, and set `Subagents: subagentTally,` after `TurnEndedAt: turnEndedAt,`. The live-only leaf: `Subagents: subagentsFor(le.SessionID),`. The NeedsYou node: `Subagents: le.Subagents,`.
 
 Run `$(go env GOROOT)/bin/gofmt -w` on the touched files.
 
