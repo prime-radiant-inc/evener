@@ -32,10 +32,12 @@ var sessionImageTestSession = identifier.MustNewSessionID()
 var sessionImageTestPNG = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 's', 'h', 'o', 't'}
 
 // sessionImageTurnFixture is one tool-result image turn the transcript fixture
-// appends: the bytes and the media type stored alongside them.
+// appends: the bytes, the media type stored alongside them, and any sibling
+// images the same turn carries.
 type sessionImageTurnFixture struct {
 	image           []byte
 	storedMediaType string
+	siblings        [][]byte
 }
 
 // seedSessionImageSession writes one session whose transcript holds a tool-result
@@ -64,15 +66,19 @@ func seedSessionImageSession(t *testing.T, cwd string, image []byte, storedMedia
 		t.Fatal(err)
 	}
 	for index, turn := range append([]sessionImageTurnFixture{{image: image, storedMediaType: storedMediaType}}, extra...) {
-		if err := w.Append(schema.Turn{
-			Kind: schema.TurnToolResults,
-			Message: llm.Message{Role: llm.RoleTool, ToolCallID: fmt.Sprintf("call_shot_%d", index), Content: []llm.ContentPart{{
+		content := make([]llm.ContentPart, 0, 1+len(turn.siblings))
+		for partIndex, part := range append([][]byte{turn.image}, turn.siblings...) {
+			content = append(content, llm.ContentPart{
 				Kind: llm.ContentToolResult,
 				ToolResult: &llm.ToolResultData{
-					ToolCallID: fmt.Sprintf("call_shot_%d", index), Name: "screenshot", Content: "captured",
-					ImageData: turn.image, ImageMediaType: turn.storedMediaType,
+					ToolCallID: fmt.Sprintf("call_shot_%d_%d", index, partIndex), Name: "screenshot", Content: "captured",
+					ImageData: part, ImageMediaType: turn.storedMediaType,
 				},
-			}}},
+			})
+		}
+		if err := w.Append(schema.Turn{
+			Kind:    schema.TurnToolResults,
+			Message: llm.Message{Role: llm.RoleTool, ToolCallID: fmt.Sprintf("call_shot_%d", index), Content: content},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -177,10 +183,7 @@ func TestHubSessionImageServesFileBackedBytes(t *testing.T) {
 // nothing is served.
 func TestHubSessionImageRefusals(t *testing.T) {
 	oversize := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, outputImageMaxBytes/4+1)
-	// Large enough that the record's own base64 form exceeds the record bound, so
-	// the read refuses it before DecodeEntry rather than at the image bound.
-	overRecord := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 12*1024*1024/4)
-	assertOverRecordBound(t, overRecord)
+	overRecord := overRecordBoundImage(t)
 
 	t.Run("sha and path are mutually exclusive", func(t *testing.T) {
 		past := seedSessionImageSession(t, "", sessionImageTestPNG, "image/png")
@@ -368,8 +371,7 @@ func TestHubSessionImageRefusals(t *testing.T) {
 // consumes that record whole, so the scan resumes at the next one: images
 // before and after an over-bound record are still served.
 func TestHubSessionImageSkipsOverBoundRecordsAroundTheMatch(t *testing.T) {
-	tail := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 12*1024*1024/4)
-	assertOverRecordBound(t, tail)
+	tail := overRecordBoundImage(t)
 	past := seedSessionImageSession(t, "", sessionImageTestPNG, "image/png",
 		sessionImageTurnFixture{image: tail, storedMediaType: "image/png"})
 	// Same fixture, with the over-bound record first and the match second.
@@ -431,14 +433,49 @@ func appendSessionImageTurn(t *testing.T, past *hubcore.PastIndex, image []byte,
 	return w.Close()
 }
 
-// assertOverRecordBound fails unless an image of this size encodes past the
-// record bound the bounded scan reads under: an under-bound fixture would reach
+// overRecordBoundImage builds an image whose encoded record cannot be decoded
+// under the bounded scan's record bound: an under-bound fixture would reach
 // DecodeEntry and exercise the image bound instead, leaving the record-level
 // refusal untested.
-func assertOverRecordBound(t *testing.T, image []byte) {
+func overRecordBoundImage(t *testing.T) []byte {
 	t.Helper()
 	maxRecordBytes, _ := sessionImageBounds()
+	// base64 inflates by 4/3, so raw bytes past three quarters of the bound
+	// encode past it; the extra bytes cover the record's own JSON overhead.
+	rawLen := maxRecordBytes*3/4 + 4096
+	image := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, rawLen/4+1)
 	if encoded := base64.StdEncoding.EncodedLen(len(image)); encoded <= maxRecordBytes {
 		t.Fatalf("fixture image of %d bytes encodes to %d, at or under the record bound %d: it would not exercise the record-level refusal", len(image), encoded, maxRecordBytes)
+	}
+	return image
+}
+
+// One turn can carry several images in one transcript record: the wire accepts
+// up to hubcore.SendMaxImageItems of them, so a record's encoded size is the
+// protocol's maximum payload, not one image's. A record past a single image's
+// size must therefore still decode, and each in-bound image in it is servable.
+func TestHubSessionImageServesImagesFromAMultiImageRecord(t *testing.T) {
+	each := append(bytes.Clone(sessionImageTestPNG), bytes.Repeat([]byte{'x'}, 3*1024*1024-len(sessionImageTestPNG))...)
+	oneImageRecord := base64.StdEncoding.EncodedLen(outputImageMaxBytes) + sessionImageRecordOverhead
+	maxRecordBytes, _ := sessionImageBounds()
+	if encoded := base64.StdEncoding.EncodedLen(4 * len(each)); encoded <= oneImageRecord || encoded > maxRecordBytes {
+		t.Fatalf("four %d-byte images encode to %d bytes; want past a single image's record (%d) and within the record bound (%d)", len(each), encoded, oneImageRecord, maxRecordBytes)
+	}
+	// The earlier turn carries a different image, so the requested sha can only
+	// be answered out of the multi-image record.
+	past := seedSessionImageSession(t, "", sessionImageTestPNG, "image/png",
+		sessionImageTurnFixture{image: each, storedMediaType: "image/png", siblings: [][]byte{each, each, each}})
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
+	defer srv.Close()
+
+	resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
+		SessionID: sessionImageTestSession,
+		SHA:       imageSha(each),
+	})
+	if err != nil {
+		t.Fatalf("evener/session/image: %v", err)
+	}
+	if !bytes.Equal(resp.Data, each) {
+		t.Fatalf("Data = %q, want an image out of the multi-image record", resp.Data)
 	}
 }

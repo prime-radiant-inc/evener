@@ -81,21 +81,28 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
 	return scanTranscriptForImage(path, wantSha, transcriptJSONLMaxLineBytes, 0)
 }
 
-// sessionImageRecordOverhead is the space one transcript record may spend on
-// everything that is not its own image — turn text, sibling tool results, JSON
-// scaffolding — before the bounded scan refuses to decode it. It is the slack
-// between the transport-sized line cap and the 8 MiB image bound.
-const sessionImageRecordOverhead = 4 * 1024 * 1024
+// sessionImageRecordOverhead is the space the largest legitimate record may
+// spend on everything that is not image payload — turn text, sibling tool
+// results, JSON scaffolding. It is the same 1 MiB allowance the line cap itself
+// carries for the wire's maximum image payload (see
+// appwire_validation_test.go's TestTranscriptJSONLMaxLineCoversMaxImagePayload).
+const sessionImageRecordOverhead = 1024 * 1024
 
 // sessionImageBounds is the bound the evener/session/image method reads under:
 // an image of at most outputImageMaxBytes inside a record long enough to hold
-// its base64 form plus sessionImageRecordOverhead. The method is the one path
-// by which a hub reads bytes out of another hub's filesystem, so the bound
-// governs the read: an over-bound record is refused before DecodeEntry
-// materializes its image bytes, and an over-bound image is refused even when
-// the record decoded.
+// the protocol's maximum image payload — hubcore.SendMaxImageItems images of
+// hubcore.SendMaxImageBytes each in base64, plus the non-image allowance. That
+// is the largest record the wire itself could have accepted, so a longer one is
+// refused before DecodeEntry materializes its bytes; the method is the one path
+// by which a hub reads bytes out of another hub's filesystem, and its read is
+// bounded rather than bounded only by the transport's frame limit.
+//
+// A record past this bound needs a streaming scan that materializes only the
+// matched image to be servable; until then it is refused, and — since the scan
+// resumes at the next record — only that record's own images are lost.
 func sessionImageBounds() (maxRecordBytes int, maxImageBytes int64) {
-	return base64.StdEncoding.EncodedLen(outputImageMaxBytes) + sessionImageRecordOverhead, outputImageMaxBytes
+	encodedImageBytes := base64.StdEncoding.EncodedLen(hubcore.SendMaxImageBytes)
+	return hubcore.SendMaxImageItems*encodedImageBytes + sessionImageRecordOverhead, outputImageMaxBytes
 }
 
 // scanTranscriptForImage is the shared body of the transcript image scan.
