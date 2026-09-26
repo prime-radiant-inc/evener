@@ -40,6 +40,7 @@ import {
 } from "@evener/appwire-client";
 import {
   type FormEvent,
+  memo,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
@@ -76,7 +77,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { MemoizedSessionChrome } from "../chrome/SessionChrome";
+import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
@@ -143,6 +144,15 @@ const CLASS = {
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
+
+// The composer re-renders on every draft keystroke and nothing in the chrome
+// reads the draft, so its mounts go through this memo. It renders the imported
+// SessionChrome binding at render time instead of wrapping the function itself
+// (memo(SessionChrome)), so a replacement of the module export still reaches
+// these mounts.
+const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
+  return <SessionChrome {...props} />;
+});
 
 // Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
 // and the quote-insert effect below (SelectionQuote's "Quote in reply" path,

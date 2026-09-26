@@ -35,6 +35,14 @@ vi.mock("./StatusRow", async (importOriginal) => {
   };
 });
 
+// SessionChrome's work-time clock re-renders it every NOW_TICK_MS on its own.
+// Holding the clock still keeps a slow run from crossing a tick mid-typing, so
+// only typing can move the count.
+vi.mock("../liveness", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../liveness")>();
+  return { ...actual, useNowTick: () => 1_000_000 };
+});
+
 const REF = "ref_a";
 
 const CAPABILITIES: ThreadCapabilities = {
