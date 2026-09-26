@@ -53,6 +53,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -770,6 +771,9 @@ func fileHasContent(path string) bool {
 // output (fmt.Println, log.Print, a child process) alike; only the toolchain's
 // own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
 // marker such as `panic:` — ends the run, on either side of the marker.
+// If a mismatched owner separates a marker from its diagnostic context, or the
+// ordinary window is empty, owner-aware expansion recovers bounded context
+// instead.
 //
 // A survey that died with no marker at all — a fatal error, an os.Exit, a
 // killed binary — has no block to show, so a bounded tail of the log stands in.
@@ -792,6 +796,9 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	lines := strings.Split(trimmed, "\n")
 	matched := false
 	emitted := 0 // exclusive end of the last block written
+	emittedLines := make(map[int]struct{})
+	deferredLines := make(map[string][]int)
+	fallbackOwners := surveyFallbackOwnerStates(lines)
 	for i := 0; i < len(lines) && maxBlocks > 0; {
 		if !surveyRedLine.MatchString(lines[i]) {
 			i++
@@ -799,6 +806,10 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		}
 		maxBlocks--
 		matched = true
+		name := surveyFailureName(lines[i])
+		fallbackClaims := make(map[string]surveyFallbackClaim)
+		deferred := deferredLines[name]
+		delete(deferredLines, name)
 		start := i
 		for n := 0; n < surveyContextBefore && start > emitted && !surveyFrameworkLine(lines[start-1]); n++ {
 			start--
@@ -807,12 +818,67 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
-		for _, excerpt := range lines[start:end] {
-			_, _ = fmt.Fprintln(w, excerpt)
+		deferFallbackLine := func(index int) bool {
+			if surveyFrameworkLine(lines[index]) {
+				return false
+			}
+			owner := fallbackOwners[index].owner
+			if fallbackOwners[index].verdict {
+				owner = name
+			}
+			if owner == "" || owner == name {
+				return false
+			}
+			claim, ok := fallbackClaims[owner]
+			if !ok {
+				claim = surveyFallbackLaterFailureClaim(lines, i, maxBlocks, owner)
+				fallbackClaims[owner] = claim
+			}
+			if claim.name == "" || index < claim.lastRun {
+				return false
+			}
+			deferredLines[claim.name] = append(deferredLines[claim.name], index)
+			return true
 		}
-		// Scanning resumes past this block and the next block cannot reach
-		// back into it: adjacent failures would otherwise print the lines
-		// between them twice.
+		if len(deferred) > 0 || start == i || surveyFailureHasMismatchedOwner(lines, i) {
+			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines, deferred); ok {
+				for index := start; index < i; index++ {
+					if _, alreadyEmitted := emittedLines[index]; !alreadyEmitted {
+						deferFallbackLine(index)
+					}
+				}
+				for _, excerpt := range expanded {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for _, excerpt := range lines[i+1 : end] {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for index := i; index < end; index++ {
+					emittedLines[index] = struct{}{}
+				}
+				emitted = end
+				i = end
+				continue
+			}
+		}
+		for _, index := range deferred {
+			_, _ = fmt.Fprintln(w, lines[index])
+			emittedLines[index] = struct{}{}
+		}
+		for index := start; index < end; index++ {
+			if index < i {
+				if deferFallbackLine(index) {
+					continue
+				}
+			}
+			if _, alreadyEmitted := emittedLines[index]; alreadyEmitted {
+				continue
+			}
+			_, _ = fmt.Fprintln(w, lines[index])
+			emittedLines[index] = struct{}{}
+		}
+		// Scanning resumes past the ordinary window. Expansion can reach back
+		// earlier, so emittedLines prevents reprinting lines already emitted.
 		emitted = end
 		i = end
 	}
@@ -823,11 +889,352 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	}
 }
 
+// surveyFailureName recovers the test name from the framing line the testing
+// package emits. The name lets a failure reach back to its own run, rather than
+// treating a completed subtest or an interleaved parallel test as the parent's
+// boundary.
+func surveyFailureName(line string) string {
+	if strings.HasPrefix(line, "panic:") {
+		return ""
+	}
+	name := strings.TrimPrefix(line, "--- FAIL:")
+	if end := strings.Index(name, " ("); end >= 0 {
+		name = name[:end]
+	}
+	return strings.TrimSpace(name)
+}
+
+// surveyFailedChildNames collects failed descendants from a parent's indented
+// verdict block. The scan stops at the first unindented line, which is the next
+// top-level frame or failure marker rather than another child verdict.
+func surveyFailedChildNames(lines []string, marker int, parent string) map[string]struct{} {
+	var failed map[string]struct{}
+	for index := marker + 1; index < len(lines); index++ {
+		line := lines[index]
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--- FAIL:") {
+			child := surveyFailureName(trimmed)
+			if strings.HasPrefix(child, parent+"/") {
+				if failed == nil {
+					failed = make(map[string]struct{})
+				}
+				failed[child] = struct{}{}
+			}
+		}
+	}
+	return failed
+}
+
+// surveyFailureHasMismatchedOwner reports whether the nearest ownership frame
+// before a failure differs from the failing test itself. Descendant frames
+// intentionally count as mismatches: their ordinary tail can hide the
+// parent's diagnostic window, so expansion must rank the combined owners.
+func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return false
+	}
+	for index := marker - 1; index >= 0; index-- {
+		if owner := surveyPhaseOwner(lines[index]); owner != "" {
+			return owner != name
+		}
+	}
+	return false
+}
+
+type surveyFallbackOwnerState struct {
+	owner   string
+	verdict bool
+}
+
+// surveyFallbackOwnerStates records the latest ownership frame before each
+// line once for the whole log. A verdict is kept separately because the
+// fallback associates it with the failure marker currently being expanded.
+func surveyFallbackOwnerStates(lines []string) []surveyFallbackOwnerState {
+	states := make([]surveyFallbackOwnerState, len(lines))
+	owner := ""
+	verdict := false
+	for index, line := range lines {
+		states[index] = surveyFallbackOwnerState{owner: owner, verdict: verdict}
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			owner = frameOwner
+			verdict = false
+		}
+		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
+			verdict = true
+		}
+	}
+	return states
+}
+
+type surveyFallbackClaim struct {
+	name    string
+	lastRun int
+}
+
+// surveyFallbackLaterFailureClaim finds the first later failure that can claim
+// an owner's ordinary context. lastRun excludes lines before a repeated owner
+// or parent RUN; the caller can reuse this result for every line with that
+// owner in the current fallback window.
+func surveyFallbackLaterFailureClaim(lines []string, marker, maxBlocks int, owner string) surveyFallbackClaim {
+	for later, failures := marker+1, 0; later < len(lines); later++ {
+		if !surveyRedLine.MatchString(lines[later]) {
+			continue
+		}
+		failures++
+		laterName := surveyFailureName(lines[later])
+		if laterName != owner && !strings.HasPrefix(owner, laterName+"/") {
+			continue
+		}
+		if failures > maxBlocks {
+			return surveyFallbackClaim{}
+		}
+		lastRun := -1
+		for between := marker + 1; between < later; between++ {
+			if lines[between] == "=== RUN   "+owner || lines[between] == "=== RUN   "+laterName {
+				lastRun = between
+			}
+		}
+		return surveyFallbackClaim{name: laterName, lastRun: lastRun}
+	}
+	return surveyFallbackClaim{}
+}
+
+// surveyDiagnosticLine matches the source location that testing prefixes on
+// t.Error/t.Fatal output. These lines are the useful part of a parent failure
+// even when the test framework has put many subtest frames between them and
+// the parent's verdict.
+var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.go:[0-9]+:`)
+
+// expandSurveyFailure recovers a bounded set of a parent's output when the
+// nearby excerpt contains only its verdict or a different test owns the
+// nearest context. The lines from ordinaryStart up to marker are the
+// already-selected ordinary context. Selection starts with owned ordinary
+// output or, when that window has no lines owned by the failing test or its
+// descendants, descendant diagnostics. A diagnostic kind reserves a slot only
+// when its newest candidate would otherwise be dropped from the current
+// ordinary tail after other reservations. Newest parent diagnostics then fill
+// up to all but the failed-child reservation, followed by failed-child
+// diagnostics; remaining slots are backfilled from owned diagnostics, then
+// owned output, then unindented ordinary-window lines owned by other tests.
+// Source diagnostics are associated with the most recent go test RUN/CONT/NAME
+// frame; a verdict returns ownership to the failing test. If ordinary context
+// owned by the failing test or its descendants exists, expansion requires a
+// source diagnostic owned by the failing test or one of its failed children.
+// When ordinary context overflows its budget, the newest budget-sized tail is
+// kept contiguously, dropping only older lines.
+// Deferred context is emitted in addition to one block's ordinary before bound
+// and marker. It is bounded by the number of deferred windows admitted by the
+// remaining block budget.
+func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines map[int]struct{}, deferredLines []int) ([]string, bool) {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return nil, false
+	}
+	run := -1
+	for i := marker - 1; i >= 0; i-- {
+		if lines[i] == "=== RUN   "+name {
+			run = i
+			break
+		}
+	}
+	if run < 0 {
+		return nil, false
+	}
+
+	const maxExpandedLines = surveyContextBefore
+	appendNewest := func(candidates *[]int, index int) {
+		if len(*candidates) == maxExpandedLines {
+			copy(*candidates, (*candidates)[1:])
+			(*candidates)[maxExpandedLines-1] = index
+			return
+		}
+		*candidates = append(*candidates, index)
+	}
+	owner := name
+	ordinaryOwnedCandidates := make([]int, 0, maxExpandedLines)
+	parentDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	descendantDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	failedChildDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	ownedDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	ownedOutputCandidates := make([]int, 0, maxExpandedLines)
+	ordinaryContextCandidates := make([]int, 0, maxExpandedLines)
+	failedChildNames := surveyFailedChildNames(lines, marker, name)
+	for index, line := range lines[run+1 : marker] {
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			owner = frameOwner
+		}
+		trimmed := strings.TrimSpace(line)
+		if surveyTestVerdictLine.MatchString(trimmed) {
+			owner = name
+		}
+		if surveyFrameworkLine(line) || trimmed == "" {
+			continue
+		}
+		lineIndex := run + 1 + index
+		if _, alreadyEmitted := emittedLines[lineIndex]; alreadyEmitted {
+			continue
+		}
+		diagnostic := surveyDiagnosticLine.MatchString(line)
+		if diagnostic && owner == name {
+			appendNewest(&parentDiagnosticCandidates, lineIndex)
+		}
+		owned := owner == name || strings.HasPrefix(owner, name+"/")
+		ordinary := lineIndex >= ordinaryStart
+		if ordinary && owned {
+			appendNewest(&ordinaryOwnedCandidates, lineIndex)
+		}
+		if owned {
+			if diagnostic {
+				if owner != name {
+					appendNewest(&descendantDiagnosticCandidates, lineIndex)
+					for failedChild := range failedChildNames {
+						if owner == failedChild || strings.HasPrefix(owner, failedChild+"/") {
+							appendNewest(&failedChildDiagnosticCandidates, lineIndex)
+							break
+						}
+					}
+				}
+				appendNewest(&ownedDiagnosticCandidates, lineIndex)
+			} else {
+				appendNewest(&ownedOutputCandidates, lineIndex)
+			}
+		}
+		if ordinary && !owned && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			appendNewest(&ordinaryContextCandidates, lineIndex)
+		}
+	}
+	hasFailureDiagnostic := len(parentDiagnosticCandidates) > 0 || len(failedChildDiagnosticCandidates) > 0
+	if len(ordinaryOwnedCandidates) > 0 && !hasFailureDiagnostic {
+		return nil, false
+	}
+	reserveParentDiagnostic := false
+	reserveFailedChildDiagnostic := false
+	candidateInOrdinaryTail := func(candidates []int, ordinaryBudget int) bool {
+		candidate := candidates[len(candidates)-1]
+		start := max(len(ordinaryOwnedCandidates)-ordinaryBudget, 0)
+		return slices.Contains(ordinaryOwnedCandidates[start:], candidate)
+	}
+	ordinaryBudgetForReservations := func() int {
+		reservedDiagnostics := 0
+		if reserveParentDiagnostic {
+			reservedDiagnostics++
+		}
+		if reserveFailedChildDiagnostic {
+			reservedDiagnostics++
+		}
+		return maxExpandedLines - reservedDiagnostics
+	}
+	for {
+		ordinaryBudget := ordinaryBudgetForReservations()
+		changed := false
+		if !reserveParentDiagnostic && len(parentDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(parentDiagnosticCandidates, ordinaryBudget) {
+			reserveParentDiagnostic = true
+			changed = true
+		}
+		if !reserveFailedChildDiagnostic && len(failedChildDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(failedChildDiagnosticCandidates, ordinaryBudget) {
+			reserveFailedChildDiagnostic = true
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	ordinaryBudget := ordinaryBudgetForReservations()
+	keep := make(map[int]struct{}, maxExpandedLines)
+	selectedCount := 0
+	for _, deferredLine := range slices.Backward(deferredLines) {
+		if deferredLine <= run {
+			continue
+		}
+		keep[deferredLine] = struct{}{}
+	}
+	selectNewest := func(candidates []int, limit int) {
+		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
+			if _, exists := keep[candidates[i]]; exists {
+				continue
+			}
+			keep[candidates[i]] = struct{}{}
+			selectedCount++
+		}
+	}
+	selectNewest(ordinaryOwnedCandidates, ordinaryBudget)
+	if len(ordinaryOwnedCandidates) == 0 {
+		selectNewest(descendantDiagnosticCandidates, ordinaryBudget)
+	}
+	if len(parentDiagnosticCandidates) > 0 {
+		parentBudget := maxExpandedLines
+		if reserveFailedChildDiagnostic {
+			parentBudget--
+		}
+		selectNewest(parentDiagnosticCandidates, parentBudget)
+	}
+	selectNewest(failedChildDiagnosticCandidates, maxExpandedLines)
+	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
+	selectNewest(ownedOutputCandidates, maxExpandedLines)
+	selectNewest(ordinaryContextCandidates, maxExpandedLines)
+	if len(keep) == 0 {
+		return nil, false
+	}
+	result := make([]string, 0, len(keep)+1)
+	for index := run + 1; index < marker; index++ {
+		if _, exists := keep[index]; exists {
+			result = append(result, lines[index])
+		}
+	}
+	for index := range keep {
+		emittedLines[index] = struct{}{}
+	}
+	result = append(result, lines[marker])
+	return result, true
+}
+
+// surveyPhaseOwner extracts the test name from the testing package's RUN,
+// CONT, or NAME frame. PAUSE is a framing boundary without an owner.
+func surveyPhaseOwner(line string) string {
+	phase, owner, ok := surveyPhaseParts(line)
+	if !ok || phase == "PAUSE" {
+		return ""
+	}
+	return strings.TrimSpace(owner)
+}
+
 // surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
-// a test starts, and `PAUSE` and `CONT` around a parallel test's wait. The
-// space after the directive closes it off from the test name, so a test's own
-// line that merely begins with one of the words (`=== PAUSED ...`) is output.
-var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT) `)
+// a test starts, `PAUSE` and `CONT` around a parallel test's wait, and `NAME`
+// when testing switches output ownership. The space after the directive
+// closes it off from the test name, so a test's own line that merely begins
+// with one of the words (`=== PAUSED ...`) is output.
+func surveyPhaseLine(line string) bool {
+	_, _, ok := surveyPhaseParts(line)
+	return ok
+}
+
+func surveyPhaseParts(line string) (phase, owner string, ok bool) {
+	if !strings.HasPrefix(line, "=== ") {
+		return "", "", false
+	}
+	line = line[len("=== "):]
+	switch {
+	case strings.HasPrefix(line, "RUN "):
+		phase = "RUN"
+		owner = line[len("RUN "):]
+	case strings.HasPrefix(line, "PAUSE "):
+		phase = "PAUSE"
+		owner = line[len("PAUSE "):]
+	case strings.HasPrefix(line, "CONT "):
+		phase = "CONT"
+		owner = line[len("CONT "):]
+	case strings.HasPrefix(line, "NAME "):
+		phase = "NAME"
+		owner = line[len("NAME "):]
+	default:
+		return "", "", false
+	}
+	return phase, owner, strings.TrimSpace(owner) != ""
+}
 
 // surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
 // closed by the colon `go test -v` always writes. Without the colon a line is
@@ -854,7 +1261,7 @@ var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok 
 //
 // Each form is matched through the delimiter the toolchain always writes, not
 // a prefix it merely starts with. A phase line is `=== ` plus `RUN`, `PAUSE`,
-// or `CONT` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
+// `CONT`, or `NAME` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
 // `PASS:`, `FAIL:`, or `SKIP:` (`surveyTestVerdictLine`); and the bare binary
 // verdict plus `go test`'s package verdict and summary come from
 // `surveyVerdictLine`. The variable tail of each — the test name and time, the
@@ -869,7 +1276,7 @@ var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok 
 // lookalike costs a bounded amount of context; mis-classifying one loses the
 // diagnosis.
 func surveyFrameworkLine(line string) bool {
-	return surveyPhaseLine.MatchString(line) ||
+	return surveyPhaseLine(line) ||
 		surveyTestVerdictLine.MatchString(line) ||
 		surveyVerdictLine.MatchString(line) ||
 		surveyRedLine.MatchString(line)
