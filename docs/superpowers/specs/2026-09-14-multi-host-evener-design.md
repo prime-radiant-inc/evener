@@ -441,23 +441,22 @@ implementing — several have landed without their entry being re-marked.
   configured `config_path`/`addr` after normalization), effective user, and
   listening socket in the **same** remote command that issues the signal,
   refusing `ErrRestart` (no signal, no relaunch) on any mismatch or on a field
-  it cannot re-read, and refusing rather than signaling an unverified target.
-  The restart prefers the supervisor path wherever a supervisor is identified
-  and safely restartable (`systemctl [--user] restart`; launchd `kickstart -k`,
-  which pins by label rather than PID), and takes the ad hoc verify-then-signal
-  path only where no supervisor is identified. **Decided by Jesse, 2026-09-26:**
-  verify-then-signal is the accepted answer, and the atomic `pidfd` handle the
-  round-17 correction demanded is **withdrawn** as a requirement — no atomic
-  form is reachable through this component's only host interface
-  (`ssh <dest> <command>`), and no host-side pin helper is specified, installed,
-  or invoked. The residual check-then-act window in the ad hoc path remains: the
-  re-read narrows it and does not close it. The requirement to refuse rather
-  than signal an unverified target stands — an identity field that cannot be
-  re-read refuses `ErrRestart` with no signal rather than falling back to a bare
-  unguarded `kill`, and a supervisor label outside the bare-safe set is refused
-  likewise (the label case is a separate fix in flight). The shipped
-  `restartBare` re-validates the target before signaling and accepts the window
-  the re-read leaves. Mirrors component-04 acceptance criterion 20.
+  it cannot re-read. The restart prefers the supervisor path wherever a
+  supervisor is identified and safely restartable (`systemctl [--user] restart`;
+  launchd `kickstart -k`, which pins by label rather than PID), and takes the ad
+  hoc verify-then-signal path only where no supervisor is identified. **Decided
+  by Jesse, 2026-09-26:** verify-then-signal is the accepted answer, and the
+  atomic `pidfd` handle the round-17 correction demanded is **withdrawn** as a
+  requirement — no atomic form is reachable through this component's only host
+  interface (`ssh <dest> <command>`), and no host-side pin helper is specified,
+  installed, or invoked. The residual check-then-act window in the ad hoc path
+  remains: the re-read narrows it and does not close it. The refusal rule
+  stands, never a fallback to a bare unguarded `kill`: an identity field that
+  cannot be re-read refuses `ErrRestart` with no signal, and a supervisor label
+  outside the bare-safe set is refused likewise (the label case is a separate
+  fix in flight). The shipped `restartBare` re-validates the target before
+  signaling and accepts the window the re-read leaves. Mirrors component-04
+  acceptance criterion 20.
 - **[05/06] remote-originated `thread/start` resolution (round 17; landed,
   `1e4018fa5d`)** — at the **receiving** hub, `hubThreadStart`
   (`app_threadlifecycle.go`) and the request-context `origin` plumbing
@@ -526,11 +525,10 @@ implementing — several have landed without their entry being re-marked.
   and that a restart-capable deployment must be supervised. **That conclusion is
   superseded by the 2026-09-26 decision above:** the supervisorless (ad hoc)
   restart is **supported** through the guarded verify-then-signal path, not
-  refused. The restart still prefers a supervisor where one is identified and
-  safely restartable, and still refuses rather than signaling an unverified
-  target; the residual check-then-act window in the ad hoc path is accepted, and
-  a host-side atomic-signal helper is **not** a requirement. The **start** of a
-  stopped hub (last-known-state bootstrap, no PID to signal) is unaffected and
+  refused — supervisor preference, the unverified-target refusal, the accepted
+  residual window, and the dropped host-side-helper requirement all stand as
+  stated in the [04] item above. The **start** of a stopped hub
+  (last-known-state bootstrap, no PID to signal) is unaffected and
   keeps its detached launch. Scope: `sshconn/version.go` (`restartBare` / the
   restart path) and component-04 §"Stop/restart mechanics" + acceptance
   criterion 20. Mirrors component-04 acceptance criterion 20.

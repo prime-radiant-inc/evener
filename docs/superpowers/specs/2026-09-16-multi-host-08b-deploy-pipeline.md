@@ -226,8 +226,8 @@ discarded, and the parsed record ids, against the file's own allocator
 high-water mark, account for the file's whole record set with no gap or residue.
 Unparseable fences, a boundary that fails schema validation, and ownership
 missing for a fenced name are each incomplete — and so is any other shortfall,
-including a truncation that merely omits a fenced name's record (which surfaces
-as a gap below the file's own high-water mark, not as a parse error). The
+including a truncation that merely omits a fenced name's record (a gap below the
+high-water mark, not a parse error). The
 replacement
 store opens at epoch + 1 with its row-ID allocator starting above the custodial
 `allocatorHighWaterMark` (so no fresh operation reuses an imported record's id) and
@@ -692,10 +692,10 @@ boundary map would exceed the 8 KiB encoded cap refuses with typed `cursor-too-l
 (data carries `{capBytes: 8192}`), never a truncated cursor. No cursor was minted, so
 there is no `compactSeq` and no stored `bounds` entry to name. With the host-count
 cap withdrawn (registry spec §4; component 03 §Scope), the map is bounded only by
-the operator's host list, so `cursor-too-large` is reachable for a sufficiently
-large host set and, beyond that, above the 128-byte incarnation-id bound: the
-generator pins 36-byte output (§1), so it is the host count, not id length alone,
-that can cross 8 KiB.
+the operator's host list, so `cursor-too-large` is reachable either from a
+sufficiently large host set or, with hand-minted ids, above the 128-byte
+incarnation-id bound: the generator pins 36-byte output (§1), so it is the host
+count, not id length alone, that can cross 8 KiB.
 `limit` defaults to 50 and caps at 200. Responses never exceed the cap. `limit` with no
 `cursor` starts the pinned first page. An unfiltered call pages instead of returning
 the whole store.
@@ -1145,7 +1145,7 @@ the `orphan-unverified` state surviving the interrupted transition.
 
 ## 13. UI (Hosts settings section) and acceptance criteria
 
-The Hosts settings section already shipped — `cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx` (one file, not `hosts/*`), its settings section-map registration, and the host-manager store `stores/hosts.ts`, carrying the add/edit/connect/remove rows and dialogs (#1784, and the edit slice #2111). This spec owns only the genuinely-new UI added to that section: the Deploy/Restart actions, the plan confirmation, the `operations` polling, and the host-ops store carrying them — they land in the pipeline
+The Hosts settings section already shipped — `cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx` (one file, not `hosts/*`), its settings section-map registration, and the host-manager store `stores/hosts.ts`, carrying the add/edit/connect/remove rows and dialogs (#1784, and the edit slice #2111). This spec owns only the new UI added to that section: the Deploy/Restart actions, the plan confirmation, the `operations` polling, and the host-ops store carrying them, landing in the pipeline
 PR with the regenerated client they consume (registry spec §2). The section
 contract (rows, dialogs, Connect state machine, confirmation sourcing, stores)
 is stated in the registry spec §13 and cited here, never restated.

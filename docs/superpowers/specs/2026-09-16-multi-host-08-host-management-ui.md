@@ -345,9 +345,9 @@ withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
 "Host-count cap: withdrawn"): no add, boot, or registry path enforces it, and
 `ErrTooManyHosts` is not a sentinel. A `[[hosts]]` list larger than the
 navigation manifest's 64-source limit is therefore accepted, and such a config
-fails navigation for the entire hub until it shrinks. The staged commit still
+fails navigation for the entire hub until it shrinks. The staged commit
 validates the merged post-change live set under the mutation lock before the
-sidecar persist, and boot load and the registry `Add`/`Update` paths run the
+sidecar persist; boot load and the registry `Add`/`Update` paths run the
 same validation, with no count rule among them. `add` refuses any name already
 declared in `hub.toml` or held as a live sidecar entry — the duplicate refusal
 applies to live entries only: a name present solely as a tombstone is accepted
@@ -1482,7 +1482,7 @@ protocol-shapes test asserts the code-plus-discriminator pair for each.
 
 ## 13. UI
 
-Hosts settings section (the add/edit/connect/remove section, dialog, and `stores/hosts.ts` shipped with #1784 and the edit slice #2111 at `cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx`; the pipeline PR adds only the Deploy/Restart actions, plan confirmation, and `operations` polling to it, with the regenerated client, per the §2 table; this section states the contract only): host rows with state chip (online /
+Hosts settings section (shipped with #1784 and the edit slice #2111 at `cmd/evener-hub/frontend/src/panes/settings/sections/hosts.tsx`, plus the host-manager store `stores/hosts.ts`; the pipeline PR adds only the Deploy/Restart actions, plan confirmation, and `operations` polling, with the regenerated client — §2 table; this section states the contract only): host rows with state chip (online /
 offline / connecting / removed-retained), installed version + controller
 version, OS/arch, origin marker, actions: Connect, Deploy, Restart, Edit,
 Remove (each with the confirm pattern used elsewhere in settings), and the Add
