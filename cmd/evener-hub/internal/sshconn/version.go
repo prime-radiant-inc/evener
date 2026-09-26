@@ -806,6 +806,20 @@ const noListenerMarker = "__sshconn_no_listener__"
 // to restart a listener it cannot identify rather than guessing at a PID.
 const listenerPresentMarker = "__sshconn_listener_present__"
 
+// NoListenerMarker is the port probe's proved-empty answer — a probe tool ran
+// and found no listener on the port — exposed for callers outside this package
+// that must tell a proved-empty port from an unprobeable host. The hub's gated
+// live deploy check builds its host cleanup from ListenerProbeRemote and reads
+// this marker; anything else (a pid, listenerPresentMarker, or an empty answer)
+// is NOT absence.
+const NoListenerMarker = noListenerMarker
+
+// ListenerPresentMarker is the port probe's "a fallback tool proved a listener
+// exists but could not name its process" answer, exposed for the same callers as
+// NoListenerMarker: a held-but-unnameable port is not absence, so a caller that
+// only looks for NoListenerMarker must not read this as one.
+const ListenerPresentMarker = listenerPresentMarker
+
 // listenerProbeRemote builds the remote command that reports the listeners on
 // port.
 //
@@ -863,6 +877,15 @@ echo 'sshconn: no listener probe is available on this host (lsof, ss, and /proc/
 exit 1
 `
 }
+
+// ListenerProbeRemote exposes the port probe to callers outside this package.
+// The hub's gated live deploy check builds its host cleanup from it, so the
+// check and the production restart path identify a listener on a host the same
+// way — including the ss and /proc/net/tcp fallbacks a host without lsof needs.
+// Callers must treat a nonzero exit as "cannot say": only a nil error together
+// with NoListenerMarker proves the port is free (see the probe's output
+// contract above).
+func ListenerProbeRemote(port string) string { return listenerProbeRemote(port) }
 
 // listenerProbe is one port probe's answer: the PIDs a probe tool could name,
 // and whether a listener was proved to exist that no tool could name.
