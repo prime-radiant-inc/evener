@@ -12,6 +12,7 @@ import (
 )
 
 func TestProviderIdleCompactionFallbackUsesSessionPolicy(t *testing.T) {
+	t.Parallel()
 	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
 	adapter.Respond = func(req llm.Request) (llm.Response, error) {
 		if req.Model == "gpt-4.1-nano" {

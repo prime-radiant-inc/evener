@@ -15,6 +15,7 @@ import (
 )
 
 func TestReadRetainedPageReconstructsExactBytes(t *testing.T) {
+	t.Parallel()
 	want := bytes.Repeat([]byte("0123456789abcdef"), 2560) // exactly 40 KiB
 	reader := bytes.NewReader(want)
 	var got []byte
@@ -46,6 +47,7 @@ func TestReadRetainedPageReconstructsExactBytes(t *testing.T) {
 }
 
 func TestReadRetainedPageUsesBase64WhenFixedBoundaryIsInvalidUTF8(t *testing.T) {
+	t.Parallel()
 	want := append(bytes.Repeat([]byte{'a'}, (16<<10)-1), []byte("é-tail")...)
 	page, err := readRetainedPage(bytes.NewReader(want), 0, int64(len(want)), 0)
 	if err != nil {
@@ -63,6 +65,7 @@ func TestReadRetainedPageUsesBase64WhenFixedBoundaryIsInvalidUTF8(t *testing.T) 
 }
 
 func TestReadRetainedPageValidatesEOFAndLifetimeOffsets(t *testing.T) {
+	t.Parallel()
 	t.Run("retained lifetime offset", func(t *testing.T) {
 		const retainedStart = int64(73)
 		data := []byte("retained tail")
@@ -98,6 +101,7 @@ func TestReadRetainedPageValidatesEOFAndLifetimeOffsets(t *testing.T) {
 }
 
 func TestSearchRetainedContextLinesZeroOneAndTen(t *testing.T) {
+	t.Parallel()
 	var lines []string
 	for i := range 25 {
 		line := fmt.Sprintf("line-%02d", i)
@@ -137,6 +141,7 @@ func TestSearchRetainedContextLinesZeroOneAndTen(t *testing.T) {
 }
 
 func TestSearchRetainedStopsBeforeThe101stMatch(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	for i := range 101 {
 		fmt.Fprintf(&b, "hit-%03d\n", i)
@@ -168,6 +173,7 @@ func TestSearchRetainedStopsBeforeThe101stMatch(t *testing.T) {
 }
 
 func TestSearchRetainedHonorsSmallerSuppliedMatchCap(t *testing.T) {
+	t.Parallel()
 	data := []byte("hit-0\nignore\nhit-1\nignore\nhit-2\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
 		Regexp:     regexp.MustCompile(`^hit-`),
@@ -183,6 +189,7 @@ func TestSearchRetainedHonorsSmallerSuppliedMatchCap(t *testing.T) {
 }
 
 func TestSearchRetainedHonorsSmallerSuppliedSerializedCap(t *testing.T) {
+	t.Parallel()
 	line := "HIT-" + strings.Repeat("x", 220)
 	data := []byte(line + "\n" + line + "\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
@@ -205,6 +212,7 @@ func TestSearchRetainedHonorsSmallerSuppliedSerializedCap(t *testing.T) {
 }
 
 func TestSearchRetainedSerializedCapBelowFirstRecordSkipsAndProgresses(t *testing.T) {
+	t.Parallel()
 	data := []byte("HIT-first-record\nHIT-second-record\n")
 	const capBytes = 8
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
@@ -223,6 +231,7 @@ func TestSearchRetainedSerializedCapBelowFirstRecordSkipsAndProgresses(t *testin
 }
 
 func TestSearchRetainedSerializedCapCountsJSONEscapingForProgress(t *testing.T) {
+	t.Parallel()
 	line := "HIT-" + strings.Repeat("\"\\\t", 80)
 	expected := retainedSearchMatch{LineStartByte: 0, Line: line}
 	serialized := mustMarshalRetainedMatches(t, []retainedSearchMatch{expected})
@@ -244,6 +253,7 @@ func TestSearchRetainedSerializedCapCountsJSONEscapingForProgress(t *testing.T) 
 }
 
 func TestSearchRetainedSerializedCapRepeatedContinuationCannotLoop(t *testing.T) {
+	t.Parallel()
 	firstLine := "HIT-first"
 	oversizedLine := "HIT-" + strings.Repeat("\"\\\t", 80)
 	lastLine := "HIT-last"
@@ -297,6 +307,7 @@ func TestSearchRetainedSerializedCapRepeatedContinuationCannotLoop(t *testing.T)
 }
 
 func TestSearchRetainedSerializedCapExactJSONBoundaries(t *testing.T) {
+	t.Parallel()
 	firstLine := "HIT-quote=\" slash=\\ tab=\t"
 	secondLine := "HIT-\b\f\rx"
 	first := retainedSearchMatch{LineStartByte: 0, Line: firstLine}
@@ -343,6 +354,7 @@ func TestSearchRetainedSerializedCapExactJSONBoundaries(t *testing.T) {
 }
 
 func TestSearchRetainedContextRecordOver64KiBSkipsAndProgresses(t *testing.T) {
+	t.Parallel()
 	contextLine := strings.Repeat("\"\\", 4000)
 	context := make([]string, 10)
 	for i := range context {
@@ -368,6 +380,7 @@ func TestSearchRetainedContextRecordOver64KiBSkipsAndProgresses(t *testing.T) {
 }
 
 func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
+	t.Parallel()
 	contextLine := strings.Repeat("x", 1800)
 	var lines []string
 	for i := range 10 {
@@ -413,6 +426,7 @@ func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
 }
 
 func TestSearchRetainedContinuationIsFirstLineNotEvaluatedAsMatch(t *testing.T) {
+	t.Parallel()
 	data := []byte("hit-one\nboring-a\nboring-b\nhit-two\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
 		Regexp:     regexp.MustCompile(`^hit-`),
@@ -428,6 +442,7 @@ func TestSearchRetainedContinuationIsFirstLineNotEvaluatedAsMatch(t *testing.T) 
 }
 
 func TestSearchRetainedLookaheadContextDoesNotSkipLaterMatches(t *testing.T) {
+	t.Parallel()
 	data := []byte("hit-one\nhit-two\nhit-three\n")
 	source := newMemorySearchSource(data, 0)
 	var got []string
@@ -459,6 +474,7 @@ func TestSearchRetainedLookaheadContextDoesNotSkipLaterMatches(t *testing.T) {
 }
 
 func TestSearchRetainedReportsOversizedLineIntervalAndContinues(t *testing.T) {
+	t.Parallel()
 	overlong := strings.Repeat("x", retainedSearchMaxLineBytes+1) + "\n"
 	data := []byte(overlong + "HIT\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{Regexp: regexp.MustCompile(`HIT`)})
@@ -478,6 +494,7 @@ func TestSearchRetainedReportsOversizedLineIntervalAndContinues(t *testing.T) {
 }
 
 func TestSearchRetainedSkipsPrunedInitialPartialFragment(t *testing.T) {
+	t.Parallel()
 	const retainedStart = int64(100)
 	data := []byte("fragment\nHIT\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, retainedStart), retainedSearchOptions{
@@ -493,6 +510,7 @@ func TestSearchRetainedSkipsPrunedInitialPartialFragment(t *testing.T) {
 }
 
 func TestSearchRetainedRunningDefersEOFFragment(t *testing.T) {
+	t.Parallel()
 	data := []byte("HIT-complete\nHIT-growing")
 	fragmentAt := int64(len("HIT-complete\n"))
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
@@ -508,6 +526,7 @@ func TestSearchRetainedRunningDefersEOFFragment(t *testing.T) {
 }
 
 func TestSearchRetainedRunningPrunedUnterminatedPrefixDefersUntilNewline(t *testing.T) {
+	t.Parallel()
 	const retainedStart = int64(100)
 	source := newMemorySearchSource([]byte("HIT-growing"), retainedStart)
 	opts := retainedSearchOptions{
@@ -537,6 +556,7 @@ func TestSearchRetainedRunningPrunedUnterminatedPrefixDefersUntilNewline(t *test
 }
 
 func TestSearchRetainedTerminalEvaluatesUnterminatedEOF(t *testing.T) {
+	t.Parallel()
 	data := []byte("ignore\nHIT-terminal")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
 		Regexp: regexp.MustCompile(`HIT`),
@@ -550,6 +570,7 @@ func TestSearchRetainedTerminalEvaluatesUnterminatedEOF(t *testing.T) {
 }
 
 func TestSearchRetainedValidatesOptionsAndBoundsWindowReads(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		opts jobstore.SearchOptions

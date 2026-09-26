@@ -119,6 +119,7 @@ func TestLocateLocalJobCurrentProjectWins(t *testing.T) {
 }
 
 func TestLocateLocalJobFindsExactOwnerInSiblingProject(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	sibling := localJobProjectBucket(t, stateHome, localJobSiblingProject)
@@ -136,6 +137,7 @@ func TestLocateLocalJobFindsExactOwnerInSiblingProject(t *testing.T) {
 }
 
 func TestLocateLocalJobRejectsAmbiguousSiblingOwners(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	first := localJobProjectBucket(t, stateHome, "first-0000000003")
@@ -240,6 +242,7 @@ func TestLocateLocalJobFlatStateDirDoesNotSearchSiblings(t *testing.T) {
 }
 
 func TestLocateLocalJobDoesNotReadUnrelatedSessionStores(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	unrelated := identifier.MustNewSessionID()
@@ -285,6 +288,7 @@ func TestLocateLocalJob_LegacyNamedSiblingBucket(t *testing.T) {
 }
 
 func TestReadLocalJobSnapshotIgnoresPersistedAbsoluteOutputPath(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -307,6 +311,7 @@ func TestReadLocalJobSnapshotIgnoresPersistedAbsoluteOutputPath(t *testing.T) {
 }
 
 func TestReadLocalJobSnapshotRejectsTerminalByteMismatch(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -319,6 +324,7 @@ func TestReadLocalJobSnapshotRejectsTerminalByteMismatch(t *testing.T) {
 }
 
 func TestReadLocalJobSnapshotReportsRetainedMetadata(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -485,6 +491,7 @@ func TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound(t *test
 // jobs.jsonl through the symlink, so a job from outside the state root
 // surfaces via job:<id> reads.
 func TestLocateLocalJob_RejectsSymlinkedSessionsDir(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	bucket := localJobProjectBucket(t, stateHome, "test-0123456789")
 	owner := identifier.MustNewSessionID()

@@ -194,6 +194,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 }
 
 func TestForkAndAsidePreserveCheapModel(t *testing.T) {
+	t.Parallel()
 	operations := []struct {
 		name   string
 		create func(string, string) (string, error)
@@ -322,6 +323,7 @@ func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
 }
 
 func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		transform func(string) string

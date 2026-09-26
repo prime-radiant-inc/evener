@@ -21,6 +21,7 @@ func s4covWriteFile(t *testing.T, content string) string {
 }
 
 func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -48,6 +49,7 @@ func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
 }
 
 func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"01SESS"}`
 	tests := []struct {
 		name string
@@ -77,6 +79,7 @@ func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
 }
 
 func TestStrictChildTranscriptUsesPayloadOnlyLineBoundAndDiscardsTail(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"01SESS"}`
 	path := s4covWriteFile(t, header+"\n"+strings.Repeat("x", len(header)+1))
 	data, err := readStrictChildTranscript(path, "", "01SESS", len(header))
