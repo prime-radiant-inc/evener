@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 

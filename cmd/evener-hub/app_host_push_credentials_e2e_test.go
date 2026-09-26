@@ -70,8 +70,8 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/evener/internal/orphanpipe/orphanpipetest"
+	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
 )
 
 // git()'s WaitDelay already bounds a cancelled git. Its other half is a git

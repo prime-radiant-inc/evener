@@ -15,8 +15,8 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/remoteinstall"
-	"primeradiant.com/evener/internal/shellquote"
 )
 
 // buildinfoPkg is the import path whose ldflags the controller stamps into the
