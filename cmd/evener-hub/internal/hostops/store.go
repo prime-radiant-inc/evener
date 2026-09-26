@@ -162,13 +162,37 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 	return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
 }
 
-// canonicalStorePath is the key two handles for one store file collide on.
+// canonicalStorePath is the key two handles for one store file collide on: two
+// spellings of one store path — a relative and an absolute one, a state root
+// reached through a symlink — must meet on one key, or the two handles would
+// each hold their own store mutex and overwrite each other's records.
+//
+// The store file itself may not exist yet, so a path that does not resolve as a
+// file has the directory that carries it resolved instead, and a path whose
+// directory does not exist yet keeps its lexical absolute form (the only thing
+// two spellings of a to-be-created directory can agree on).
 func canonicalStorePath(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("hostops: resolve store path %s: %w", path, err)
 	}
-	return filepath.Clean(absolute), nil
+	absolute = filepath.Clean(absolute)
+	// Resolve the longest existing prefix and re-append what does not exist yet,
+	// so a path whose store file (or its directory) has not been created still
+	// meets the spelling that resolves.
+	suffix := ""
+	current := absolute
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, suffix), nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return absolute, nil
+		}
+		suffix = filepath.Join(filepath.Base(current), suffix)
+		current = parent
+	}
 }
 
 // forgetStore forgets a path's shared cell, so the next Open loads the file from
@@ -430,8 +454,8 @@ type storeFile struct {
 // the pinned pair, the timestamps) need no pointer.
 type recordFile struct {
 	Record
-	HostRemoved *bool       `json:"hostRemoved"`
-	Result      *resultFile `json:"result,omitempty"`
+	HostRemoved *bool           `json:"hostRemoved"`
+	Result      json.RawMessage `json:"result"`
 }
 
 // resultFile is the decode shape of a record's terminal result: `ok` is a
@@ -450,11 +474,21 @@ func (f recordFile) record() (Record, error) {
 	}
 	record := f.Record
 	record.HostRemoved = *f.HostRemoved
-	if f.Result != nil {
-		if f.Result.OK == nil {
+	if len(f.Result) > 0 {
+		raw := f.Result
+		if jsonFieldIsNull(raw) {
+			return Record{}, fmt.Errorf("record %q carries a null terminal result", f.ID)
+		}
+		var result resultFile
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&result); err != nil {
+			return Record{}, fmt.Errorf("record %q carries an unparseable terminal result", f.ID)
+		}
+		if result.OK == nil {
 			return Record{}, fmt.Errorf("record %q carries a terminal result with no outcome", f.ID)
 		}
-		record.Result = &Result{OK: *f.Result.OK, Message: f.Result.Message}
+		record.Result = &Result{OK: *result.OK, Message: result.Message}
 	}
 	return record, nil
 }
@@ -470,8 +504,23 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		}
 		return snapshot{}, fmt.Errorf("hostops: stat store %s: %w", path, err)
 	}
-	if info.IsDir() {
+	// The store file must be a regular file this store owns: a directory, a
+	// symlink, a fifo, a socket or a device is not one. A link is refused because
+	// the atomic rename replaces the link itself, not what it points at, so a
+	// store behind a link would silently move on its first write; a fifo in
+	// particular would block the read below forever, turning a stray file into a
+	// boot that never finishes.
+	kind, err := lstat(fs, path)
+	if err != nil {
+		return snapshot{}, fmt.Errorf("hostops: stat store %s: %w", path, err)
+	}
+	switch {
+	case kind.IsDir():
 		return snapshot{}, fmt.Errorf("hostops: store %s is a directory, not a store file", path)
+	case kind.Mode()&os.ModeSymlink != 0:
+		return snapshot{}, fmt.Errorf("hostops: store %s is a symlink; the store file must be a regular file", path)
+	case !kind.Mode().IsRegular():
+		return snapshot{}, fmt.Errorf("hostops: store %s is not a regular file", path)
 	}
 	if perm := info.Mode().Perm(); !ownerOnly(perm) {
 		return snapshot{}, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
@@ -662,6 +711,18 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 		return 0, false
 	}
 	return perm, true
+}
+
+// lstat stats a path without following a final symlink, through the filesystem
+// seam: afero's Fs has no Lstat, but every filesystem the hub uses implements the
+// optional Lstater, and one that does not is asked to Stat instead (its answer is
+// the target's kind, which is the best it can say).
+func lstat(fs afero.Fs, path string) (os.FileInfo, error) {
+	if lstater, ok := fs.(afero.Lstater); ok {
+		info, _, err := lstater.LstatIfPossible(path)
+		return info, err
+	}
+	return fs.Stat(path)
 }
 
 // ownerOnly reports whether a permission set lets nobody but the owner read the

@@ -234,6 +234,8 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"message":"failed"}`, 1) + `]}`,
 		"null result outcome": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":null,"message":"failed"}`, 1) + `]}`,
+		"null result": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":null`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -979,7 +981,7 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 		"hostRemoved":       `"hostRemoved":false,`,
 		"sequence":          `,"sequence":1`,
 		"result outcome":    `"ok":true,`,
-		"result message":    `"message":"deployed"`,
+		"result message":    `,"message":"deployed"`,
 	}
 	for name, fragment := range omitted {
 		t.Run(name, func(t *testing.T) {
