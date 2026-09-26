@@ -85,6 +85,11 @@ export class SeenMarkers {
 		this.state = parseSeen(readJson(storage, seenKey(hubId)));
 	}
 
+	/** First run is done: adoptEpoch has run for this hub on this device. */
+	get adopted(): boolean {
+		return this.state.adopted;
+	}
+
 	isSeen(row: { ref: string; updated_at?: string }): boolean {
 		const record = this.state.sessions[row.ref];
 		if (record?.unread) return false;
