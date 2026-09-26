@@ -437,6 +437,13 @@ type TreeNode struct {
 	// promotedAttentionLevel puts an active session in NeedsYou. The node
 	// keeps its real State.
 	ApprovalPending bool
+	// ApprovalTool and ApprovalTarget say what the oldest pending escalation
+	// asks for: the tool that was denied and the full literal path it was
+	// denied (LiveEntry.PendingEscalations[0]). Both are empty whenever
+	// ApprovalPending is false. The path is shown for informed consent, so it
+	// reaches human clients only, as thread/read's cards already do.
+	ApprovalTool   string
+	ApprovalTarget string
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports
 	// State "idle" — the same word a session that ran and finished reports — so
@@ -1028,6 +1035,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return liveMap[id].PendingEscalation
 	}
 
+	// firstApprovalFor resolves the oldest pending escalation card for a
+	// session ID from the same live map, for the same reason: every builder
+	// names the same card. The daemon lists cards in raise order, so the
+	// oldest is first; a session with none gets the zero card.
+	firstApprovalFor := func(id string) appwire.SandboxEscalationRequested {
+		if cards := liveMap[id].PendingEscalations; len(cards) > 0 {
+			return cards[0]
+		}
+		return appwire.SandboxEscalationRequested{}
+	}
+
 	// tasksFor resolves a session's task-list progress from its own live
 	// entry, the same live map stateFor reads, so every builder below puts the
 	// same progress on every row of one session and a child row never borrows
@@ -1198,10 +1216,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		state := stateFor(m.ID)
 		askPending := askPendingFor(m.ID)
 		approvalPending := approvalPendingFor(m.ID)
+		approval := firstApprovalFor(m.ID)
 		if parentDead {
 			state = "ended"
 			askPending = false
 			approvalPending = false
+			approval = appwire.SandboxEscalationRequested{}
 		}
 		// A subagent's state already resolved through stateFor above: its own
 		// live entry's status when it has one, else the parent's carried state
@@ -1219,6 +1239,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			State:           state,
 			AskPending:      askPending,
 			ApprovalPending: approvalPending,
+			ApprovalTool:    approval.Tool,
+			ApprovalTarget:  approval.DeniedPath,
 			Dormant:         dormantFor(m.ID),
 			Kind:            kind,
 			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
@@ -1455,12 +1477,15 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// needs a meta to resolve kind/title/project, and a session with none
 		// has no lineage to recurse into.
 		if !hasMeta {
+			approval := firstApprovalFor(le.SessionID)
 			node := TreeNode{
 				ID:              le.SessionID,
 				Ref:             liveRefMap[le.SessionID],
 				State:           stateFor(le.SessionID),
 				AskPending:      askPendingFor(le.SessionID),
 				ApprovalPending: approvalPendingFor(le.SessionID),
+				ApprovalTool:    approval.Tool,
+				ApprovalTarget:  approval.DeniedPath,
 				Dormant:         dormantFor(le.SessionID),
 				Kind:            "session",
 				Title:           ShortID(le.SessionID),
@@ -1560,12 +1585,15 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if !tierEligible(le.SessionID, meta, nestedMetaIDs, decisions) {
 			continue
 		}
+		approval := firstApprovalFor(le.SessionID)
 		node := TreeNode{
 			ID:              le.SessionID,
 			State:           st,
 			Kind:            "session",
 			AskPending:      le.PendingAsk,
 			ApprovalPending: le.PendingEscalation,
+			ApprovalTool:    approval.Tool,
+			ApprovalTarget:  approval.DeniedPath,
 			Dormant:         dormantFor(le.SessionID),
 			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
 			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),

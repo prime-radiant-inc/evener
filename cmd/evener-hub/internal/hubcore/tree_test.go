@@ -2125,6 +2125,45 @@ func fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending(t *testing.T) {
 	}
 }
 
+// fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval: the meta-less leaf
+// builder names the oldest pending card's tool and target too.
+func fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval(t *testing.T) {
+	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+	}}}
+	tree := buildTree(nil, live)
+	if len(tree.Live) != 1 || tree.Live[0].ApprovalTool != "write_file" || tree.Live[0].ApprovalTarget != "/home/me/sites/docs/index.md" {
+		t.Fatalf("Live = %+v, want the meta-less leaf naming the first card's write_file and its full path", tree.Live)
+	}
+}
+
+// fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval: a subagent row
+// under a parent that has ended is clamped to ended, and an ended row asks for
+// nothing, so the approval its stale live entry still carries goes with the
+// state: no flag, no tool, no target.
+func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01DEADP", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "parent",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01STALESUB", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
+			IsSubagent: true, ParentSessionID: "01DEADP",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+	}}}
+	sessions := allSessions(projectByName(t, buildTree(metas, live), "evener"))
+	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
+		t.Fatalf("unexpected shape: %#v", sessions)
+	}
+	child := sessions[0].Children[0]
+	if child.State != "ended" || child.ApprovalPending || child.ApprovalTool != "" || child.ApprovalTarget != "" {
+		t.Fatalf("stale subagent = state %q, approval %v %q %q; want ended with no approval", child.State, child.ApprovalPending, child.ApprovalTool, child.ApprovalTarget)
+	}
+}
+
 // TestProjectTier_CarriesAskPendingFromLiveEntry guards against the
 // per-project TreeNode builder silently dropping AskPending: the same
 // ask-pending session rendered under its project (Current tier) must carry

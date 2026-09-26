@@ -147,3 +147,26 @@ func fuzzScenarioBuildTree_EveryRowCarriesApprovalPending(t *testing.T) {
 		t.Fatalf("Live row state %q, project row state %q: both must keep the real state active", liveRow.State, projectRow.State)
 	}
 }
+
+// fuzzScenarioBuildTree_EveryRowCarriesTheFirstApproval: a session blocked on
+// two escalations names the oldest one, the first card in raise order, on its
+// NeedsYou, Live and project rows alike: the tool that asked and the full path
+// it was denied.
+func fuzzScenarioBuildTree_EveryRowCarriesTheFirstApproval(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{ID: "01APPROVAL", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
+	live := []LiveEntry{{PID: 1, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+	}}}
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01APPROVAL")
+	if len(tree.NeedsYou) != 1 || !inLive || !inProject {
+		t.Fatalf("session missing: needs-you rows=%d live=%v project=%v", len(tree.NeedsYou), inLive, inProject)
+	}
+	for name, row := range map[string]TreeNode{"NeedsYou": tree.NeedsYou[0], "Live": liveRow, "project": projectRow} {
+		if row.ApprovalTool != "write_file" || row.ApprovalTarget != "/home/me/sites/docs/index.md" {
+			t.Fatalf("%s row approval = %q %q, want the first card's write_file and its full path", name, row.ApprovalTool, row.ApprovalTarget)
+		}
+	}
+}
